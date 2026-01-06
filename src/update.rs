@@ -6,22 +6,33 @@
 //! - Centroid expansion for outliers
 //! - Cluster threshold updates
 
+#[cfg(feature = "npy")]
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs;
+#[cfg(feature = "npy")]
+use std::fs::File;
+#[cfg(feature = "npy")]
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
-use ndarray::{Array1, Array2, Axis};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "npy")]
-use ndarray::s;
+use ndarray::{s, Array1, Array2, Axis};
+#[cfg(feature = "npy")]
+use rayon::prelude::*;
 
+#[cfg(feature = "npy")]
 use crate::codec::ResidualCodec;
-use crate::error::{Error, Result};
+#[cfg(feature = "npy")]
+use crate::error::Error;
+use crate::error::Result;
+#[cfg(feature = "npy")]
 use crate::index::Metadata;
-use crate::kmeans::{compute_kmeans, ComputeKmeansConfig};
+#[cfg(feature = "npy")]
+use crate::kmeans::compute_kmeans;
+use crate::kmeans::ComputeKmeansConfig;
+#[cfg(feature = "npy")]
 use crate::utils::quantile;
 
 /// Default batch size for processing documents (matches fast-plaid).
@@ -272,6 +283,7 @@ pub fn update_cluster_threshold(
 /// Find outlier embeddings that are far from all existing centroids.
 ///
 /// Returns indices of embeddings where min L2² distance > threshold².
+#[cfg(feature = "npy")]
 fn find_outliers(
     flat_embeddings: &Array2<f32>,
     centroids: &Array2<f32>,
@@ -781,6 +793,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "npy")]
     fn test_find_outliers() {
         // Create centroids at (0,0), (1,1)
         let centroids = Array2::from_shape_vec((2, 2), vec![0.0, 0.0, 1.0, 1.0]).unwrap();
