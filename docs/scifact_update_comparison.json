@@ -13,8 +13,8 @@
   "num_queries": 300,
   "num_centroids": 16384,
   "lategrep": {
-    "index_time_s": 11.778,
-    "search_time_s": 15.771,
+    "index_time_s": 12.192,
+    "search_time_s": 16.381,
     "num_batches": 7,
     "metrics": {
       "map": 0.7077,
@@ -24,14 +24,14 @@
       "recall@100": 0.9593
     },
     "memory": {
-      "index_peak_mb": 518.8,
-      "search_peak_mb": 317.4,
-      "peak_overall_mb": 518.8
+      "index_peak_mb": 473.4,
+      "search_peak_mb": 480.2,
+      "peak_overall_mb": 480.2
     }
   },
   "fastplaid": {
-    "index_time_s": 19.124,
-    "search_time_s": 72.427,
+    "index_time_s": 19.459,
+    "search_time_s": 85.852,
     "num_batches": 7,
     "metrics": {
       "map": 0.7114,
@@ -41,17 +41,17 @@
       "recall@100": 0.956
     },
     "memory": {
-      "index_peak_mb": 3539.0,
-      "search_peak_mb": 3582.6,
-      "peak_overall_mb": 3582.6
+      "index_peak_mb": 3316.5,
+      "search_peak_mb": 3360.9,
+      "peak_overall_mb": 3360.9
     }
   },
   "comparison": {
-    "result_overlap_10": 0.8616,
-    "result_overlap_100": 0.8761,
+    "result_overlap_10": 0.8628,
+    "result_overlap_100": 0.876,
     "map_diff_pct": 0.52,
-    "speedup": 1.62,
-    "memory_savings_pct": 85.5
+    "speedup": 1.6,
+    "memory_savings_pct": 85.7
   },
   "assertions": {
     "map_passed": true,

@@ -11,7 +11,10 @@ categories = ["science", "algorithms"]
 
 [dependencies]
 ndarray = { version = "0.16", features = ["rayon"] }
+# BLAS backends (optional)
+blas-src = { version = "0.10", optional = true }
 openblas-src = { version = "0.10", features = ["cblas", "system"], optional = true }
+accelerate-src = { version = "0.3", optional = true }
 ndarray-rand = "0.15"
 rand = "0.8"
 rand_chacha = "0.3"
@@ -21,16 +24,13 @@ thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ndarray-npy = { version = "0.9", optional = true }
-fastkmeans-rs = { git = "https://github.com/lightonai/fastkmeans-rs", version = "0.1.3" }
+fastkmeans-rs = { version = "0.1.4" }
 indicatif = "0.17"
 memmap2 = "0.9"
 half = "2.4"
 byteorder = "1.5"
 rusqlite = { version = "0.33", optional = true }
 regex = { version = "1.11", optional = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-blas-src = { version = "0.10", features = ["accelerate"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -41,9 +41,9 @@ tempfile = "3.10"
 default = []
 npy = ["ndarray-npy"]
 filtering = ["rusqlite", "regex"]
-# BLAS backends for accelerated matrix operations (enables ndarray/blas feature)
-accelerate = ["blas-src", "ndarray/blas"]  # macOS Accelerate framework
-openblas = ["openblas-src", "ndarray/blas"]  # OpenBLAS (Linux/cross-platform)
+# BLAS backends for accelerated matrix operations (enables ndarray/blas and fastkmeans-rs/blas)
+accelerate = ["blas-src", "accelerate-src", "ndarray/blas", "fastkmeans-rs/accelerate"]  # macOS Accelerate framework
+openblas = ["blas-src", "openblas-src", "ndarray/blas", "fastkmeans-rs/openblas"]  # OpenBLAS (Linux/cross-platform)
 
 [[bench]]
 name = "plaid_benchmark"
