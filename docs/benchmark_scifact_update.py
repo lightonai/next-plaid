@@ -9,27 +9,165 @@ This script:
 4. Runs search queries and evaluates retrieval quality
 5. Compares results between fast-plaid and lategrep
 6. Asserts that results are similar (within tolerance)
+7. Measures and compares memory usage
 
 Usage:
     python benchmark_scifact_update.py [--batch-size 800] [--skip-fastplaid] [--skip-lategrep]
 
 Requirements:
-    pip install beir ranx pylate fastkmeans tqdm numpy torch fast-plaid
+    pip install beir ranx pylate fastkmeans tqdm numpy torch fast-plaid psutil
     cargo build --release --features npy --example benchmark_cli
 """
 
 import argparse
+import gc
 import json
 import math
+import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+import psutil
 import torch
+
+
+# ============================================================================
+# Memory Monitoring
+# ============================================================================
+
+
+@dataclass
+class MemoryStats:
+    """Memory statistics for a benchmark run."""
+
+    peak_rss_mb: float = 0.0  # Peak resident set size in MB
+    peak_vms_mb: float = 0.0  # Peak virtual memory size in MB
+    index_peak_mb: float = 0.0  # Peak during indexing
+    search_peak_mb: float = 0.0  # Peak during search
+
+
+class MemoryMonitor:
+    """Monitor memory usage of a process or the current process."""
+
+    def __init__(self, pid: int | None = None, interval: float = 0.1):
+        self.pid = pid or os.getpid()
+        self.interval = interval
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.peak_rss_mb = 0.0
+        self.peak_vms_mb = 0.0
+        self._lock = threading.Lock()
+
+    def _monitor_loop(self):
+        """Background thread to monitor memory."""
+        try:
+            process = psutil.Process(self.pid)
+            while not self._stop_event.is_set():
+                try:
+                    mem_info = process.memory_info()
+                    rss_mb = mem_info.rss / (1024 * 1024)
+                    vms_mb = mem_info.vms / (1024 * 1024)
+                    with self._lock:
+                        self.peak_rss_mb = max(self.peak_rss_mb, rss_mb)
+                        self.peak_vms_mb = max(self.peak_vms_mb, vms_mb)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    break
+                self._stop_event.wait(self.interval)
+        except Exception:
+            pass
+
+    def start(self):
+        """Start monitoring in background thread."""
+        self._stop_event.clear()
+        self.peak_rss_mb = 0.0
+        self.peak_vms_mb = 0.0
+        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> tuple[float, float]:
+        """Stop monitoring and return (peak_rss_mb, peak_vms_mb)."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=1.0)
+        with self._lock:
+            return self.peak_rss_mb, self.peak_vms_mb
+
+    def reset(self):
+        """Reset peak values."""
+        with self._lock:
+            self.peak_rss_mb = 0.0
+            self.peak_vms_mb = 0.0
+
+
+class SubprocessMemoryMonitor:
+    """Monitor memory usage of a subprocess."""
+
+    def __init__(self, interval: float = 0.05):
+        self.interval = interval
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.peak_rss_mb = 0.0
+        self.peak_vms_mb = 0.0
+        self._process: subprocess.Popen | None = None
+        self._lock = threading.Lock()
+
+    def _monitor_loop(self):
+        """Background thread to monitor subprocess memory."""
+        while not self._stop_event.is_set():
+            if self._process and self._process.poll() is None:
+                try:
+                    proc = psutil.Process(self._process.pid)
+                    mem_info = proc.memory_info()
+                    rss_mb = mem_info.rss / (1024 * 1024)
+                    vms_mb = mem_info.vms / (1024 * 1024)
+                    with self._lock:
+                        self.peak_rss_mb = max(self.peak_rss_mb, rss_mb)
+                        self.peak_vms_mb = max(self.peak_vms_mb, vms_mb)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            self._stop_event.wait(self.interval)
+
+    def start(self):
+        """Start monitoring thread."""
+        self._stop_event.clear()
+        self.peak_rss_mb = 0.0
+        self.peak_vms_mb = 0.0
+        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._thread.start()
+
+    def set_process(self, process: subprocess.Popen):
+        """Set the subprocess to monitor."""
+        self._process = process
+
+    def stop(self) -> tuple[float, float]:
+        """Stop monitoring and return (peak_rss_mb, peak_vms_mb)."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=1.0)
+        with self._lock:
+            return self.peak_rss_mb, self.peak_vms_mb
+
+    def get_current_peak(self) -> tuple[float, float]:
+        """Get current peak values without stopping."""
+        with self._lock:
+            return self.peak_rss_mb, self.peak_vms_mb
+
+    def reset(self):
+        """Reset peak values for next phase."""
+        with self._lock:
+            self.peak_rss_mb = 0.0
+            self.peak_vms_mb = 0.0
+
+
+def get_current_memory_mb() -> float:
+    """Get current process memory usage in MB."""
+    return psutil.Process().memory_info().rss / (1024 * 1024)
 
 
 @dataclass
@@ -241,6 +379,13 @@ def run_lategrep_with_updates(
     """Run lategrep with initial create + incremental updates."""
     binary_path = get_lategrep_binary()
 
+    # Memory monitoring for subprocess
+    mem_monitor = SubprocessMemoryMonitor(interval=0.02)
+    mem_monitor.start()
+
+    index_peak_mb = 0.0
+    search_peak_mb = 0.0
+
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
         index_dir = tmpdir / "index"
@@ -255,9 +400,11 @@ def run_lategrep_with_updates(
         save_embeddings_npy(doc_embeddings[:initial_docs], initial_data_dir)
         np.save(initial_data_dir / "centroids.npy", centroids)
 
-        # Create initial index
+        # Create initial index with memory monitoring
         start = time.perf_counter()
-        result = subprocess.run(
+        mem_monitor.reset()
+
+        process = subprocess.Popen(
             [
                 str(binary_path),
                 "create",
@@ -268,11 +415,17 @@ def run_lategrep_with_updates(
                 "--nbits",
                 str(config.nbits),
             ],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"lategrep create failed: {result.stderr}")
+        mem_monitor.set_process(process)
+        stdout, stderr = process.communicate()
+        if process.returncode != 0:
+            raise RuntimeError(f"lategrep create failed: {stderr}")
+
+        peak_rss, _ = mem_monitor.get_current_peak()
+        index_peak_mb = max(index_peak_mb, peak_rss)
 
         num_batches = 1
 
@@ -282,7 +435,8 @@ def run_lategrep_with_updates(
             batch_dir = tmpdir / f"batch_{num_batches}"
             save_embeddings_npy(batch, batch_dir)
 
-            result = subprocess.run(
+            mem_monitor.reset()
+            process = subprocess.Popen(
                 [
                     str(binary_path),
                     "update",
@@ -291,21 +445,29 @@ def run_lategrep_with_updates(
                     "--data-dir",
                     str(batch_dir),
                 ],
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
             )
-            if result.returncode != 0:
-                raise RuntimeError(f"lategrep update failed: {result.stderr}")
+            mem_monitor.set_process(process)
+            stdout, stderr = process.communicate()
+            if process.returncode != 0:
+                raise RuntimeError(f"lategrep update failed: {stderr}")
+
+            peak_rss, _ = mem_monitor.get_current_peak()
+            index_peak_mb = max(index_peak_mb, peak_rss)
 
             num_batches += 1
 
         index_time = time.perf_counter() - start
 
-        # Search
+        # Search with memory monitoring
         save_queries_npy(query_embeddings, query_dir)
 
         start = time.perf_counter()
-        result = subprocess.run(
+        mem_monitor.reset()
+
+        process = subprocess.Popen(
             [
                 str(binary_path),
                 "search",
@@ -320,21 +482,33 @@ def run_lategrep_with_updates(
                 "--n-full-scores",
                 str(config.n_full_scores),
             ],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
         )
+        mem_monitor.set_process(process)
+        stdout, stderr = process.communicate()
         search_time = time.perf_counter() - start
 
-        if result.returncode != 0:
-            raise RuntimeError(f"lategrep search failed: {result.stderr}")
+        search_peak_mb, _ = mem_monitor.get_current_peak()
 
-        search_results = json.loads(result.stdout)
+        if process.returncode != 0:
+            raise RuntimeError(f"lategrep search failed: {stderr}")
+
+        search_results = json.loads(stdout)
+
+    mem_monitor.stop()
 
     return {
         "index_time_s": index_time,
         "search_time_s": search_time,
         "num_batches": num_batches,
         "results": search_results,
+        "memory": MemoryStats(
+            peak_rss_mb=max(index_peak_mb, search_peak_mb),
+            index_peak_mb=index_peak_mb,
+            search_peak_mb=search_peak_mb,
+        ),
     }
 
 
@@ -350,6 +524,14 @@ def run_fastplaid_with_updates(
 ) -> dict:
     """Run fast-plaid with initial create + incremental updates."""
     from fast_plaid.search.fast_plaid import FastPlaid
+
+    # Memory monitoring for current process (fast-plaid runs in-process)
+    mem_monitor = MemoryMonitor(interval=0.02)
+    mem_monitor.start()
+
+    # Force garbage collection before starting
+    gc.collect()
+    baseline_mem = get_current_memory_mb()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         index_dir = Path(tmpdir) / "index"
@@ -381,6 +563,14 @@ def run_fastplaid_with_updates(
 
         index_time = time.perf_counter() - start
 
+        # Get index peak memory (relative to baseline)
+        index_peak_rss, _ = mem_monitor.stop()
+        index_peak_mb = index_peak_rss - baseline_mem
+
+        # Reset for search phase
+        gc.collect()
+        mem_monitor.start()
+
         # Search
         start = time.perf_counter()
         results = index.search(
@@ -391,6 +581,9 @@ def run_fastplaid_with_updates(
             show_progress=False,
         )
         search_time = time.perf_counter() - start
+
+        search_peak_rss, _ = mem_monitor.stop()
+        search_peak_mb = search_peak_rss - baseline_mem
 
         # Convert results to common format
         search_results = []
@@ -410,6 +603,11 @@ def run_fastplaid_with_updates(
         "search_time_s": search_time,
         "num_batches": num_batches,
         "results": search_results,
+        "memory": MemoryStats(
+            peak_rss_mb=max(index_peak_rss, search_peak_rss),
+            index_peak_mb=max(0, index_peak_mb),
+            search_peak_mb=max(0, search_peak_mb),
+        ),
     }
 
 
@@ -530,6 +728,9 @@ def main():
             print(f"    MAP:               {lg_metrics['map']:.4f}")
             print(f"    NDCG@10:           {lg_metrics['ndcg@10']:.4f}")
             print(f"    Recall@100:        {lg_metrics['recall@100']:.4f}")
+            mem = lg_output["memory"]
+            print(f"    Peak RAM (index):  {mem.index_peak_mb:.1f} MB")
+            print(f"    Peak RAM (search): {mem.search_peak_mb:.1f} MB")
         except Exception as e:
             print(f"    ERROR: {e}")
             import traceback
@@ -549,6 +750,9 @@ def main():
             print(f"    MAP:               {fp_metrics['map']:.4f}")
             print(f"    NDCG@10:           {fp_metrics['ndcg@10']:.4f}")
             print(f"    Recall@100:        {fp_metrics['recall@100']:.4f}")
+            mem = fp_output["memory"]
+            print(f"    Peak RAM (index):  {mem.index_peak_mb:.1f} MB")
+            print(f"    Peak RAM (search): {mem.search_peak_mb:.1f} MB")
         except Exception as e:
             print(f"    ERROR: {e}")
             import traceback
@@ -588,10 +792,31 @@ def main():
 
         # Performance
         print("\n  Performance:")
-        print(f"    Lategrep index+update:  {results['lategrep']['index_time_s']:.2f}s")
+        print(f"    Lategrep index+update:   {results['lategrep']['index_time_s']:.2f}s")
         print(f"    Fast-plaid index+update: {results['fastplaid']['index_time_s']:.2f}s")
         speedup = results["fastplaid"]["index_time_s"] / results["lategrep"]["index_time_s"]
-        print(f"    Lategrep speedup:       {speedup:.2f}x")
+        print(f"    Lategrep speedup:        {speedup:.2f}x")
+
+        # Memory comparison
+        lg_mem = results["lategrep"]["memory"]
+        fp_mem = results["fastplaid"]["memory"]
+        print("\n  Memory Usage:")
+        print(f"  {'Phase':<20} {'Lategrep':>12} {'Fast-plaid':>12} {'Savings':>12}")
+        print("  " + "-" * 56)
+        print(
+            f"  {'Index/Update':<20} {lg_mem.index_peak_mb:>10.1f} MB {fp_mem.index_peak_mb:>10.1f} MB "
+            f"{(1 - lg_mem.index_peak_mb / max(fp_mem.index_peak_mb, 1)):>+10.0%}"
+        )
+        print(
+            f"  {'Search':<20} {lg_mem.search_peak_mb:>10.1f} MB {fp_mem.search_peak_mb:>10.1f} MB "
+            f"{(1 - lg_mem.search_peak_mb / max(fp_mem.search_peak_mb, 1)):>+10.0%}"
+        )
+        total_lg = max(lg_mem.index_peak_mb, lg_mem.search_peak_mb)
+        total_fp = max(fp_mem.index_peak_mb, fp_mem.search_peak_mb)
+        print(
+            f"  {'Peak Overall':<20} {total_lg:>10.1f} MB {total_fp:>10.1f} MB "
+            f"{(1 - total_lg / max(total_fp, 1)):>+10.0%}"
+        )
 
         # Assertions
         print("\n  " + "=" * 60)
@@ -648,18 +873,29 @@ def main():
                 "search_time_s": round(results["lategrep"]["search_time_s"], 3),
                 "num_batches": results["lategrep"]["num_batches"],
                 "metrics": {k: round(v, 4) for k, v in all_metrics["lategrep"].items()},
+                "memory": {
+                    "index_peak_mb": round(lg_mem.index_peak_mb, 1),
+                    "search_peak_mb": round(lg_mem.search_peak_mb, 1),
+                    "peak_overall_mb": round(total_lg, 1),
+                },
             },
             "fastplaid": {
                 "index_time_s": round(results["fastplaid"]["index_time_s"], 3),
                 "search_time_s": round(results["fastplaid"]["search_time_s"], 3),
                 "num_batches": results["fastplaid"]["num_batches"],
                 "metrics": {k: round(v, 4) for k, v in all_metrics["fastplaid"].items()},
+                "memory": {
+                    "index_peak_mb": round(fp_mem.index_peak_mb, 1),
+                    "search_peak_mb": round(fp_mem.search_peak_mb, 1),
+                    "peak_overall_mb": round(total_fp, 1),
+                },
             },
             "comparison": {
                 "result_overlap_10": round(overlap_10, 4),
                 "result_overlap_100": round(overlap_100, 4),
                 "map_diff_pct": round(map_diff_pct, 2),
                 "speedup": round(speedup, 2),
+                "memory_savings_pct": round((1 - total_lg / max(total_fp, 1)) * 100, 1),
             },
             "assertions": {
                 "map_passed": bool(map_passed),

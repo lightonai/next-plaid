@@ -841,7 +841,11 @@ impl Index {
     ///
     /// The number of documents actually deleted.
     #[cfg(feature = "npy")]
-    pub fn delete_with_options(&mut self, doc_ids: &[i64], delete_metadata: bool) -> Result<usize> {
+    pub fn delete_with_options(
+        &mut self,
+        doc_ids: &[i64],
+        #[allow(unused_variables)] delete_metadata: bool,
+    ) -> Result<usize> {
         let deleted = crate::delete::delete_from_index(doc_ids, &self.path)?;
 
         // Delete from metadata database if it exists and requested
