@@ -1,0 +1,18 @@
+{
+  "dataset": "scifact",
+  "model": "answerdotai/answerai-colbert-small-v1",
+  "num_documents": 5183,
+  "num_queries": 300,
+  "num_centroids": 16384,
+  "nbits": 4,
+  "index_time_s": 200.773,
+  "search_time_s": 16.68,
+  "qps": 17.99,
+  "metrics": {
+    "map": 0.7075,
+    "ndcg@10": 0.7437,
+    "ndcg@100": 0.7659,
+    "recall@10": 0.8573,
+    "recall@100": 0.9593
+  }
+}

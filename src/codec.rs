@@ -122,6 +122,10 @@ impl ResidualCodec {
 
     /// Compress embeddings into centroid codes using nearest neighbor search.
     ///
+    /// Uses batch matrix multiplication for efficiency:
+    /// `scores = embeddings @ centroids.T  -> [N, K]`
+    /// `codes = argmax(scores, axis=1)     -> [N]`
+    ///
     /// # Arguments
     ///
     /// * `embeddings` - Embeddings of shape `[N, dim]`
@@ -130,29 +134,47 @@ impl ResidualCodec {
     ///
     /// Centroid indices of shape `[N]`
     pub fn compress_into_codes(&self, embeddings: &Array2<f32>) -> Array1<usize> {
+        use rayon::prelude::*;
+
         let n = embeddings.nrows();
-        let mut codes = Array1::<usize>::zeros(n);
-
-        // Compute scores: embeddings @ centroids.T
-        // For each embedding, find argmax
-        for (i, emb) in embeddings.axis_iter(Axis(0)).enumerate() {
-            let mut max_score = f32::NEG_INFINITY;
-            let mut max_idx = 0;
-
-            for (j, centroid) in self.centroids.axis_iter(Axis(0)).enumerate() {
-                let score = emb.dot(&centroid);
-                if score > max_score {
-                    max_score = score;
-                    max_idx = j;
-                }
-            }
-            codes[i] = max_idx;
+        if n == 0 {
+            return Array1::zeros(0);
         }
 
-        codes
+        // Process in batches to avoid memory issues with large matrices
+        const BATCH_SIZE: usize = 2048;
+
+        let mut all_codes = Vec::with_capacity(n);
+
+        for start in (0..n).step_by(BATCH_SIZE) {
+            let end = (start + BATCH_SIZE).min(n);
+            let batch = embeddings.slice(ndarray::s![start..end, ..]);
+
+            // Batch matrix multiplication: [batch, dim] @ [dim, K] -> [batch, K]
+            let scores = batch.dot(&self.centroids.t());
+
+            // Parallel argmax over each row
+            let batch_codes: Vec<usize> = scores
+                .axis_iter(Axis(0))
+                .into_par_iter()
+                .map(|row| {
+                    row.iter()
+                        .enumerate()
+                        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                        .map(|(idx, _)| idx)
+                        .unwrap_or(0)
+                })
+                .collect();
+
+            all_codes.extend(batch_codes);
+        }
+
+        Array1::from_vec(all_codes)
     }
 
     /// Quantize residuals into packed bytes.
+    ///
+    /// Uses vectorized bucket search and parallel processing for efficiency.
     ///
     /// # Arguments
     ///
@@ -162,6 +184,8 @@ impl ResidualCodec {
     ///
     /// Packed residuals of shape `[N, dim * nbits / 8]` as bytes
     pub fn quantize_residuals(&self, residuals: &Array2<f32>) -> Result<Array2<u8>> {
+        use rayon::prelude::*;
+
         let cutoffs = self
             .bucket_cutoffs
             .as_ref()
@@ -170,31 +194,46 @@ impl ResidualCodec {
         let n = residuals.nrows();
         let dim = residuals.ncols();
         let packed_dim = dim * self.nbits / 8;
+        let nbits = self.nbits;
 
+        if n == 0 {
+            return Ok(Array2::zeros((0, packed_dim)));
+        }
+
+        // Convert cutoffs to a slice for faster access
+        let cutoffs_slice = cutoffs.as_slice().unwrap();
+
+        // Process rows in parallel
+        let packed_rows: Vec<Vec<u8>> = residuals
+            .axis_iter(Axis(0))
+            .into_par_iter()
+            .map(|row| {
+                let mut packed_row = vec![0u8; packed_dim];
+                let mut bit_idx = 0;
+
+                for &val in row.iter() {
+                    // Binary search for bucket (searchsorted equivalent)
+                    let bucket = cutoffs_slice.iter().filter(|&&c| val > c).count();
+
+                    // Pack bits directly into bytes
+                    for b in 0..nbits {
+                        let bit = ((bucket >> b) & 1) as u8;
+                        let byte_idx = bit_idx / 8;
+                        let bit_pos = 7 - (bit_idx % 8);
+                        packed_row[byte_idx] |= bit << bit_pos;
+                        bit_idx += 1;
+                    }
+                }
+
+                packed_row
+            })
+            .collect();
+
+        // Assemble into array
         let mut packed = Array2::<u8>::zeros((n, packed_dim));
-
-        // Bucketize each residual value
-        for i in 0..n {
-            let mut bits = Vec::with_capacity(dim * self.nbits);
-
-            for j in 0..dim {
-                let val = residuals[[i, j]];
-                // Find bucket index
-                let bucket = cutoffs.iter().filter(|&&c| val > c).count();
-
-                // Convert bucket to bits (LSB-first to match decompression's bit reversal)
-                for b in 0..self.nbits {
-                    bits.push(((bucket >> b) & 1) as u8);
-                }
-            }
-
-            // Pack bits into bytes
-            for (byte_idx, chunk) in bits.chunks(8).enumerate() {
-                let mut byte_val = 0u8;
-                for (bit_idx, &bit) in chunk.iter().enumerate() {
-                    byte_val |= bit << (7 - bit_idx);
-                }
-                packed[[i, byte_idx]] = byte_val;
+        for (i, row) in packed_rows.into_iter().enumerate() {
+            for (j, val) in row.into_iter().enumerate() {
+                packed[[i, j]] = val;
             }
         }
 

@@ -273,35 +273,67 @@ impl Index {
         for chunk_idx in 0..n_chunks {
             let start = chunk_idx * config.batch_size;
             let end = (start + config.batch_size).min(num_documents);
+            let chunk_docs = &embeddings[start..end];
 
-            let mut chunk_codes_list: Vec<usize> = Vec::new();
-            let mut chunk_doclens: Vec<i64> = Vec::new();
+            // Collect document lengths
+            let chunk_doclens: Vec<i64> = chunk_docs.iter().map(|d| d.nrows() as i64).collect();
+            let total_tokens: usize = chunk_doclens.iter().sum::<i64>() as usize;
 
-            for doc in &embeddings[start..end] {
-                let doc_len = doc.nrows();
-                chunk_doclens.push(doc_len as i64);
-                doc_lengths.push(doc_len as i64);
+            // Concatenate all embeddings in the chunk for batch processing
+            let mut batch_embeddings = Array2::<f32>::zeros((total_tokens, embedding_dim));
+            let mut offset = 0;
+            for doc in chunk_docs {
+                let n = doc.nrows();
+                batch_embeddings
+                    .slice_mut(s![offset..offset + n, ..])
+                    .assign(doc);
+                offset += n;
+            }
 
-                // Compress embeddings
-                let codes = codec.compress_into_codes(doc);
+            // BATCH: Compress all embeddings at once
+            let batch_codes = codec.compress_into_codes(&batch_embeddings);
 
-                // Compute residuals
-                let mut res = doc.clone();
-                for i in 0..doc_len {
-                    let centroid = codec.centroids.row(codes[i]);
-                    for j in 0..embedding_dim {
-                        res[[i, j]] -= centroid[j];
-                    }
-                }
+            // BATCH: Compute residuals using parallel subtraction
+            let mut batch_residuals = batch_embeddings;
+            {
+                use rayon::prelude::*;
+                let centroids = &codec.centroids;
+                batch_residuals
+                    .axis_iter_mut(Axis(0))
+                    .into_par_iter()
+                    .zip(batch_codes.as_slice().unwrap().par_iter())
+                    .for_each(|(mut row, &code)| {
+                        let centroid = centroids.row(code);
+                        row.iter_mut()
+                            .zip(centroid.iter())
+                            .for_each(|(r, c)| *r -= c);
+                    });
+            }
 
-                // Quantize residuals
-                let packed = codec.quantize_residuals(&res)?;
+            // BATCH: Quantize all residuals at once
+            let batch_packed = codec.quantize_residuals(&batch_residuals)?;
 
-                chunk_codes_list.extend(codes.iter().copied());
+            // Split results back into per-document arrays
+            let mut code_offset = 0;
+            for &len in &chunk_doclens {
+                let len_usize = len as usize;
+                doc_lengths.push(len);
+
+                let codes: Array1<usize> = batch_codes
+                    .slice(s![code_offset..code_offset + len_usize])
+                    .to_owned();
                 all_codes.extend(codes.iter().copied());
                 doc_codes.push(codes);
+
+                let packed = batch_packed
+                    .slice(s![code_offset..code_offset + len_usize, ..])
+                    .to_owned();
                 doc_residuals.push(packed);
+
+                code_offset += len_usize;
             }
+
+            let chunk_codes_list: Vec<usize> = batch_codes.iter().copied().collect();
 
             // Save chunk metadata
             let chunk_meta = ChunkMetadata {
@@ -324,28 +356,14 @@ impl Index {
             {
                 use ndarray_npy::WriteNpyExt;
 
-                // Save chunk codes
-                let chunk_codes_arr: Array1<i64> =
-                    chunk_codes_list.iter().map(|&x| x as i64).collect();
+                // Save chunk codes (already in batch form)
+                let chunk_codes_arr: Array1<i64> = batch_codes.iter().map(|&x| x as i64).collect();
                 let codes_path = index_dir.join(format!("{}.codes.npy", chunk_idx));
                 chunk_codes_arr.write_npy(File::create(&codes_path)?)?;
 
-                // Save chunk residuals
-                let total_res_rows: usize =
-                    doc_residuals[start..end].iter().map(|r| r.nrows()).sum();
-                let packed_dim = embedding_dim * config.nbits / 8;
-                let mut chunk_residuals = Array2::<u8>::zeros((total_res_rows, packed_dim));
-                let mut offset = 0;
-                for res in &doc_residuals[start..end] {
-                    for (i, row) in res.axis_iter(Axis(0)).enumerate() {
-                        for (j, &val) in row.iter().enumerate() {
-                            chunk_residuals[[offset + i, j]] = val;
-                        }
-                    }
-                    offset += res.nrows();
-                }
+                // Save chunk residuals (already in batch form)
                 let residuals_path = index_dir.join(format!("{}.residuals.npy", chunk_idx));
-                chunk_residuals.write_npy(File::create(&residuals_path)?)?;
+                batch_packed.write_npy(File::create(&residuals_path)?)?;
             }
 
             progress.inc(1);

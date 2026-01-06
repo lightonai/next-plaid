@@ -523,45 +523,69 @@ pub fn update_index(
         let global_chunk_idx = start_chunk_idx + i;
         let chk_offset = i * batch_size;
         let chk_end = (chk_offset + batch_size).min(num_new_documents);
+        let chunk_docs = &embeddings[chk_offset..chk_end];
 
-        let mut chk_codes_list: Vec<usize> = Vec::new();
-        let mut chk_residuals_list: Vec<u8> = Vec::new();
-        let mut chk_doclens: Vec<i64> = Vec::new();
+        // Collect document lengths
+        let mut chk_doclens: Vec<i64> = chunk_docs.iter().map(|d| d.nrows() as i64).collect();
+        let total_tokens: usize = chk_doclens.iter().sum::<i64>() as usize;
 
-        for doc in &embeddings[chk_offset..chk_end] {
-            let doc_len = doc.nrows() as i64;
-            chk_doclens.push(doc_len);
+        // Concatenate all embeddings in the chunk for batch processing
+        let mut batch_embeddings = ndarray::Array2::<f32>::zeros((total_tokens, embedding_dim));
+        let mut offset = 0;
+        for doc in chunk_docs {
+            let n = doc.nrows();
+            batch_embeddings
+                .slice_mut(s![offset..offset + n, ..])
+                .assign(doc);
+            offset += n;
+        }
 
-            // Compress embeddings to codes
-            let codes = codec.compress_into_codes(doc);
+        // BATCH: Compress all embeddings at once
+        let batch_codes = codec.compress_into_codes(&batch_embeddings);
 
-            // Compute residuals
-            let mut residuals = doc.clone();
-            for (j, &code) in codes.iter().enumerate() {
-                let centroid = codec.centroids.row(code);
-                for k in 0..embedding_dim {
-                    residuals[[j, k]] -= centroid[k];
-                }
+        // BATCH: Compute residuals using parallel subtraction
+        let mut batch_residuals = batch_embeddings;
+        {
+            let centroids = &codec.centroids;
+            batch_residuals
+                .axis_iter_mut(Axis(0))
+                .into_par_iter()
+                .zip(batch_codes.as_slice().unwrap().par_iter())
+                .for_each(|(mut row, &code)| {
+                    let centroid = centroids.row(code);
+                    row.iter_mut()
+                        .zip(centroid.iter())
+                        .for_each(|(r, c)| *r -= c);
+                });
+        }
+
+        // Collect residual norms if updating threshold
+        if update_threshold {
+            for row in batch_residuals.axis_iter(Axis(0)) {
+                let norm = row.dot(&row).sqrt();
+                all_residual_norms.push(norm);
             }
+        }
 
-            // Collect residual norms if updating threshold
-            if update_threshold {
-                for row in residuals.axis_iter(Axis(0)) {
-                    let norm = row.dot(&row).sqrt();
-                    all_residual_norms.push(norm);
-                }
-            }
+        // BATCH: Quantize all residuals at once
+        let batch_packed = codec.quantize_residuals(&batch_residuals)?;
 
-            // Quantize residuals
-            let packed = codec.quantize_residuals(&residuals)?;
+        // Convert to lists for chunk saving
+        let mut chk_codes_list: Vec<usize> = batch_codes.iter().copied().collect();
+        let mut chk_residuals_list: Vec<u8> = batch_packed.iter().copied().collect();
 
-            chk_codes_list.extend(codes.iter().copied());
-            new_codes_accumulated.push(codes.to_vec());
-            new_doclens_accumulated.push(doc_len);
-
-            for row in packed.axis_iter(Axis(0)) {
-                chk_residuals_list.extend(row.iter().copied());
-            }
+        // Split codes back into per-document arrays for IVF building
+        let mut code_offset = 0;
+        for &len in &chk_doclens {
+            let len_usize = len as usize;
+            let codes: Vec<usize> = batch_codes
+                .slice(s![code_offset..code_offset + len_usize])
+                .iter()
+                .copied()
+                .collect();
+            new_codes_accumulated.push(codes);
+            new_doclens_accumulated.push(len);
+            code_offset += len_usize;
         }
 
         // Handle appending to last chunk
