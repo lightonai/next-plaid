@@ -108,6 +108,7 @@ fn run_create(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         nbits,
         batch_size: 50000,
         seed: Some(42),
+        ..Default::default()
     };
 
     // Create index

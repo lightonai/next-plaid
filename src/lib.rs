@@ -16,6 +16,9 @@ pub mod utils;
 pub use codec::ResidualCodec;
 pub use error::{Error, Result};
 pub use index::{Index, IndexConfig, LoadedIndex, Metadata};
-pub use kmeans::{compute_centroids, compute_centroids_from_documents, FastKMeans, KMeansConfig};
+pub use kmeans::{
+    compute_centroids, compute_centroids_from_documents, compute_kmeans, estimate_num_partitions,
+    ComputeKmeansConfig, FastKMeans, KMeansConfig,
+};
 pub use search::{QueryResult, SearchParameters};
 pub use strided_tensor::{IvfStridedTensor, StridedTensor};

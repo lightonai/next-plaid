@@ -31,26 +31,47 @@ lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy"] }
 
 ## Usage
 
-### Creating an Index
+### Creating an Index with Automatic Centroids
+
+The simplest way to create an index - centroids are computed automatically using the same heuristics as FastPlaid:
 
 ```rust
 use lategrep::{Index, IndexConfig};
 use ndarray::Array2;
-use fastkmeans_rs::KMeans;
 
 // Your document embeddings (list of [num_tokens, dim] arrays)
 let embeddings: Vec<Array2<f32>> = load_embeddings();
 
-// Compute centroids using fastkmeans-rs
-let all_embeddings: Array2<f32> = concatenate_embeddings(&embeddings);
-let kmeans = KMeans::new(&all_embeddings, num_centroids, None)?;
-let centroids = kmeans.centroids().to_owned();
+// Create index with automatic centroid computation
+let config = IndexConfig::default();  // nbits=4, kmeans_niters=4, etc.
+let index = Index::create_with_kmeans(&embeddings, "path/to/index", &config)?;
+```
+
+### Creating an Index with Pre-computed Centroids
+
+For more control, you can compute centroids separately:
+
+```rust
+use lategrep::{Index, IndexConfig, compute_kmeans, ComputeKmeansConfig};
+use ndarray::Array2;
+
+let embeddings: Vec<Array2<f32>> = load_embeddings();
+
+// Compute centroids with custom settings
+let kmeans_config = ComputeKmeansConfig {
+    kmeans_niters: 4,
+    max_points_per_centroid: 256,
+    seed: 42,
+    ..Default::default()
+};
+let centroids = compute_kmeans(&embeddings, &kmeans_config)?;
 
 // Create the index
 let config = IndexConfig {
-    nbits: 2,
+    nbits: 4,
     batch_size: 50000,
     seed: Some(42),
+    ..Default::default()
 };
 
 let index = Index::create(&embeddings, centroids, "path/to/index", &config)?;
@@ -102,26 +123,74 @@ make ci
 
 ### Available Commands
 
-```bash
-make build      # Build the project
-make release    # Build in release mode
-make test       # Run tests
-make lint       # Run clippy and format checks
-make fmt        # Format code
-make doc        # Build documentation
-make bench      # Run benchmarks
-make ci         # Run all CI checks
-```
-
-### Comparing with FastPlaid
-
-To verify that Lategrep produces the same results as FastPlaid:
+#### Core Commands
 
 ```bash
-make compare-reference
+make build          # Build the project
+make release        # Build in release mode
+make test           # Run all unit tests
+make lint           # Run clippy and format checks
+make fmt            # Format code
+make doc            # Build documentation
+make bench          # Run benchmarks
+make ci             # Run all CI checks (fmt, clippy, test, doc, bench)
 ```
 
-This will create a small test index with both implementations and compare the search results.
+#### Python Tools
+
+```bash
+make lint-python    # Lint Python code with ruff
+make fmt-python     # Format Python code with ruff
+```
+
+#### Comparison Tests
+
+```bash
+make compare-reference       # Quick comparison with synthetic data
+make compare-scifact         # Full SciFact comparison (encodes from scratch)
+make compare-scifact-cached  # SciFact comparison with cached embeddings (faster)
+```
+
+#### Evaluation
+
+```bash
+make evaluate-scifact        # Evaluate lategrep on SciFact dataset
+make evaluate-scifact-cached # Evaluate with cached embeddings (faster)
+```
+
+## Testing
+
+### Unit Tests
+
+Run the full test suite:
+
+```bash
+cargo test --features npy
+```
+
+### FastPlaid Compatibility
+
+Lategrep is designed to produce results compatible with FastPlaid. The comparison tests verify:
+
+1. **Retrieval Quality**: MAP, NDCG@10, NDCG@100, Recall@10, Recall@100
+2. **Result Overlap**: Jaccard similarity between result sets
+3. **Index Compatibility**: Cross-loading of indices
+
+#### Latest SciFact Results
+
+| Metric | Lategrep | FastPlaid | Difference |
+|--------|----------|-----------|------------|
+| MAP | 0.7074 | 0.7065 | +0.0009 |
+| NDCG@10 | 0.7437 | 0.7431 | +0.0006 |
+| Recall@100 | 0.9593 | 0.9593 | 0.0000 |
+| Result Overlap @10 | 92.93% | - | - |
+| Result Overlap @100 | 93.55% | - | - |
+
+Run the comparison yourself:
+
+```bash
+make compare-scifact-cached
+```
 
 ## Algorithm
 

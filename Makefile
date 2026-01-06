@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached
 
 all: fmt lint test
 
@@ -91,3 +91,13 @@ evaluate-scifact:
 evaluate-scifact-cached:
 	cargo build --release --features npy --example benchmark_cli
 	cd docs && uv sync --extra eval && uv run python evaluate_scifact.py --skip-encoding
+
+# Compare lategrep and fast-plaid on SciFact dataset
+compare-scifact:
+	cargo build --release --features npy --example benchmark_cli
+	cd docs && uv sync --extra eval --extra fast-plaid && uv run python compare_scifact.py
+
+# Compare with cached embeddings (faster)
+compare-scifact-cached:
+	cargo build --release --features npy --example benchmark_cli
+	cd docs && uv sync --extra eval --extra fast-plaid && uv run python compare_scifact.py --skip-encoding

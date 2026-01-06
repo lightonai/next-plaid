@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::codec::ResidualCodec;
 use crate::error::{Error, Result};
+use crate::kmeans::{compute_kmeans, ComputeKmeansConfig};
 use crate::strided_tensor::{IvfStridedTensor, StridedTensor};
 use crate::utils::{quantile, quantiles};
 
@@ -22,6 +23,24 @@ pub struct IndexConfig {
     pub batch_size: usize,
     /// Random seed for reproducibility
     pub seed: Option<u64>,
+    /// Number of K-means iterations (default: 4)
+    #[serde(default = "default_kmeans_niters")]
+    pub kmeans_niters: usize,
+    /// Maximum number of points per centroid for K-means (default: 256)
+    #[serde(default = "default_max_points_per_centroid")]
+    pub max_points_per_centroid: usize,
+    /// Number of samples for K-means training.
+    /// If None, uses heuristic: min(1 + 16 * sqrt(120 * num_documents), num_documents)
+    #[serde(default)]
+    pub n_samples_kmeans: Option<usize>,
+}
+
+fn default_kmeans_niters() -> usize {
+    4
+}
+
+fn default_max_points_per_centroid() -> usize {
+    256
 }
 
 impl Default for IndexConfig {
@@ -30,6 +49,9 @@ impl Default for IndexConfig {
             nbits: 4,
             batch_size: 50_000,
             seed: Some(42),
+            kmeans_niters: 4,
+            max_points_per_centroid: 256,
+            n_samples_kmeans: None,
         }
     }
 }
@@ -418,6 +440,46 @@ impl Index {
             doc_lengths: doc_lengths_arr,
             doc_residuals,
         })
+    }
+
+    /// Create a new index from document embeddings with automatic centroid computation.
+    ///
+    /// This method implements the same logic as fast-plaid's `create()`:
+    /// 1. Computes centroids using K-means with automatic K calculation
+    /// 2. Creates the index using the computed centroids
+    ///
+    /// # Arguments
+    ///
+    /// * `embeddings` - List of document embeddings, each of shape `[num_tokens, dim]`
+    /// * `index_path` - Directory to save the index
+    /// * `config` - Index configuration (includes K-means parameters)
+    ///
+    /// # Returns
+    ///
+    /// The created index
+    pub fn create_with_kmeans(
+        embeddings: &[Array2<f32>],
+        index_path: &str,
+        config: &IndexConfig,
+    ) -> Result<Self> {
+        if embeddings.is_empty() {
+            return Err(Error::IndexCreation("No documents provided".into()));
+        }
+
+        // Build K-means configuration from IndexConfig
+        let kmeans_config = ComputeKmeansConfig {
+            kmeans_niters: config.kmeans_niters,
+            max_points_per_centroid: config.max_points_per_centroid,
+            seed: config.seed.unwrap_or(42),
+            n_samples_kmeans: config.n_samples_kmeans,
+            num_partitions: None, // Let the heuristic decide
+        };
+
+        // Compute centroids using fast-plaid's approach
+        let centroids = compute_kmeans(embeddings, &kmeans_config)?;
+
+        // Create the index with the computed centroids
+        Self::create(embeddings, centroids, index_path, config)
     }
 
     /// Load an existing index from disk.
