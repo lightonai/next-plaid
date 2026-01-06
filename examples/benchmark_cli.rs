@@ -1,10 +1,11 @@
 //! CLI tool for benchmarking lategrep.
 //!
-//! This example provides a command-line interface for creating and searching
+//! This example provides a command-line interface for creating, updating, and searching
 //! indexes, primarily used by the Python benchmark script.
 //!
 //! Usage:
 //!     benchmark_cli create --data-dir <path> --index-dir <path> [--nbits <n>]
+//!     benchmark_cli update --index-dir <path> --data-dir <path>
 //!     benchmark_cli search --index-dir <path> --query-dir <path> [--top-k <n>]
 
 #[cfg(feature = "npy")]
@@ -13,7 +14,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "npy")]
-use lategrep::{Index, IndexConfig, SearchParameters};
+use lategrep::{Index, IndexConfig, SearchParameters, UpdateConfig};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -25,6 +26,7 @@ fn main() {
 
     let result = match args[1].as_str() {
         "create" => run_create(&args[2..]),
+        "update" => run_update(&args[2..]),
         "search" => run_search(&args[2..]),
         "--help" | "-h" => {
             print_usage();
@@ -47,12 +49,17 @@ fn print_usage() {
     eprintln!(
         r#"Usage:
     benchmark_cli create --data-dir <path> --index-dir <path> [--nbits <n>]
+    benchmark_cli update --index-dir <path> --data-dir <path>
     benchmark_cli search --index-dir <path> --query-dir <path> [options]
 
 Create Options:
     --data-dir <path>     Directory containing doc_*.npy files and centroids.npy
     --index-dir <path>    Directory to write the index
     --nbits <n>           Number of bits for quantization (default: 4)
+
+Update Options:
+    --index-dir <path>    Directory containing the existing index
+    --data-dir <path>     Directory containing doc_*.npy files to add
 
 Search Options:
     --index-dir <path>    Directory containing the index
@@ -121,6 +128,61 @@ fn run_create(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(not(feature = "npy"))]
 fn run_create(_args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Err("Index creation requires 'npy' feature".into())
+}
+
+#[cfg(feature = "npy")]
+fn run_update(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut index_dir: Option<PathBuf> = None;
+    let mut data_dir: Option<PathBuf> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--index-dir" => {
+                i += 1;
+                index_dir = Some(PathBuf::from(&args[i]));
+            }
+            "--data-dir" => {
+                i += 1;
+                data_dir = Some(PathBuf::from(&args[i]));
+            }
+            _ => {
+                return Err(format!("Unknown option: {}", args[i]).into());
+            }
+        }
+        i += 1;
+    }
+
+    let index_dir = index_dir.ok_or("--index-dir is required")?;
+    let data_dir = data_dir.ok_or("--data-dir is required")?;
+
+    // Load existing index
+    let mut index = Index::load(index_dir.to_str().unwrap())?;
+    eprintln!(
+        "Loaded index with {} documents",
+        index.metadata.num_documents
+    );
+
+    // Load new embeddings
+    let embeddings = load_embeddings(&data_dir)?;
+    eprintln!("Loaded {} new documents", embeddings.len());
+
+    // Create update config
+    let config = UpdateConfig::default();
+
+    // Update index
+    index.update_simple(&embeddings, Some(config.batch_size))?;
+    eprintln!(
+        "Index updated, now has {} documents",
+        index.metadata.num_documents
+    );
+
+    Ok(())
+}
+
+#[cfg(not(feature = "npy"))]
+fn run_update(_args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    Err("Index update requires 'npy' feature".into())
 }
 
 #[cfg(feature = "npy")]

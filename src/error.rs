@@ -40,6 +40,10 @@ pub enum Error {
     #[error("Invalid configuration: {0}")]
     Config(String),
 
+    /// Error during update operation
+    #[error("Update failed: {0}")]
+    Update(String),
+
     /// NPY read error
     #[cfg(feature = "npy")]
     #[error("NPY read error: {0}")]

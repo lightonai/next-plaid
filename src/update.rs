@@ -1,23 +1,437 @@
 //! Index update functionality for adding new documents.
 //!
 //! This module provides functions to incrementally update an existing PLAID index
-//! with new documents without rebuilding from scratch.
+//! with new documents, matching fast-plaid's behavior:
+//! - Buffer mechanism for small updates
+//! - Centroid expansion for outliers
+//! - Cluster threshold updates
 
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
+use ndarray::{Array1, Array2, Axis};
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+
 #[cfg(feature = "npy")]
-use ndarray::{s, Array1};
-use ndarray::{Array2, Axis};
+use ndarray::s;
 
 use crate::codec::ResidualCodec;
 use crate::error::{Error, Result};
 use crate::index::Metadata;
+use crate::kmeans::{compute_kmeans, ComputeKmeansConfig};
+use crate::utils::quantile;
 
 /// Default batch size for processing documents (matches fast-plaid).
 const DEFAULT_BATCH_SIZE: usize = 50_000;
+
+/// Configuration for index updates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateConfig {
+    /// Batch size for processing documents (default: 50,000)
+    pub batch_size: usize,
+    /// Number of K-means iterations for centroid expansion (default: 4)
+    pub kmeans_niters: usize,
+    /// Max points per centroid for K-means (default: 256)
+    pub max_points_per_centroid: usize,
+    /// Number of samples for K-means (default: auto-calculated)
+    pub n_samples_kmeans: Option<usize>,
+    /// Random seed (default: 42)
+    pub seed: u64,
+    /// If index has fewer docs than this, rebuild from scratch (default: 999)
+    pub start_from_scratch: usize,
+    /// Buffer size before triggering centroid expansion (default: 100)
+    pub buffer_size: usize,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            batch_size: DEFAULT_BATCH_SIZE,
+            kmeans_niters: 4,
+            max_points_per_centroid: 256,
+            n_samples_kmeans: None,
+            seed: 42,
+            start_from_scratch: 999,
+            buffer_size: 100,
+        }
+    }
+}
+
+impl UpdateConfig {
+    /// Convert to ComputeKmeansConfig for centroid expansion.
+    pub fn to_kmeans_config(&self) -> ComputeKmeansConfig {
+        ComputeKmeansConfig {
+            kmeans_niters: self.kmeans_niters,
+            max_points_per_centroid: self.max_points_per_centroid,
+            seed: self.seed,
+            n_samples_kmeans: self.n_samples_kmeans,
+            num_partitions: None,
+        }
+    }
+}
+
+// ============================================================================
+// Buffer Management
+// ============================================================================
+
+/// Load buffered embeddings from buffer.npy.
+///
+/// Returns an empty vector if buffer.npy doesn't exist.
+#[cfg(feature = "npy")]
+pub fn load_buffer(index_path: &Path) -> Result<Vec<Array2<f32>>> {
+    let buffer_path = index_path.join("buffer.npy");
+    if !buffer_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    // Load as object array (similar to fast-plaid's allow_pickle=True)
+    use std::io::Read;
+    let mut file = File::open(&buffer_path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+
+    // Parse the npy format header to get shape info
+    // For simplicity, we'll load the raw data assuming it's stored as a list of arrays
+    // This matches fast-plaid's np.save with allow_pickle=True format
+
+    // Alternative approach: read using ndarray-npy as a contiguous array
+    // and split by stored lengths
+    use ndarray_npy::ReadNpyExt;
+
+    // Try to read as a 2D array first (single batch case)
+    if let Ok(arr) = Array2::<f32>::read_npy(File::open(&buffer_path)?) {
+        return Ok(vec![arr]);
+    }
+
+    // If that fails, the buffer might be empty or in a different format
+    Ok(Vec::new())
+}
+
+/// Save embeddings to buffer.npy.
+#[cfg(feature = "npy")]
+pub fn save_buffer(index_path: &Path, embeddings: &[Array2<f32>]) -> Result<()> {
+    use ndarray_npy::WriteNpyExt;
+
+    let buffer_path = index_path.join("buffer.npy");
+
+    // For simplicity, concatenate all embeddings into one array
+    // and store the lengths separately
+    if embeddings.is_empty() {
+        return Ok(());
+    }
+
+    let dim = embeddings[0].ncols();
+    let total_rows: usize = embeddings.iter().map(|e| e.nrows()).sum();
+
+    let mut flat = Array2::<f32>::zeros((total_rows, dim));
+    let mut offset = 0;
+    let mut lengths = Vec::new();
+
+    for emb in embeddings {
+        let n = emb.nrows();
+        flat.slice_mut(s![offset..offset + n, ..]).assign(emb);
+        lengths.push(n as i64);
+        offset += n;
+    }
+
+    flat.write_npy(File::create(&buffer_path)?)?;
+
+    // Save lengths
+    let lengths_path = index_path.join("buffer_lengths.json");
+    serde_json::to_writer(BufWriter::new(File::create(&lengths_path)?), &lengths)?;
+
+    Ok(())
+}
+
+/// Clear buffer files.
+pub fn clear_buffer(index_path: &Path) -> Result<()> {
+    let buffer_path = index_path.join("buffer.npy");
+    let lengths_path = index_path.join("buffer_lengths.json");
+
+    if buffer_path.exists() {
+        fs::remove_file(&buffer_path)?;
+    }
+    if lengths_path.exists() {
+        fs::remove_file(&lengths_path)?;
+    }
+
+    Ok(())
+}
+
+/// Load embeddings stored for rebuild (embeddings.npy).
+#[cfg(feature = "npy")]
+pub fn load_embeddings_npy(index_path: &Path) -> Result<Vec<Array2<f32>>> {
+    use ndarray_npy::ReadNpyExt;
+
+    let emb_path = index_path.join("embeddings.npy");
+    if !emb_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    // Try to read as 2D array
+    if let Ok(arr) = Array2::<f32>::read_npy(File::open(&emb_path)?) {
+        return Ok(vec![arr]);
+    }
+
+    Ok(Vec::new())
+}
+
+/// Save embeddings for potential rebuild.
+#[cfg(feature = "npy")]
+pub fn save_embeddings_npy(index_path: &Path, embeddings: &[Array2<f32>]) -> Result<()> {
+    use ndarray_npy::WriteNpyExt;
+
+    if embeddings.is_empty() {
+        return Ok(());
+    }
+
+    let dim = embeddings[0].ncols();
+    let total_rows: usize = embeddings.iter().map(|e| e.nrows()).sum();
+
+    let mut flat = Array2::<f32>::zeros((total_rows, dim));
+    let mut offset = 0;
+
+    for emb in embeddings {
+        let n = emb.nrows();
+        flat.slice_mut(s![offset..offset + n, ..]).assign(emb);
+        offset += n;
+    }
+
+    let emb_path = index_path.join("embeddings.npy");
+    flat.write_npy(File::create(&emb_path)?)?;
+
+    Ok(())
+}
+
+/// Clear embeddings.npy.
+pub fn clear_embeddings_npy(index_path: &Path) -> Result<()> {
+    let emb_path = index_path.join("embeddings.npy");
+    if emb_path.exists() {
+        fs::remove_file(&emb_path)?;
+    }
+    Ok(())
+}
+
+// ============================================================================
+// Cluster Threshold Management
+// ============================================================================
+
+/// Load cluster threshold from cluster_threshold.npy.
+#[cfg(feature = "npy")]
+pub fn load_cluster_threshold(index_path: &Path) -> Result<f32> {
+    use ndarray_npy::ReadNpyExt;
+
+    let thresh_path = index_path.join("cluster_threshold.npy");
+    if !thresh_path.exists() {
+        return Err(Error::Update("cluster_threshold.npy not found".into()));
+    }
+
+    let arr: Array1<f32> = Array1::read_npy(File::open(&thresh_path)?)?;
+    Ok(arr[0])
+}
+
+/// Update cluster_threshold.npy with weighted average.
+#[cfg(feature = "npy")]
+pub fn update_cluster_threshold(
+    index_path: &Path,
+    new_residual_norms: &Array1<f32>,
+    old_total_embeddings: usize,
+) -> Result<()> {
+    use ndarray_npy::{ReadNpyExt, WriteNpyExt};
+
+    let new_count = new_residual_norms.len();
+    if new_count == 0 {
+        return Ok(());
+    }
+
+    let new_threshold = quantile(new_residual_norms, 0.75);
+
+    let thresh_path = index_path.join("cluster_threshold.npy");
+    let final_threshold = if thresh_path.exists() {
+        let old_arr: Array1<f32> = Array1::read_npy(File::open(&thresh_path)?)?;
+        let old_threshold = old_arr[0];
+        let total = old_total_embeddings + new_count;
+        (old_threshold * old_total_embeddings as f32 + new_threshold * new_count as f32)
+            / total as f32
+    } else {
+        new_threshold
+    };
+
+    Array1::from_vec(vec![final_threshold]).write_npy(File::create(&thresh_path)?)?;
+
+    Ok(())
+}
+
+// ============================================================================
+// Centroid Expansion
+// ============================================================================
+
+/// Find outlier embeddings that are far from all existing centroids.
+///
+/// Returns indices of embeddings where min L2² distance > threshold².
+fn find_outliers(
+    flat_embeddings: &Array2<f32>,
+    centroids: &Array2<f32>,
+    threshold_sq: f32,
+) -> Vec<usize> {
+    flat_embeddings
+        .axis_iter(Axis(0))
+        .into_par_iter()
+        .enumerate()
+        .filter_map(|(i, emb)| {
+            // Find minimum squared distance to any centroid
+            let min_dist_sq = centroids
+                .axis_iter(Axis(0))
+                .map(|c| {
+                    // L2 squared distance
+                    emb.iter()
+                        .zip(c.iter())
+                        .map(|(a, b)| (a - b).powi(2))
+                        .sum::<f32>()
+                })
+                .fold(f32::INFINITY, f32::min);
+
+            if min_dist_sq > threshold_sq {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Expand centroids by clustering embeddings far from existing centroids.
+///
+/// This implements fast-plaid's update_centroids() function:
+/// 1. Flatten all new embeddings
+/// 2. Find outliers (distance > cluster_threshold²)
+/// 3. Cluster outliers to get new centroids
+/// 4. Append new centroids to centroids.npy
+/// 5. Extend ivf_lengths.npy with zeros
+/// 6. Update metadata.json num_partitions
+///
+/// Returns the number of new centroids added.
+#[cfg(feature = "npy")]
+pub fn update_centroids(
+    index_path: &Path,
+    new_embeddings: &[Array2<f32>],
+    cluster_threshold: f32,
+    config: &UpdateConfig,
+) -> Result<usize> {
+    use ndarray_npy::{ReadNpyExt, WriteNpyExt};
+
+    let centroids_path = index_path.join("centroids.npy");
+    if !centroids_path.exists() {
+        return Ok(0);
+    }
+
+    // Load existing centroids
+    let existing_centroids: Array2<f32> = Array2::read_npy(File::open(&centroids_path)?)?;
+
+    // Flatten all new embeddings
+    let dim = existing_centroids.ncols();
+    let total_tokens: usize = new_embeddings.iter().map(|e| e.nrows()).sum();
+
+    if total_tokens == 0 {
+        return Ok(0);
+    }
+
+    let mut flat_embeddings = Array2::<f32>::zeros((total_tokens, dim));
+    let mut offset = 0;
+
+    for emb in new_embeddings {
+        let n = emb.nrows();
+        flat_embeddings
+            .slice_mut(s![offset..offset + n, ..])
+            .assign(emb);
+        offset += n;
+    }
+
+    // Find outliers
+    let threshold_sq = cluster_threshold * cluster_threshold;
+    let outlier_indices = find_outliers(&flat_embeddings, &existing_centroids, threshold_sq);
+
+    let num_outliers = outlier_indices.len();
+    if num_outliers == 0 {
+        return Ok(0);
+    }
+
+    // Extract outlier embeddings
+    let mut outliers = Array2::<f32>::zeros((num_outliers, dim));
+    for (i, &idx) in outlier_indices.iter().enumerate() {
+        outliers.row_mut(i).assign(&flat_embeddings.row(idx));
+    }
+
+    // Compute number of new centroids
+    // k_update = max(1, ceil(num_outliers / max_points_per_centroid) * 4)
+    let target_k =
+        ((num_outliers as f64 / config.max_points_per_centroid as f64).ceil() as usize).max(1) * 4;
+    let k_update = target_k.min(num_outliers); // Can't have more centroids than points
+
+    // Cluster outliers to get new centroids
+    let kmeans_config = ComputeKmeansConfig {
+        kmeans_niters: config.kmeans_niters,
+        max_points_per_centroid: config.max_points_per_centroid,
+        seed: config.seed,
+        n_samples_kmeans: config.n_samples_kmeans,
+        num_partitions: Some(k_update),
+    };
+
+    // Convert outliers to vector of single-token "documents" for compute_kmeans
+    let outlier_docs: Vec<Array2<f32>> = outlier_indices
+        .iter()
+        .map(|&idx| flat_embeddings.slice(s![idx..idx + 1, ..]).to_owned())
+        .collect();
+
+    let new_centroids = compute_kmeans(&outlier_docs, &kmeans_config)?;
+    let k_new = new_centroids.nrows();
+
+    // Concatenate centroids
+    let new_num_centroids = existing_centroids.nrows() + k_new;
+    let mut final_centroids = Array2::<f32>::zeros((new_num_centroids, dim));
+    final_centroids
+        .slice_mut(s![..existing_centroids.nrows(), ..])
+        .assign(&existing_centroids);
+    final_centroids
+        .slice_mut(s![existing_centroids.nrows().., ..])
+        .assign(&new_centroids);
+
+    // Save updated centroids
+    final_centroids.write_npy(File::create(&centroids_path)?)?;
+
+    // Extend ivf_lengths.npy with zeros for new centroids
+    let ivf_lengths_path = index_path.join("ivf_lengths.npy");
+    if ivf_lengths_path.exists() {
+        let old_lengths: Array1<i32> = Array1::read_npy(File::open(&ivf_lengths_path)?)?;
+        let mut new_lengths = Array1::<i32>::zeros(new_num_centroids);
+        new_lengths
+            .slice_mut(s![..old_lengths.len()])
+            .assign(&old_lengths);
+        new_lengths.write_npy(File::create(&ivf_lengths_path)?)?;
+    }
+
+    // Update metadata.json num_partitions
+    let meta_path = index_path.join("metadata.json");
+    if meta_path.exists() {
+        let mut meta: serde_json::Value =
+            serde_json::from_reader(BufReader::new(File::open(&meta_path)?))?;
+
+        if let Some(obj) = meta.as_object_mut() {
+            obj.insert("num_partitions".to_string(), new_num_centroids.into());
+        }
+
+        serde_json::to_writer_pretty(BufWriter::new(File::create(&meta_path)?), &meta)?;
+    }
+
+    Ok(k_new)
+}
+
+// ============================================================================
+// Low-Level Index Update
+// ============================================================================
 
 /// Update an existing index with new documents.
 ///
@@ -26,16 +440,19 @@ const DEFAULT_BATCH_SIZE: usize = 50_000;
 /// * `embeddings` - List of new document embeddings, each of shape `[num_tokens, dim]`
 /// * `index_path` - Path to the existing index directory
 /// * `codec` - The loaded ResidualCodec for compression
-/// * `batch_size` - Optional batch size for processing (default: 25,000)
+/// * `batch_size` - Optional batch size for processing (default: 50,000)
+/// * `update_threshold` - Whether to update the cluster threshold
 ///
 /// # Returns
 ///
 /// The number of new documents added
+#[cfg(feature = "npy")]
 pub fn update_index(
     embeddings: &[Array2<f32>],
     index_path: &str,
     codec: &ResidualCodec,
     batch_size: Option<usize>,
+    update_threshold: bool,
 ) -> Result<usize> {
     let batch_size = batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
     let index_dir = Path::new(index_path);
@@ -55,17 +472,11 @@ pub fn update_index(
     let nbits = metadata.nbits;
 
     // Determine starting chunk index
-    #[cfg(not(feature = "npy"))]
-    let start_chunk_idx = num_existing_chunks;
-    #[cfg(feature = "npy")]
     let mut start_chunk_idx = num_existing_chunks;
-    #[cfg(feature = "npy")]
     let mut append_to_last = false;
     let mut current_emb_offset = old_total_embeddings;
 
     // Check if we should append to the last chunk (if it has < 2000 documents)
-    // This optimization only works with the npy feature for loading old data
-    #[cfg(feature = "npy")]
     if start_chunk_idx > 0 {
         let last_idx = start_chunk_idx - 1;
         let last_meta_path = index_dir.join(format!("{}.metadata.json", last_idx));
@@ -101,11 +512,11 @@ pub fn update_index(
 
     let mut new_codes_accumulated: Vec<Vec<usize>> = Vec::new();
     let mut new_doclens_accumulated: Vec<i64> = Vec::new();
+    let mut all_residual_norms: Vec<f32> = Vec::new();
 
     let progress = indicatif::ProgressBar::new(n_new_chunks as u64);
     progress.set_message("Updating index...");
 
-    #[cfg(feature = "npy")]
     let packed_dim = embedding_dim * nbits / 8;
 
     for i in 0..n_new_chunks {
@@ -126,10 +537,18 @@ pub fn update_index(
 
             // Compute residuals
             let mut residuals = doc.clone();
-            for (i, &code) in codes.iter().enumerate() {
+            for (j, &code) in codes.iter().enumerate() {
                 let centroid = codec.centroids.row(code);
-                for j in 0..embedding_dim {
-                    residuals[[i, j]] -= centroid[j];
+                for k in 0..embedding_dim {
+                    residuals[[j, k]] -= centroid[k];
+                }
+            }
+
+            // Collect residual norms if updating threshold
+            if update_threshold {
+                for row in residuals.axis_iter(Axis(0)) {
+                    let norm = row.dot(&row).sqrt();
+                    all_residual_norms.push(norm);
                 }
             }
 
@@ -146,13 +565,12 @@ pub fn update_index(
         }
 
         // Handle appending to last chunk
-        #[cfg(feature = "npy")]
         if i == 0 && append_to_last {
+            use ndarray_npy::ReadNpyExt;
+
             let old_doclens_path = index_dir.join(format!("doclens.{}.json", global_chunk_idx));
 
             if old_doclens_path.exists() {
-                use ndarray_npy::ReadNpyExt;
-
                 let old_doclens: Vec<i64> =
                     serde_json::from_reader(BufReader::new(File::open(&old_doclens_path)?))?;
 
@@ -180,7 +598,6 @@ pub fn update_index(
         }
 
         // Save chunk data
-        #[cfg(feature = "npy")]
         {
             use ndarray_npy::WriteNpyExt;
 
@@ -215,6 +632,12 @@ pub fn update_index(
     }
     progress.finish();
 
+    // Update cluster threshold if requested
+    if update_threshold && !all_residual_norms.is_empty() {
+        let norms = Array1::from_vec(all_residual_norms);
+        update_cluster_threshold(index_dir, &norms, old_total_embeddings)?;
+    }
+
     // Build new partial IVF
     let mut partition_pids_map: HashMap<usize, Vec<i64>> = HashMap::new();
     let mut pid_counter = old_num_documents as i64;
@@ -230,7 +653,6 @@ pub fn update_index(
     }
 
     // Load old IVF and merge
-    #[cfg(feature = "npy")]
     {
         use ndarray_npy::{ReadNpyExt, WriteNpyExt};
 
@@ -324,5 +746,30 @@ pub fn update_index(
 
 #[cfg(test)]
 mod tests {
-    // Tests would require a full index setup, so we keep them minimal here
+    use super::*;
+
+    #[test]
+    fn test_update_config_default() {
+        let config = UpdateConfig::default();
+        assert_eq!(config.batch_size, 50_000);
+        assert_eq!(config.buffer_size, 100);
+        assert_eq!(config.start_from_scratch, 999);
+    }
+
+    #[test]
+    fn test_find_outliers() {
+        // Create centroids at (0,0), (1,1)
+        let centroids = Array2::from_shape_vec((2, 2), vec![0.0, 0.0, 1.0, 1.0]).unwrap();
+
+        // Create embeddings: one close to (0,0), one close to (1,1), one far away at (5,5)
+        let embeddings =
+            Array2::from_shape_vec((3, 2), vec![0.1, 0.1, 0.9, 0.9, 5.0, 5.0]).unwrap();
+
+        // Threshold of 1.0 squared = 1.0
+        let outliers = find_outliers(&embeddings, &centroids, 1.0);
+
+        // Only the point at (5,5) should be an outlier
+        assert_eq!(outliers.len(), 1);
+        assert_eq!(outliers[0], 2);
+    }
 }

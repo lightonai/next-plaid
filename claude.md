@@ -213,88 +213,269 @@ impl<T> MmapArray<T> {
 
 ### Phase 4: Update Mechanism
 
-#### 4.1 Buffer Management
-**Status**: Not implemented
-**Purpose**: Buffer small updates before centroid expansion
+**Status**: LOW-LEVEL IMPLEMENTATION EXISTS, HIGH-LEVEL API MISSING
+
+The update mechanism in fast-plaid has two layers:
+1. **Python layer** (fast_plaid.py + update.py): High-level orchestration, buffer management, centroid expansion
+2. **Rust layer** (update.rs): Low-level encoding, IVF updates, file I/O
+
+#### Fast-plaid Update Flow (Reference)
+
+```python
+# Fast-plaid process_update() logic:
+def process_update(documents_embeddings, ...):
+    # 1. If no index exists, create from scratch
+    if not index_exists:
+        return create_fn(documents_embeddings)
+
+    # 2. If index too small (< start_from_scratch), rebuild
+    if num_documents_in_index <= start_from_scratch:  # default: 999
+        combined = existing_embeddings + new_embeddings
+        return create_fn(combined)
+
+    # 3. Load existing buffer
+    buffer_embeddings = load_buffer()  # from buffer.npy
+    total_new = len(documents_embeddings) + len(buffer_embeddings)
+
+    # 4. If buffer threshold reached, expand centroids
+    if total_new >= buffer_size:  # default: 100
+        # Delete buffered docs from index (they were added without centroid expansion)
+        delete_fn(buffered_doc_ids)
+        combined = buffer_embeddings + new_embeddings
+
+        # Expand centroids with outliers
+        update_centroids(combined, cluster_threshold)
+
+        # Remove buffer file
+        remove(buffer.npy)
+
+        # Update index with centroid expansion
+        rust_update(combined, update_threshold_centroids=True)
+    else:
+        # 5. Small update: add to buffer
+        save_buffer(new_embeddings)
+        rust_update(new_embeddings, update_threshold_centroids=False)
+
+    return reload_index()
+```
+
+#### 4.1 High-Level Update Config
+**Status**: NOT IMPLEMENTED - NEEDS IMPLEMENTATION
 
 ```rust
-pub struct UpdateBuffer {
-    /// Buffered embeddings awaiting centroid expansion
-    pub embeddings: Vec<Array2<f32>>,
-    /// Buffer size threshold for expansion
+/// Configuration for Index::update()
+#[derive(Debug, Clone)]
+pub struct UpdateConfig {
+    /// Batch size for processing documents (default: 50,000)
+    pub batch_size: usize,
+    /// Number of K-means iterations for centroid expansion (default: 4)
+    pub kmeans_niters: usize,
+    /// Max points per centroid for K-means (default: 256)
+    pub max_points_per_centroid: usize,
+    /// Number of samples for K-means (default: auto-calculated)
+    pub n_samples_kmeans: Option<usize>,
+    /// Random seed (default: 42)
+    pub seed: u64,
+    /// If index has fewer docs than this, rebuild from scratch (default: 999)
+    pub start_from_scratch: usize,
+    /// Buffer size before triggering centroid expansion (default: 100)
     pub buffer_size: usize,
-}
-
-impl UpdateBuffer {
-    fn add(&mut self, embeddings: &[Array2<f32>]);
-    fn should_expand(&self) -> bool;
-    fn clear(&mut self);
-    fn save(&self, path: &Path) -> Result<()>;
-    fn load(path: &Path) -> Result<Self>;
-}
-```
-
-**Files**: `src/update.rs` (new)
-
-#### 4.2 Centroid Expansion
-**Status**: Not implemented
-**Algorithm**:
-
-```rust
-pub fn expand_centroids(
-    index: &mut Index,
-    new_embeddings: &[Array2<f32>],
-    max_points_per_centroid: usize,
-) -> Result<()> {
-    // 1. Find outliers (distance > cluster_threshold)
-    let outliers = find_outliers(new_embeddings, &index.codec.centroids, index.cluster_threshold);
-
-    // 2. Cluster outliers to get new centroids
-    let k_new = (outliers.len() / max_points_per_centroid).max(1);
-    let new_centroids = kmeans(&outliers, k_new);
-
-    // 3. Append new centroids
-    index.codec.centroids = concatenate(&[index.codec.centroids, new_centroids]);
-
-    // 4. Extend IVF with empty lists for new centroids
-    index.ivf_lengths = concatenate(&[index.ivf_lengths, zeros(k_new)]);
-
-    // 5. Update metadata
-    index.metadata.num_partitions += k_new;
-}
-```
-
-#### 4.3 Incremental Index Update
-**Status**: Not implemented
-**Algorithm**:
-
-```rust
-pub fn update_index(
-    index: &mut Index,
-    new_embeddings: &[Array2<f32>],
-) -> Result<()> {
-    // 1. Determine chunk handling
-    let (start_chunk, append_to_last) = determine_chunk_strategy(index);
-
-    // 2. Encode new documents using existing codec
-    let (codes, residuals, doclens) = encode_documents(new_embeddings, &index.codec);
-
-    // 3. Write/append chunk files
-    if append_to_last {
-        append_to_chunk(index.path, start_chunk - 1, codes, residuals, doclens)?;
-    } else {
-        write_new_chunks(index.path, start_chunk, codes, residuals, doclens)?;
-    }
-
-    // 4. Update IVF with new passage IDs
-    update_ivf(index, &codes, start_doc_id)?;
-
-    // 5. Update global metadata
-    update_metadata(index, new_embeddings.len())?;
 }
 ```
 
 **Files**: `src/update.rs`
+
+#### 4.2 Buffer Management
+**Status**: NOT IMPLEMENTED - NEEDS IMPLEMENTATION
+**Purpose**: Store small updates in buffer.npy until threshold is reached
+
+```rust
+/// Load buffered embeddings from buffer.npy
+pub fn load_buffer(index_path: &Path) -> Result<Vec<Array2<f32>>>;
+
+/// Save embeddings to buffer.npy
+pub fn save_buffer(index_path: &Path, embeddings: &[Array2<f32>]) -> Result<()>;
+
+/// Remove buffer.npy
+pub fn clear_buffer(index_path: &Path) -> Result<()>;
+```
+
+**Files**: `src/update.rs`
+
+#### 4.3 Centroid Expansion
+**Status**: NOT IMPLEMENTED - NEEDS IMPLEMENTATION
+**Algorithm** (matches fast-plaid update.py):
+
+```rust
+/// Expand centroids by clustering embeddings far from existing centroids.
+///
+/// This implements fast-plaid's update_centroids() function:
+/// 1. Flatten all new embeddings
+/// 2. Compute squared L2 distances to nearest centroid
+/// 3. Find outliers (distance > cluster_threshold²)
+/// 4. Cluster outliers to get k_update = max(1, ceil(outliers/max_points) * 4) new centroids
+/// 5. Append new centroids to centroids.npy
+/// 6. Extend ivf_lengths.npy with zeros
+/// 7. Update metadata.json num_partitions
+pub fn update_centroids(
+    index_path: &Path,
+    new_embeddings: &[Array2<f32>],
+    cluster_threshold: f32,
+    config: &UpdateConfig,
+) -> Result<usize>;  // Returns number of new centroids added
+```
+
+**Outlier Detection** (CPU version with rayon):
+```rust
+fn find_outliers(
+    embeddings: &Array2<f32>,      // [total_tokens, dim]
+    centroids: &Array2<f32>,       // [K, dim]
+    threshold_sq: f32,             // cluster_threshold²
+) -> Vec<usize> {
+    // For each embedding, find min squared distance to any centroid
+    // Return indices where min_dist > threshold_sq
+    embeddings.axis_iter(Axis(0))
+        .into_par_iter()
+        .enumerate()
+        .filter_map(|(i, emb)| {
+            let min_dist_sq = centroids.axis_iter(Axis(0))
+                .map(|c| {
+                    let diff = &emb - &c;
+                    diff.dot(&diff)  // L2 squared
+                })
+                .fold(f32::INFINITY, f32::min);
+
+            if min_dist_sq > threshold_sq {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+```
+
+**Files**: `src/update.rs`
+
+#### 4.4 Low-Level Index Update (Rust)
+**Status**: PARTIALLY IMPLEMENTED - NEEDS ENHANCEMENT
+
+Current `update_index()` handles:
+- ✅ Chunk file writing
+- ✅ IVF merging
+- ✅ Metadata updates
+- ❌ Cluster threshold update (weighted average)
+- ❌ Proper handling of `update_threshold_centroids` flag
+
+Add cluster threshold update logic:
+```rust
+/// Update cluster_threshold.npy with weighted average
+pub fn update_cluster_threshold(
+    index_path: &Path,
+    new_residual_norms: &Array1<f32>,
+    old_total_embeddings: usize,
+) -> Result<()> {
+    let new_count = new_residual_norms.len();
+    let new_threshold = quantile(new_residual_norms, 0.75);
+
+    let thresh_path = index_path.join("cluster_threshold.npy");
+    let final_threshold = if thresh_path.exists() {
+        let old_threshold: f32 = load_scalar_npy(&thresh_path)?;
+        let total = old_total_embeddings + new_count;
+        (old_threshold * old_total_embeddings as f32
+            + new_threshold * new_count as f32) / total as f32
+    } else {
+        new_threshold
+    };
+
+    save_scalar_npy(&thresh_path, final_threshold)
+}
+```
+
+**Files**: `src/update.rs`
+
+#### 4.5 High-Level Update API
+**Status**: NOT IMPLEMENTED - NEEDS IMPLEMENTATION
+
+```rust
+impl Index {
+    /// Update the index with new documents, matching fast-plaid behavior.
+    ///
+    /// This implements the full update flow:
+    /// 1. If no index exists, creates one from scratch
+    /// 2. If index too small (< start_from_scratch), rebuilds with all docs
+    /// 3. Uses buffer mechanism for small updates
+    /// 4. Triggers centroid expansion when buffer threshold reached
+    pub fn update(
+        &mut self,
+        embeddings: &[Array2<f32>],
+        config: &UpdateConfig,
+    ) -> Result<()>;
+}
+```
+
+Implementation outline:
+```rust
+pub fn update(&mut self, embeddings: &[Array2<f32>], config: &UpdateConfig) -> Result<()> {
+    let index_path = Path::new(&self.path);
+
+    // Check if index too small -> rebuild from scratch
+    if self.metadata.num_documents <= config.start_from_scratch {
+        // Load existing embeddings from embeddings.npy if exists
+        let existing = load_embeddings_npy(index_path)?;
+        let combined: Vec<_> = existing.into_iter().chain(embeddings.iter().cloned()).collect();
+
+        // Rebuild index
+        let centroids = compute_kmeans(&combined, &config.to_kmeans_config())?;
+        *self = Index::create(&combined, centroids, &self.path, &config.to_index_config())?;
+
+        // Remove embeddings.npy if above threshold
+        if self.metadata.num_documents > config.start_from_scratch {
+            clear_embeddings_npy(index_path)?;
+        }
+        return Ok(());
+    }
+
+    // Load buffer
+    let buffer = load_buffer(index_path)?;
+    let total_new = embeddings.len() + buffer.len();
+
+    // Check buffer threshold
+    if total_new >= config.buffer_size {
+        // Centroid expansion path
+        let combined: Vec<_> = buffer.into_iter().chain(embeddings.iter().cloned()).collect();
+
+        // Delete buffered docs from index
+        if !buffer.is_empty() {
+            let start_del = self.metadata.num_documents - buffer.len();
+            delete_docs(index_path, start_del..self.metadata.num_documents)?;
+        }
+
+        // Expand centroids
+        let cluster_threshold = load_cluster_threshold(index_path)?;
+        update_centroids(index_path, &combined, cluster_threshold, config)?;
+
+        // Reload codec with new centroids
+        self.codec = ResidualCodec::load_from_dir(index_path)?;
+
+        // Clear buffer
+        clear_buffer(index_path)?;
+
+        // Update index with threshold update
+        update_index_internal(embeddings, index_path, &self.codec, config.batch_size, true)?;
+    } else {
+        // Small update: add to buffer
+        save_buffer(index_path, embeddings)?;
+        update_index_internal(embeddings, index_path, &self.codec, config.batch_size, false)?;
+    }
+
+    // Reload index
+    *self = Index::load(&self.path)?;
+    Ok(())
+}
+```
+
+**Files**: `src/update.rs`, `src/index.rs`
 
 ---
 

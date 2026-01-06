@@ -22,3 +22,4 @@ pub use kmeans::{
 };
 pub use search::{QueryResult, SearchParameters};
 pub use strided_tensor::{IvfStridedTensor, StridedTensor};
+pub use update::UpdateConfig;

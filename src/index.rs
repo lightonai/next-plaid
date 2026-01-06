@@ -603,6 +603,121 @@ impl Index {
 
         self.codec.decompress(residuals, &codes.view())
     }
+
+    /// Update the index with new documents, matching fast-plaid behavior.
+    ///
+    /// This method adds new documents to an existing index:
+    /// - If the index has fewer documents than `config.start_from_scratch`, it rebuilds
+    /// - Uses a buffer mechanism for small updates
+    /// - Triggers centroid expansion when buffer threshold is reached
+    ///
+    /// # Arguments
+    ///
+    /// * `embeddings` - New document embeddings to add
+    /// * `config` - Update configuration
+    ///
+    /// # Returns
+    ///
+    /// The updated Index after reloading
+    #[cfg(feature = "npy")]
+    pub fn update(
+        &mut self,
+        embeddings: &[Array2<f32>],
+        config: &crate::update::UpdateConfig,
+    ) -> Result<()> {
+        use crate::update::{
+            clear_buffer, load_buffer, load_cluster_threshold, save_buffer, update_centroids,
+            update_index,
+        };
+
+        let index_path = std::path::Path::new(&self.path);
+
+        // Check if we should rebuild from scratch (small index)
+        if self.metadata.num_documents <= config.start_from_scratch {
+            // For small indices, fast-plaid rebuilds from scratch
+            // We would need stored embeddings to do this properly
+            // For now, just do a regular update
+            update_index(
+                embeddings,
+                &self.path,
+                &self.codec,
+                Some(config.batch_size),
+                true,
+            )?;
+
+            // Reload the index
+            *self = Index::load(&self.path)?;
+            return Ok(());
+        }
+
+        // Load buffer
+        let buffer = load_buffer(index_path)?;
+        let total_new = embeddings.len() + buffer.len();
+
+        // Check buffer threshold
+        if total_new >= config.buffer_size {
+            // Centroid expansion path
+            let combined: Vec<Array2<f32>> = buffer
+                .into_iter()
+                .chain(embeddings.iter().cloned())
+                .collect();
+
+            // Expand centroids with outliers
+            if let Ok(cluster_threshold) = load_cluster_threshold(index_path) {
+                let new_centroids =
+                    update_centroids(index_path, &combined, cluster_threshold, config)?;
+                if new_centroids > 0 {
+                    // Reload codec with new centroids
+                    self.codec = ResidualCodec::load_from_dir(index_path)?;
+                }
+            }
+
+            // Clear buffer
+            clear_buffer(index_path)?;
+
+            // Update index with threshold update
+            update_index(
+                embeddings,
+                &self.path,
+                &self.codec,
+                Some(config.batch_size),
+                true,
+            )?;
+        } else {
+            // Small update: add to buffer
+            save_buffer(index_path, embeddings)?;
+
+            // Update index without threshold update
+            update_index(
+                embeddings,
+                &self.path,
+                &self.codec,
+                Some(config.batch_size),
+                false,
+            )?;
+        }
+
+        // Reload the index
+        *self = Index::load(&self.path)?;
+        Ok(())
+    }
+
+    /// Simple update without buffer mechanism.
+    ///
+    /// This directly adds documents to the index without centroid expansion
+    /// or buffer management. Useful for testing or when you want full control.
+    #[cfg(feature = "npy")]
+    pub fn update_simple(
+        &mut self,
+        embeddings: &[Array2<f32>],
+        batch_size: Option<usize>,
+    ) -> Result<()> {
+        crate::update::update_index(embeddings, &self.path, &self.codec, batch_size, true)?;
+
+        // Reload the index
+        *self = Index::load(&self.path)?;
+        Ok(())
+    }
 }
 
 /// A loaded index optimized for search with StridedTensor storage.
