@@ -11,7 +11,6 @@ Usage:
 
 import argparse
 import json
-import shutil
 import subprocess
 import tempfile
 import time
@@ -24,6 +23,7 @@ import numpy as np
 @dataclass
 class BenchmarkConfig:
     """Configuration for update benchmark."""
+
     num_docs: int = 5000
     batch_size: int = 800
     embedding_dim: int = 128
@@ -76,6 +76,7 @@ class FastPlaidBenchmark:
     def is_available(self) -> bool:
         try:
             from fast_plaid.search.fast_plaid import FastPlaid
+
             self._FastPlaid = FastPlaid
             return True
         except ImportError:
@@ -111,7 +112,7 @@ class FastPlaidBenchmark:
 
         # Update with remaining batches
         for i in range(batch_size, len(embeddings), batch_size):
-            batch = embeddings[i:i + batch_size]
+            batch = embeddings[i : i + batch_size]
             batch_tensors = [torch.from_numpy(e) for e in batch]
             index.update(documents_embeddings=batch_tensors)
             num_batches += 1
@@ -145,7 +146,9 @@ class LategrepBenchmark:
                 timeout=120,
             )
             if result.returncode == 0:
-                self._binary_path = project_root / "target" / "release" / "examples" / "benchmark_cli"
+                self._binary_path = (
+                    project_root / "target" / "release" / "examples" / "benchmark_cli"
+                )
                 return self._binary_path.exists()
         except Exception:
             pass
@@ -171,9 +174,12 @@ class LategrepBenchmark:
             [
                 str(self._binary_path),
                 "create",
-                "--data-dir", str(data_dir / "batch_0"),
-                "--index-dir", str(index_dir),
-                "--nbits", str(self.config.nbits),
+                "--data-dir",
+                str(data_dir / "batch_0"),
+                "--index-dir",
+                str(index_dir),
+                "--nbits",
+                str(self.config.nbits),
             ],
             capture_output=True,
             text=True,
@@ -185,7 +191,7 @@ class LategrepBenchmark:
 
         # Update with remaining batches
         for i in range(batch_size, len(embeddings), batch_size):
-            batch = embeddings[i:i + batch_size]
+            batch = embeddings[i : i + batch_size]
             batch_dir = data_dir / f"batch_{num_batches}"
             save_embeddings_npy(batch, batch_dir)
 
@@ -193,8 +199,10 @@ class LategrepBenchmark:
                 [
                     str(self._binary_path),
                     "update",
-                    "--index-dir", str(index_dir),
-                    "--data-dir", str(batch_dir),
+                    "--index-dir",
+                    str(index_dir),
+                    "--data-dir",
+                    str(batch_dir),
                 ],
                 capture_output=True,
                 text=True,
@@ -233,7 +241,7 @@ def main():
     print("=" * 70)
     print("  Update Benchmark: fast-plaid vs lategrep")
     print("=" * 70)
-    print(f"\nConfiguration:")
+    print("\nConfiguration:")
     print(f"  Documents:   {config.num_docs}")
     print(f"  Batch size:  {config.batch_size}")
     print(f"  Dim:         {config.embedding_dim}")
@@ -296,6 +304,7 @@ def main():
             except Exception as e:
                 print(f"  ERROR: {e}")
                 import traceback
+
                 traceback.print_exc()
 
     # Print comparison

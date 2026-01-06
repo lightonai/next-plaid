@@ -459,7 +459,7 @@ def main():
     print("=" * 70)
     print("  SciFact Update Benchmark: fast-plaid vs lategrep")
     print("=" * 70)
-    print(f"\nConfiguration:")
+    print("\nConfiguration:")
     print(f"  Batch size:        {config.batch_size}")
     print(f"  Initial docs:      {config.initial_docs}")
     print(f"  Top-k:             {config.top_k}")
@@ -497,7 +497,9 @@ def main():
     print(f"  Embedding dim:     {embedding_dim}")
     print(f"  Avg tokens/doc:    {avg_doc_tokens:.1f}")
     print(f"  Total tokens:      {total_doc_tokens}")
-    print(f"  Update batches:    {(len(doc_embeddings) - config.initial_docs) // config.batch_size + 1}")
+    print(
+        f"  Update batches:    {(len(doc_embeddings) - config.initial_docs) // config.batch_size + 1}"
+    )
 
     # Compute centroids (for lategrep)
     print("\n[3/5] Computing centroids...")
