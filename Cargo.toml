@@ -1,0 +1,46 @@
+[package]
+name = "lategrep"
+version = "0.1.0"
+edition = "2021"
+description = "CPU-based PLAID implementation for multi-vector search using ndarray"
+license = "Apache-2.0"
+repository = "https://github.com/lightonai/lategrep"
+homepage = "https://github.com/lightonai/lategrep"
+keywords = ["search", "multi-vector", "plaid", "colbert", "ndarray"]
+categories = ["science", "algorithms"]
+
+[dependencies]
+ndarray = { version = "0.16", features = ["rayon"] }
+ndarray-rand = "0.15"
+rand = "0.8"
+rand_chacha = "0.3"
+rayon = "1.10"
+num-traits = "0.2"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ndarray-npy = { version = "0.9", optional = true }
+fastkmeans-rs = { git = "https://github.com/lightonai/fastkmeans-rs", version = "0.1" }
+indicatif = "0.17"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+approx = "0.5"
+
+[features]
+default = []
+npy = ["ndarray-npy"]
+
+[[bench]]
+name = "plaid_benchmark"
+harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+
+[profile.bench]
+lto = true
+codegen-units = 1
+opt-level = 3

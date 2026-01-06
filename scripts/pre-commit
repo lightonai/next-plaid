@@ -1,0 +1,26 @@
+#!/bin/sh
+#
+# Pre-commit hook that runs the same checks as CI
+# To skip this hook, use: git commit --no-verify
+
+set -e
+
+echo "Running pre-commit checks..."
+
+# Check formatting
+echo "Checking formatting..."
+cargo fmt --all -- --check
+
+# Run clippy
+echo "Running clippy..."
+cargo clippy --all-targets --all-features -- -D warnings
+
+# Run tests
+echo "Running tests..."
+cargo test
+
+# Build documentation
+echo "Building documentation..."
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+
+echo "All pre-commit checks passed!"
