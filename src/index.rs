@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::codec::ResidualCodec;
 use crate::error::{Error, Result};
+use crate::strided_tensor::{IvfStridedTensor, StridedTensor};
 use crate::utils::{quantile, quantiles};
 
 /// Configuration for index creation
@@ -539,6 +540,122 @@ impl Index {
         let residuals = &self.doc_residuals[doc_id];
 
         self.codec.decompress(residuals, &codes.view())
+    }
+}
+
+/// A loaded index optimized for search with StridedTensor storage.
+///
+/// This struct contains all data required for search operations, stored in
+/// a format optimized for batch lookups. It uses `StridedTensor` for efficient
+/// retrieval of variable-length sequences.
+pub struct LoadedIndex {
+    /// Index metadata
+    pub metadata: Metadata,
+    /// Residual codec for quantization/decompression
+    pub codec: ResidualCodec,
+    /// IVF index mapping centroids to document IDs
+    pub ivf: IvfStridedTensor,
+    /// Document codes (centroid assignments) stored contiguously
+    pub doc_codes: StridedTensor<usize>,
+    /// Packed residuals stored contiguously
+    pub doc_residuals: StridedTensor<u8>,
+    /// Number of bits for quantization
+    pub nbits: usize,
+}
+
+impl LoadedIndex {
+    /// Create a LoadedIndex from an existing Index.
+    ///
+    /// This converts the Index's per-document storage to contiguous StridedTensor storage.
+    pub fn from_index(index: Index) -> Self {
+        let embedding_dim = index.codec.embedding_dim();
+        let packed_dim = embedding_dim * index.metadata.nbits / 8;
+        let num_documents = index.doc_codes.len();
+
+        // Convert doc_codes to contiguous storage
+        let total_codes: usize = index.doc_lengths.iter().sum::<i64>() as usize;
+        let mut codes_data = Array2::<usize>::zeros((total_codes, 1));
+        let mut offset = 0;
+
+        for codes in &index.doc_codes {
+            for (j, &code) in codes.iter().enumerate() {
+                codes_data[[offset + j, 0]] = code;
+            }
+            offset += codes.len();
+        }
+
+        let doc_codes = StridedTensor::new(codes_data, index.doc_lengths.clone());
+
+        // Convert doc_residuals to contiguous storage
+        let mut residuals_data = Array2::<u8>::zeros((total_codes, packed_dim));
+        offset = 0;
+
+        for residuals in &index.doc_residuals {
+            residuals_data
+                .slice_mut(s![offset..offset + residuals.nrows(), ..])
+                .assign(residuals);
+            offset += residuals.nrows();
+        }
+
+        let doc_residuals = StridedTensor::new(residuals_data, index.doc_lengths.clone());
+
+        // Convert IVF to IvfStridedTensor
+        let ivf = IvfStridedTensor::new(index.ivf, index.ivf_lengths);
+
+        Self {
+            metadata: index.metadata,
+            codec: index.codec,
+            ivf,
+            doc_codes,
+            doc_residuals,
+            nbits: num_documents, // Will be set below
+        }
+    }
+
+    /// Load a LoadedIndex from disk.
+    #[cfg(feature = "npy")]
+    pub fn load(index_path: &str) -> Result<Self> {
+        let index = Index::load(index_path)?;
+        let nbits = index.metadata.nbits;
+        let mut loaded = Self::from_index(index);
+        loaded.nbits = nbits;
+        Ok(loaded)
+    }
+
+    /// Get candidate documents from IVF for given centroid indices.
+    pub fn get_candidates(&self, centroid_indices: &[usize]) -> Vec<i64> {
+        self.ivf.lookup(centroid_indices)
+    }
+
+    /// Lookup codes and residuals for a batch of document IDs.
+    ///
+    /// Returns (codes, residuals, lengths) for efficient batch decompression.
+    pub fn lookup_documents(&self, doc_ids: &[usize]) -> (Array1<usize>, Array2<u8>, Array1<i64>) {
+        let (codes, lengths) = self.doc_codes.lookup_codes(doc_ids);
+        let (residuals, _) = self.doc_residuals.lookup_2d(doc_ids);
+        (codes, residuals, lengths)
+    }
+
+    /// Decompress embeddings for a batch of document IDs.
+    ///
+    /// Returns the decompressed embeddings as a contiguous array along with lengths.
+    pub fn decompress_documents(&self, doc_ids: &[usize]) -> Result<(Array2<f32>, Array1<i64>)> {
+        let (codes, residuals, lengths) = self.lookup_documents(doc_ids);
+
+        // Decompress using the codec
+        let embeddings = self.codec.decompress(&residuals, &codes.view())?;
+
+        Ok((embeddings, lengths))
+    }
+
+    /// Get the number of documents in the index.
+    pub fn num_documents(&self) -> usize {
+        self.doc_codes.len()
+    }
+
+    /// Get the embedding dimension.
+    pub fn embedding_dim(&self) -> usize {
+        self.codec.embedding_dim()
     }
 }
 
