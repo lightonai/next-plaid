@@ -13,6 +13,7 @@ Lategrep is a pure Rust, CPU-only implementation of [FastPlaid](https://github.c
 - **BLAS Acceleration**: Optional Accelerate (macOS) or OpenBLAS backends for 3.6x faster indexing
 - **Compatible**: Produces indices that can be compared against FastPlaid
 - **K-means Integration**: Uses [fastkmeans-rs](https://github.com/lightonai/fastkmeans-rs) for centroid computation
+- **Metadata Filtering**: Optional SQLite-based metadata storage for filtered search (matching FastPlaid's filtering API)
 
 ## Performance
 
@@ -76,6 +77,22 @@ lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy", "
 ```
 
 Note: OpenBLAS requires the system library to be installed (`apt install libopenblas-dev` on Ubuntu).
+
+### Metadata Filtering (Optional)
+
+For SQLite-based metadata filtering (matching FastPlaid's filtering API):
+
+```toml
+[dependencies]
+lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy", "filtering"] }
+```
+
+Or with BLAS acceleration:
+
+```toml
+[dependencies]
+lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy", "filtering", "accelerate"] }
+```
 
 ## Usage
 
@@ -153,6 +170,94 @@ let queries: Vec<Array2<f32>> = get_multiple_queries();
 let results = index.search_batch(&queries, &params, true, None)?;
 ```
 
+### Filtered Search with Metadata
+
+The `filtering` feature provides SQLite-based metadata storage for efficient filtered search:
+
+```rust
+use lategrep::{Index, IndexConfig, SearchParameters, filtering};
+use serde_json::json;
+
+// Create index
+let embeddings: Vec<Array2<f32>> = load_embeddings();
+let config = IndexConfig::default();
+let index = Index::create_with_kmeans(&embeddings, "path/to/index", &config)?;
+
+// Create metadata database with document attributes
+let metadata = vec![
+    json!({"title": "Document 1", "category": "science", "year": 2023}),
+    json!({"title": "Document 2", "category": "history", "year": 2022}),
+    json!({"title": "Document 3", "category": "science", "year": 2024}),
+];
+filtering::create("path/to/index", &metadata)?;
+
+// Query metadata to get document subset
+let subset = filtering::where_condition(
+    "path/to/index",
+    "category = ? AND year >= ?",
+    &[json!("science"), json!(2023)],
+)?;
+// Returns: [0, 2] (documents matching the filter)
+
+// Search only within the filtered subset
+let query: Array2<f32> = get_query_embeddings();
+let params = SearchParameters::default();
+let result = index.search(&query, &params, Some(&subset))?;
+```
+
+#### Filtering API
+
+```rust
+use lategrep::filtering;
+use serde_json::json;
+
+// Create metadata database (replaces existing)
+filtering::create("path/to/index", &metadata)?;
+
+// Add new documents with metadata
+filtering::update("path/to/index", &new_metadata)?;
+
+// Delete documents (automatically re-indexes _subset_ IDs)
+filtering::delete("path/to/index", &[1, 3, 5])?;
+
+// Query by SQL condition
+let subset = filtering::where_condition(
+    "path/to/index",
+    "category = ? OR score > ?",
+    &[json!("A"), json!(90)],
+)?;
+
+// Get full metadata rows
+let rows = filtering::get("path/to/index", None, &[], Some(&[0, 2, 4]))?;
+
+// Check if metadata exists
+if filtering::exists("path/to/index") {
+    let count = filtering::count("path/to/index")?;
+    println!("Index has {} documents with metadata", count);
+}
+```
+
+#### Supported Query Patterns
+
+```rust
+// Equality
+filtering::where_condition(path, "category = ?", &[json!("A")])?;
+
+// Comparison operators
+filtering::where_condition(path, "score > ?", &[json!(90)])?;
+filtering::where_condition(path, "year BETWEEN ? AND ?", &[json!(2020), json!(2024)])?;
+
+// Pattern matching
+filtering::where_condition(path, "title LIKE ?", &[json!("%search%")])?;
+
+// Boolean logic
+filtering::where_condition(path, "category = ? AND year >= ?", &[json!("science"), json!(2023)])?;
+filtering::where_condition(path, "category = ? OR category = ?", &[json!("A"), json!("B")])?;
+
+// NULL handling
+filtering::where_condition(path, "optional_field IS NOT NULL", &[])?;
+```
+
 ## Development
 
 ### Setup
@@ -214,6 +319,12 @@ Run the full test suite:
 
 ```bash
 cargo test --features npy
+```
+
+With filtering support:
+
+```bash
+cargo test --features "npy filtering"
 ```
 
 ### FastPlaid Compatibility
