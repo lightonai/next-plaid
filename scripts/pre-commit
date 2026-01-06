@@ -7,20 +7,24 @@ set -e
 
 echo "Running pre-commit checks..."
 
-# Check formatting
-echo "Checking formatting..."
+# Check Rust formatting
+echo "Checking Rust formatting..."
 cargo fmt --all -- --check
 
 # Run clippy
 echo "Running clippy..."
 cargo clippy --all-targets --all-features -- -D warnings
 
-# Run tests
-echo "Running tests..."
+# Run Rust tests
+echo "Running Rust tests..."
 cargo test
 
 # Build documentation
 echo "Building documentation..."
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+
+# Lint Python code
+echo "Linting Python code..."
+cd docs && uv run --extra dev ruff check . && uv run --extra dev ruff format --check .
 
 echo "All pre-commit checks passed!"

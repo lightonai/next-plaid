@@ -5,10 +5,22 @@ description = "Documentation and comparison tests for lategrep"
 requires-python = ">=3.9"
 dependencies = [
     "numpy>=1.20.0",
-    "fast-plaid>=0.1.0",
+    "torch>=2.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
+    "ruff>=0.8.0",
 ]
+fast-plaid = [
+    "fast-plaid>=0.1.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]

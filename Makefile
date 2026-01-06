@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python
 
 all: fmt lint test
 
@@ -69,7 +69,15 @@ ci: fmt-check clippy test doc bench-check
 install-hooks:
 	./scripts/install-hooks.sh
 
+# Lint Python code
+lint-python:
+	cd docs && uv run --extra dev ruff check .
+
+# Format Python code
+fmt-python:
+	cd docs && uv run --extra dev ruff format .
+
 # Compare with fast-plaid reference implementation
 compare-reference:
-	cargo build --release --features npy
-	uv run docs/compare_reference.py
+	cargo build --release --features npy --example benchmark_cli
+	cd docs && uv sync --extra fast-plaid && uv run python compare_reference.py --skip-cross
