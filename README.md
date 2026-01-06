@@ -38,6 +38,16 @@ Both implementations achieve equivalent retrieval quality:
 | Recall@100 | 95.93% | 95.60% | +0.3% |
 | Result Overlap @100 | 87.6% | - | - |
 
+### Memory Usage
+
+Lategrep uses significantly less memory than FastPlaid:
+
+| Operation | Lategrep | FastPlaid | Savings |
+|-----------|----------|-----------|---------|
+| Index + Update | **491 MB** | 3,493 MB | **86% less** |
+| Search | **412 MB** | 3,552 MB | **88% less** |
+| **Peak** | **491 MB** | 3,552 MB | **86% less** |
+
 Run the benchmark yourself:
 
 ```bash
