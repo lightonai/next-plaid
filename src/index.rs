@@ -976,6 +976,301 @@ impl LoadedIndex {
     }
 }
 
+// ============================================================================
+// Memory-Mapped Index for Low Memory Usage
+// ============================================================================
+
+/// A memory-mapped index optimized for low memory usage.
+///
+/// This struct uses memory-mapped files for the large arrays (codes and residuals)
+/// instead of loading them entirely into RAM. Only small tensors (centroids,
+/// bucket weights, IVF) are loaded into memory.
+///
+/// # Memory Usage
+///
+/// For a typical index:
+/// - `Index`: All data in RAM (~491 MB for SciFact 5K docs)
+/// - `MmapIndex`: Only small tensors (~50 MB) + OS-managed mmap
+///
+/// # Usage
+///
+/// ```ignore
+/// use lategrep::MmapIndex;
+///
+/// let index = MmapIndex::load("/path/to/index")?;
+/// let results = index.search(&query, &params, None)?;
+/// ```
+#[cfg(feature = "npy")]
+pub struct MmapIndex {
+    /// Path to the index directory
+    pub path: String,
+    /// Index metadata
+    pub metadata: Metadata,
+    /// Residual codec for quantization/decompression
+    pub codec: ResidualCodec,
+    /// IVF data (concatenated passage IDs per centroid)
+    pub ivf: Array1<i64>,
+    /// IVF lengths (number of passages per centroid)
+    pub ivf_lengths: Array1<i32>,
+    /// IVF offsets (cumulative offsets into ivf array)
+    pub ivf_offsets: Array1<i64>,
+    /// Document lengths (number of tokens per document)
+    pub doc_lengths: Array1<i64>,
+    /// Cumulative document offsets for indexing into codes/residuals
+    pub doc_offsets: Array1<usize>,
+    /// Memory-mapped codes array (public for search access)
+    pub mmap_codes: crate::mmap::MmapNpyArray1I64,
+    /// Memory-mapped residuals array (public for search access)
+    pub mmap_residuals: crate::mmap::MmapNpyArray2U8,
+}
+
+#[cfg(feature = "npy")]
+impl MmapIndex {
+    /// Load a memory-mapped index from disk.
+    ///
+    /// This creates merged files for codes and residuals if they don't exist,
+    /// then memory-maps them for efficient access.
+    pub fn load(index_path: &str) -> Result<Self> {
+        use ndarray_npy::ReadNpyExt;
+
+        let index_dir = Path::new(index_path);
+
+        // Load metadata
+        let metadata_path = index_dir.join("metadata.json");
+        let metadata: Metadata = serde_json::from_reader(BufReader::new(
+            File::open(&metadata_path)
+                .map_err(|e| Error::IndexLoad(format!("Failed to open metadata: {}", e)))?,
+        ))?;
+
+        // Load codec (small tensors)
+        let codec = ResidualCodec::load_from_dir(index_dir)?;
+
+        // Load IVF (small tensor)
+        let ivf_path = index_dir.join("ivf.npy");
+        let ivf: Array1<i64> = Array1::read_npy(
+            File::open(&ivf_path)
+                .map_err(|e| Error::IndexLoad(format!("Failed to open ivf.npy: {}", e)))?,
+        )
+        .map_err(|e| Error::IndexLoad(format!("Failed to read ivf.npy: {}", e)))?;
+
+        let ivf_lengths_path = index_dir.join("ivf_lengths.npy");
+        let ivf_lengths: Array1<i32> = Array1::read_npy(
+            File::open(&ivf_lengths_path)
+                .map_err(|e| Error::IndexLoad(format!("Failed to open ivf_lengths.npy: {}", e)))?,
+        )
+        .map_err(|e| Error::IndexLoad(format!("Failed to read ivf_lengths.npy: {}", e)))?;
+
+        // Compute IVF offsets
+        let num_centroids = ivf_lengths.len();
+        let mut ivf_offsets = Array1::<i64>::zeros(num_centroids + 1);
+        for i in 0..num_centroids {
+            ivf_offsets[i + 1] = ivf_offsets[i] + ivf_lengths[i] as i64;
+        }
+
+        // Load document lengths from all chunks
+        let mut doc_lengths_vec: Vec<i64> = Vec::with_capacity(metadata.num_documents);
+        for chunk_idx in 0..metadata.num_chunks {
+            let doclens_path = index_dir.join(format!("doclens.{}.json", chunk_idx));
+            let chunk_doclens: Vec<i64> =
+                serde_json::from_reader(BufReader::new(File::open(&doclens_path)?))?;
+            doc_lengths_vec.extend(chunk_doclens);
+        }
+        let doc_lengths = Array1::from_vec(doc_lengths_vec);
+
+        // Compute document offsets for indexing
+        let mut doc_offsets = Array1::<usize>::zeros(doc_lengths.len() + 1);
+        for i in 0..doc_lengths.len() {
+            doc_offsets[i + 1] = doc_offsets[i] + doc_lengths[i] as usize;
+        }
+
+        // Compute padding needed for StridedTensor compatibility
+        let max_len = doc_lengths.iter().cloned().max().unwrap_or(0) as usize;
+        let last_len = *doc_lengths.last().unwrap_or(&0) as usize;
+        let padding_needed = max_len.saturating_sub(last_len);
+
+        // Create merged files if needed
+        let merged_codes_path =
+            crate::mmap::merge_codes_chunks(index_dir, metadata.num_chunks, padding_needed)?;
+        let merged_residuals_path =
+            crate::mmap::merge_residuals_chunks(index_dir, metadata.num_chunks, padding_needed)?;
+
+        // Memory-map the merged files
+        let mmap_codes = crate::mmap::MmapNpyArray1I64::from_npy_file(&merged_codes_path)?;
+        let mmap_residuals = crate::mmap::MmapNpyArray2U8::from_npy_file(&merged_residuals_path)?;
+
+        Ok(Self {
+            path: index_path.to_string(),
+            metadata,
+            codec,
+            ivf,
+            ivf_lengths,
+            ivf_offsets,
+            doc_lengths,
+            doc_offsets,
+            mmap_codes,
+            mmap_residuals,
+        })
+    }
+
+    /// Get candidate documents from IVF for given centroid indices.
+    pub fn get_candidates(&self, centroid_indices: &[usize]) -> Vec<i64> {
+        let mut candidates: Vec<i64> = Vec::new();
+
+        for &idx in centroid_indices {
+            if idx < self.ivf_lengths.len() {
+                let start = self.ivf_offsets[idx] as usize;
+                let len = self.ivf_lengths[idx] as usize;
+                candidates.extend(self.ivf.slice(s![start..start + len]).iter());
+            }
+        }
+
+        candidates.sort_unstable();
+        candidates.dedup();
+        candidates
+    }
+
+    /// Get document embeddings by decompressing codes and residuals.
+    pub fn get_document_embeddings(&self, doc_id: usize) -> Result<Array2<f32>> {
+        if doc_id >= self.doc_lengths.len() {
+            return Err(Error::Search(format!("Invalid document ID: {}", doc_id)));
+        }
+
+        let start = self.doc_offsets[doc_id];
+        let end = self.doc_offsets[doc_id + 1];
+
+        // Get codes and residuals from mmap
+        let codes_slice = self.mmap_codes.slice(start, end);
+        let residuals_view = self.mmap_residuals.slice_rows(start, end);
+
+        // Convert codes to Array1<usize>
+        let codes: Array1<usize> = Array1::from_iter(codes_slice.iter().map(|&c| c as usize));
+
+        // Convert residuals to owned Array2
+        let residuals = residuals_view.to_owned();
+
+        // Decompress
+        self.codec.decompress(&residuals, &codes.view())
+    }
+
+    /// Get codes for a batch of document IDs (for approximate scoring).
+    pub fn get_document_codes(&self, doc_ids: &[usize]) -> Vec<Vec<i64>> {
+        doc_ids
+            .iter()
+            .map(|&doc_id| {
+                if doc_id >= self.doc_lengths.len() {
+                    return vec![];
+                }
+                let start = self.doc_offsets[doc_id];
+                let end = self.doc_offsets[doc_id + 1];
+                self.mmap_codes.slice(start, end).to_vec()
+            })
+            .collect()
+    }
+
+    /// Decompress embeddings for a batch of document IDs.
+    pub fn decompress_documents(&self, doc_ids: &[usize]) -> Result<(Array2<f32>, Vec<usize>)> {
+        // Compute total tokens
+        let mut total_tokens = 0usize;
+        let mut lengths = Vec::with_capacity(doc_ids.len());
+        for &doc_id in doc_ids {
+            if doc_id >= self.doc_lengths.len() {
+                lengths.push(0);
+            } else {
+                let len = self.doc_offsets[doc_id + 1] - self.doc_offsets[doc_id];
+                lengths.push(len);
+                total_tokens += len;
+            }
+        }
+
+        if total_tokens == 0 {
+            return Ok((Array2::zeros((0, self.codec.embedding_dim())), lengths));
+        }
+
+        // Gather all codes and residuals
+        let packed_dim = self.mmap_residuals.ncols();
+        let mut all_codes = Vec::with_capacity(total_tokens);
+        let mut all_residuals = Array2::<u8>::zeros((total_tokens, packed_dim));
+        let mut offset = 0;
+
+        for &doc_id in doc_ids {
+            if doc_id >= self.doc_lengths.len() {
+                continue;
+            }
+            let start = self.doc_offsets[doc_id];
+            let end = self.doc_offsets[doc_id + 1];
+            let len = end - start;
+
+            // Append codes
+            let codes_slice = self.mmap_codes.slice(start, end);
+            all_codes.extend(codes_slice.iter().map(|&c| c as usize));
+
+            // Copy residuals
+            let residuals_view = self.mmap_residuals.slice_rows(start, end);
+            all_residuals
+                .slice_mut(s![offset..offset + len, ..])
+                .assign(&residuals_view);
+            offset += len;
+        }
+
+        let codes_arr = Array1::from_vec(all_codes);
+        let embeddings = self.codec.decompress(&all_residuals, &codes_arr.view())?;
+
+        Ok((embeddings, lengths))
+    }
+
+    /// Search for similar documents.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - Query embedding matrix [num_tokens, dim]
+    /// * `params` - Search parameters
+    /// * `subset` - Optional subset of document IDs to search within
+    ///
+    /// # Returns
+    ///
+    /// Search result containing top-k document IDs and scores.
+    pub fn search(
+        &self,
+        query: &Array2<f32>,
+        params: &crate::search::SearchParameters,
+        subset: Option<&[i64]>,
+    ) -> Result<crate::search::SearchResult> {
+        crate::search::search_one_mmap(self, query, params, subset)
+    }
+
+    /// Search for multiple queries in batch.
+    ///
+    /// # Arguments
+    ///
+    /// * `queries` - Slice of query embedding matrices
+    /// * `params` - Search parameters
+    /// * `parallel` - If true, process queries in parallel using rayon
+    /// * `subset` - Optional subset of document IDs to search within
+    ///
+    /// # Returns
+    ///
+    /// Vector of search results, one per query.
+    pub fn search_batch(
+        &self,
+        queries: &[Array2<f32>],
+        params: &crate::search::SearchParameters,
+        parallel: bool,
+        subset: Option<&[i64]>,
+    ) -> Result<Vec<crate::search::SearchResult>> {
+        crate::search::search_many_mmap(self, queries, params, parallel, subset)
+    }
+
+    /// Get the number of documents in the index.
+    pub fn num_documents(&self) -> usize {
+        self.doc_lengths.len()
+    }
+
+    /// Get the embedding dimension.
+    pub fn embedding_dim(&self) -> usize {
+        self.codec.embedding_dim()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

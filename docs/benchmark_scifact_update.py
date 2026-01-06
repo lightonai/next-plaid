@@ -480,6 +480,7 @@ def run_lategrep_with_updates(
                 str(config.n_ivf_probe),
                 "--n-full-scores",
                 str(config.n_full_scores),
+                "--mmap",  # Use memory-mapped index for lower RAM usage
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

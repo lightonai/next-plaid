@@ -148,8 +148,10 @@ fast-plaid/
 
 ### Phase 3: Memory-Mapped Loading
 
+**Goal**: Reduce RAM usage by memory-mapping large index files instead of loading them into memory.
+
 #### 3.1 Basic Memory-Mapped Arrays
-**Status**: ✅ PARTIAL (basic implementation exists)
+**Status**: ✅ COMPLETE (custom binary format)
 
 | Feature | fast-plaid | lategrep | Notes |
 |---------|------------|----------|-------|
@@ -158,17 +160,121 @@ fast-plaid/
 | MmapArray2U8 for residuals | ✅ | ✅ | `src/mmap.rs` |
 | MmapArray1I64 for codes/IVF | ✅ | ✅ | `src/mmap.rs` |
 
-#### 3.2 Merged File Creation
-**Status**: ⚠️ NOT IMPLEMENTED (optional optimization)
+#### 3.2 NPY Memory-Mapped Arrays
+**Status**: ✅ COMPLETE
+
+NPY format memory mapping for compatibility with existing index files:
 
 | Feature | fast-plaid | lategrep | Notes |
 |---------|------------|----------|-------|
-| MergedIndex struct | ✅ | ❌ | Nice-to-have for large indices |
-| Manifest tracking | ✅ | ❌ | `merged_codes.manifest.json` |
-| `merge_chunks()` | ✅ | ❌ | Combines chunk files |
-| `incremental_merge()` | ✅ | ❌ | Adds new chunks without full rebuild |
+| `MmapNpyArray1I64` for codes | ✅ | ✅ | `src/mmap.rs` |
+| `MmapNpyArray2U8` for residuals | ✅ | ✅ | `src/mmap.rs` |
+| NPY header parsing (v1.0 and v2.0) | ✅ | ✅ | Shape, dtype, fortran_order |
+| Zero-copy row access | ✅ | ✅ | Direct slice into mmap |
 
-**Note**: This is an optimization for very large indices. Core functionality works without it.
+#### 3.3 Merged File Creation
+**Status**: ✅ COMPLETE
+
+| Feature | fast-plaid | lategrep | Notes |
+|---------|------------|----------|-------|
+| `merge_chunks()` | ✅ | ✅ | Combines chunk files into single NPY |
+| Manifest tracking | ✅ | ✅ | `merged_codes.manifest.json` |
+| Incremental merge (changed chunks only) | ✅ | ✅ | Skip unchanged chunks via mtime |
+| Padding for StridedTensor compatibility | ✅ | ✅ | max_len - last_len padding rows |
+
+**Manifest format** (`merged_codes.manifest.json`):
+```json
+{
+  "0.codes.npy": {"rows": 50000, "mtime": 1704067200.0},
+  "1.codes.npy": {"rows": 30000, "mtime": 1704067210.0}
+}
+```
+
+#### 3.4 MmapIndex Implementation
+**Status**: ✅ COMPLETE
+
+| Feature | fast-plaid | lategrep | Notes |
+|---------|------------|----------|-------|
+| `MmapIndex` struct | ✅ | ✅ | Memory-mapped index for search |
+| `MmapIndex::load()` | ✅ | ✅ | Creates merged files if needed |
+| `MmapIndex::search()` | ✅ | ✅ | Search with mmap data |
+| `MmapIndex::search_batch()` | ✅ | ✅ | Parallel batch search |
+| Small tensors in RAM | ✅ | ✅ | centroids, bucket_weights, ivf |
+| Large tensors mmap'd | ✅ | ✅ | codes, residuals |
+
+**Memory comparison (SciFact 5,183 docs)**:
+- Index: 519 MB (lategrep) vs 3,539 MB (fast-plaid) = 85% reduction
+- Search: 317 MB (lategrep with mmap) vs 3,583 MB (fast-plaid) = **91% reduction**
+
+#### 3.5 Implementation Steps
+
+**Step 1: NPY mmap support in `src/mmap.rs`**
+```rust
+/// Memory-mapped NPY array for i64 values (codes).
+pub struct MmapNpyArray1I64 {
+    _mmap: Mmap,
+    shape: usize,
+    data_offset: usize,
+}
+
+impl MmapNpyArray1I64 {
+    pub fn from_npy_file(path: &Path) -> Result<Self>;
+    pub fn len(&self) -> usize;
+    pub fn slice(&self, start: usize, end: usize) -> &[i64];
+}
+
+/// Memory-mapped NPY array for u8 values (residuals).
+pub struct MmapNpyArray2U8 {
+    _mmap: Mmap,
+    shape: (usize, usize),
+    data_offset: usize,
+}
+
+impl MmapNpyArray2U8 {
+    pub fn from_npy_file(path: &Path) -> Result<Self>;
+    pub fn shape(&self) -> (usize, usize);
+    pub fn slice_rows(&self, start: usize, end: usize) -> ArrayView2<'_, u8>;
+}
+```
+
+**Step 2: Merged file creation in `src/mmap.rs`**
+```rust
+/// Merge chunked NPY files into a single memory-mapped file.
+pub fn merge_npy_chunks<T>(
+    index_path: &Path,
+    name_suffix: &str,  // "codes" or "residuals"
+    num_chunks: usize,
+    padding_rows: usize,
+) -> Result<PathBuf>;
+```
+
+**Step 3: MmapIndex in `src/index.rs`**
+```rust
+/// A memory-mapped index optimized for low memory usage.
+pub struct MmapIndex {
+    pub metadata: Metadata,
+    pub codec: ResidualCodec,
+    pub ivf: Array1<i64>,
+    pub ivf_lengths: Array1<i32>,
+    pub ivf_offsets: Array1<i64>,
+    pub doc_lengths: Array1<i64>,
+    // Memory-mapped large data
+    mmap_codes: MmapNpyArray1I64,
+    mmap_residuals: MmapNpyArray2U8,
+    // Precomputed offsets for document lookups
+    doc_offsets: Array1<usize>,
+}
+
+impl MmapIndex {
+    pub fn load(index_path: &str) -> Result<Self>;
+    pub fn search(&self, query: &Array2<f32>, params: &SearchParameters) -> Result<SearchResult>;
+    pub fn search_batch(&self, queries: &[Array2<f32>], params: &SearchParameters, parallel: bool) -> Result<Vec<SearchResult>>;
+}
+```
+
+**Step 4: Integration with benchmark**
+- Update `benchmark_cli` example to use `MmapIndex` by default
+- Add `--no-mmap` flag for comparison
 
 ---
 

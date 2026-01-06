@@ -304,6 +304,231 @@ impl Index {
     }
 }
 
+// ============================================================================
+// Memory-Mapped Index Search
+// ============================================================================
+
+/// Compute approximate scores for mmap index using code lookups.
+#[cfg(feature = "npy")]
+fn approximate_score_mmap(query_centroid_scores: &Array2<f32>, doc_codes: &[i64]) -> f32 {
+    let mut score = 0.0;
+
+    for q_idx in 0..query_centroid_scores.nrows() {
+        let mut max_score = f32::NEG_INFINITY;
+
+        for &code in doc_codes.iter() {
+            let centroid_score = query_centroid_scores[[q_idx, code as usize]];
+            if centroid_score > max_score {
+                max_score = centroid_score;
+            }
+        }
+
+        if max_score > f32::NEG_INFINITY {
+            score += max_score;
+        }
+    }
+
+    score
+}
+
+/// Search a memory-mapped index for a single query.
+#[cfg(feature = "npy")]
+pub fn search_one_mmap(
+    index: &crate::index::MmapIndex,
+    query: &Array2<f32>,
+    params: &SearchParameters,
+    subset: Option<&[i64]>,
+) -> Result<QueryResult> {
+    use ndarray::Axis;
+
+    // Compute query-centroid scores
+    let query_centroid_scores = query.dot(&index.codec.centroids.t());
+
+    // Find top IVF cells to probe
+    let cells_to_probe: Vec<usize> = if let Some(subset_docs) = subset {
+        // When filtering by subset, only probe centroids that contain subset documents
+        let mut subset_centroids: Vec<usize> = Vec::new();
+        for &doc_id in subset_docs {
+            if (doc_id as usize) < index.doc_lengths.len() {
+                let start = index.doc_offsets[doc_id as usize];
+                let end = index.doc_offsets[doc_id as usize + 1];
+                let codes = index.mmap_codes.slice(start, end);
+                subset_centroids.extend(codes.iter().map(|&c| c as usize));
+            }
+        }
+        subset_centroids.sort_unstable();
+        subset_centroids.dedup();
+
+        if subset_centroids.is_empty() {
+            return Ok(QueryResult {
+                query_id: 0,
+                passage_ids: vec![],
+                scores: vec![],
+            });
+        }
+
+        // Compute scores for subset centroids and take top-k
+        let mut centroid_scores: Vec<(usize, f32)> = subset_centroids
+            .iter()
+            .map(|&c| {
+                let score: f32 = query_centroid_scores
+                    .axis_iter(Axis(0))
+                    .map(|q| q[c])
+                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                    .unwrap_or(0.0);
+                (c, score)
+            })
+            .collect();
+
+        centroid_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        centroid_scores
+            .iter()
+            .take(params.n_ivf_probe)
+            .map(|(c, _)| *c)
+            .collect()
+    } else {
+        // Standard path: select top-k centroids per query token
+        let num_centroids = index.codec.num_centroids();
+        let num_query_tokens = query_centroid_scores.nrows();
+
+        let mut selected_centroids = std::collections::HashSet::new();
+
+        for q_idx in 0..num_query_tokens {
+            let mut centroid_scores: Vec<(usize, f32)> = (0..num_centroids)
+                .map(|c| (c, query_centroid_scores[[q_idx, c]]))
+                .collect();
+
+            centroid_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            for (c, _) in centroid_scores.iter().take(params.n_ivf_probe) {
+                selected_centroids.insert(*c);
+            }
+        }
+
+        selected_centroids.into_iter().collect()
+    };
+
+    // Get candidate documents from IVF
+    let mut candidates = index.get_candidates(&cells_to_probe);
+
+    // Filter by subset if provided
+    if let Some(subset_docs) = subset {
+        let subset_set: std::collections::HashSet<i64> = subset_docs.iter().copied().collect();
+        candidates.retain(|&c| subset_set.contains(&c));
+    }
+
+    if candidates.is_empty() {
+        return Ok(QueryResult {
+            query_id: 0,
+            passage_ids: vec![],
+            scores: vec![],
+        });
+    }
+
+    // Compute approximate scores
+    let mut approx_scores: Vec<(i64, f32)> = candidates
+        .par_iter()
+        .map(|&doc_id| {
+            let start = index.doc_offsets[doc_id as usize];
+            let end = index.doc_offsets[doc_id as usize + 1];
+            let codes = index.mmap_codes.slice(start, end);
+            let score = approximate_score_mmap(&query_centroid_scores, codes);
+            (doc_id, score)
+        })
+        .collect();
+
+    // Sort by approximate score and take top candidates
+    approx_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    let top_candidates: Vec<i64> = approx_scores
+        .iter()
+        .take(params.n_full_scores)
+        .map(|(id, _)| *id)
+        .collect();
+
+    // Further reduce for full decompression
+    let n_decompress = (params.n_full_scores / 4).max(params.top_k);
+    let to_decompress: Vec<i64> = top_candidates.into_iter().take(n_decompress).collect();
+
+    if to_decompress.is_empty() {
+        return Ok(QueryResult {
+            query_id: 0,
+            passage_ids: vec![],
+            scores: vec![],
+        });
+    }
+
+    // Compute exact scores with decompressed embeddings
+    let mut exact_scores: Vec<(i64, f32)> = to_decompress
+        .par_iter()
+        .filter_map(|&doc_id| {
+            let doc_embeddings = index.get_document_embeddings(doc_id as usize).ok()?;
+            let score = colbert_score(&query.view(), &doc_embeddings.view());
+            Some((doc_id, score))
+        })
+        .collect();
+
+    // Sort by exact score
+    exact_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    // Return top-k results
+    let result_count = params.top_k.min(exact_scores.len());
+    let passage_ids: Vec<i64> = exact_scores
+        .iter()
+        .take(result_count)
+        .map(|(id, _)| *id)
+        .collect();
+    let scores: Vec<f32> = exact_scores
+        .iter()
+        .take(result_count)
+        .map(|(_, s)| *s)
+        .collect();
+
+    Ok(QueryResult {
+        query_id: 0,
+        passage_ids,
+        scores,
+    })
+}
+
+/// Search a memory-mapped index for multiple queries.
+#[cfg(feature = "npy")]
+pub fn search_many_mmap(
+    index: &crate::index::MmapIndex,
+    queries: &[Array2<f32>],
+    params: &SearchParameters,
+    parallel: bool,
+    subset: Option<&[i64]>,
+) -> Result<Vec<QueryResult>> {
+    if parallel {
+        let results: Vec<QueryResult> = queries
+            .par_iter()
+            .enumerate()
+            .map(|(i, query)| {
+                let mut result =
+                    search_one_mmap(index, query, params, subset).unwrap_or_else(|_| QueryResult {
+                        query_id: i,
+                        passage_ids: vec![],
+                        scores: vec![],
+                    });
+                result.query_id = i;
+                result
+            })
+            .collect();
+        Ok(results)
+    } else {
+        let mut results = Vec::with_capacity(queries.len());
+        for (i, query) in queries.iter().enumerate() {
+            let mut result = search_one_mmap(index, query, params, subset)?;
+            result.query_id = i;
+            results.push(result);
+        }
+        Ok(results)
+    }
+}
+
+/// Alias type for search result (for API compatibility)
+pub type SearchResult = QueryResult;
+
 #[cfg(test)]
 mod tests {
     use super::*;

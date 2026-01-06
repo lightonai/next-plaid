@@ -67,6 +67,7 @@ Search Options:
     --top-k <n>           Number of results to return (default: 10)
     --n-ivf-probe <n>     Number of IVF cells to probe (default: 8)
     --n-full-scores <n>   Number of candidates for exact scoring (default: 4096)
+    --mmap                Use memory-mapped index for lower RAM usage
 "#
     );
 }
@@ -187,11 +188,14 @@ fn run_update(_args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(feature = "npy")]
 fn run_search(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    use lategrep::MmapIndex;
+
     let mut index_dir: Option<PathBuf> = None;
     let mut query_dir: Option<PathBuf> = None;
     let mut top_k: usize = 10;
     let mut n_ivf_probe: usize = 8;
     let mut n_full_scores: usize = 4096;
+    let mut use_mmap: bool = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -216,6 +220,9 @@ fn run_search(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 i += 1;
                 n_full_scores = args[i].parse()?;
             }
+            "--mmap" => {
+                use_mmap = true;
+            }
             _ => {
                 return Err(format!("Unknown option: {}", args[i]).into());
             }
@@ -225,9 +232,6 @@ fn run_search(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     let index_dir = index_dir.ok_or("--index-dir is required")?;
     let query_dir = query_dir.ok_or("--query-dir is required")?;
-
-    // Load index
-    let index = Index::load(index_dir.to_str().unwrap())?;
 
     // Load queries
     let queries = load_queries(&query_dir)?;
@@ -241,8 +245,20 @@ fn run_search(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         n_ivf_probe,
     };
 
-    // Run search
-    let results = index.search_batch(&queries, &params, false, None)?;
+    // Run search with either regular or mmap index
+    let results = if use_mmap {
+        eprintln!("Using memory-mapped index...");
+        let index = MmapIndex::load(index_dir.to_str().unwrap())?;
+        eprintln!("Loaded mmap index with {} documents", index.num_documents());
+        index.search_batch(&queries, &params, true, None)?
+    } else {
+        let index = Index::load(index_dir.to_str().unwrap())?;
+        eprintln!(
+            "Loaded index with {} documents",
+            index.metadata.num_documents
+        );
+        index.search_batch(&queries, &params, false, None)?
+    };
 
     // Output results as JSON
     let json_results: Vec<serde_json::Value> = results
