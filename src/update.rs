@@ -122,6 +122,8 @@ pub fn load_buffer(index_path: &Path) -> Result<Vec<Array2<f32>>> {
 }
 
 /// Save embeddings to buffer.npy.
+///
+/// Also saves buffer_info.json with the number of documents for deletion tracking.
 #[cfg(feature = "npy")]
 pub fn save_buffer(index_path: &Path, embeddings: &[Array2<f32>]) -> Result<()> {
     use ndarray_npy::WriteNpyExt;
@@ -154,19 +156,43 @@ pub fn save_buffer(index_path: &Path, embeddings: &[Array2<f32>]) -> Result<()> 
     let lengths_path = index_path.join("buffer_lengths.json");
     serde_json::to_writer(BufWriter::new(File::create(&lengths_path)?), &lengths)?;
 
+    // Save buffer info for deletion tracking (number of documents)
+    let info_path = index_path.join("buffer_info.json");
+    let buffer_info = serde_json::json!({ "num_docs": embeddings.len() });
+    serde_json::to_writer(BufWriter::new(File::create(&info_path)?), &buffer_info)?;
+
     Ok(())
+}
+
+/// Load buffer info (number of buffered documents).
+///
+/// Returns 0 if buffer_info.json doesn't exist.
+#[cfg(feature = "npy")]
+pub fn load_buffer_info(index_path: &Path) -> Result<usize> {
+    let info_path = index_path.join("buffer_info.json");
+    if !info_path.exists() {
+        return Ok(0);
+    }
+
+    let info: serde_json::Value = serde_json::from_reader(BufReader::new(File::open(&info_path)?))?;
+
+    Ok(info.get("num_docs").and_then(|v| v.as_u64()).unwrap_or(0) as usize)
 }
 
 /// Clear buffer files.
 pub fn clear_buffer(index_path: &Path) -> Result<()> {
     let buffer_path = index_path.join("buffer.npy");
     let lengths_path = index_path.join("buffer_lengths.json");
+    let info_path = index_path.join("buffer_info.json");
 
     if buffer_path.exists() {
         fs::remove_file(&buffer_path)?;
     }
     if lengths_path.exists() {
         fs::remove_file(&lengths_path)?;
+    }
+    if info_path.exists() {
+        fs::remove_file(&info_path)?;
     }
 
     Ok(())

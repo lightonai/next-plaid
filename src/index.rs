@@ -644,11 +644,13 @@ impl Index {
         config: &crate::update::UpdateConfig,
     ) -> Result<()> {
         use crate::update::{
-            clear_buffer, load_buffer, load_cluster_threshold, save_buffer, update_centroids,
-            update_index,
+            clear_buffer, load_buffer, load_buffer_info, load_cluster_threshold, save_buffer,
+            update_centroids, update_index,
         };
 
-        let index_path = std::path::Path::new(&self.path);
+        // Clone path to avoid borrow issues when reassigning self
+        let path_str = self.path.clone();
+        let index_path = std::path::Path::new(&path_str);
 
         // Check if we should rebuild from scratch (small index)
         if self.metadata.num_documents <= config.start_from_scratch {
@@ -657,14 +659,14 @@ impl Index {
             // For now, just do a regular update
             update_index(
                 embeddings,
-                &self.path,
+                &path_str,
                 &self.codec,
                 Some(config.batch_size),
                 true,
             )?;
 
             // Reload the index
-            *self = Index::load(&self.path)?;
+            *self = Index::load(&path_str)?;
             return Ok(());
         }
 
@@ -674,13 +676,30 @@ impl Index {
 
         // Check buffer threshold
         if total_new >= config.buffer_size {
-            // Centroid expansion path
+            // Centroid expansion path (matches fast-plaid update.py:376-422)
+
+            // 1. Get number of buffered docs that were previously indexed
+            let num_buffered = load_buffer_info(index_path)?;
+
+            // 2. Delete buffered docs from index (they were indexed without centroid expansion)
+            //    This matches fast-plaid's delete_fn(subset=documents_to_delete)
+            if num_buffered > 0 && self.metadata.num_documents >= num_buffered {
+                let start_del_idx = self.metadata.num_documents - num_buffered;
+                let docs_to_delete: Vec<i64> = (start_del_idx..self.metadata.num_documents)
+                    .map(|i| i as i64)
+                    .collect();
+                crate::delete::delete_from_index(&docs_to_delete, &path_str)?;
+                // Reload after delete to get updated metadata
+                *self = Index::load(&path_str)?;
+            }
+
+            // 3. Combine buffer + new embeddings
             let combined: Vec<Array2<f32>> = buffer
                 .into_iter()
                 .chain(embeddings.iter().cloned())
                 .collect();
 
-            // Expand centroids with outliers
+            // 4. Expand centroids with outliers from combined embeddings
             if let Ok(cluster_threshold) = load_cluster_threshold(index_path) {
                 let new_centroids =
                     update_centroids(index_path, &combined, cluster_threshold, config)?;
@@ -690,25 +709,25 @@ impl Index {
                 }
             }
 
-            // Clear buffer
+            // 5. Clear buffer
             clear_buffer(index_path)?;
 
-            // Update index with threshold update
+            // 6. Update index with ALL combined embeddings (buffer + new)
             update_index(
-                embeddings,
-                &self.path,
+                &combined,
+                &path_str,
                 &self.codec,
                 Some(config.batch_size),
                 true,
             )?;
         } else {
-            // Small update: add to buffer
+            // Small update: add to buffer and index without centroid expansion
             save_buffer(index_path, embeddings)?;
 
             // Update index without threshold update
             update_index(
                 embeddings,
-                &self.path,
+                &path_str,
                 &self.codec,
                 Some(config.batch_size),
                 false,
@@ -716,7 +735,7 @@ impl Index {
         }
 
         // Reload the index
-        *self = Index::load(&self.path)?;
+        *self = Index::load(&path_str)?;
         Ok(())
     }
 

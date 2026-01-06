@@ -13,20 +13,20 @@
   "num_queries": 300,
   "num_centroids": 16384,
   "lategrep": {
-    "index_time_s": 11.767,
-    "search_time_s": 16.81,
+    "index_time_s": 11.755,
+    "search_time_s": 15.331,
     "num_batches": 7,
     "metrics": {
       "map": 0.7077,
-      "ndcg@10": 0.7439,
+      "ndcg@10": 0.744,
       "ndcg@100": 0.7661,
       "recall@10": 0.8573,
       "recall@100": 0.9593
     }
   },
   "fastplaid": {
-    "index_time_s": 19.413,
-    "search_time_s": 86.487,
+    "index_time_s": 19.378,
+    "search_time_s": 82.438,
     "num_batches": 7,
     "metrics": {
       "map": 0.7114,
@@ -38,7 +38,7 @@
   },
   "comparison": {
     "result_overlap_10": 0.8616,
-    "result_overlap_100": 0.8756,
+    "result_overlap_100": 0.8762,
     "map_diff_pct": 0.52,
     "speedup": 1.65
   },
