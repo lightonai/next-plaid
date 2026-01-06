@@ -26,6 +26,7 @@ venv/
 ENV/
 env/
 .uv/
+*.json
 
 # Test artifacts
 *.npy
@@ -33,6 +34,8 @@ test_index/
 
 # Documentation build
 /docs/_build/
+/docs/evaluation_datasets/
+/docs/scifact_embeddings/
 
 # Benchmark results
 /target/criterion/
