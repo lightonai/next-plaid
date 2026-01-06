@@ -52,14 +52,14 @@ fn print_usage() {
 Create Options:
     --data-dir <path>     Directory containing doc_*.npy files and centroids.npy
     --index-dir <path>    Directory to write the index
-    --nbits <n>           Number of bits for quantization (default: 2)
+    --nbits <n>           Number of bits for quantization (default: 4)
 
 Search Options:
     --index-dir <path>    Directory containing the index
     --query-dir <path>    Directory containing query_*.npy files
     --top-k <n>           Number of results to return (default: 10)
-    --n-ivf-probe <n>     Number of IVF cells to probe (default: 32)
-    --n-full-scores <n>   Number of candidates for exact scoring (default: 1024)
+    --n-ivf-probe <n>     Number of IVF cells to probe (default: 8)
+    --n-full-scores <n>   Number of candidates for exact scoring (default: 4096)
 "#
     );
 }
@@ -68,7 +68,7 @@ Search Options:
 fn run_create(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut data_dir: Option<PathBuf> = None;
     let mut index_dir: Option<PathBuf> = None;
-    let mut nbits: usize = 2;
+    let mut nbits: usize = 4;
 
     let mut i = 0;
     while i < args.len() {
@@ -127,8 +127,8 @@ fn run_search(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut index_dir: Option<PathBuf> = None;
     let mut query_dir: Option<PathBuf> = None;
     let mut top_k: usize = 10;
-    let mut n_ivf_probe: usize = 32;
-    let mut n_full_scores: usize = 1024;
+    let mut n_ivf_probe: usize = 8;
+    let mut n_full_scores: usize = 4096;
 
     let mut i = 0;
     while i < args.len() {
@@ -172,7 +172,7 @@ fn run_search(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     // Search parameters
     let params = SearchParameters {
-        batch_size: 128,
+        batch_size: 2000,
         n_full_scores,
         top_k,
         n_ivf_probe,

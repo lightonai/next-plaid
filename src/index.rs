@@ -27,9 +27,9 @@ pub struct IndexConfig {
 impl Default for IndexConfig {
     fn default() -> Self {
         Self {
-            nbits: 2,
-            batch_size: 50000,
-            seed: None,
+            nbits: 4,
+            batch_size: 50_000,
+            seed: Some(42),
         }
     }
 }
@@ -666,8 +666,8 @@ mod tests {
     #[test]
     fn test_index_config_default() {
         let config = IndexConfig::default();
-        assert_eq!(config.nbits, 2);
-        assert_eq!(config.batch_size, 50000);
-        assert!(config.seed.is_none());
+        assert_eq!(config.nbits, 4);
+        assert_eq!(config.batch_size, 50_000);
+        assert_eq!(config.seed, Some(42));
     }
 }

@@ -10,15 +10,16 @@ use crate::error::{Error, Result};
 pub use fastkmeans_rs::{FastKMeans, KMeansConfig, KMeansError};
 
 /// Default configuration for centroid computation.
+/// These defaults match fast-plaid's behavior.
 pub fn default_config(num_centroids: usize) -> KMeansConfig {
     KMeansConfig {
         k: num_centroids,
-        max_iters: 20,
-        tol: 1e-6,
+        max_iters: 4,
+        tol: 1e-8,
         seed: 42,
         max_points_per_centroid: Some(256),
-        chunk_size_data: 100_000,
-        chunk_size_centroids: 1024,
+        chunk_size_data: 51_200,
+        chunk_size_centroids: 10_240,
         verbose: false,
     }
 }

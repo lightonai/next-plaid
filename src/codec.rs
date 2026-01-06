@@ -182,8 +182,8 @@ impl ResidualCodec {
                 // Find bucket index
                 let bucket = cutoffs.iter().filter(|&&c| val > c).count();
 
-                // Convert bucket to bits
-                for b in (0..self.nbits).rev() {
+                // Convert bucket to bits (LSB-first to match decompression's bit reversal)
+                for b in 0..self.nbits {
                     bits.push(((bucket >> b) & 1) as u8);
                 }
             }
@@ -379,5 +379,72 @@ mod tests {
         let codes = codec.compress_into_codes(&embeddings);
         assert_eq!(codes[0], 0);
         assert_eq!(codes[1], 2);
+    }
+
+    #[test]
+    fn test_quantize_decompress_roundtrip_4bit() {
+        // Test round-trip with 4-bit quantization
+        let dim = 8;
+        let centroids = Array2::zeros((4, dim));
+        let avg_residual = Array1::zeros(dim);
+
+        // Create bucket cutoffs and weights for 16 buckets
+        // Cutoffs at quantiles 1/16, 2/16, ..., 15/16
+        let bucket_cutoffs: Vec<f32> = (1..16).map(|i| (i as f32 / 16.0 - 0.5) * 2.0).collect();
+        // Weights at quantile midpoints
+        let bucket_weights: Vec<f32> = (0..16)
+            .map(|i| ((i as f32 + 0.5) / 16.0 - 0.5) * 2.0)
+            .collect();
+
+        let codec = ResidualCodec::new(
+            4,
+            centroids,
+            avg_residual,
+            Some(Array1::from_vec(bucket_cutoffs)),
+            Some(Array1::from_vec(bucket_weights)),
+        )
+        .unwrap();
+
+        // Create test residuals that span different bucket ranges
+        let residuals = Array2::from_shape_vec(
+            (2, dim),
+            vec![
+                -0.9, -0.7, -0.5, -0.3, 0.0, 0.3, 0.5, 0.9, // various bucket values
+                -0.8, -0.4, 0.0, 0.4, 0.8, -0.6, 0.2, 0.6,
+            ],
+        )
+        .unwrap();
+
+        // Quantize
+        let packed = codec.quantize_residuals(&residuals).unwrap();
+        assert_eq!(packed.ncols(), dim * 4 / 8); // 4 bytes per row for dim=8, nbits=4
+
+        // Create a temporary centroid assignment (all zeros)
+        let codes = Array1::from_vec(vec![0, 0]);
+
+        // Decompress and verify the reconstruction is reasonable
+        let decompressed = codec.decompress(&packed, &codes.view()).unwrap();
+
+        // The decompressed values should be close to the quantized bucket weights
+        // (plus centroid, which is zero here)
+        for i in 0..residuals.nrows() {
+            for j in 0..residuals.ncols() {
+                let orig = residuals[[i, j]];
+                let recon = decompressed[[i, j]];
+                // After normalization, values should be in similar direction
+                // The reconstruction won't be exact due to quantization, but
+                // the sign should generally match for non-zero values
+                if orig.abs() > 0.2 {
+                    assert!(
+                        (orig > 0.0) == (recon > 0.0) || recon.abs() < 0.1,
+                        "Sign mismatch at [{}, {}]: orig={}, recon={}",
+                        i,
+                        j,
+                        orig,
+                        recon
+                    );
+                }
+            }
+        }
     }
 }

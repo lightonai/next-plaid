@@ -16,6 +16,13 @@ dev = [
 fast-plaid = [
     "fast-plaid>=0.1.0",
 ]
+eval = [
+    "beir>=2.0.0",
+    "ranx>=0.3.0",
+    "pylate>=1.0.0",
+    "fastkmeans>=0.1.0",
+    "tqdm>=4.60.0",
+]
 
 [tool.ruff]
 line-length = 100

@@ -23,10 +23,10 @@ pub struct SearchParameters {
 impl Default for SearchParameters {
     fn default() -> Self {
         Self {
-            batch_size: 128,
-            n_full_scores: 1024,
+            batch_size: 2000,
+            n_full_scores: 4096,
             top_k: 10,
-            n_ivf_probe: 32,
+            n_ivf_probe: 8,
         }
     }
 }
@@ -139,25 +139,29 @@ pub fn search_one(
             .map(|(c, _)| *c)
             .collect()
     } else {
-        // Standard path: select top-k centroids based on max query token similarity
+        // Standard path: select top-k centroids PER query token, then take union
+        // This matches fast-plaid's algorithm: for each query token, find the best centroids
         let num_centroids = index.codec.num_centroids();
-        let mut centroid_scores: Vec<(usize, f32)> = (0..num_centroids)
-            .map(|c| {
-                let score: f32 = query_centroid_scores
-                    .axis_iter(Axis(0))
-                    .map(|q| q[c])
-                    .max_by(|a, b| a.partial_cmp(b).unwrap())
-                    .unwrap_or(0.0);
-                (c, score)
-            })
-            .collect();
+        let num_query_tokens = query_centroid_scores.nrows();
 
-        centroid_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        centroid_scores
-            .iter()
-            .take(params.n_ivf_probe)
-            .map(|(c, _)| *c)
-            .collect()
+        // Collect all centroid indices from per-token top-k
+        let mut selected_centroids = std::collections::HashSet::new();
+
+        for q_idx in 0..num_query_tokens {
+            // Get scores for this query token
+            let mut centroid_scores: Vec<(usize, f32)> = (0..num_centroids)
+                .map(|c| (c, query_centroid_scores[[q_idx, c]]))
+                .collect();
+
+            // Sort by score descending and take top n_ivf_probe
+            centroid_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            for (c, _) in centroid_scores.iter().take(params.n_ivf_probe) {
+                selected_centroids.insert(*c);
+            }
+        }
+
+        selected_centroids.into_iter().collect()
     };
 
     // Get candidate documents from IVF
@@ -330,9 +334,9 @@ mod tests {
     #[test]
     fn test_search_params_default() {
         let params = SearchParameters::default();
-        assert_eq!(params.batch_size, 128);
-        assert_eq!(params.n_full_scores, 1024);
+        assert_eq!(params.batch_size, 2000);
+        assert_eq!(params.n_full_scores, 4096);
         assert_eq!(params.top_k, 10);
-        assert_eq!(params.n_ivf_probe, 32);
+        assert_eq!(params.n_ivf_probe, 8);
     }
 }

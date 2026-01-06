@@ -28,17 +28,17 @@ from pathlib import Path
 
 import numpy as np
 
-# Configuration
+# Configuration (defaults match fast-plaid)
 DEFAULT_CONFIG = {
     "num_docs": 100,
     "num_tokens_range": (10, 50),
     "embedding_dim": 128,
     "num_centroids": 64,
-    "nbits": 2,
+    "nbits": 4,
     "seed": 42,
     "top_k": 10,
-    "n_ivf_probe": 16,
-    "n_full_scores": 256,
+    "n_ivf_probe": 8,
+    "n_full_scores": 4096,
     "num_queries": 5,
 }
 
@@ -47,11 +47,11 @@ QUICK_CONFIG = {
     "num_tokens_range": (5, 20),
     "embedding_dim": 64,
     "num_centroids": 16,
-    "nbits": 2,
+    "nbits": 4,
     "seed": 42,
     "top_k": 5,
     "n_ivf_probe": 8,
-    "n_full_scores": 64,
+    "n_full_scores": 256,
     "num_queries": 3,
 }
 

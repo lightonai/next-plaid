@@ -16,8 +16,8 @@ use crate::codec::ResidualCodec;
 use crate::error::{Error, Result};
 use crate::index::Metadata;
 
-/// Default batch size for processing documents.
-const DEFAULT_BATCH_SIZE: usize = 25_000;
+/// Default batch size for processing documents (matches fast-plaid).
+const DEFAULT_BATCH_SIZE: usize = 50_000;
 
 /// Update an existing index with new documents.
 ///

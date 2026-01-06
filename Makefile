@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached
 
 all: fmt lint test
 
@@ -81,3 +81,13 @@ fmt-python:
 compare-reference:
 	cargo build --release --features npy --example benchmark_cli
 	cd docs && uv sync --extra fast-plaid && uv run python compare_reference.py --skip-cross
+
+# Evaluate on SciFact dataset
+evaluate-scifact:
+	cargo build --release --features npy --example benchmark_cli
+	cd docs && uv sync --extra eval && uv run python evaluate_scifact.py
+
+# Evaluate on SciFact with cached embeddings (faster)
+evaluate-scifact-cached:
+	cargo build --release --features npy --example benchmark_cli
+	cd docs && uv sync --extra eval && uv run python evaluate_scifact.py --skip-encoding
