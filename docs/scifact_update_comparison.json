@@ -1,0 +1,51 @@
+{
+  "dataset": "scifact",
+  "model": "answerdotai/answerai-colbert-small-v1",
+  "config": {
+    "batch_size": 800,
+    "initial_docs": 800,
+    "top_k": 100,
+    "n_ivf_probe": 8,
+    "n_full_scores": 8192,
+    "nbits": 4
+  },
+  "num_documents": 5183,
+  "num_queries": 300,
+  "num_centroids": 16384,
+  "lategrep": {
+    "index_time_s": 184.814,
+    "search_time_s": 15.593,
+    "num_batches": 7,
+    "metrics": {
+      "map": 0.7077,
+      "ndcg@10": 0.7439,
+      "ndcg@100": 0.7661,
+      "recall@10": 0.8573,
+      "recall@100": 0.9593
+    }
+  },
+  "fastplaid": {
+    "index_time_s": 20.208,
+    "search_time_s": 78.854,
+    "num_batches": 7,
+    "metrics": {
+      "map": 0.7114,
+      "ndcg@10": 0.7464,
+      "ndcg@100": 0.768,
+      "recall@10": 0.8573,
+      "recall@100": 0.956
+    }
+  },
+  "comparison": {
+    "result_overlap_10": 0.8628,
+    "result_overlap_100": 0.8762,
+    "map_diff_pct": 0.52,
+    "speedup": 0.11
+  },
+  "assertions": {
+    "map_passed": true,
+    "overlap_passed": true,
+    "recall_passed": true,
+    "all_passed": true
+  }
+}
