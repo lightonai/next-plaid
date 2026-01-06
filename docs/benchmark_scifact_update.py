@@ -205,10 +205,17 @@ def compute_result_overlap(results_a: list, results_b: list, k: int = 100) -> fl
 
 def get_lategrep_binary() -> Path:
     """Build and return path to lategrep benchmark_cli binary."""
+    import platform
+
     project_root = Path(__file__).parent.parent
 
+    # Use accelerate BLAS on macOS for better performance
+    features = "npy"
+    if platform.system() == "Darwin":
+        features = "npy,accelerate"
+
     result = subprocess.run(
-        ["cargo", "build", "--release", "--features", "npy", "--example", "benchmark_cli"],
+        ["cargo", "build", "--release", "--features", features, "--example", "benchmark_cli"],
         capture_output=True,
         text=True,
         cwd=project_root,

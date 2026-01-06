@@ -3,6 +3,13 @@
 //! This crate provides a pure Rust, CPU-only implementation of the PLAID algorithm
 //! for efficient multi-vector search (late interaction retrieval).
 
+// Link BLAS implementation when feature is enabled
+#[cfg(feature = "accelerate")]
+extern crate blas_src;
+
+#[cfg(feature = "openblas")]
+extern crate openblas_src;
+
 pub mod codec;
 pub mod error;
 pub mod index;
