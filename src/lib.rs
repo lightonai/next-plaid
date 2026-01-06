@@ -13,6 +13,8 @@ extern crate openblas_src;
 pub mod codec;
 pub mod delete;
 pub mod error;
+#[cfg(feature = "filtering")]
+pub mod filtering;
 pub mod index;
 pub mod kmeans;
 pub mod mmap;

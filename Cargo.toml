@@ -26,6 +26,8 @@ indicatif = "0.17"
 memmap2 = "0.9"
 half = "2.4"
 byteorder = "1.5"
+rusqlite = { version = "0.33", optional = true }
+regex = { version = "1.11", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 blas-src = { version = "0.10", features = ["accelerate"], optional = true }
@@ -38,6 +40,7 @@ tempfile = "3.10"
 [features]
 default = []
 npy = ["ndarray-npy"]
+filtering = ["rusqlite", "regex"]
 # BLAS backends for accelerated matrix operations (enables ndarray/blas feature)
 accelerate = ["blas-src", "ndarray/blas"]  # macOS Accelerate framework
 openblas = ["openblas-src", "ndarray/blas"]  # OpenBLAS (Linux/cross-platform)

@@ -246,6 +246,232 @@ fast-plaid/
 
 **Files**: `src/index.rs`, `src/update.rs`
 
+#### 4.7 Document Deletion
+**Status**: ✅ COMPLETE
+
+| Feature | fast-plaid | lategrep | Notes |
+|---------|------------|----------|-------|
+| `delete_from_index()` | ✅ | ✅ | `src/delete.rs:49-230` |
+| `Index::delete()` high-level API | ✅ | ✅ | `src/index.rs:740-769` |
+| Chunk-wise embedding filtering | ✅ | ✅ | Filters codes/residuals per chunk |
+| IVF full rebuild after deletion | ✅ | ✅ | Rebuilds from remaining codes |
+| Metadata update after deletion | ✅ | ✅ | Updates all counts |
+
+**Files**: `src/delete.rs` (230 lines, 2 tests)
+
+---
+
+### Phase 4.7: Delete Feature Implementation Plan
+
+**Goal**: Implement document deletion matching fast-plaid's `delete_from_index()` behavior.
+
+#### Algorithm Overview (from fast-plaid)
+
+The delete operation removes documents by rewriting index chunks:
+
+1. **Load metadata**: Read `metadata.json` to get `num_chunks`, `nbits`, `num_partitions`
+2. **Build deletion set**: Convert document IDs to a `HashSet` for O(1) lookup
+3. **Process each chunk**:
+   - Load `doclens.{chunk_idx}.json` to get document lengths
+   - Build a boolean mask of embeddings to keep (exclude embeddings belonging to deleted docs)
+   - If any documents deleted from this chunk:
+     - Filter `{chunk_idx}.codes.npy` using mask
+     - Filter `{chunk_idx}.residuals.npy` using mask (row-wise)
+     - Update `doclens.{chunk_idx}.json` (remove deleted doc lengths)
+     - Update `{chunk_idx}.metadata.json` (num_documents, num_embeddings)
+4. **Rebuild IVF**: Re-read all codes from all chunks and rebuild `ivf.npy` + `ivf_lengths.npy`
+5. **Update global metadata**: Update `num_documents`, `num_embeddings`, `avg_doclen`
+
+#### Implementation Steps
+
+**Step 1: Create `src/delete.rs` module**
+```rust
+// New file: src/delete.rs
+//! Document deletion functionality for removing documents from an existing index.
+
+use std::collections::HashSet;
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
+use std::path::Path;
+
+use ndarray::{Array1, Array2, s};
+use ndarray_npy::{ReadNpyExt, WriteNpyExt};
+
+use crate::error::{Error, Result};
+use crate::index::Metadata;
+```
+
+**Step 2: Implement `delete_from_index()` function**
+```rust
+/// Delete documents from an existing index.
+///
+/// # Arguments
+/// * `doc_ids` - Slice of document IDs to delete (0-indexed)
+/// * `index_path` - Path to the index directory
+///
+/// # Returns
+/// Number of documents deleted
+pub fn delete_from_index(doc_ids: &[i64], index_path: &str) -> Result<usize>
+```
+
+**Step 3: Add `Index::delete()` method in `src/index.rs`**
+```rust
+impl Index {
+    /// Delete documents from the index.
+    ///
+    /// This removes the specified documents and rebuilds the IVF.
+    /// The index is reloaded after deletion.
+    #[cfg(feature = "npy")]
+    pub fn delete(&mut self, doc_ids: &[i64]) -> Result<usize> {
+        let deleted = crate::delete::delete_from_index(doc_ids, &self.path)?;
+        *self = Index::load(&self.path)?;
+        Ok(deleted)
+    }
+}
+```
+
+**Step 4: Add `Delete` error variant in `src/error.rs`**
+```rust
+/// Error during delete operation
+#[error("Delete failed: {0}")]
+Delete(String),
+```
+
+**Step 5: Export from `src/lib.rs`**
+```rust
+pub mod delete;
+pub use delete::delete_from_index;
+```
+
+#### Key Differences from fast-plaid
+
+| Aspect | fast-plaid | lategrep |
+|--------|------------|----------|
+| Tensor operations | PyTorch `masked_select()` | ndarray boolean indexing |
+| IVF rebuild | `Tensor::bincount()` | Manual HashMap aggregation |
+| Memory | GPU-capable tensors | CPU arrays |
+| Device parameter | Required (CPU/CUDA) | Not needed (CPU-only) |
+
+#### Testing Plan
+
+1. Create index with 10 documents
+2. Delete documents [2, 5, 7]
+3. Verify:
+   - `metadata.num_documents` reduced by 3
+   - Search for remaining documents works
+   - IVF contains correct document IDs
+   - Deleted doc IDs not in search results
+
+---
+
+### Phase 4.8: Buffer + Delete Update Fix
+
+**Status**: ✅ COMPLETE
+
+**Goal**: Fix `Index::update()` to properly handle buffer threshold by deleting buffered documents before re-adding with expanded centroids, matching fast-plaid's behavior.
+
+#### Problem Analysis
+
+The current lategrep `Index::update()` is **incorrect**. When the buffer threshold is reached, fast-plaid:
+
+1. **Deletes** previously buffered documents from the index (they were added without centroid expansion)
+2. Combines buffer embeddings + new embeddings
+3. Expands centroids with outliers from the combined set
+4. Clears the buffer file
+5. Re-adds ALL combined embeddings with the expanded centroids
+
+Current lategrep behavior (WRONG):
+- Does NOT delete buffered docs
+- Only adds `embeddings`, not `buffer + embeddings`
+- No tracking of which doc IDs are in the buffer
+
+#### Fast-plaid Update Logic (from `update.py:376-422`)
+
+```python
+if total_new_docs >= buffer_size:
+    if len(existing_buffer_embeddings) > 0:
+        # Delete buffered docs (they were indexed without centroid expansion)
+        start_del_idx = num_documents_in_index - len(existing_buffer_embeddings)
+        documents_to_delete = list(range(start_del_idx, num_documents_in_index))
+        documents_embeddings = existing_buffer_embeddings + documents_embeddings
+        delete_fn(subset=documents_to_delete, _delete_metadata=False)
+
+    update_centroids(...)  # Expand with outliers
+    clear_buffer()
+    update_index(embeddings=documents_embeddings)  # buffer + new
+```
+
+#### Implementation Plan
+
+**Step 1: Track buffer document count**
+
+Add `buffer_info.json` to track how many documents are in the buffer:
+
+```rust
+// In save_buffer()
+let buffer_info = json!({ "num_docs": embeddings.len() });
+serde_json::to_writer(File::create(index_path.join("buffer_info.json"))?)?;
+
+// New function to load buffer info
+fn load_buffer_info(index_path: &Path) -> Result<usize>
+```
+
+**Step 2: Fix Index::update() centroid expansion path**
+
+```rust
+if total_new >= config.buffer_size {
+    // 1. Get number of buffered docs
+    let num_buffered = load_buffer_info(index_path)?;
+
+    // 2. Delete buffered docs from index (they were indexed without expansion)
+    if num_buffered > 0 {
+        let start_del_idx = self.metadata.num_documents - num_buffered;
+        let docs_to_delete: Vec<i64> = (start_del_idx..self.metadata.num_documents)
+            .map(|i| i as i64)
+            .collect();
+        crate::delete::delete_from_index(&docs_to_delete, &self.path)?;
+        // Reload after delete
+        *self = Index::load(&self.path)?;
+    }
+
+    // 3. Combine buffer + new embeddings
+    let combined: Vec<Array2<f32>> = buffer
+        .into_iter()
+        .chain(embeddings.iter().cloned())
+        .collect();
+
+    // 4. Expand centroids with combined embeddings
+    update_centroids(index_path, &combined, cluster_threshold, config)?;
+    self.codec = ResidualCodec::load_from_dir(index_path)?;
+
+    // 5. Clear buffer
+    clear_buffer(index_path)?;
+
+    // 6. Update index with ALL combined embeddings
+    update_index(&combined, &self.path, &self.codec, ...)?;
+}
+```
+
+#### Key Differences
+
+| Aspect | fast-plaid | lategrep (current) | lategrep (fixed) |
+|--------|------------|-------------------|------------------|
+| Delete buffered docs | ✅ | ❌ | ✅ |
+| Combine buffer+new | ✅ | ❌ (only new) | ✅ |
+| Track buffer doc count | ✅ | ❌ | ✅ |
+
+#### Benchmark Results (SciFact, batch_size=800)
+
+| Metric | Lategrep | Fast-plaid | Diff |
+|--------|----------|------------|------|
+| Index+Update time | 11.76s | 19.38s | **1.65x faster** |
+| MAP | 0.7077 | 0.7114 | -0.5% |
+| NDCG@10 | 0.7440 | 0.7464 | -0.3% |
+| Recall@100 | 0.9593 | 0.9560 | +0.3% |
+| Result overlap @100 | 87.6% | - | - |
+
+**All assertions passed**: Results are similar between implementations.
+
 ---
 
 ### Phase 5: Search Pipeline
@@ -363,9 +589,11 @@ fast-plaid/
 | `Index::search_batch()` | ✅ | ✅ | Multiple queries |
 | `Index::update()` | ✅ | ✅ | With buffer + centroid expansion |
 | `Index::update_simple()` | ❌ | ✅ | lategrep-only: direct update |
+| `Index::delete()` | ✅ | ✅ | Remove documents, rebuild IVF |
+| `delete_from_index()` | ✅ | ✅ | Low-level delete function |
 | `LoadedIndex::load()` | ✅ | ✅ | Optimized for search |
 
-**Files**: `src/lib.rs` (exports), `src/index.rs`
+**Files**: `src/lib.rs` (exports), `src/index.rs`, `src/delete.rs`
 
 #### 8.2 Error Handling
 | Error Type | fast-plaid | lategrep | Notes |
@@ -379,7 +607,8 @@ fast-plaid/
 | `Codec` | ✅ | ✅ | `src/error.rs:37` |
 | `Config` | ✅ | ✅ | `src/error.rs:41` |
 | `Update` | ✅ | ✅ | `src/error.rs:45` |
-| `NpyRead` / `NpyWrite` | ✅ | ✅ | `src/error.rs:49-55` |
+| `Delete` | ✅ | ✅ | `src/error.rs:49` |
+| `NpyRead` / `NpyWrite` | ✅ | ✅ | `src/error.rs:52-58` |
 
 **Files**: `src/error.rs`
 
@@ -396,8 +625,10 @@ fast-plaid/
 | **3. Memory-Mapped Loading** | ⚠️ PARTIAL | Basic mmap works; merged files optional |
 | **4. Update Mechanism** | ✅ COMPLETE | Full fast-plaid behavior |
 | **5. K-means Integration** | ✅ COMPLETE | fastkmeans-rs fully integrated |
+| **6. Delete Mechanism** | ✅ COMPLETE | `src/delete.rs`, `Index::delete()` |
+| **7. Filtering/Metadata** | ✅ COMPLETE | SQLite-based filtering, `src/filtering.rs` |
 
-### Overall Completion: **~95%**
+### Overall Completion: **~98%**
 
 **Fully Implemented:**
 - ResidualCodec with all optimizations
@@ -406,10 +637,13 @@ fast-plaid/
 - Search pipeline (all 4 stages)
 - Index creation (chunking, IVF, codecs)
 - Update mechanism with centroid expansion
+- Delete mechanism with IVF rebuild
 - K-means integration
 - Full NPY/JSON file I/O
 - Error handling
 - Public API
+- SQLite metadata filtering
+- Subset filtering in search
 
 **Optional/Partial:**
 - Memory-mapped merged files (nice-to-have optimization)
@@ -440,6 +674,8 @@ fastkmeans-rs = "0.1.3"
 ndarray-npy = "0.9" (optional)
 memmap2 = "0.9"
 rayon = "1.10"
+rusqlite = "0.33" (optional, for filtering)
+regex = "1.11" (optional, for filtering)
 ```
 
 ### fast-plaid (GPU-capable, Python+Rust)
@@ -464,9 +700,14 @@ src/
 ├── index.rs                 # Index struct, creation, loading ✅
 ├── search.rs                # Search pipeline ✅
 ├── update.rs                # Update and centroid expansion ✅
+├── delete.rs                # Document deletion ✅
+├── filtering.rs             # SQLite metadata filtering ✅
 ├── mmap.rs                  # Memory-mapped file handling ✅
 ├── kmeans.rs                # K-means integration ✅
 └── utils.rs                 # Utility functions ✅
+
+tests/
+└── filtering_integration.rs # Integration tests for filtering ✅
 ```
 
 ---
@@ -483,3 +724,172 @@ src/
 - File formats are identical for index interchange ✅
 - Search results match within floating-point tolerance ✅
 - Consider adding f16 support later for full format compatibility
+
+---
+
+## Phase 9: Filtering Feature Implementation
+
+**Status**: ✅ COMPLETE
+
+### Overview
+
+Implement fast-plaid compatible filtering features:
+1. **Subset filtering in search** - Already implemented in `search_one()`
+2. **SQLite metadata filtering** - New `src/filtering.rs` module matching fast-plaid's `filtering.py`
+3. **Metadata integration** - Update `Index::update()` and `Index::delete()` to handle metadata
+
+### 9.1 Subset Filtering in Search
+
+**Status**: ✅ COMPLETE (already implemented)
+
+| Feature | fast-plaid | lategrep | Notes |
+|---------|------------|----------|-------|
+| `subset` parameter in `search()` | ✅ | ✅ | `src/search.rs:99` |
+| Centroid filtering for subset | ✅ | ✅ | Only probe centroids containing subset docs |
+| Candidate filtering to subset | ✅ | ✅ | `src/search.rs:170-174` |
+| Per-query subsets in batch search | ✅ | ✅ | `search_many()` supports different subsets per query |
+
+**Files**: `src/search.rs`
+
+### 9.2 SQLite Metadata Module
+
+**Status**: ✅ COMPLETE
+
+#### API Design (matching fast-plaid `filtering.py`)
+
+```rust
+// src/filtering.rs
+
+/// Create a new SQLite metadata database, replacing any existing one.
+pub fn create(index_path: &str, metadata: &[Value]) -> Result<usize>;
+
+/// Append new metadata rows to the database, adding columns if needed.
+pub fn update(index_path: &str, metadata: &[Value]) -> Result<usize>;
+
+/// Delete rows by subset IDs and re-index the _subset_ column.
+pub fn delete(index_path: &str, subset: &[i64]) -> Result<usize>;
+
+/// Query the database and return matching _subset_ IDs.
+pub fn where_condition(index_path: &str, condition: &str, parameters: &[Value]) -> Result<Vec<i64>>;
+
+/// Get full metadata rows by condition or subset IDs.
+pub fn get(
+    index_path: &str,
+    condition: Option<&str>,
+    parameters: &[Value],
+    subset: Option<&[i64]>,
+) -> Result<Vec<Value>>;
+
+/// Check if metadata database exists.
+pub fn exists(index_path: &str) -> bool;
+
+/// Get count of documents in metadata database.
+pub fn count(index_path: &str) -> Result<usize>;
+```
+
+| Feature | fast-plaid | lategrep | Notes |
+|---------|------------|----------|-------|
+| `create()` | ✅ | ✅ | Creates `metadata.db` with `_subset_` primary key |
+| `update()` | ✅ | ✅ | Appends rows, adds columns dynamically |
+| `delete()` | ✅ | ✅ | Deletes rows, re-indexes `_subset_` to sequential |
+| `where_condition()` | ✅ | ✅ | Returns `_subset_` IDs matching SQL condition |
+| `get()` | ✅ | ✅ | Returns full metadata dicts by condition or subset |
+| SQL injection prevention | ✅ | ✅ | Validate column names, use parameterized queries |
+| Type inference | ✅ | ✅ | INTEGER, REAL, TEXT, BLOB |
+| Date/datetime support | ✅ | ✅ | Stored as TEXT (ISO format) |
+
+**Dependencies to add**:
+```toml
+rusqlite = { version = "0.33", optional = true }
+```
+
+**Feature flag**:
+```toml
+[features]
+filtering = ["rusqlite"]
+```
+
+#### Implementation Details
+
+1. **Database Schema**:
+   ```sql
+   CREATE TABLE METADATA (
+       "_subset_" INTEGER PRIMARY KEY,
+       -- Dynamic columns inferred from metadata
+   )
+   ```
+
+2. **Re-indexing on delete**:
+   - Uses `ROW_NUMBER() OVER (ORDER BY _subset_)` to reassign sequential IDs
+   - Matches fast-plaid behavior exactly
+
+3. **Column name validation**:
+   - Regex: `^[a-zA-Z_][a-zA-Z0-9_]*$`
+   - Prevents SQL injection in column names
+
+### 9.3 Integration with Index
+
+**Status**: ✅ COMPLETE
+
+| Feature | fast-plaid | lategrep | Notes |
+|---------|------------|----------|-------|
+| `metadata` param in `Index::create()` | ✅ | ✅ | Use `filtering::create()` after create |
+| `Index::update_with_metadata()` | ✅ | ✅ | Optional metadata for new docs |
+| Auto-delete metadata in `Index::delete()` | ✅ | ✅ | Calls `filtering::delete()` |
+| `Index::delete_with_options()` | ❌ | ✅ | Control metadata deletion |
+
+### 9.4 Testing Plan
+
+1. **Unit tests for filtering module**:
+   - `test_create_metadata_db` - Basic create with various types
+   - `test_update_metadata_db` - Adding new rows and columns
+   - `test_delete_metadata_reindex` - Delete and verify re-indexing
+   - `test_where_condition` - SQL condition queries
+   - `test_get_by_subset` - Retrieve by subset IDs
+   - `test_sql_injection_prevention` - Reject invalid column names
+
+2. **Integration tests**:
+   - Create index with metadata
+   - Update index with new metadata
+   - Delete documents and verify metadata deleted
+   - Search with subset filter from `where_condition()`
+
+### 9.5 Usage Example
+
+```rust
+use lategrep::{Index, IndexConfig, SearchParameters};
+use lategrep::filtering;
+use std::collections::HashMap;
+use serde_json::Value;
+
+// Create index with metadata
+let embeddings = load_embeddings();
+let metadata: Vec<HashMap<String, Value>> = vec![
+    [("name".into(), "Alice".into()), ("category".into(), "A".into())].into(),
+    [("name".into(), "Bob".into()), ("category".into(), "B".into())].into(),
+];
+
+let config = IndexConfig::default();
+let index = Index::create_with_kmeans(&embeddings, "my_index", &config)?;
+filtering::create("my_index", &metadata)?;
+
+// Query metadata to get subset
+let subset = filtering::where_condition(
+    "my_index",
+    "category = ?",
+    &["A".into()],
+)?;
+
+// Search with subset filter
+let params = SearchParameters::default();
+let result = index.search(&query, &params, Some(&subset))?;
+```
+
+### Key Differences from fast-plaid
+
+| Aspect | fast-plaid | lategrep |
+|--------|------------|----------|
+| Database library | Python sqlite3 | rusqlite |
+| Value type | Python Any | serde_json::Value |
+| Date handling | datetime/date objects | String (ISO format) |
+| Error handling | Python exceptions | Result<T, Error> |

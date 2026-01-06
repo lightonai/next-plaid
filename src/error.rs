@@ -48,6 +48,16 @@ pub enum Error {
     #[error("Delete failed: {0}")]
     Delete(String),
 
+    /// Error during filtering/metadata operation
+    #[cfg(feature = "filtering")]
+    #[error("Filtering error: {0}")]
+    Filtering(String),
+
+    /// SQLite database error
+    #[cfg(feature = "filtering")]
+    #[error("SQLite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+
     /// NPY read error
     #[cfg(feature = "npy")]
     #[error("NPY read error: {0}")]

@@ -739,6 +739,50 @@ impl Index {
         Ok(())
     }
 
+    /// Update the index with new documents and optional metadata.
+    ///
+    /// This method adds new documents and their metadata to an existing index.
+    /// Uses the same buffer mechanism as `update()`, but also manages the
+    /// metadata database.
+    ///
+    /// # Arguments
+    ///
+    /// * `embeddings` - New document embeddings to add
+    /// * `config` - Update configuration
+    /// * `metadata` - Optional metadata for new documents (must match embeddings length)
+    ///
+    /// # Returns
+    ///
+    /// The updated Index after reloading
+    #[cfg(all(feature = "npy", feature = "filtering"))]
+    pub fn update_with_metadata(
+        &mut self,
+        embeddings: &[Array2<f32>],
+        config: &crate::update::UpdateConfig,
+        metadata: Option<&[serde_json::Value]>,
+    ) -> Result<()> {
+        // Validate metadata length if provided
+        if let Some(meta) = metadata {
+            if meta.len() != embeddings.len() {
+                return Err(Error::Config(format!(
+                    "Metadata length ({}) must match embeddings length ({})",
+                    meta.len(),
+                    embeddings.len()
+                )));
+            }
+        }
+
+        // Perform the update
+        self.update(embeddings, config)?;
+
+        // Add metadata if provided
+        if let Some(meta) = metadata {
+            crate::filtering::update(&self.path, meta)?;
+        }
+
+        Ok(())
+    }
+
     /// Simple update without buffer mechanism.
     ///
     /// This directly adds documents to the index without centroid expansion
@@ -780,7 +824,31 @@ impl Index {
     /// ```
     #[cfg(feature = "npy")]
     pub fn delete(&mut self, doc_ids: &[i64]) -> Result<usize> {
+        self.delete_with_options(doc_ids, true)
+    }
+
+    /// Delete documents from the index with control over metadata deletion.
+    ///
+    /// This is useful when you want to delete documents without affecting the
+    /// metadata database (e.g., during buffer management in updates).
+    ///
+    /// # Arguments
+    ///
+    /// * `doc_ids` - Slice of document IDs to delete (0-indexed)
+    /// * `delete_metadata` - If true, also delete from metadata.db if it exists
+    ///
+    /// # Returns
+    ///
+    /// The number of documents actually deleted.
+    #[cfg(feature = "npy")]
+    pub fn delete_with_options(&mut self, doc_ids: &[i64], delete_metadata: bool) -> Result<usize> {
         let deleted = crate::delete::delete_from_index(doc_ids, &self.path)?;
+
+        // Delete from metadata database if it exists and requested
+        #[cfg(feature = "filtering")]
+        if delete_metadata && crate::filtering::exists(&self.path) {
+            crate::filtering::delete(&self.path, doc_ids)?;
+        }
 
         // Reload the index
         *self = Index::load(&self.path)?;
