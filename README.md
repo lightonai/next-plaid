@@ -23,9 +23,9 @@ Lategrep achieves **faster indexing than FastPlaid** on CPU with BLAS accelerati
 
 | Operation | Lategrep | FastPlaid | Speedup |
 |-----------|----------|-----------|---------|
-| Index + Update (batch=800) | **11.77s** | 19.41s | **1.65x faster** |
-| Search (300 queries) | **16.81s** | 86.49s | **5.1x faster** |
-| **Total** | **28.58s** | 105.90s | **3.7x faster** |
+| Index + Update (batch=800) | **12.19s** | 19.46s | **1.60x faster** |
+| Search (300 queries) | **16.38s** | 85.85s | **5.2x faster** |
+| **Total** | **28.57s** | 105.31s | **3.7x faster** |
 
 ### Retrieval Quality
 
@@ -44,9 +44,9 @@ Lategrep uses significantly less memory than FastPlaid:
 
 | Operation | Lategrep | FastPlaid | Savings |
 |-----------|----------|-----------|---------|
-| Index + Update | **491 MB** | 3,493 MB | **86% less** |
-| Search | **412 MB** | 3,552 MB | **88% less** |
-| **Peak** | **491 MB** | 3,552 MB | **86% less** |
+| Index + Update | **473 MB** | 3,317 MB | **86% less** |
+| Search | **480 MB** | 3,361 MB | **86% less** |
+| **Peak** | **480 MB** | 3,361 MB | **86% less** |
 
 Run the benchmark yourself:
 
