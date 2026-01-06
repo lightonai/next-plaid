@@ -10,8 +10,38 @@ Lategrep is a pure Rust, CPU-only implementation of [FastPlaid](https://github.c
 
 - **Pure Rust**: No Python or GPU dependencies required
 - **CPU Optimized**: Uses ndarray with rayon for parallel processing
+- **BLAS Acceleration**: Optional Accelerate (macOS) or OpenBLAS backends for 3.6x faster indexing
 - **Compatible**: Produces indices that can be compared against FastPlaid
 - **K-means Integration**: Uses [fastkmeans-rs](https://github.com/lightonai/fastkmeans-rs) for centroid computation
+
+## Performance
+
+Lategrep achieves **faster indexing than FastPlaid** on CPU with BLAS acceleration enabled.
+
+### SciFact Benchmark (5,183 documents, 1.2M tokens)
+
+| Operation | Lategrep | FastPlaid | Speedup |
+|-----------|----------|-----------|---------|
+| Index + Update (batch=800) | **11.77s** | 19.41s | **1.65x faster** |
+| Search (300 queries) | **16.81s** | 86.49s | **5.1x faster** |
+| **Total** | **28.58s** | 105.90s | **3.7x faster** |
+
+### Retrieval Quality
+
+Both implementations achieve equivalent retrieval quality:
+
+| Metric | Lategrep | FastPlaid | Difference |
+|--------|----------|-----------|------------|
+| MAP | 0.7077 | 0.7114 | -0.5% |
+| NDCG@10 | 0.7439 | 0.7464 | -0.3% |
+| Recall@100 | 95.93% | 95.60% | +0.3% |
+| Result Overlap @100 | 87.6% | - | - |
+
+Run the benchmark yourself:
+
+```bash
+make benchmark-scifact-update
+```
 
 ## Installation
 
@@ -28,6 +58,24 @@ For NPY file support (required for index persistence):
 [dependencies]
 lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy"] }
 ```
+
+### BLAS Acceleration (Recommended)
+
+For optimal performance, enable BLAS acceleration:
+
+**macOS (Apple Accelerate framework):**
+```toml
+[dependencies]
+lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy", "accelerate"] }
+```
+
+**Linux (OpenBLAS):**
+```toml
+[dependencies]
+lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy", "openblas"] }
+```
+
+Note: OpenBLAS requires the system library to be installed (`apt install libopenblas-dev` on Ubuntu).
 
 ## Usage
 
@@ -178,18 +226,13 @@ Lategrep is designed to produce results compatible with FastPlaid. The compariso
 
 #### Latest SciFact Results
 
-| Metric | Lategrep | FastPlaid | Difference |
-|--------|----------|-----------|------------|
-| MAP | 0.7074 | 0.7065 | +0.0009 |
-| NDCG@10 | 0.7437 | 0.7431 | +0.0006 |
-| Recall@100 | 0.9593 | 0.9593 | 0.0000 |
-| Result Overlap @10 | 92.93% | - | - |
-| Result Overlap @100 | 93.55% | - | - |
+See [Performance](#performance) section above for the latest benchmark results.
 
 Run the comparison yourself:
 
 ```bash
-make compare-scifact-cached
+make benchmark-scifact-update   # Full benchmark with updates (batch=800)
+make compare-scifact-cached     # Quick retrieval quality comparison
 ```
 
 ## Algorithm
