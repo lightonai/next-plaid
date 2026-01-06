@@ -44,6 +44,10 @@ pub enum Error {
     #[error("Update failed: {0}")]
     Update(String),
 
+    /// Error during delete operation
+    #[error("Delete failed: {0}")]
+    Delete(String),
+
     /// NPY read error
     #[cfg(feature = "npy")]
     #[error("NPY read error: {0}")]

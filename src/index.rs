@@ -736,6 +736,37 @@ impl Index {
         *self = Index::load(&self.path)?;
         Ok(())
     }
+
+    /// Delete documents from the index.
+    ///
+    /// This removes the specified documents by rewriting the index chunks
+    /// and rebuilding the IVF. The index is reloaded after deletion.
+    ///
+    /// # Arguments
+    ///
+    /// * `doc_ids` - Slice of document IDs to delete (0-indexed)
+    ///
+    /// # Returns
+    ///
+    /// The number of documents actually deleted.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use lategrep::Index;
+    ///
+    /// let mut index = Index::load("/path/to/index")?;
+    /// let deleted = index.delete(&[2, 5, 7])?;
+    /// println!("Deleted {} documents", deleted);
+    /// ```
+    #[cfg(feature = "npy")]
+    pub fn delete(&mut self, doc_ids: &[i64]) -> Result<usize> {
+        let deleted = crate::delete::delete_from_index(doc_ids, &self.path)?;
+
+        // Reload the index
+        *self = Index::load(&self.path)?;
+        Ok(deleted)
+    }
 }
 
 /// A loaded index optimized for search with StridedTensor storage.

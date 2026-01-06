@@ -11,6 +11,7 @@ extern crate blas_src;
 extern crate openblas_src;
 
 pub mod codec;
+pub mod delete;
 pub mod error;
 pub mod index;
 pub mod kmeans;
@@ -21,6 +22,8 @@ pub mod update;
 pub mod utils;
 
 pub use codec::ResidualCodec;
+#[cfg(feature = "npy")]
+pub use delete::delete_from_index;
 pub use error::{Error, Result};
 pub use index::{Index, IndexConfig, LoadedIndex, Metadata};
 pub use kmeans::{
