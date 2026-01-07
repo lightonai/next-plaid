@@ -32,7 +32,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install OpenBLAS
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Clippy (main crate)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Clippy (API crate)
+        run: cargo clippy --package lategrep-api --all-targets -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
@@ -57,6 +60,9 @@ jobs:
       - name: Run tests (macOS)
         if: matrix.os == 'macos-latest'
         run: cargo test --features "npy,filtering,accelerate"
+
+      - name: Run API tests
+        run: cargo test --package lategrep-api
 
   doc:
     name: Documentation
