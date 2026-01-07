@@ -10,17 +10,17 @@ license = "Apache-2.0"
 lategrep = { path = "..", features = ["npy", "filtering"] }
 
 # Web framework
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1.0", features = ["full"] }
-tower = { version = "0.4", features = ["util"] }
-tower-http = { version = "0.5", features = ["cors", "trace", "timeout"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "timeout"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Arrays
-ndarray = { version = "0.16", features = ["serde"] }
+ndarray = { version = "0.16", features = ["serde"] }  # pinned: must match main crate
 
 # Error handling
 thiserror = "2.0"
@@ -37,13 +37,13 @@ base64 = "0.22"
 
 # OpenAPI / Swagger
 utoipa = { version = "5", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "8", features = ["axum"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["json"] }
-ndarray-rand = "0.15"
+reqwest = { version = "0.12", features = ["json"] }  # 0.13 requires different TLS setup
+ndarray-rand = "0.15"  # pinned: must match main crate
 tempfile = "3.15"
-rand = "0.8"
+rand = "0.8"  # pinned: must match main crate
 
 [[bin]]
 name = "lategrep-api"

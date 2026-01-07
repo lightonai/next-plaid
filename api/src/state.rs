@@ -168,6 +168,7 @@ impl AppState {
     }
 
     /// Check if an index is currently loaded.
+    #[allow(dead_code)]
     pub fn is_loaded(&self, name: &str) -> bool {
         self.indices.read().contains_key(name)
     }
@@ -191,6 +192,7 @@ impl AppState {
     }
 
     /// List all loaded indices.
+    #[allow(dead_code)]
     pub fn list_loaded(&self) -> Vec<String> {
         self.indices.read().keys().cloned().collect()
     }

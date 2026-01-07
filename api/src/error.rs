@@ -28,6 +28,7 @@ pub enum ApiError {
 
     /// Document not found
     #[error("Document not found: {0}")]
+    #[allow(dead_code)]
     DocumentNotFound(String),
 
     /// Embedding dimension mismatch
@@ -40,6 +41,7 @@ pub enum ApiError {
 
     /// Search error
     #[error("Search failed: {0}")]
+    #[allow(dead_code)]
     SearchError(String),
 
     /// Index creation error
@@ -48,6 +50,7 @@ pub enum ApiError {
 
     /// Update error
     #[error("Update failed: {0}")]
+    #[allow(dead_code)]
     UpdateError(String),
 
     /// Internal server error

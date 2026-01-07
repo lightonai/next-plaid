@@ -86,31 +86,31 @@ fn build_test_router(state: Arc<AppState>) -> Router {
             get(handlers::list_indices).post(handlers::create_index),
         )
         .route(
-            "/:name",
+            "/{name}",
             get(handlers::get_index_info).delete(handlers::delete_index),
         );
 
     // Document routes
     let document_routes = Router::new().route(
-        "/:name/documents",
+        "/{name}/documents",
         post(handlers::add_documents).delete(handlers::delete_documents),
     );
 
     // Search routes
     let search_routes = Router::new()
-        .route("/:name/search", post(handlers::search))
-        .route("/:name/search/filtered", post(handlers::search_filtered));
+        .route("/{name}/search", post(handlers::search))
+        .route("/{name}/search/filtered", post(handlers::search_filtered));
 
     // Metadata routes
     let metadata_routes = Router::new()
         .route(
-            "/:name/metadata",
+            "/{name}/metadata",
             get(handlers::get_all_metadata).post(handlers::add_metadata),
         )
-        .route("/:name/metadata/count", get(handlers::get_metadata_count))
-        .route("/:name/metadata/check", post(handlers::check_metadata))
-        .route("/:name/metadata/query", post(handlers::query_metadata))
-        .route("/:name/metadata/get", post(handlers::get_metadata));
+        .route("/{name}/metadata/count", get(handlers::get_metadata_count))
+        .route("/{name}/metadata/check", post(handlers::check_metadata))
+        .route("/{name}/metadata/query", post(handlers::query_metadata))
+        .route("/{name}/metadata/get", post(handlers::get_metadata));
 
     // Combine all routes under /indices
     let indices_router = Router::new()
