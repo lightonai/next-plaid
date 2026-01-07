@@ -3,7 +3,7 @@
 Benchmark comparing fast-plaid and lategrep on SciFact with incremental updates.
 
 This script:
-1. Loads SciFact embeddings (cached from previous runs)
+1. Loads SciFact embeddings (computes and caches if not available)
 2. Creates initial index with first batch of documents
 3. Updates the index with remaining documents in batches of 800
 4. Runs search queries and evaluates retrieval quality
@@ -226,6 +226,111 @@ def load_beir_dataset(dataset_name: str, split: str = "test"):
     documents_ids = {index: document["id"] for index, document in enumerate(documents_list)}
 
     return documents_list, queries, qrels_formatted, documents_ids
+
+
+def compute_embeddings(
+    documents: list[dict],
+    queries: dict,
+    output_dir: Path,
+    model_name: str = "answerdotai/answerai-colbert-small-v1",
+    query_length: int = 48,
+    document_length: int = 300,
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Compute ColBERT embeddings for documents and queries using pylate.
+
+    Args:
+        documents: List of document dicts with 'text' field
+        queries: Dict of query_id -> query_text
+        output_dir: Directory to save cached embeddings
+        model_name: HuggingFace model name for ColBERT
+        query_length: Max query token length
+        document_length: Max document token length
+
+    Returns:
+        Tuple of (doc_embeddings, query_embeddings) as lists of numpy arrays
+    """
+    from pylate import models
+
+    print(f"  Loading ColBERT model: {model_name}")
+    model = models.ColBERT(
+        model_name_or_path=model_name,
+        query_length=query_length,
+        document_length=document_length,
+    )
+
+    # Encode documents
+    print(f"  Encoding {len(documents)} documents...")
+    doc_texts = [doc["text"] for doc in documents]
+    doc_embeddings_raw = model.encode(
+        doc_texts,
+        is_query=False,
+        show_progress_bar=True,
+    )
+    doc_embeddings = [np.array(emb, dtype=np.float32) for emb in doc_embeddings_raw]
+
+    # Encode queries
+    print(f"  Encoding {len(queries)} queries...")
+    query_texts = list(queries.values())
+    query_embeddings_raw = model.encode(
+        query_texts,
+        is_query=True,
+        show_progress_bar=True,
+    )
+    query_embeddings = [np.array(emb, dtype=np.float32) for emb in query_embeddings_raw]
+
+    # Save to cache
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"  Saving embeddings to {output_dir}")
+    np.savez(
+        output_dir / "doc_embeddings.npz",
+        embeddings=np.array(doc_embeddings, dtype=object),
+    )
+    np.savez(
+        output_dir / "query_embeddings.npz",
+        embeddings=np.array(query_embeddings, dtype=object),
+    )
+
+    return doc_embeddings, query_embeddings
+
+
+def load_or_compute_embeddings(
+    documents: list[dict],
+    queries: dict,
+    embeddings_dir: Path,
+    dataset_config: dict,
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Load cached embeddings or compute them if not available.
+
+    Args:
+        documents: List of document dicts with 'text' field
+        queries: Dict of query_id -> query_text
+        embeddings_dir: Directory for cached embeddings
+        dataset_config: Dataset-specific configuration (query_length, etc.)
+
+    Returns:
+        Tuple of (doc_embeddings, query_embeddings) as lists of numpy arrays
+    """
+    doc_embeddings_file = embeddings_dir / "doc_embeddings.npz"
+    query_embeddings_file = embeddings_dir / "query_embeddings.npz"
+
+    if doc_embeddings_file.exists() and query_embeddings_file.exists():
+        print("  Loading cached embeddings...")
+        doc_data = np.load(doc_embeddings_file, allow_pickle=True)
+        doc_embeddings = [np.array(e, dtype=np.float32) for e in doc_data["embeddings"]]
+        query_data = np.load(query_embeddings_file, allow_pickle=True)
+        query_embeddings = [np.array(e, dtype=np.float32) for e in query_data["embeddings"]]
+        return doc_embeddings, query_embeddings
+
+    print("  Cached embeddings not found, computing from scratch...")
+    return compute_embeddings(
+        documents=documents,
+        queries=queries,
+        output_dir=embeddings_dir,
+        model_name=MODEL_NAME,
+        query_length=dataset_config.get("query_length", 48),
+        document_length=dataset_config.get("document_length", 300),
+    )
 
 
 def compute_centroids_kmeans(
@@ -674,20 +779,14 @@ def main():
     print(f"  Documents: {len(documents)}")
     print(f"  Queries: {len(queries)}")
 
-    # Load cached embeddings
-    doc_embeddings_file = embeddings_dir / "doc_embeddings.npz"
-    query_embeddings_file = embeddings_dir / "query_embeddings.npz"
-
-    if not doc_embeddings_file.exists() or not query_embeddings_file.exists():
-        print(f"\nERROR: Cached embeddings not found at {embeddings_dir}")
-        print("Run 'python evaluate_scifact.py' first to generate embeddings.")
-        return 1
-
-    print("\n[2/5] Loading cached embeddings...")
-    doc_data = np.load(doc_embeddings_file, allow_pickle=True)
-    doc_embeddings = [np.array(e, dtype=np.float32) for e in doc_data["embeddings"]]
-    query_data = np.load(query_embeddings_file, allow_pickle=True)
-    query_embeddings = [np.array(e, dtype=np.float32) for e in query_data["embeddings"]]
+    # Load or compute embeddings
+    print("\n[2/5] Loading or computing embeddings...")
+    doc_embeddings, query_embeddings = load_or_compute_embeddings(
+        documents=documents,
+        queries=queries,
+        embeddings_dir=embeddings_dir,
+        dataset_config=ds_config,
+    )
 
     avg_doc_tokens = np.mean([emb.shape[0] for emb in doc_embeddings])
     total_doc_tokens = sum(emb.shape[0] for emb in doc_embeddings)

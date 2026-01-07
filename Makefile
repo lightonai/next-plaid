@@ -92,39 +92,14 @@ compare-reference:
 	cargo build --release --features npy --example benchmark_cli
 	cd docs && uv sync --extra fast-plaid && uv run python compare_reference.py --skip-cross
 
-# Evaluate on SciFact dataset
-evaluate-scifact:
-	cargo build --release --features npy --example benchmark_cli
-	cd docs && uv sync --extra eval && uv run python evaluate_scifact.py
-
-# Evaluate on SciFact with cached embeddings (faster)
-evaluate-scifact-cached:
-	cargo build --release --features npy --example benchmark_cli
-	cd docs && uv sync --extra eval && uv run python evaluate_scifact.py --skip-encoding
-
-# Compare lategrep and fast-plaid on SciFact dataset
-compare-scifact:
-	cargo build --release --features npy --example benchmark_cli
-	cd docs && uv sync --extra eval --extra fast-plaid && uv run python compare_scifact.py
-
-# Compare with cached embeddings (faster)
-compare-scifact-cached:
-	cargo build --release --features npy --example benchmark_cli
-	cd docs && uv sync --extra eval --extra fast-plaid && uv run python compare_scifact.py --skip-encoding
-
 # Benchmark SciFact with updates (batch size 800) - compares fast-plaid and lategrep
 benchmark-scifact-update:
 	cargo build --release --features npy --example benchmark_cli
 	cd docs && uv sync --extra eval --extra fast-plaid && uv run python benchmark_scifact_update.py --batch-size 800
 
-# Benchmark SciFact via REST API (uses cached embeddings, with BLAS acceleration)
-# Uses 'accelerate' on macOS, 'openblas' on Linux
+# Benchmark SciFact via REST API (uses cached embeddings, with OpenBLAS)
 benchmark-scifact-api:
-ifeq ($(shell uname),Darwin)
-	cargo build --release -p lategrep-api --features accelerate
-else
 	cargo build --release -p lategrep-api --features openblas
-endif
 	cd docs && uv sync --extra eval && uv run python benchmark_scifact_api.py --batch-size 100
 
 launch-api-debug:
