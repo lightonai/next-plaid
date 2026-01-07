@@ -879,6 +879,71 @@ The API has a 5-minute timeout for long operations like index creation.
 
 CORS is enabled by default to allow requests from any origin.
 
+## Performance
+
+### SciFact Benchmark (5,183 documents, 1.2M tokens)
+
+Benchmark results using the REST API with batch uploads of 100 documents per request:
+
+| Metric | Value |
+|--------|-------|
+| **Index time** | 199.5s |
+| **Search time** (300 queries) | 19.7s |
+| **Total time** | 219.1s |
+| **API calls** | 52 |
+
+#### Memory Usage
+
+| Phase | Peak Memory |
+|-------|-------------|
+| Indexing | 1,940 MB |
+| Search | 817 MB |
+
+#### Retrieval Quality
+
+| Metric | Score |
+|--------|-------|
+| MAP | 0.7046 |
+| NDCG@10 | 0.7392 |
+| NDCG@100 | 0.7633 |
+| Recall@10 | 84.9% |
+| Recall@100 | 95.9% |
+
+#### Throughput
+
+| Metric | Value |
+|--------|-------|
+| Indexing | 26.0 docs/s |
+| Search | 15.2 queries/s |
+
+### Indexing Performance Notes
+
+Lategrep uses a three-phase update strategy that explains the varying indexing speeds:
+
+1. **Start-from-scratch mode** (< 999 documents by default):
+   - The index is rebuilt entirely from scratch with fresh K-means on every update
+   - This ensures optimal centroid placement for small indices
+   - Controlled by `start_from_scratch` config (default: 999)
+
+2. **Buffer mode** (< 100 new documents):
+   - New documents are indexed quickly without centroid expansion
+   - Embeddings are saved to a buffer for later processing
+   - Controlled by `buffer_size` config (default: 100)
+
+3. **Centroid expansion mode** (>= 100 buffered documents):
+   - When the buffer fills up, centroids are expanded with outliers
+   - Buffered documents are re-indexed with the improved centroids
+   - Ensures retrieval quality stays high as the index grows
+
+In the benchmark above, the first ~10 batches (1,000 documents) are slower because the index is rebuilt from scratch on each update until crossing the 999-document threshold. After that, updates switch to buffer/expansion mode and each batch of 100 documents completes in ~2.5-3 seconds.
+
+Run the benchmark yourself:
+
+```bash
+cd docs
+python benchmark_scifact_api.py --batch-size 100
+```
+
 ## License
 
 Apache-2.0
