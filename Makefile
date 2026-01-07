@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update ci-api test-api-integration
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api ci-api test-api-integration
 
 all: fmt lint test
 
@@ -116,6 +116,16 @@ compare-scifact-cached:
 benchmark-scifact-update:
 	cargo build --release --features npy --example benchmark_cli
 	cd docs && uv sync --extra eval --extra fast-plaid && uv run python benchmark_scifact_update.py --batch-size 800
+
+# Benchmark SciFact via REST API (uses cached embeddings, with BLAS acceleration)
+# Uses 'accelerate' on macOS, 'openblas' on Linux
+benchmark-scifact-api:
+ifeq ($(shell uname),Darwin)
+	cargo build --release -p lategrep-api --features accelerate
+else
+	cargo build --release -p lategrep-api --features openblas
+endif
+	cd docs && uv sync --extra eval && uv run python benchmark_scifact_api.py --batch-size 100
 
 launch-api-debug:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true

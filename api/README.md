@@ -22,9 +22,28 @@ The API includes interactive Swagger UI documentation:
 
 ### Build
 
+For optimal performance, build with BLAS acceleration enabled:
+
+**macOS (Apple Accelerate framework):**
+
 ```bash
-cd api
-cargo build --release
+cargo build --release -p lategrep-api --features accelerate
+```
+
+**Linux (OpenBLAS):**
+
+```bash
+# Install OpenBLAS first
+sudo apt install libopenblas-dev  # Debian/Ubuntu
+sudo dnf install openblas-devel   # Fedora/RHEL
+
+cargo build --release -p lategrep-api --features openblas
+```
+
+**Without BLAS acceleration:**
+
+```bash
+cargo build --release -p lategrep-api
 ```
 
 ### Run
@@ -75,6 +94,7 @@ docker compose down
 
 The Docker image:
 
+- **Includes OpenBLAS** for optimized matrix operations
 - Exposes port 8080
 - Stores indices in `/data/indices` (mount a volume to persist)
 - Runs as non-root user
@@ -557,6 +577,7 @@ for i in range(10):
 ### Step 3: Create the Index
 
 The index creation is a two-phase process:
+
 1. **Declare** the index with its configuration
 2. **Update** the index to add documents
 
@@ -883,49 +904,51 @@ CORS is enabled by default to allow requests from any origin.
 
 ### SciFact Benchmark (5,183 documents, 1.2M tokens)
 
-Benchmark results using the REST API with batch uploads of 100 documents per request:
+Benchmark results using the REST API with batch uploads of 100 documents per request (with BLAS acceleration):
 
-| Metric | Value |
-|--------|-------|
-| **Index time** | 199.5s |
-| **Search time** (300 queries) | 19.7s |
-| **Total time** | 219.1s |
-| **API calls** | 52 |
+| Metric                        | Value  |
+| ----------------------------- | ------ |
+| **Index time**                | 198.3s |
+| **Search time** (300 queries) | 19.6s  |
+| **Total time**                | 217.9s |
+| **API calls**                 | 52     |
 
 #### Memory Usage
 
-| Phase | Peak Memory |
-|-------|-------------|
-| Indexing | 1,940 MB |
-| Search | 817 MB |
+| Phase    | Peak Memory |
+| -------- | ----------- |
+| Indexing | 2,454 MB    |
+| Search   | 1,828 MB    |
 
 #### Retrieval Quality
 
-| Metric | Score |
-|--------|-------|
-| MAP | 0.7046 |
-| NDCG@10 | 0.7392 |
-| NDCG@100 | 0.7633 |
-| Recall@10 | 84.9% |
-| Recall@100 | 95.9% |
+| Metric     | Score  |
+| ---------- | ------ |
+| MAP        | 0.7046 |
+| NDCG@10    | 0.7392 |
+| NDCG@100   | 0.7633 |
+| Recall@10  | 84.9%  |
+| Recall@100 | 95.9%  |
 
 #### Throughput
 
-| Metric | Value |
-|--------|-------|
-| Indexing | 26.0 docs/s |
-| Search | 15.2 queries/s |
+| Metric   | Value          |
+| -------- | -------------- |
+| Indexing | 26.1 docs/s    |
+| Search   | 15.3 queries/s |
 
 ### Indexing Performance Notes
 
 Lategrep uses a three-phase update strategy that explains the varying indexing speeds:
 
 1. **Start-from-scratch mode** (< 999 documents by default):
+
    - The index is rebuilt entirely from scratch with fresh K-means on every update
    - This ensures optimal centroid placement for small indices
    - Controlled by `start_from_scratch` config (default: 999)
 
 2. **Buffer mode** (< 100 new documents):
+
    - New documents are indexed quickly without centroid expansion
    - Embeddings are saved to a buffer for later processing
    - Controlled by `buffer_size` config (default: 100)
@@ -940,8 +963,7 @@ In the benchmark above, the first ~10 batches (1,000 documents) are slower becau
 Run the benchmark yourself:
 
 ```bash
-cd docs
-python benchmark_scifact_api.py --batch-size 100
+make benchmark-scifact-api
 ```
 
 ## License
