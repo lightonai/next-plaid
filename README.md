@@ -414,5 +414,3 @@ If you use this work, please cite:
   year = {2025},
 }
 ```
-
-This is a test.

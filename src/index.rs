@@ -729,6 +729,24 @@ impl Index {
         embeddings: &[Array2<f32>],
         config: &crate::update::UpdateConfig,
     ) -> Result<()> {
+        use crate::lock::IndexLockGuard;
+
+        let index_path = std::path::Path::new(&self.path);
+
+        // Acquire exclusive lock to prevent concurrent modifications
+        let _lock = IndexLockGuard::acquire(index_path)?;
+
+        self.update_unlocked(embeddings, config)
+    }
+
+    /// Internal update implementation without locking.
+    /// Callers must ensure they hold the index lock.
+    #[cfg(feature = "npy")]
+    fn update_unlocked(
+        &mut self,
+        embeddings: &[Array2<f32>],
+        config: &crate::update::UpdateConfig,
+    ) -> Result<()> {
         use crate::update::{
             clear_buffer, clear_embeddings_npy, embeddings_npy_exists, load_buffer,
             load_buffer_info, load_cluster_threshold, load_embeddings_npy, save_buffer,
@@ -796,7 +814,7 @@ impl Index {
                 let docs_to_delete: Vec<i64> = (start_del_idx..self.metadata.num_documents)
                     .map(|i| i as i64)
                     .collect();
-                crate::delete::delete_from_index(&docs_to_delete, &path_str)?;
+                crate::delete::delete_from_index_unlocked(&docs_to_delete, &path_str)?;
                 // Reload after delete to get updated metadata
                 *self = Index::load(&path_str)?;
             }
@@ -933,13 +951,25 @@ impl Index {
         index_config: &IndexConfig,
         update_config: &crate::update::UpdateConfig,
     ) -> Result<Self> {
+        use crate::lock::IndexLockGuard;
+
         let index_dir = std::path::Path::new(index_path);
+
+        // Create directory if it doesn't exist (needed for lock file)
+        if !index_dir.exists() {
+            fs::create_dir_all(index_dir)?;
+        }
+
+        // Acquire exclusive lock to prevent concurrent create/update races
+        let _lock = IndexLockGuard::acquire(index_dir)?;
+
         let metadata_path = index_dir.join("metadata.json");
 
         if metadata_path.exists() {
-            // Index exists, load and update
+            // Index exists, load and update using unlocked version
+            // (we already hold the lock)
             let mut index = Self::load(index_path)?;
-            index.update(embeddings, update_config)?;
+            index.update_unlocked(embeddings, update_config)?;
             Ok(index)
         } else {
             // Index doesn't exist, create new
@@ -957,6 +987,13 @@ impl Index {
         embeddings: &[Array2<f32>],
         batch_size: Option<usize>,
     ) -> Result<()> {
+        use crate::lock::IndexLockGuard;
+
+        let index_path = std::path::Path::new(&self.path);
+
+        // Acquire exclusive lock to prevent concurrent modifications
+        let _lock = IndexLockGuard::acquire(index_path)?;
+
         crate::update::update_index(embeddings, &self.path, &self.codec, batch_size, true)?;
 
         // Reload the index
@@ -1010,7 +1047,14 @@ impl Index {
         doc_ids: &[i64],
         #[allow(unused_variables)] delete_metadata: bool,
     ) -> Result<usize> {
-        let deleted = crate::delete::delete_from_index(doc_ids, &self.path)?;
+        use crate::lock::IndexLockGuard;
+
+        let index_path = std::path::Path::new(&self.path);
+
+        // Acquire exclusive lock to prevent concurrent modifications
+        let _lock = IndexLockGuard::acquire(index_path)?;
+
+        let deleted = crate::delete::delete_from_index_unlocked(doc_ids, &self.path)?;
 
         // Delete from metadata database if it exists and requested
         #[cfg(feature = "filtering")]

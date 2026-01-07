@@ -10,9 +10,9 @@ build:
 release:
 	cargo build --release
 
-# Run all tests
+# Run all tests (with npy and filtering features)
 test:
-	cargo test
+	cargo test --features "npy,filtering"
 
 # Run tests in release mode
 test-release:
