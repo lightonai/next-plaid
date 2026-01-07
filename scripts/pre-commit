@@ -19,6 +19,10 @@ cargo clippy --all-targets --all-features -- -D warnings
 echo "Running Rust tests..."
 cargo test
 
+# Run API tests
+echo "Running API tests..."
+cargo test --package lategrep-api
+
 # Build documentation
 echo "Building documentation..."
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
