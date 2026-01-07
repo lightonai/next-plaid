@@ -27,6 +27,7 @@ ENV/
 env/
 .uv/
 *.json
+api/indices/
 
 # Test artifacts
 *.npy

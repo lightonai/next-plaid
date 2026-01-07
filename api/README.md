@@ -73,6 +73,7 @@ docker compose down
 ```
 
 The Docker image:
+
 - Exposes port 8080
 - Stores indices in `/data/indices` (mount a volume to persist)
 - Runs as non-root user
@@ -88,6 +89,7 @@ GET /
 ```
 
 Response:
+
 ```json
 {
   "status": "healthy",
@@ -105,6 +107,7 @@ GET /indices
 ```
 
 Response:
+
 ```json
 ["my_index", "another_index"]
 ```
@@ -116,6 +119,7 @@ POST /indices
 ```
 
 Request:
+
 ```json
 {
   "name": "my_index",
@@ -135,6 +139,7 @@ Request:
 ```
 
 Response:
+
 ```json
 {
   "name": "my_index",
@@ -152,6 +157,7 @@ GET /indices/{name}
 ```
 
 Response:
+
 ```json
 {
   "name": "my_index",
@@ -180,6 +186,7 @@ POST /indices/{name}/documents
 ```
 
 Request:
+
 ```json
 {
   "documents": [
@@ -194,6 +201,7 @@ Request:
 ```
 
 Response:
+
 ```json
 {
   "documents_added": 2,
@@ -209,6 +217,7 @@ DELETE /indices/{name}/documents
 ```
 
 Request:
+
 ```json
 {
   "document_ids": [5, 10, 15]
@@ -216,6 +225,7 @@ Request:
 ```
 
 Response:
+
 ```json
 {
   "deleted": 3,
@@ -232,6 +242,7 @@ POST /indices/{name}/search
 ```
 
 Request:
+
 ```json
 {
   "queries": [
@@ -246,6 +257,7 @@ Request:
 ```
 
 Response:
+
 ```json
 {
   "num_queries": 1,
@@ -266,6 +278,7 @@ POST /indices/{name}/search
 ```
 
 Request:
+
 ```json
 {
   "queries": [{"embeddings": [[...]]}],
@@ -280,6 +293,7 @@ POST /indices/{name}/search/filtered
 ```
 
 Request:
+
 ```json
 {
   "queries": [{"embeddings": [[...]]}],
@@ -298,6 +312,7 @@ GET /indices/{name}/metadata
 ```
 
 Response:
+
 ```json
 {
   "count": 1000,
@@ -316,11 +331,10 @@ POST /indices/{name}/metadata
 ```
 
 Request:
+
 ```json
 {
-  "metadata": [
-    {"title": "New Doc", "category": "math"}
-  ]
+  "metadata": [{ "title": "New Doc", "category": "math" }]
 }
 ```
 
@@ -331,6 +345,7 @@ GET /indices/{name}/metadata/count
 ```
 
 Response:
+
 ```json
 {
   "count": 1000,
@@ -345,6 +360,7 @@ POST /indices/{name}/metadata/check
 ```
 
 Request:
+
 ```json
 {
   "document_ids": [0, 5, 10, 999999]
@@ -352,6 +368,7 @@ Request:
 ```
 
 Response:
+
 ```json
 {
   "existing_ids": [0, 5, 10],
@@ -368,6 +385,7 @@ POST /indices/{name}/metadata/query
 ```
 
 Request:
+
 ```json
 {
   "condition": "category = ? AND score > ?",
@@ -376,6 +394,7 @@ Request:
 ```
 
 Response:
+
 ```json
 {
   "document_ids": [0, 5, 42, 89],
@@ -390,6 +409,7 @@ POST /indices/{name}/metadata/get
 ```
 
 Request (by document IDs):
+
 ```json
 {
   "document_ids": [0, 5, 10]
@@ -397,6 +417,7 @@ Request (by document IDs):
 ```
 
 Request (by condition):
+
 ```json
 {
   "condition": "category = ?",
@@ -427,6 +448,7 @@ cargo build --release
 ```
 
 Verify the server is running:
+
 ```bash
 curl http://localhost:8080/health
 # {"status":"healthy","version":"0.1.0","loaded_indices":0}
@@ -453,7 +475,7 @@ metadata = []
 categories = ["physics", "biology", "chemistry", "math", "computer_science"]
 years = list(range(2018, 2024))
 
-for i in range(100):
+for i in range(10):
     num_tokens = np.random.randint(20, 60)
     embeddings = np.random.randn(num_tokens, 128).astype(np.float32)
     # Normalize embeddings (important for ColBERT-style search)

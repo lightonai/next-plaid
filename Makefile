@@ -112,3 +112,8 @@ compare-scifact-cached:
 benchmark-scifact-update:
 	cargo build --release --features npy --example benchmark_cli
 	cd docs && uv sync --extra eval --extra fast-plaid && uv run python benchmark_scifact_update.py --batch-size 800
+
+launch-api-debug:
+	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
+	rm -rf api/indices
+	cd api && RUST_LOG=debug cargo run --release

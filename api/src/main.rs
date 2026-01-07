@@ -7,24 +7,24 @@
 //! ## Index Management
 //! - `GET /indices` - List all indices
 //! - `POST /indices` - Create a new index
-//! - `GET /indices/:name` - Get index info
-//! - `DELETE /indices/:name` - Delete an index
+//! - `GET /indices/{name}` - Get index info
+//! - `DELETE /indices/{name}` - Delete an index
 //!
 //! ## Documents
-//! - `POST /indices/:name/documents` - Add documents
-//! - `DELETE /indices/:name/documents` - Delete documents
+//! - `POST /indices/{name}/documents` - Add documents
+//! - `DELETE /indices/{name}/documents` - Delete documents
 //!
 //! ## Search
-//! - `POST /indices/:name/search` - Search with embeddings
-//! - `POST /indices/:name/search/filtered` - Search with metadata filter
+//! - `POST /indices/{name}/search` - Search with embeddings
+//! - `POST /indices/{name}/search/filtered` - Search with metadata filter
 //!
 //! ## Metadata
-//! - `GET /indices/:name/metadata` - Get all metadata
-//! - `POST /indices/:name/metadata` - Add metadata
-//! - `GET /indices/:name/metadata/count` - Get metadata count
-//! - `POST /indices/:name/metadata/check` - Check if documents have metadata
-//! - `POST /indices/:name/metadata/query` - Query metadata with SQL condition
-//! - `POST /indices/:name/metadata/get` - Get metadata for specific documents
+//! - `GET /indices/{name}/metadata` - Get all metadata
+//! - `POST /indices/{name}/metadata` - Add metadata
+//! - `GET /indices/{name}/metadata/count` - Get metadata count
+//! - `POST /indices/{name}/metadata/check` - Check if documents have metadata
+//! - `POST /indices/{name}/metadata/query` - Query metadata with SQL condition
+//! - `POST /indices/{name}/metadata/get` - Get metadata for specific documents
 //!
 //! ## Documentation
 //! - `GET /swagger-ui` - Swagger UI
@@ -143,52 +143,47 @@ async fn health(state: axum::extract::State<Arc<AppState>>) -> Json<HealthRespon
 
 /// Build the API router.
 fn build_router(state: Arc<AppState>) -> Router {
-    // Index management routes
-    let index_routes = Router::new()
-        .route(
-            "/",
-            get(handlers::list_indices).post(handlers::create_index),
-        )
-        .route(
-            "/{name}",
-            get(handlers::get_index_info).delete(handlers::delete_index),
-        );
-
-    // Document routes
-    let document_routes = Router::new().route(
-        "/{name}/documents",
-        post(handlers::add_documents).delete(handlers::delete_documents),
-    );
-
-    // Search routes
-    let search_routes = Router::new()
-        .route("/{name}/search", post(handlers::search))
-        .route("/{name}/search/filtered", post(handlers::search_filtered));
-
-    // Metadata routes
-    let metadata_routes = Router::new()
-        .route(
-            "/{name}/metadata",
-            get(handlers::get_all_metadata).post(handlers::add_metadata),
-        )
-        .route("/{name}/metadata/count", get(handlers::get_metadata_count))
-        .route("/{name}/metadata/check", post(handlers::check_metadata))
-        .route("/{name}/metadata/query", post(handlers::query_metadata))
-        .route("/{name}/metadata/get", post(handlers::get_metadata));
-
-    // Combine all routes under /indices
-    let indices_router = Router::new()
-        .merge(index_routes)
-        .merge(document_routes)
-        .merge(search_routes)
-        .merge(metadata_routes);
-
-    // Build main router with Swagger UI
+    // Build main router - use without_v07_checks to allow :param syntax
     Router::new()
+        .without_v07_checks()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .route("/health", get(health))
         .route("/", get(health))
-        .nest("/indices", indices_router)
+        // Index routes
+        .route(
+            "/indices",
+            get(handlers::list_indices).post(handlers::create_index),
+        )
+        .route(
+            "/indices/{name}",
+            get(handlers::get_index_info).delete(handlers::delete_index),
+        )
+        .route(
+            "/indices/{name}/documents",
+            post(handlers::add_documents).delete(handlers::delete_documents),
+        )
+        .route("/indices/{name}/search", post(handlers::search))
+        .route(
+            "/indices/{name}/search/filtered",
+            post(handlers::search_filtered),
+        )
+        .route(
+            "/indices/{name}/metadata",
+            get(handlers::get_all_metadata).post(handlers::add_metadata),
+        )
+        .route(
+            "/indices/{name}/metadata/count",
+            get(handlers::get_metadata_count),
+        )
+        .route(
+            "/indices/{name}/metadata/check",
+            post(handlers::check_metadata),
+        )
+        .route(
+            "/indices/{name}/metadata/query",
+            post(handlers::query_metadata),
+        )
+        .route("/indices/{name}/metadata/get", post(handlers::get_metadata))
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
