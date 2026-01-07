@@ -36,6 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, post},
     Json, Router,
 };
@@ -211,6 +212,8 @@ fn build_router(state: Arc<AppState>) -> Router {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
+        // Allow large payloads for embedding uploads (100 MB)
+        .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
         .with_state(state)
 }
 

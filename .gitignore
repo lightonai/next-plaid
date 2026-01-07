@@ -40,6 +40,7 @@ test_index/
 
 # Benchmark results
 /target/criterion/
+evaluation_datasets/
 
 # Claude
 .claude/
