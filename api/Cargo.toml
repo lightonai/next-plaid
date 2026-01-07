@@ -20,7 +20,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Arrays
-ndarray = { version = "0.16", features = ["serde"] }  # pinned: must match main crate
+ndarray = { version = "0.16", features = [
+    "serde",
+] } # pinned: must match main crate
 
 # Error handling
 thiserror = "2.0"
@@ -40,10 +42,10 @@ utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["json"] }  # 0.13 requires different TLS setup
-ndarray-rand = "0.15"  # pinned: must match main crate
+reqwest = { version = "0.13", features = ["json"] }
+ndarray-rand = "0.15"                               # pinned: must match main crate
 tempfile = "3.15"
-rand = "0.8"  # pinned: must match main crate
+rand = "0.8"                                        # pinned: must match main crate
 
 [[bin]]
 name = "lategrep-api"

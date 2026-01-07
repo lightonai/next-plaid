@@ -1,9 +1,9 @@
 //! Benchmarks for lategrep
-
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use ndarray::{Array1, Array2};
 use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;
+use std::hint::black_box;
 
 fn create_test_codec(embedding_dim: usize, num_centroids: usize) -> lategrep::ResidualCodec {
     let centroids = {
