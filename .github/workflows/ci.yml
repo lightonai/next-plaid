@@ -33,7 +33,7 @@ jobs:
       - name: Install OpenBLAS
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
       - name: Clippy (main crate)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --features "npy,filtering,openblas" -- -D warnings
       - name: Clippy (API crate)
         run: cargo clippy --package lategrep-api --all-targets -- -D warnings
 
@@ -73,7 +73,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install OpenBLAS
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
-      - run: cargo doc --no-deps --all-features
+      - run: cargo doc --no-deps --features "npy,filtering,openblas"
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -86,4 +86,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install OpenBLAS
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
-      - run: cargo bench --no-run --all-features
+      - run: cargo bench --no-run --features "npy,filtering,openblas"
