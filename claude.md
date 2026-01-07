@@ -734,7 +734,7 @@ if total_new >= config.buffer_size {
 | **6. Delete Mechanism** | ✅ COMPLETE | `src/delete.rs`, `Index::delete()` |
 | **7. Filtering/Metadata** | ✅ COMPLETE | SQLite-based filtering, `src/filtering.rs` |
 
-### Overall Completion: **~98%**
+### Overall Completion: **~96%**
 
 **Fully Implemented:**
 - ResidualCodec with all optimizations
@@ -749,7 +749,17 @@ if total_new >= config.buffer_size {
 - Error handling
 - Public API
 - SQLite metadata filtering
-- Subset filtering in search
+- Subset filtering in search (single subset)
+- Embedding reconstruction from compressed index
+
+**Not Implemented (see Phase 10):**
+- Per-query subset filtering in batch search
+- Start-from-scratch index rebuild logic
+- Multi-device/GPU support (by design - CPU-only)
+- Low memory mode (GPU-specific)
+- Triton K-means kernels (GPU-specific)
+- Built-in evaluation module
+- Profile decorator
 
 **Optional/Partial:**
 - Memory-mapped merged files (nice-to-have optimization)
@@ -802,6 +812,7 @@ src/
 ├── lib.rs                   # Public API exports ✅
 ├── error.rs                 # Error types ✅
 ├── codec.rs                 # ResidualCodec with lookup tables ✅
+├── embeddings.rs            # Embedding reconstruction ✅
 ├── strided_tensor.rs        # StridedTensor for variable-length data ✅
 ├── index.rs                 # Index struct, creation, loading ✅
 ├── search.rs                # Search pipeline ✅
@@ -853,7 +864,7 @@ Implement fast-plaid compatible filtering features:
 | `subset` parameter in `search()` | ✅ | ✅ | `src/search.rs:99` |
 | Centroid filtering for subset | ✅ | ✅ | Only probe centroids containing subset docs |
 | Candidate filtering to subset | ✅ | ✅ | `src/search.rs:170-174` |
-| Per-query subsets in batch search | ✅ | ✅ | `search_many()` supports different subsets per query |
+| Per-query subsets in batch search | ✅ | ❌ | See Phase 10.2 - lategrep uses single subset for all queries |
 
 **Files**: `src/search.rs`
 
@@ -999,3 +1010,395 @@ let result = index.search(&query, &params, Some(&subset))?;
 | Value type | Python Any | serde_json::Value |
 | Date handling | datetime/date objects | String (ISO format) |
 | Error handling | Python exceptions | Result<T, Error> |
+
+---
+
+## Phase 10: Missing Features from fast-plaid
+
+This section documents features present in fast-plaid that are **NOT yet implemented** in lategrep. These are potential areas for future development.
+
+### 10.1 Embedding Reconstruction
+
+**Status**: ✅ IMPLEMENTED
+
+Lategrep now provides `reconstruct_embeddings()` in `src/embeddings.rs` that allows reconstructing the original embeddings from compressed index data for specific document IDs.
+
+**Use cases**:
+- Debugging and verification
+- Re-indexing with different parameters
+- Hybrid search strategies (combining dense + sparse)
+- Exporting embeddings for downstream tasks
+
+**lategrep API** (`src/embeddings.rs`):
+```rust
+// Module-level function
+pub fn reconstruct_embeddings(
+    index: &LoadedIndex,
+    doc_ids: &[i64],
+) -> Result<Vec<Array2<f32>>>
+
+// Also available for MmapIndex
+pub fn reconstruct_embeddings_mmap(
+    index: &MmapIndex,
+    doc_ids: &[i64],
+) -> Result<Vec<Array2<f32>>>
+```
+
+**Convenience methods on Index types**:
+```rust
+// On Index, LoadedIndex, and MmapIndex:
+let embeddings = index.reconstruct(&[0, 5, 10])?;
+let single = index.reconstruct_single(5)?;
+```
+
+| Feature | fast-plaid | lategrep |
+|---------|------------|----------|
+| `reconstruct_embeddings()` | ✅ | ✅ |
+| Parallel reconstruction via rayon | ✅ | ✅ |
+| Per-document embedding retrieval | ✅ | ✅ |
+| Support for LoadedIndex | ✅ | ✅ |
+| Support for MmapIndex | ✅ | ✅ |
+| Support for Index | N/A | ✅ |
+
+**Files**: `src/embeddings.rs`, `src/index.rs`
+
+---
+
+### 10.2 Per-Query Subset Filtering in Batch Search
+
+**Status**: ❌ NOT IMPLEMENTED
+
+fast-plaid supports different subset filters for each query in a batch search, while lategrep applies the same subset to all queries.
+
+**fast-plaid API** (`search.rs:202`):
+```rust
+// Rust signature
+pub fn pysearch(
+    ...
+    subset: Option<Vec<Vec<i64>>>,  // Per-query subsets
+    ...
+)
+```
+
+```python
+# Python usage - different subset for each query
+results = plaid.search(
+    queries=queries_tensor,  # [num_queries, tokens, dim]
+    subset=[[1, 2, 3], [4, 5, 6], [7, 8, 9]],  # Per-query subsets
+)
+```
+
+**lategrep limitation** (`search.rs`):
+```rust
+// Current: same subset for all queries
+fn search_many(
+    queries: &[Array2<f32>],
+    subset: Option<&[i64]>,  // Single subset for ALL queries
+) -> Vec<SearchResult>
+```
+
+**Implementation requirements**:
+```rust
+// Enhanced API
+fn search_many_with_subsets(
+    queries: &[Array2<f32>],
+    subsets: Option<&[Vec<i64>]>,  // Per-query subsets
+) -> Vec<SearchResult>
+```
+
+| Feature | fast-plaid | lategrep |
+|---------|------------|----------|
+| Per-query subsets in batch | ✅ | ❌ |
+| Single subset for all queries | ✅ | ✅ |
+
+---
+
+### 10.3 Start-from-scratch Index Rebuilding
+
+**Status**: ✅ IMPLEMENTED
+
+fast-plaid has sophisticated logic in `update.py` for handling small indices:
+
+1. When `num_documents <= start_from_scratch` threshold (default: 999):
+   - Stores raw embeddings in `embeddings.npy`
+   - On subsequent updates, combines old + new embeddings
+   - Rebuilds entire index from scratch with fresh K-means
+
+2. Benefits:
+   - Better centroid quality for small, evolving indices
+   - Avoids centroid drift from many small updates
+
+**fast-plaid logic** (`update.py:312-346`):
+```python
+if num_documents_in_index <= start_from_scratch:
+    if os.path.exists(os.path.join(index_path, "embeddings.npy")):
+        existing_embeddings_np = np.load("embeddings.npy", allow_pickle=True)
+        documents_embeddings = existing_embeddings + documents_embeddings
+
+    create_fn(documents_embeddings=documents_embeddings, ...)
+
+    if len(documents_embeddings) > start_from_scratch:
+        os.remove("embeddings.npy")  # Clean up once threshold passed
+    else:
+        np.save("embeddings.npy", documents_embeddings)  # Store for next rebuild
+```
+
+**lategrep implementation** (`src/index.rs:741-778`, `src/update.rs:166-207`):
+- `Index::create_with_kmeans()` saves raw embeddings when below threshold
+- `Index::update()` loads existing embeddings, combines with new, rebuilds from scratch
+- Clears `embeddings.npy` when threshold exceeded
+- Uses `embeddings_lengths.json` for per-document length tracking
+
+| Feature | fast-plaid | lategrep |
+|---------|------------|----------|
+| `start_from_scratch` config | ✅ | ✅ |
+| Raw embeddings storage (`embeddings.npy`) | ✅ | ✅ |
+| Full rebuild when threshold exceeded | ✅ | ✅ |
+| Clean up embeddings.npy after threshold | ✅ | ✅ |
+
+---
+
+### 10.4 Multi-Device/GPU Support
+
+**Status**: ❌ NOT IMPLEMENTED (by design)
+
+fast-plaid supports multiple compute devices via `_get_device()` in `fast_plaid.py:55-78`:
+
+| Device | fast-plaid | lategrep |
+|--------|------------|----------|
+| CPU | ✅ | ✅ |
+| CUDA (single GPU) | ✅ | ❌ |
+| CUDA (multi-GPU) | ✅ | ❌ |
+| MPS (Apple Silicon) | ✅ | ❌ |
+| XPU (Intel) | ✅ | ❌ |
+
+**fast-plaid features**:
+- Automatic device detection
+- Parallel multi-GPU index provisioning (`load.py:124-162`)
+- `low_memory` mode: keeps large tensors on CPU, codec on GPU
+
+**Note**: lategrep is intentionally CPU-only to eliminate PyTorch dependency. GPU support would require:
+- Adding `tch` crate dependency
+- Significant architecture changes
+- Alternative: Create separate `lategrep-gpu` crate
+
+---
+
+### 10.5 Low Memory Mode
+
+**Status**: ❌ NOT IMPLEMENTED
+
+fast-plaid's `low_memory` mode keeps document data (codes, residuals) on CPU while loading codec (centroids, bucket_weights) to GPU.
+
+**Benefits**:
+- Reduces VRAM usage significantly
+- Allows indexing larger corpora on limited GPU memory
+- Trade-off: slightly slower search due to CPU→GPU transfers
+
+**fast-plaid usage**:
+```python
+plaid = FastPlaid(index_path="./index", low_memory=True)
+```
+
+**Implementation in `load.rs:138-142`**:
+```rust
+// Force document tensors to CPU in low memory mode
+let storage_device = if low_memory { Device::Cpu } else { main_device };
+```
+
+---
+
+### 10.6 Triton Kernels for K-means
+
+**Status**: ❌ NOT IMPLEMENTED
+
+fast-plaid supports Triton kernels for accelerated K-means on GPU (`kmeans.py:11-49`):
+
+```python
+plaid.create(
+    documents_embeddings=embeddings,
+    use_triton_kmeans=True,  # Use Triton kernels
+)
+```
+
+**Benefits**:
+- Faster K-means clustering
+- Better GPU utilization
+- Reduced memory overhead
+
+**Note**: Not applicable to lategrep since it's CPU-only.
+
+---
+
+### 10.7 Evaluation Module
+
+**Status**: ❌ NOT IMPLEMENTED
+
+fast-plaid has a Python evaluation module (`evaluation/evaluation.py`) for benchmarking:
+
+```python
+from fast_plaid import evaluation
+
+# Load BEIR dataset
+documents, queries, qrels, doc_ids = evaluation.load_beir("scifact", split="test")
+
+# Run evaluation
+metrics = evaluation.evaluate(
+    scores=search_results,
+    qrels=qrels,
+    queries=queries,
+    metrics=["ndcg@10", "map", "recall@100"],
+)
+```
+
+**Features**:
+- `load_beir()`: Download and load BEIR benchmark datasets (lines 16-90)
+- `evaluate()`: Compute NDCG, MAP, Hits metrics using ranx library (lines 93-180)
+- `add_duplicates()`: Handle duplicate queries in evaluation
+
+**Alternative for lategrep**: Use Python wrapper or external evaluation tools (trec_eval, ranx).
+
+---
+
+### 10.8 Profile Decorator
+
+**Status**: ❌ NOT IMPLEMENTED
+
+fast-plaid provides `@profile_resources` decorator in `search/profile.py` for profiling:
+
+```python
+from fast_plaid.search.profile import profile_resources
+
+@profile_resources
+def my_function():
+    # ... code ...
+
+# Output:
+# [PROFILE] Function: my_function
+#   ├── Time:      1.2345s
+#   ├── RAM (RSS): 100.00MB -> 150.00MB (Delta: +50.00MB)
+#   └── VRAM:      500.00MB -> 800.00MB (Delta: +300.00MB, Peak: 900.00MB)
+```
+
+**Features measured**:
+- Execution time
+- RSS memory before/after/delta
+- VRAM before/after/delta/peak (GPU only)
+
+**Alternative for lategrep**: Use external profiling tools (perf, heaptrack, flamegraph).
+
+---
+
+### 10.9 Buffer Format Differences
+
+**Status**: ⚠️ DIFFERENT IMPLEMENTATION
+
+fast-plaid and lategrep store buffer embeddings differently:
+
+| Aspect | fast-plaid | lategrep |
+|--------|------------|----------|
+| Buffer file | `buffer.npy` (pickled object array) | `buffer_*.npy` (individual f32 arrays) |
+| Buffer info | Inferred from buffer length | `buffer_info.json` |
+| Embeddings storage | `embeddings.npy` (for rebuild) | `embeddings.npy` + `embeddings_lengths.json` |
+| Buffer format | NumPy object array (ragged) | Multiple regular NPY files |
+
+**fast-plaid** (`update.py:60-72`):
+```python
+def save_list_tensors_on_disk(path, tensors):
+    np.save(path, np.array(tensors, dtype=object), allow_pickle=True)
+
+def load_list_tensors_on_disk(path):
+    return [torch.from_numpy(t) for t in np.load(path, allow_pickle=True)]
+```
+
+**lategrep** (`update.rs:115-162`):
+```rust
+pub fn save_buffer(index_path: &Path, embeddings: &[Array2<f32>]) -> Result<()> {
+    // Save each embedding as buffer_0.npy, buffer_1.npy, etc.
+    // Save count in buffer_info.json
+}
+```
+
+**Note**: The different formats are functionally equivalent but not directly compatible.
+
+---
+
+### Summary: Feature Gap Priority
+
+| Priority | Feature | Effort | Impact | Status |
+|----------|---------|--------|--------|--------|
+| **High** | Embedding Reconstruction | Medium | Enables debugging, hybrid search | ✅ DONE |
+| **High** | Per-Query Subsets | Low | Better batch filtering | ❌ |
+| **Medium** | Start-from-scratch Rebuild | Medium | Better small index quality | ✅ DONE |
+| **Low** | Multi-GPU Support | High | Performance (requires tch) | ❌ |
+| **Low** | Evaluation Module | Low | Convenience (use external tools) | ❌ |
+| **Low** | Profile Decorator | Low | Convenience (use external tools) | ❌ |
+
+---
+
+### Implementation Roadmap
+
+**Phase 10.1**: Embedding Reconstruction (Recommended first)
+```rust
+// src/embeddings.rs (new file)
+
+/// Reconstruct embeddings for specific documents from the compressed index.
+pub fn reconstruct_embeddings(
+    loaded_index: &LoadedIndex,
+    doc_ids: &[i64],
+) -> Result<Vec<Array2<f32>>> {
+    doc_ids.par_iter()
+        .map(|&doc_id| {
+            let (codes, lengths) = loaded_index.doc_codes_strided.lookup_1d(&[doc_id]);
+            let (residuals, _) = loaded_index.doc_residuals_strided.lookup_2d(&[doc_id]);
+            loaded_index.codec.decompress(&codes, &residuals)
+        })
+        .collect()
+}
+
+// Add convenience method to Index
+impl Index {
+    pub fn reconstruct(&self, doc_ids: &[i64]) -> Result<Vec<Array2<f32>>> {
+        let loaded = LoadedIndex::from_index(self)?;
+        reconstruct_embeddings(&loaded, doc_ids)
+    }
+}
+```
+
+**Phase 10.2**: Per-Query Subsets
+```rust
+// In src/search.rs
+
+pub fn search_many_with_subsets(
+    loaded_index: &LoadedIndex,
+    queries: &[Array2<f32>],
+    params: &SearchParameters,
+    subsets: Option<&[Vec<i64>]>,  // Per-query subsets
+    parallel: bool,
+) -> Result<Vec<SearchResult>> {
+    if parallel {
+        queries.par_iter()
+            .enumerate()
+            .map(|(i, q)| {
+                let subset = subsets.map(|s| s.get(i).map(|v| v.as_slice())).flatten();
+                search_one(loaded_index, q, params, subset)
+            })
+            .collect()
+    } else {
+        // Sequential version
+    }
+}
+```
+
+**Phase 10.3**: Start-from-scratch Rebuild ✅ DONE
+```rust
+// In src/update.rs - IMPLEMENTED
+pub fn save_embeddings_npy(index_path: &Path, embeddings: &[Array2<f32>]) -> Result<()>;
+pub fn load_embeddings_npy(index_path: &Path) -> Result<Vec<Array2<f32>>>;
+pub fn clear_embeddings_npy(index_path: &Path) -> Result<()>;
+pub fn embeddings_npy_exists(index_path: &Path) -> bool;
+
+// In src/index.rs - IMPLEMENTED
+// Index::create_with_kmeans() saves embeddings when below threshold
+// Index::update() rebuilds from scratch when num_documents <= start_from_scratch
+```

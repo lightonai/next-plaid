@@ -198,25 +198,54 @@ pub fn clear_buffer(index_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Load embeddings stored for rebuild (embeddings.npy).
+/// Load embeddings stored for rebuild (embeddings.npy + embeddings_lengths.json).
+///
+/// This function loads raw embeddings that were saved for start-from-scratch rebuilds.
+/// The embeddings are stored in a flat 2D array with a separate lengths file.
 #[cfg(feature = "npy")]
 pub fn load_embeddings_npy(index_path: &Path) -> Result<Vec<Array2<f32>>> {
     use ndarray_npy::ReadNpyExt;
 
     let emb_path = index_path.join("embeddings.npy");
+    let lengths_path = index_path.join("embeddings_lengths.json");
+
     if !emb_path.exists() {
         return Ok(Vec::new());
     }
 
-    // Try to read as 2D array
-    if let Ok(arr) = Array2::<f32>::read_npy(File::open(&emb_path)?) {
-        return Ok(vec![arr]);
+    // Load flat embeddings array
+    let flat: Array2<f32> = Array2::read_npy(File::open(&emb_path)?)?;
+
+    // Load lengths to split back into per-document arrays
+    if lengths_path.exists() {
+        let lengths: Vec<i64> =
+            serde_json::from_reader(BufReader::new(File::open(&lengths_path)?))?;
+
+        let mut result = Vec::with_capacity(lengths.len());
+        let mut offset = 0;
+
+        for &len in &lengths {
+            let len_usize = len as usize;
+            if offset + len_usize > flat.nrows() {
+                break;
+            }
+            let doc_emb = flat.slice(s![offset..offset + len_usize, ..]).to_owned();
+            result.push(doc_emb);
+            offset += len_usize;
+        }
+
+        return Ok(result);
     }
 
-    Ok(Vec::new())
+    // Fallback: if no lengths file, return as single document
+    Ok(vec![flat])
 }
 
-/// Save embeddings for potential rebuild.
+/// Save embeddings for potential rebuild (start-from-scratch mode).
+///
+/// Stores embeddings in embeddings.npy (flat array) + embeddings_lengths.json.
+/// This matches fast-plaid's behavior of storing raw embeddings when the index
+/// is below the start_from_scratch threshold.
 #[cfg(feature = "npy")]
 pub fn save_embeddings_npy(index_path: &Path, embeddings: &[Array2<f32>]) -> Result<()> {
     use ndarray_npy::WriteNpyExt;
@@ -230,26 +259,43 @@ pub fn save_embeddings_npy(index_path: &Path, embeddings: &[Array2<f32>]) -> Res
 
     let mut flat = Array2::<f32>::zeros((total_rows, dim));
     let mut offset = 0;
+    let mut lengths = Vec::with_capacity(embeddings.len());
 
     for emb in embeddings {
         let n = emb.nrows();
         flat.slice_mut(s![offset..offset + n, ..]).assign(emb);
+        lengths.push(n as i64);
         offset += n;
     }
 
+    // Save flat embeddings
     let emb_path = index_path.join("embeddings.npy");
     flat.write_npy(File::create(&emb_path)?)?;
+
+    // Save lengths for reconstruction
+    let lengths_path = index_path.join("embeddings_lengths.json");
+    serde_json::to_writer(BufWriter::new(File::create(&lengths_path)?), &lengths)?;
 
     Ok(())
 }
 
-/// Clear embeddings.npy.
+/// Clear embeddings.npy and embeddings_lengths.json.
 pub fn clear_embeddings_npy(index_path: &Path) -> Result<()> {
     let emb_path = index_path.join("embeddings.npy");
+    let lengths_path = index_path.join("embeddings_lengths.json");
+
     if emb_path.exists() {
         fs::remove_file(&emb_path)?;
     }
+    if lengths_path.exists() {
+        fs::remove_file(&lengths_path)?;
+    }
     Ok(())
+}
+
+/// Check if embeddings.npy exists for start-from-scratch mode.
+pub fn embeddings_npy_exists(index_path: &Path) -> bool {
+    index_path.join("embeddings.npy").exists()
 }
 
 // ============================================================================

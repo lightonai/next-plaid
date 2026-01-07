@@ -296,6 +296,7 @@ mod tests {
             kmeans_niters: 2,
             max_points_per_centroid: 256,
             n_samples_kmeans: None,
+            start_from_scratch: 999,
         };
 
         let index = Index::create_with_kmeans(&embeddings, index_path, &config).unwrap();
@@ -369,6 +370,7 @@ mod tests {
             kmeans_niters: 2,
             max_points_per_centroid: 256,
             n_samples_kmeans: None,
+            start_from_scratch: 999,
         };
 
         Index::create_with_kmeans(&embeddings, index_path, &config).unwrap();

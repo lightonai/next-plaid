@@ -12,6 +12,7 @@ extern crate openblas_src;
 
 pub mod codec;
 pub mod delete;
+pub mod embeddings;
 pub mod error;
 #[cfg(feature = "filtering")]
 pub mod filtering;

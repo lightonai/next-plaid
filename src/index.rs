@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::codec::ResidualCodec;
 use crate::error::{Error, Result};
+#[cfg(feature = "npy")]
 use crate::kmeans::{compute_kmeans, ComputeKmeansConfig};
 use crate::strided_tensor::{IvfStridedTensor, StridedTensor};
 use crate::utils::{quantile, quantiles};
@@ -33,6 +34,15 @@ pub struct IndexConfig {
     /// If None, uses heuristic: min(1 + 16 * sqrt(120 * num_documents), num_documents)
     #[serde(default)]
     pub n_samples_kmeans: Option<usize>,
+    /// Threshold for start-from-scratch mode (default: 999).
+    /// When the number of documents is <= this threshold, raw embeddings are saved
+    /// to embeddings.npy for potential rebuilds during updates.
+    #[serde(default = "default_start_from_scratch")]
+    pub start_from_scratch: usize,
+}
+
+fn default_start_from_scratch() -> usize {
+    999
 }
 
 fn default_kmeans_niters() -> usize {
@@ -52,6 +62,7 @@ impl Default for IndexConfig {
             kmeans_niters: 4,
             max_points_per_centroid: 256,
             n_samples_kmeans: None,
+            start_from_scratch: 999,
         }
     }
 }
@@ -465,6 +476,7 @@ impl Index {
     /// This method implements the same logic as fast-plaid's `create()`:
     /// 1. Computes centroids using K-means with automatic K calculation
     /// 2. Creates the index using the computed centroids
+    /// 3. If num_documents <= start_from_scratch, saves raw embeddings for potential rebuilds
     ///
     /// # Arguments
     ///
@@ -475,6 +487,7 @@ impl Index {
     /// # Returns
     ///
     /// The created index
+    #[cfg(feature = "npy")]
     pub fn create_with_kmeans(
         embeddings: &[Array2<f32>],
         index_path: &str,
@@ -497,7 +510,16 @@ impl Index {
         let centroids = compute_kmeans(embeddings, &kmeans_config)?;
 
         // Create the index with the computed centroids
-        Self::create(embeddings, centroids, index_path, config)
+        let index = Self::create(embeddings, centroids, index_path, config)?;
+
+        // If below start_from_scratch threshold, save raw embeddings for potential rebuilds
+        // This matches fast-plaid's behavior in create() (fast_plaid.py:499-506)
+        if embeddings.len() <= config.start_from_scratch {
+            let index_dir = std::path::Path::new(index_path);
+            crate::update::save_embeddings_npy(index_dir, embeddings)?;
+        }
+
+        Ok(index)
     }
 
     /// Load an existing index from disk.
@@ -622,12 +644,76 @@ impl Index {
         self.codec.decompress(residuals, &codes.view())
     }
 
+    /// Reconstruct embeddings for specific documents.
+    ///
+    /// This is a convenience method that converts the Index to a LoadedIndex
+    /// and then reconstructs the embeddings. For repeated reconstruction calls,
+    /// consider using `LoadedIndex::reconstruct()` directly.
+    ///
+    /// # Arguments
+    ///
+    /// * `doc_ids` - Slice of document IDs to reconstruct (0-indexed)
+    ///
+    /// # Returns
+    ///
+    /// A vector of 2D arrays, one per document. Each array has shape `[num_tokens, dim]`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use lategrep::Index;
+    ///
+    /// let index = Index::load("/path/to/index")?;
+    /// let embeddings = index.reconstruct(&[0, 1, 2])?;
+    /// ```
+    pub fn reconstruct(&self, doc_ids: &[i64]) -> Result<Vec<Array2<f32>>> {
+        // For Index, we can directly decompress per-document
+        use rayon::prelude::*;
+
+        let num_documents = self.doc_codes.len();
+
+        // Validate document IDs
+        for &doc_id in doc_ids {
+            if doc_id < 0 || doc_id as usize >= num_documents {
+                return Err(Error::Search(format!(
+                    "Invalid document ID: {} (index has {} documents)",
+                    doc_id, num_documents
+                )));
+            }
+        }
+
+        // Process documents in parallel
+        doc_ids
+            .par_iter()
+            .map(|&doc_id| self.get_document_embeddings(doc_id as usize))
+            .collect()
+    }
+
+    /// Reconstruct a single document's embeddings.
+    ///
+    /// Convenience method for reconstructing a single document.
+    pub fn reconstruct_single(&self, doc_id: i64) -> Result<Array2<f32>> {
+        self.get_document_embeddings(doc_id as usize)
+    }
+
     /// Update the index with new documents, matching fast-plaid behavior.
     ///
-    /// This method adds new documents to an existing index:
-    /// - If the index has fewer documents than `config.start_from_scratch`, it rebuilds
-    /// - Uses a buffer mechanism for small updates
-    /// - Triggers centroid expansion when buffer threshold is reached
+    /// This method adds new documents to an existing index with three possible paths:
+    ///
+    /// 1. **Start-from-scratch mode** (num_documents <= start_from_scratch):
+    ///    - Loads existing embeddings from `embeddings.npy` if available
+    ///    - Combines with new embeddings
+    ///    - Rebuilds the entire index from scratch with fresh K-means
+    ///    - Clears `embeddings.npy` if total exceeds threshold
+    ///
+    /// 2. **Buffer mode** (total_new < buffer_size):
+    ///    - Adds new documents to the index without centroid expansion
+    ///    - Saves embeddings to buffer for later centroid expansion
+    ///
+    /// 3. **Centroid expansion mode** (total_new >= buffer_size):
+    ///    - Deletes previously buffered documents
+    ///    - Expands centroids with outliers from combined buffer + new embeddings
+    ///    - Re-indexes all combined embeddings with expanded centroids
     ///
     /// # Arguments
     ///
@@ -636,7 +722,7 @@ impl Index {
     ///
     /// # Returns
     ///
-    /// The updated Index after reloading
+    /// Ok(()) on success, with self reloaded to reflect changes.
     #[cfg(feature = "npy")]
     pub fn update(
         &mut self,
@@ -644,7 +730,8 @@ impl Index {
         config: &crate::update::UpdateConfig,
     ) -> Result<()> {
         use crate::update::{
-            clear_buffer, load_buffer, load_buffer_info, load_cluster_threshold, save_buffer,
+            clear_buffer, clear_embeddings_npy, embeddings_npy_exists, load_buffer,
+            load_buffer_info, load_cluster_threshold, load_embeddings_npy, save_buffer,
             update_centroids, update_index,
         };
 
@@ -652,21 +739,42 @@ impl Index {
         let path_str = self.path.clone();
         let index_path = std::path::Path::new(&path_str);
 
-        // Check if we should rebuild from scratch (small index)
+        // ==================================================================
+        // Start-from-scratch mode (fast-plaid update.py:312-346)
+        // ==================================================================
         if self.metadata.num_documents <= config.start_from_scratch {
-            // For small indices, fast-plaid rebuilds from scratch
-            // We would need stored embeddings to do this properly
-            // For now, just do a regular update
-            update_index(
-                embeddings,
-                &path_str,
-                &self.codec,
-                Some(config.batch_size),
-                true,
-            )?;
+            // Load existing embeddings if available
+            let existing_embeddings = load_embeddings_npy(index_path)?;
 
-            // Reload the index
-            *self = Index::load(&path_str)?;
+            // Combine existing + new embeddings
+            let combined_embeddings: Vec<Array2<f32>> = existing_embeddings
+                .into_iter()
+                .chain(embeddings.iter().cloned())
+                .collect();
+
+            // Build IndexConfig from UpdateConfig for create_with_kmeans
+            let index_config = crate::index::IndexConfig {
+                nbits: self.metadata.nbits,
+                batch_size: config.batch_size,
+                seed: Some(config.seed),
+                kmeans_niters: config.kmeans_niters,
+                max_points_per_centroid: config.max_points_per_centroid,
+                n_samples_kmeans: config.n_samples_kmeans,
+                start_from_scratch: config.start_from_scratch,
+            };
+
+            // Rebuild index from scratch with fresh K-means
+            // Note: create_with_kmeans will save embeddings.npy if below threshold
+            *self = Index::create_with_kmeans(&combined_embeddings, &path_str, &index_config)?;
+
+            // If we've crossed the threshold, clear embeddings.npy
+            // (create_with_kmeans won't save it if above threshold)
+            if combined_embeddings.len() > config.start_from_scratch
+                && embeddings_npy_exists(index_path)
+            {
+                clear_embeddings_npy(index_path)?;
+            }
+
             return Ok(());
         }
 
@@ -974,6 +1082,50 @@ impl LoadedIndex {
     pub fn embedding_dim(&self) -> usize {
         self.codec.embedding_dim()
     }
+
+    /// Reconstruct embeddings for specific documents.
+    ///
+    /// This method retrieves the compressed codes and residuals for each document
+    /// and decompresses them to recover the original embeddings.
+    ///
+    /// # Arguments
+    ///
+    /// * `doc_ids` - Slice of document IDs to reconstruct (0-indexed)
+    ///
+    /// # Returns
+    ///
+    /// A vector of 2D arrays, one per document. Each array has shape `[num_tokens, dim]`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use lategrep::LoadedIndex;
+    ///
+    /// let index = LoadedIndex::load("/path/to/index")?;
+    /// let embeddings = index.reconstruct(&[0, 1, 2])?;
+    ///
+    /// for (i, emb) in embeddings.iter().enumerate() {
+    ///     println!("Document {}: {} tokens x {} dim", i, emb.nrows(), emb.ncols());
+    /// }
+    /// ```
+    pub fn reconstruct(&self, doc_ids: &[i64]) -> Result<Vec<Array2<f32>>> {
+        crate::embeddings::reconstruct_embeddings(self, doc_ids)
+    }
+
+    /// Reconstruct a single document's embeddings.
+    ///
+    /// Convenience method for reconstructing a single document.
+    ///
+    /// # Arguments
+    ///
+    /// * `doc_id` - Document ID to reconstruct (0-indexed)
+    ///
+    /// # Returns
+    ///
+    /// A 2D array with shape `[num_tokens, dim]`.
+    pub fn reconstruct_single(&self, doc_id: i64) -> Result<Array2<f32>> {
+        crate::embeddings::reconstruct_single(self, doc_id)
+    }
 }
 
 // ============================================================================
@@ -1268,6 +1420,50 @@ impl MmapIndex {
     /// Get the embedding dimension.
     pub fn embedding_dim(&self) -> usize {
         self.codec.embedding_dim()
+    }
+
+    /// Reconstruct embeddings for specific documents.
+    ///
+    /// This method retrieves the compressed codes and residuals for each document
+    /// from memory-mapped files and decompresses them to recover the original embeddings.
+    ///
+    /// # Arguments
+    ///
+    /// * `doc_ids` - Slice of document IDs to reconstruct (0-indexed)
+    ///
+    /// # Returns
+    ///
+    /// A vector of 2D arrays, one per document. Each array has shape `[num_tokens, dim]`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use lategrep::MmapIndex;
+    ///
+    /// let index = MmapIndex::load("/path/to/index")?;
+    /// let embeddings = index.reconstruct(&[0, 1, 2])?;
+    ///
+    /// for (i, emb) in embeddings.iter().enumerate() {
+    ///     println!("Document {}: {} tokens x {} dim", i, emb.nrows(), emb.ncols());
+    /// }
+    /// ```
+    pub fn reconstruct(&self, doc_ids: &[i64]) -> Result<Vec<Array2<f32>>> {
+        crate::embeddings::reconstruct_embeddings_mmap(self, doc_ids)
+    }
+
+    /// Reconstruct a single document's embeddings.
+    ///
+    /// Convenience method for reconstructing a single document.
+    ///
+    /// # Arguments
+    ///
+    /// * `doc_id` - Document ID to reconstruct (0-indexed)
+    ///
+    /// # Returns
+    ///
+    /// A 2D array with shape `[num_tokens, dim]`.
+    pub fn reconstruct_single(&self, doc_id: i64) -> Result<Array2<f32>> {
+        crate::embeddings::reconstruct_single_mmap(self, doc_id)
     }
 }
 
