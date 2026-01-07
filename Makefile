@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update ci-api
 
 all: fmt lint test
 
@@ -62,8 +62,14 @@ example:
 	cargo run --example basic --release
 
 # Run all CI checks locally
-ci: fmt-check clippy test doc bench-check
+ci: fmt-check clippy test doc bench-check ci-api
 	@echo "All CI checks passed!"
+
+# Run CI checks for api crate
+ci-api:
+	cd api && cargo fmt --all -- --check
+	cd api && cargo clippy --all-targets --all-features -- -D warnings
+	cd api && cargo test
 
 # Install git hooks
 install-hooks:
