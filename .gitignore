@@ -42,3 +42,4 @@ test_index/
 
 # Claude
 .claude/
+api/target/

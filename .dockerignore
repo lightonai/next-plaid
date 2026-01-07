@@ -1,0 +1,36 @@
+# Build artifacts
+target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Documentation (not needed for build)
+*.md
+!README.md
+
+# Test data
+test_data/
+tests/
+benchmarks/
+
+# Python virtual environments
+.venv/
+__pycache__/
+*.pyc
+
+# Local development
+.env
+*.log
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore

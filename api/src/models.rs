@@ -1,0 +1,393 @@
+//! Request and response models for the lategrep API.
+//!
+//! This module defines the JSON structures used for API communication.
+
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+// =============================================================================
+// Index Management
+// =============================================================================
+
+/// Request to create a new index.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateIndexRequest {
+    /// Name/identifier for the index
+    #[schema(example = "my_index")]
+    pub name: String,
+    /// Initial document embeddings
+    pub documents: Vec<DocumentEmbeddings>,
+    /// Optional metadata for initial documents (must match documents length)
+    #[serde(default)]
+    pub metadata: Option<Vec<serde_json::Value>>,
+    /// Index configuration
+    #[serde(default)]
+    pub config: IndexConfigRequest,
+}
+
+/// Index configuration options.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+pub struct IndexConfigRequest {
+    /// Number of bits for quantization (2 or 4, default: 4)
+    #[serde(default)]
+    #[schema(example = 4)]
+    pub nbits: Option<usize>,
+    /// Batch size for processing (default: 50000)
+    #[serde(default)]
+    #[schema(example = 50000)]
+    pub batch_size: Option<usize>,
+    /// Random seed for reproducibility
+    #[serde(default)]
+    #[schema(example = 42)]
+    pub seed: Option<u64>,
+}
+
+/// Response after creating an index.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CreateIndexResponse {
+    /// Index name
+    #[schema(example = "my_index")]
+    pub name: String,
+    /// Number of documents indexed
+    #[schema(example = 1000)]
+    pub num_documents: usize,
+    /// Number of embeddings (tokens)
+    #[schema(example = 50000)]
+    pub num_embeddings: usize,
+    /// Number of centroids
+    #[schema(example = 512)]
+    pub num_partitions: usize,
+    /// Embedding dimension
+    #[schema(example = 128)]
+    pub dimension: usize,
+}
+
+/// Index status/info response.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct IndexInfoResponse {
+    /// Index name
+    #[schema(example = "my_index")]
+    pub name: String,
+    /// Number of documents
+    #[schema(example = 1000)]
+    pub num_documents: usize,
+    /// Number of embeddings (tokens)
+    #[schema(example = 50000)]
+    pub num_embeddings: usize,
+    /// Number of centroids (partitions)
+    #[schema(example = 512)]
+    pub num_partitions: usize,
+    /// Average document length
+    #[schema(example = 50.0)]
+    pub avg_doclen: f64,
+    /// Embedding dimension
+    #[schema(example = 128)]
+    pub dimension: usize,
+    /// Whether metadata database exists
+    #[schema(example = true)]
+    pub has_metadata: bool,
+    /// Number of metadata entries (if metadata exists)
+    #[schema(example = 1000)]
+    pub metadata_count: Option<usize>,
+}
+
+// =============================================================================
+// Document Upload
+// =============================================================================
+
+/// Document embeddings with optional metadata.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DocumentEmbeddings {
+    /// Embedding matrix as nested array [num_tokens, dim]
+    #[schema(example = json!([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]))]
+    pub embeddings: Vec<Vec<f32>>,
+}
+
+/// Request to add documents to an existing index.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AddDocumentsRequest {
+    /// List of document embeddings
+    pub documents: Vec<DocumentEmbeddings>,
+    /// Optional metadata for each document (must match documents length)
+    #[serde(default)]
+    pub metadata: Option<Vec<serde_json::Value>>,
+}
+
+/// Response after adding documents.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct AddDocumentsResponse {
+    /// Number of documents added
+    #[schema(example = 10)]
+    pub documents_added: usize,
+    /// New total number of documents
+    #[schema(example = 1010)]
+    pub total_documents: usize,
+    /// Starting document ID for new documents
+    #[schema(example = 1000)]
+    pub start_id: usize,
+}
+
+// =============================================================================
+// Search
+// =============================================================================
+
+/// Query embeddings for search.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct QueryEmbeddings {
+    /// Embedding matrix as nested array [num_tokens, dim]
+    #[schema(example = json!([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]))]
+    pub embeddings: Vec<Vec<f32>>,
+}
+
+/// Request to search the index.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SearchRequest {
+    /// Query embeddings (single query or batch)
+    pub queries: Vec<QueryEmbeddings>,
+    /// Search parameters
+    #[serde(default)]
+    pub params: SearchParamsRequest,
+    /// Optional subset of document IDs to search within
+    #[serde(default)]
+    #[schema(example = json!([0, 5, 10, 15]))]
+    pub subset: Option<Vec<i64>>,
+}
+
+/// Search parameters.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+pub struct SearchParamsRequest {
+    /// Number of results to return per query (default: 10)
+    #[serde(default)]
+    #[schema(example = 10)]
+    pub top_k: Option<usize>,
+    /// Number of IVF cells to probe (default: 8)
+    #[serde(default)]
+    #[schema(example = 8)]
+    pub n_ivf_probe: Option<usize>,
+    /// Number of documents for exact re-ranking (default: 4096)
+    #[serde(default)]
+    #[schema(example = 4096)]
+    pub n_full_scores: Option<usize>,
+}
+
+/// Single query result.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct QueryResultResponse {
+    /// Query index in the batch
+    #[schema(example = 0)]
+    pub query_id: usize,
+    /// Retrieved document IDs (ranked by relevance)
+    #[schema(example = json!([42, 17, 89, 5]))]
+    pub document_ids: Vec<i64>,
+    /// Relevance scores for each document
+    #[schema(example = json!([0.95, 0.87, 0.82, 0.75]))]
+    pub scores: Vec<f32>,
+}
+
+/// Response containing search results.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SearchResponse {
+    /// Results for each query
+    pub results: Vec<QueryResultResponse>,
+    /// Total number of queries processed
+    #[schema(example = 1)]
+    pub num_queries: usize,
+}
+
+/// Request for filtered search combining metadata query and search.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct FilteredSearchRequest {
+    /// Query embeddings
+    pub queries: Vec<QueryEmbeddings>,
+    /// Search parameters
+    #[serde(default)]
+    pub params: SearchParamsRequest,
+    /// SQL WHERE condition for filtering
+    #[schema(example = "category = ? AND score > ?")]
+    pub filter_condition: String,
+    /// Parameters for the filter condition
+    #[serde(default)]
+    #[schema(example = json!(["science", 90]))]
+    pub filter_parameters: Vec<serde_json::Value>,
+}
+
+// =============================================================================
+// Metadata
+// =============================================================================
+
+/// Request to check which documents have metadata.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CheckMetadataRequest {
+    /// Document IDs to check
+    #[schema(example = json!([0, 5, 10, 999]))]
+    pub document_ids: Vec<i64>,
+}
+
+/// Response for metadata existence check.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CheckMetadataResponse {
+    /// Document IDs that exist in the metadata database
+    #[schema(example = json!([0, 5, 10]))]
+    pub existing_ids: Vec<i64>,
+    /// Document IDs that do not exist
+    #[schema(example = json!([999]))]
+    pub missing_ids: Vec<i64>,
+    /// Total count of existing
+    #[schema(example = 3)]
+    pub existing_count: usize,
+    /// Total count of missing
+    #[schema(example = 1)]
+    pub missing_count: usize,
+}
+
+/// Request to get metadata for documents.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct GetMetadataRequest {
+    /// Optional document IDs to retrieve (if not provided, returns all)
+    #[serde(default)]
+    #[schema(example = json!([0, 5, 10]))]
+    pub document_ids: Option<Vec<i64>>,
+    /// Optional SQL WHERE condition
+    #[serde(default)]
+    #[schema(example = "category = ?")]
+    pub condition: Option<String>,
+    /// Parameters for the condition
+    #[serde(default)]
+    #[schema(example = json!(["science"]))]
+    pub parameters: Vec<serde_json::Value>,
+    /// Maximum number of results to return
+    #[serde(default)]
+    #[schema(example = 100)]
+    pub limit: Option<usize>,
+}
+
+/// Response containing metadata.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct GetMetadataResponse {
+    /// Metadata entries
+    #[schema(example = json!([{"_subset_": 0, "title": "Doc 1"}, {"_subset_": 1, "title": "Doc 2"}]))]
+    pub metadata: Vec<serde_json::Value>,
+    /// Number of entries returned
+    #[schema(example = 2)]
+    pub count: usize,
+}
+
+/// Request to query metadata with a SQL condition.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct QueryMetadataRequest {
+    /// SQL WHERE condition (e.g., "category = ? AND score > ?")
+    #[schema(example = "category = ? AND score > ?")]
+    pub condition: String,
+    /// Parameters for the condition
+    #[serde(default)]
+    #[schema(example = json!(["science", 90]))]
+    pub parameters: Vec<serde_json::Value>,
+}
+
+/// Response containing document IDs matching the condition.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct QueryMetadataResponse {
+    /// Document IDs matching the condition
+    #[schema(example = json!([0, 5, 42, 89]))]
+    pub document_ids: Vec<i64>,
+    /// Number of matching documents
+    #[schema(example = 4)]
+    pub count: usize,
+}
+
+/// Request to add or update metadata.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AddMetadataRequest {
+    /// Metadata entries to add
+    #[schema(example = json!([{"title": "Doc 1", "category": "science"}, {"title": "Doc 2", "category": "history"}]))]
+    pub metadata: Vec<serde_json::Value>,
+}
+
+/// Response after adding metadata.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct AddMetadataResponse {
+    /// Number of metadata entries added
+    #[schema(example = 2)]
+    pub added: usize,
+}
+
+/// Metadata count response.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct MetadataCountResponse {
+    /// Number of metadata entries
+    #[schema(example = 1000)]
+    pub count: usize,
+    /// Whether metadata database exists
+    #[schema(example = true)]
+    pub has_metadata: bool,
+}
+
+// =============================================================================
+// Delete
+// =============================================================================
+
+/// Request to delete documents.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DeleteDocumentsRequest {
+    /// Document IDs to delete
+    #[schema(example = json!([5, 10, 15]))]
+    pub document_ids: Vec<i64>,
+}
+
+/// Response after deleting documents.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct DeleteDocumentsResponse {
+    /// Number of documents deleted
+    #[schema(example = 3)]
+    pub deleted: usize,
+    /// Remaining document count
+    #[schema(example = 997)]
+    pub remaining: usize,
+}
+
+/// Response after deleting an index.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct DeleteIndexResponse {
+    /// Whether deletion was successful
+    #[schema(example = true)]
+    pub deleted: bool,
+    /// Name of deleted index
+    #[schema(example = "my_index")]
+    pub name: String,
+}
+
+// =============================================================================
+// Health
+// =============================================================================
+
+/// Health check response.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct HealthResponse {
+    /// Service status
+    #[schema(example = "healthy")]
+    pub status: String,
+    /// API version
+    #[schema(example = "0.1.0")]
+    pub version: String,
+    /// Number of loaded indices
+    #[schema(example = 2)]
+    pub loaded_indices: usize,
+}
+
+// =============================================================================
+// Error
+// =============================================================================
+
+/// API error response.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ErrorResponse {
+    /// Error code for programmatic handling
+    #[schema(example = "INDEX_NOT_FOUND")]
+    pub code: String,
+    /// Human-readable error message
+    #[schema(example = "Index 'my_index' not found")]
+    pub message: String,
+    /// Optional additional details
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
