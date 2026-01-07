@@ -5,6 +5,10 @@
 
 set -e
 
+# Get repository root directory
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
 echo "Running pre-commit checks..."
 
 # Check Rust formatting
@@ -30,5 +34,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 # Lint Python code
 echo "Linting Python code..."
 cd docs && uv run --extra dev ruff check . && uv run --extra dev ruff format --check .
+cd "$REPO_ROOT"
+
+# Run API integration tests
+echo "Running API integration tests..."
+./scripts/run-api-tests.sh
 
 echo "All pre-commit checks passed!"
