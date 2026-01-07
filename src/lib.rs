@@ -18,7 +18,6 @@ pub mod error;
 pub mod filtering;
 pub mod index;
 pub mod kmeans;
-pub mod lock;
 pub mod mmap;
 pub mod search;
 pub mod strided_tensor;
@@ -36,7 +35,6 @@ pub use kmeans::{
     compute_centroids, compute_centroids_from_documents, compute_kmeans, estimate_num_partitions,
     ComputeKmeansConfig, FastKMeans, KMeansConfig,
 };
-pub use lock::IndexLockGuard;
 pub use search::{QueryResult, SearchParameters};
 pub use strided_tensor::{IvfStridedTensor, StridedTensor};
 pub use update::UpdateConfig;

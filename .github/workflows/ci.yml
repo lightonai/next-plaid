@@ -136,7 +136,7 @@ jobs:
 
           # Run tests
           cd api/tests
-          uv run pytest test_api.py test_concurrent_updates.py -v
+          uv run pytest test_api.py -v
 
           # Cleanup
           kill $API_PID 2>/dev/null || true

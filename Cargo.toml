@@ -39,7 +39,6 @@ half = "2.4"
 byteorder = "1.5"
 rusqlite = { version = "0.38", optional = true }
 regex = { version = "1.11", optional = true }
-fs2 = "0.4"  # Cross-platform file locking for concurrent update safety
 
 [dev-dependencies]
 criterion = { version = "0.8.1", features = [

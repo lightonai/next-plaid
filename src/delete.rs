@@ -50,19 +50,6 @@ use crate::index::Metadata;
 /// ```
 #[cfg(feature = "npy")]
 pub fn delete_from_index(doc_ids: &[i64], index_path: &str) -> Result<usize> {
-    use crate::lock::IndexLockGuard;
-
-    let index_dir = Path::new(index_path);
-
-    // Acquire exclusive lock to prevent concurrent modifications
-    let _lock = IndexLockGuard::acquire(index_dir)?;
-
-    delete_from_index_unlocked(doc_ids, index_path)
-}
-
-/// Internal version without locking - for use by methods that already hold the lock.
-#[cfg(feature = "npy")]
-pub(crate) fn delete_from_index_unlocked(doc_ids: &[i64], index_path: &str) -> Result<usize> {
     use ndarray_npy::{ReadNpyExt, WriteNpyExt};
 
     let index_dir = Path::new(index_path);
