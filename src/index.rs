@@ -891,6 +891,62 @@ impl Index {
         Ok(())
     }
 
+    /// Update an existing index or create a new one if it doesn't exist.
+    ///
+    /// This is a convenience method that:
+    /// 1. Checks if an index exists at the given path
+    /// 2. If not, creates a new index with `create_with_kmeans`
+    /// 3. If yes, loads the index and calls `update`
+    ///
+    /// # Arguments
+    ///
+    /// * `embeddings` - Document embeddings to add
+    /// * `index_path` - Directory for the index
+    /// * `index_config` - Configuration for index creation (used if creating new)
+    /// * `update_config` - Configuration for updates (used if updating existing)
+    ///
+    /// # Returns
+    ///
+    /// The created or updated Index.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use lategrep::{Index, IndexConfig, UpdateConfig};
+    ///
+    /// let embeddings: Vec<Array2<f32>> = load_embeddings();
+    /// let index_config = IndexConfig::default();
+    /// let update_config = UpdateConfig::default();
+    ///
+    /// // Creates index if it doesn't exist, otherwise updates it
+    /// let index = Index::update_or_create(
+    ///     &embeddings,
+    ///     "path/to/index",
+    ///     &index_config,
+    ///     &update_config,
+    /// )?;
+    /// ```
+    #[cfg(feature = "npy")]
+    pub fn update_or_create(
+        embeddings: &[Array2<f32>],
+        index_path: &str,
+        index_config: &IndexConfig,
+        update_config: &crate::update::UpdateConfig,
+    ) -> Result<Self> {
+        let index_dir = std::path::Path::new(index_path);
+        let metadata_path = index_dir.join("metadata.json");
+
+        if metadata_path.exists() {
+            // Index exists, load and update
+            let mut index = Self::load(index_path)?;
+            index.update(embeddings, update_config)?;
+            Ok(index)
+        } else {
+            // Index doesn't exist, create new
+            Self::create_with_kmeans(embeddings, index_path, index_config)
+        }
+    }
+
     /// Simple update without buffer mechanism.
     ///
     /// This directly adds documents to the index without centroid expansion
@@ -1477,5 +1533,108 @@ mod tests {
         assert_eq!(config.nbits, 4);
         assert_eq!(config.batch_size, 50_000);
         assert_eq!(config.seed, Some(42));
+    }
+
+    #[test]
+    #[cfg(feature = "npy")]
+    fn test_update_or_create_new_index() {
+        use ndarray::Array2;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let index_path = temp_dir.path().to_str().unwrap();
+
+        // Create test embeddings (5 documents)
+        let mut embeddings: Vec<Array2<f32>> = Vec::new();
+        for i in 0..5 {
+            let mut doc = Array2::<f32>::zeros((5, 32));
+            for j in 0..5 {
+                for k in 0..32 {
+                    doc[[j, k]] = (i as f32 * 0.1) + (j as f32 * 0.01) + (k as f32 * 0.001);
+                }
+            }
+            // Normalize rows
+            for mut row in doc.rows_mut() {
+                let norm: f32 = row.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm > 0.0 {
+                    row.iter_mut().for_each(|x| *x /= norm);
+                }
+            }
+            embeddings.push(doc);
+        }
+
+        let index_config = IndexConfig {
+            nbits: 2,
+            batch_size: 50,
+            seed: Some(42),
+            kmeans_niters: 2,
+            ..Default::default()
+        };
+        let update_config = crate::update::UpdateConfig::default();
+
+        // Index doesn't exist - should create new
+        let index = Index::update_or_create(&embeddings, index_path, &index_config, &update_config)
+            .expect("Failed to create index");
+
+        assert_eq!(index.metadata.num_documents, 5);
+
+        // Verify index was created
+        assert!(temp_dir.path().join("metadata.json").exists());
+        assert!(temp_dir.path().join("centroids.npy").exists());
+    }
+
+    #[test]
+    #[cfg(feature = "npy")]
+    fn test_update_or_create_existing_index() {
+        use ndarray::Array2;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let index_path = temp_dir.path().to_str().unwrap();
+
+        // Helper to create embeddings
+        let create_embeddings = |count: usize, offset: usize| -> Vec<Array2<f32>> {
+            let mut embeddings = Vec::new();
+            for i in 0..count {
+                let mut doc = Array2::<f32>::zeros((5, 32));
+                for j in 0..5 {
+                    for k in 0..32 {
+                        doc[[j, k]] =
+                            ((i + offset) as f32 * 0.1) + (j as f32 * 0.01) + (k as f32 * 0.001);
+                    }
+                }
+                for mut row in doc.rows_mut() {
+                    let norm: f32 = row.iter().map(|x| x * x).sum::<f32>().sqrt();
+                    if norm > 0.0 {
+                        row.iter_mut().for_each(|x| *x /= norm);
+                    }
+                }
+                embeddings.push(doc);
+            }
+            embeddings
+        };
+
+        let index_config = IndexConfig {
+            nbits: 2,
+            batch_size: 50,
+            seed: Some(42),
+            kmeans_niters: 2,
+            ..Default::default()
+        };
+        let update_config = crate::update::UpdateConfig::default();
+
+        // First call - creates index with 5 documents
+        let embeddings1 = create_embeddings(5, 0);
+        let index1 =
+            Index::update_or_create(&embeddings1, index_path, &index_config, &update_config)
+                .expect("Failed to create index");
+        assert_eq!(index1.metadata.num_documents, 5);
+
+        // Second call - updates existing index with 3 more documents
+        let embeddings2 = create_embeddings(3, 5);
+        let index2 =
+            Index::update_or_create(&embeddings2, index_path, &index_config, &update_config)
+                .expect("Failed to update index");
+        assert_eq!(index2.metadata.num_documents, 8);
     }
 }

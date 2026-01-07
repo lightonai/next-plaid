@@ -22,6 +22,10 @@ pub enum ApiError {
     #[error("Index already exists: {0}")]
     IndexAlreadyExists(String),
 
+    /// Index not declared (must call create first)
+    #[error("Index not declared: {0}. Call POST /indices first to declare the index.")]
+    IndexNotDeclared(String),
+
     /// Invalid request parameters
     #[error("Invalid request: {0}")]
     BadRequest(String),
@@ -81,6 +85,14 @@ impl IntoResponse for ApiError {
             ApiError::IndexAlreadyExists(msg) => {
                 (StatusCode::CONFLICT, "INDEX_ALREADY_EXISTS", msg.clone())
             }
+            ApiError::IndexNotDeclared(msg) => (
+                StatusCode::NOT_FOUND,
+                "INDEX_NOT_DECLARED",
+                format!(
+                    "Index '{}' not declared. Call POST /indices first to declare the index.",
+                    msg
+                ),
+            ),
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
             ApiError::DocumentNotFound(msg) => {
                 (StatusCode::NOT_FOUND, "DOCUMENT_NOT_FOUND", msg.clone())

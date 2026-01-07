@@ -9,17 +9,15 @@ use utoipa::ToSchema;
 // Index Management
 // =============================================================================
 
-/// Request to create a new index.
+/// Request to create/declare a new index.
+///
+/// This only declares the index with its configuration. Use the update endpoint
+/// to add documents to the index.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateIndexRequest {
     /// Name/identifier for the index
     #[schema(example = "my_index")]
     pub name: String,
-    /// Initial document embeddings
-    pub documents: Vec<DocumentEmbeddings>,
-    /// Optional metadata for initial documents (must match documents length)
-    #[serde(default)]
-    pub metadata: Option<Vec<serde_json::Value>>,
     /// Index configuration
     #[serde(default)]
     pub config: IndexConfigRequest,
@@ -42,24 +40,31 @@ pub struct IndexConfigRequest {
     pub seed: Option<u64>,
 }
 
-/// Response after creating an index.
+/// Response after declaring an index.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateIndexResponse {
     /// Index name
     #[schema(example = "my_index")]
     pub name: String,
-    /// Number of documents indexed
-    #[schema(example = 1000)]
-    pub num_documents: usize,
-    /// Number of embeddings (tokens)
+    /// Index configuration that was stored
+    pub config: IndexConfigStored,
+    /// Message indicating next steps
+    #[schema(example = "Index declared. Use POST /indices/{name}/update to add documents.")]
+    pub message: String,
+}
+
+/// Stored index configuration.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct IndexConfigStored {
+    /// Number of bits for quantization (2 or 4)
+    #[schema(example = 4)]
+    pub nbits: usize,
+    /// Batch size for processing
     #[schema(example = 50000)]
-    pub num_embeddings: usize,
-    /// Number of centroids
-    #[schema(example = 512)]
-    pub num_partitions: usize,
-    /// Embedding dimension
-    #[schema(example = 128)]
-    pub dimension: usize,
+    pub batch_size: usize,
+    /// Random seed for reproducibility
+    #[schema(example = 42)]
+    pub seed: Option<u64>,
 }
 
 /// Index status/info response.
@@ -372,6 +377,78 @@ pub struct HealthResponse {
     /// Number of loaded indices
     #[schema(example = 2)]
     pub loaded_indices: usize,
+    /// Index directory path
+    #[schema(example = "./indices")]
+    pub index_dir: String,
+    /// List of available indices with their configuration
+    pub indices: Vec<IndexSummary>,
+}
+
+/// Summary information about an index.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct IndexSummary {
+    /// Index name
+    #[schema(example = "my_index")]
+    pub name: String,
+    /// Number of documents
+    #[schema(example = 1000)]
+    pub num_documents: usize,
+    /// Number of embeddings (tokens)
+    #[schema(example = 50000)]
+    pub num_embeddings: usize,
+    /// Number of centroids (partitions)
+    #[schema(example = 512)]
+    pub num_partitions: usize,
+    /// Embedding dimension
+    #[schema(example = 128)]
+    pub dimension: usize,
+    /// Number of bits for quantization (2 or 4)
+    #[schema(example = 4)]
+    pub nbits: usize,
+    /// Average document length
+    #[schema(example = 50.0)]
+    pub avg_doclen: f64,
+    /// Whether metadata database exists
+    #[schema(example = true)]
+    pub has_metadata: bool,
+}
+
+/// Request to update an index by adding documents.
+///
+/// The index must have been declared first via `POST /indices`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateIndexRequest {
+    /// Document embeddings to add
+    pub documents: Vec<DocumentEmbeddings>,
+    /// Optional metadata for each document (must match documents length)
+    #[serde(default)]
+    pub metadata: Option<Vec<serde_json::Value>>,
+}
+
+/// Response after updating or creating an index.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct UpdateIndexResponse {
+    /// Index name
+    #[schema(example = "my_index")]
+    pub name: String,
+    /// Whether a new index was created (true) or existing index was updated (false)
+    #[schema(example = false)]
+    pub created: bool,
+    /// Number of documents added
+    #[schema(example = 10)]
+    pub documents_added: usize,
+    /// Total number of documents after update
+    #[schema(example = 1010)]
+    pub total_documents: usize,
+    /// Number of embeddings (tokens)
+    #[schema(example = 50500)]
+    pub num_embeddings: usize,
+    /// Number of centroids
+    #[schema(example = 512)]
+    pub num_partitions: usize,
+    /// Embedding dimension
+    #[schema(example = 128)]
+    pub dimension: usize,
 }
 
 // =============================================================================

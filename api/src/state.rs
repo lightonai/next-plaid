@@ -222,4 +222,54 @@ impl AppState {
     pub fn loaded_count(&self) -> usize {
         self.indices.read().len()
     }
+
+    /// Get summary information for all indices on disk.
+    pub fn get_all_index_summaries(&self) -> Vec<crate::models::IndexSummary> {
+        let mut summaries = Vec::new();
+
+        for name in self.list_all() {
+            if let Ok(summary) = self.get_index_summary(&name) {
+                summaries.push(summary);
+            }
+        }
+
+        summaries
+    }
+
+    /// Get summary information for a specific index.
+    pub fn get_index_summary(
+        &self,
+        name: &str,
+    ) -> crate::error::ApiResult<crate::models::IndexSummary> {
+        let path = self.index_path(name);
+        let path_str = path.to_string_lossy().to_string();
+
+        // Try to load metadata from disk
+        let metadata_path = path.join("metadata.json");
+        if !metadata_path.exists() {
+            return Err(crate::error::ApiError::IndexNotFound(name.to_string()));
+        }
+
+        // Read metadata.json directly to avoid loading the full index
+        let metadata_file = std::fs::File::open(&metadata_path).map_err(|e| {
+            crate::error::ApiError::Internal(format!("Failed to open metadata: {}", e))
+        })?;
+
+        let metadata: serde_json::Value = serde_json::from_reader(metadata_file).map_err(|e| {
+            crate::error::ApiError::Internal(format!("Failed to parse metadata: {}", e))
+        })?;
+
+        let has_metadata = lategrep::filtering::exists(&path_str);
+
+        Ok(crate::models::IndexSummary {
+            name: name.to_string(),
+            num_documents: metadata["num_documents"].as_u64().unwrap_or(0) as usize,
+            num_embeddings: metadata["num_embeddings"].as_u64().unwrap_or(0) as usize,
+            num_partitions: metadata["num_partitions"].as_u64().unwrap_or(0) as usize,
+            dimension: metadata["embedding_dim"].as_u64().unwrap_or(0) as usize,
+            nbits: metadata["nbits"].as_u64().unwrap_or(4) as usize,
+            avg_doclen: metadata["avg_doclen"].as_f64().unwrap_or(0.0),
+            has_metadata,
+        })
+    }
 }

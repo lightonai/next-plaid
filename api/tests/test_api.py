@@ -206,21 +206,34 @@ def test_metadata():
 
 @pytest.fixture(scope="module")
 def created_index(api_client, test_documents, test_metadata):
-    """Create a test index and clean up after tests."""
+    """Create a test index and clean up after tests.
+
+    Uses two-phase workflow:
+    1. Declare index with config
+    2. Update to add documents
+    """
     # Delete if exists from previous run
     requests.delete(f"{api_client}/indices/{TEST_INDEX_NAME}")
 
-    # Create index
+    # Step 1: Declare index with config
     response = requests.post(
         f"{api_client}/indices",
         json={
             "name": TEST_INDEX_NAME,
-            "documents": test_documents,
-            "metadata": test_metadata,
             "config": {"nbits": 4, "batch_size": 50000},
         },
     )
-    assert response.status_code == 200, f"Failed to create index: {response.text}"
+    assert response.status_code == 200, f"Failed to declare index: {response.text}"
+
+    # Step 2: Update to add documents
+    response = requests.post(
+        f"{api_client}/indices/{TEST_INDEX_NAME}/update",
+        json={
+            "documents": test_documents,
+            "metadata": test_metadata,
+        },
+    )
+    assert response.status_code == 200, f"Failed to update index: {response.text}"
     result = response.json()
 
     yield result
@@ -263,12 +276,14 @@ class TestIndexManagement:
     """Tests for index creation, listing, and deletion."""
 
     def test_create_index(self, created_index):
-        """Test index creation returns correct info."""
+        """Test index creation via two-phase workflow returns correct info."""
         assert created_index["name"] == TEST_INDEX_NAME
-        assert created_index["num_documents"] == NUM_DOCUMENTS
+        assert created_index["total_documents"] == NUM_DOCUMENTS
+        assert created_index["documents_added"] == NUM_DOCUMENTS
         assert created_index["num_embeddings"] == NUM_DOCUMENTS * TOKENS_PER_DOCUMENT
         assert created_index["dimension"] == EMBEDDING_DIM
         assert created_index["num_partitions"] > 0
+        assert created_index["created"] is True  # First update creates the index
 
     def test_list_indices(self, api_client, created_index):
         """Test listing all indices includes our test index."""
@@ -295,21 +310,24 @@ class TestIndexManagement:
         response = requests.get(f"{api_client}/indices/nonexistent_index_xyz")
         assert response.status_code == 404
 
-    def test_create_duplicate_index_fails(self, api_client, created_index, test_documents):
-        """Test creating an index with same name fails."""
+    def test_create_duplicate_index_fails(self, api_client, created_index):
+        """Test declaring an index with same name fails."""
         response = requests.post(
             f"{api_client}/indices",
-            json={"name": TEST_INDEX_NAME, "documents": test_documents[:1]},
+            json={"name": TEST_INDEX_NAME, "config": {"nbits": 4}},
         )
         assert response.status_code == 409  # Conflict
 
-    def test_create_index_empty_documents_fails(self, api_client):
-        """Test creating an index with no documents fails."""
+    def test_update_without_declare_fails(self, api_client):
+        """Test that updating an undeclared index fails."""
+        np.random.seed(999)
+        docs = [{"embeddings": generate_normalized_embeddings(30)}]
         response = requests.post(
-            f"{api_client}/indices",
-            json={"name": "empty_test_index", "documents": []},
+            f"{api_client}/indices/undeclared_test_index/update",
+            json={"documents": docs},
         )
-        assert response.status_code == 400
+        # Should fail because index was not declared via POST /indices
+        assert response.status_code == 404
 
 
 # -----------------------------------------------------------------------------
@@ -874,14 +892,21 @@ class TestIntegration:
     """End-to-end integration tests."""
 
     def test_full_workflow(self, api_client):
-        """Test complete workflow: create, search, filter, delete."""
+        """Test complete workflow: declare, update, search, filter, delete."""
         index_name = "integration_test_index"
         np.random.seed(500)
 
         # Clean up any existing index
         requests.delete(f"{api_client}/indices/{index_name}")
 
-        # 1. Create index
+        # 1. Declare index
+        response = requests.post(
+            f"{api_client}/indices",
+            json={"name": index_name, "config": {"nbits": 4}},
+        )
+        assert response.status_code == 200
+
+        # 2. Update with documents
         docs = [{"embeddings": generate_normalized_embeddings(30)} for _ in range(5)]
         metadata = [
             {"title": f"Doc {i}", "category": "A" if i < 3 else "B", "score": i * 10}
@@ -889,12 +914,13 @@ class TestIntegration:
         ]
 
         response = requests.post(
-            f"{api_client}/indices",
-            json={"name": index_name, "documents": docs, "metadata": metadata},
+            f"{api_client}/indices/{index_name}/update",
+            json={"documents": docs, "metadata": metadata},
         )
         assert response.status_code == 200
+        assert response.json()["created"] is True
 
-        # 2. Basic search
+        # 3. Basic search
         query = generate_normalized_embeddings(8)
         response = requests.post(
             f"{api_client}/indices/{index_name}/search",
@@ -903,7 +929,7 @@ class TestIntegration:
         assert response.status_code == 200
         assert len(response.json()["results"][0]["document_ids"]) == 3
 
-        # 3. Filtered search
+        # 4. Filtered search
         response = requests.post(
             f"{api_client}/indices/{index_name}/search/filtered",
             json={
@@ -920,7 +946,7 @@ class TestIntegration:
         assert len(result["document_ids"]) <= 3
         assert all(doc_id < 3 for doc_id in result["document_ids"])
 
-        # 4. Add documents
+        # 5. Add documents
         new_docs = [{"embeddings": generate_normalized_embeddings(30)}]
         new_metadata = [{"title": "New Doc", "category": "C", "score": 100}]
         response = requests.post(
@@ -930,7 +956,7 @@ class TestIntegration:
         assert response.status_code == 200
         assert response.json()["total_documents"] == 6
 
-        # 5. Cleanup
+        # 6. Cleanup
         response = requests.delete(f"{api_client}/indices/{index_name}")
         assert response.status_code == 200
 

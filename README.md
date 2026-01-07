@@ -21,32 +21,32 @@ Lategrep achieves **faster indexing than FastPlaid** on CPU with BLAS accelerati
 
 ### SciFact Benchmark (5,183 documents, 1.2M tokens)
 
-| Operation | Lategrep | FastPlaid | Speedup |
-|-----------|----------|-----------|---------|
-| Index + Update (batch=800) | **12.19s** | 19.46s | **1.60x faster** |
-| Search (300 queries) | **16.38s** | 85.85s | **5.2x faster** |
-| **Total** | **28.57s** | 105.31s | **3.7x faster** |
+| Operation                  | Lategrep   | FastPlaid | Speedup          |
+| -------------------------- | ---------- | --------- | ---------------- |
+| Index + Update (batch=800) | **12.19s** | 19.46s    | **1.60x faster** |
+| Search (300 queries)       | **16.38s** | 85.85s    | **5.2x faster**  |
+| **Total**                  | **28.57s** | 105.31s   | **3.7x faster**  |
 
 ### Retrieval Quality
 
 Both implementations achieve equivalent retrieval quality:
 
-| Metric | Lategrep | FastPlaid | Difference |
-|--------|----------|-----------|------------|
-| MAP | 0.7077 | 0.7114 | -0.5% |
-| NDCG@10 | 0.7439 | 0.7464 | -0.3% |
-| Recall@100 | 95.93% | 95.60% | +0.3% |
-| Result Overlap @100 | 87.6% | - | - |
+| Metric              | Lategrep | FastPlaid | Difference |
+| ------------------- | -------- | --------- | ---------- |
+| MAP                 | 0.7077   | 0.7114    | -0.5%      |
+| NDCG@10             | 0.7439   | 0.7464    | -0.3%      |
+| Recall@100          | 95.93%   | 95.60%    | +0.3%      |
+| Result Overlap @100 | 87.6%    | -         | -          |
 
 ### Memory Usage
 
 Lategrep uses significantly less memory than FastPlaid:
 
-| Operation | Lategrep | FastPlaid | Savings |
-|-----------|----------|-----------|---------|
-| Index + Update | **473 MB** | 3,317 MB | **86% less** |
-| Search | **480 MB** | 3,361 MB | **86% less** |
-| **Peak** | **480 MB** | 3,361 MB | **86% less** |
+| Operation      | Lategrep   | FastPlaid | Savings      |
+| -------------- | ---------- | --------- | ------------ |
+| Index + Update | **473 MB** | 3,317 MB  | **86% less** |
+| Search         | **480 MB** | 3,361 MB  | **86% less** |
+| **Peak**       | **480 MB** | 3,361 MB  | **86% less** |
 
 Run the benchmark yourself:
 
@@ -75,12 +75,14 @@ lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy"] }
 For optimal performance, enable BLAS acceleration:
 
 **macOS (Apple Accelerate framework):**
+
 ```toml
 [dependencies]
 lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy", "accelerate"] }
 ```
 
 **Linux (OpenBLAS):**
+
 ```toml
 [dependencies]
 lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy", "openblas"] }
@@ -151,6 +153,29 @@ let config = IndexConfig {
 
 let index = Index::create(&embeddings, centroids, "path/to/index", &config)?;
 ```
+
+### Update or Create Index
+
+For convenience, you can use `update_or_create` which automatically creates a new index if it doesn't exist, or updates an existing one:
+
+```rust
+use lategrep::{Index, IndexConfig, UpdateConfig};
+use ndarray::Array2;
+
+let embeddings: Vec<Array2<f32>> = load_embeddings();
+let index_config = IndexConfig::default();
+let update_config = UpdateConfig::default();
+
+// Creates index if it doesn't exist, otherwise updates it
+let index = Index::update_or_create(
+    &embeddings,
+    "path/to/index",
+    &index_config,
+    &update_config,
+)?;
+```
+
+This is useful for incremental indexing pipelines where you want to add documents without checking if the index exists first.
 
 ### Searching
 
@@ -361,6 +386,7 @@ make compare-scifact-cached     # Quick retrieval quality comparison
 Lategrep implements the PLAID (Passage-Level Aligned Interaction with Documents) algorithm:
 
 1. **Index Creation**:
+
    - Compute K-means centroids on all token embeddings
    - For each document, assign tokens to nearest centroids (codes)
    - Compute and quantize residuals (difference from centroids)

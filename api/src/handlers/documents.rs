@@ -16,7 +16,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::models::{
     AddDocumentsRequest, AddDocumentsResponse, CreateIndexRequest, CreateIndexResponse,
     DeleteDocumentsRequest, DeleteDocumentsResponse, DeleteIndexResponse, DocumentEmbeddings,
-    ErrorResponse, IndexInfoResponse,
+    ErrorResponse, IndexConfigStored, IndexInfoResponse, UpdateIndexRequest, UpdateIndexResponse,
 };
 use crate::state::{AppState, LoadedIndex};
 
@@ -51,14 +51,17 @@ fn to_ndarray(doc: &DocumentEmbeddings) -> ApiResult<Array2<f32>> {
         .map_err(|e| ApiError::BadRequest(format!("Failed to create array: {}", e)))
 }
 
-/// Create a new index with initial documents.
+/// Declare a new index with its configuration.
+///
+/// This only declares the index and stores its configuration.
+/// Use `POST /indices/{name}/update` to add documents to the index.
 #[utoipa::path(
     post,
     path = "/indices",
     tag = "indices",
     request_body = CreateIndexRequest,
     responses(
-        (status = 200, description = "Index created successfully", body = CreateIndexResponse),
+        (status = 200, description = "Index declared successfully", body = CreateIndexResponse),
         (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 409, description = "Index already exists", body = ErrorResponse)
     )
@@ -74,78 +77,35 @@ pub async fn create_index(
         ));
     }
 
-    // Check if index already exists
-    if state.index_exists_on_disk(&req.name) {
+    // Check if index already exists (either declared or populated)
+    let index_path = state.index_path(&req.name);
+    if index_path.join("config.json").exists() || index_path.join("metadata.json").exists() {
         return Err(ApiError::IndexAlreadyExists(req.name.clone()));
     }
 
-    // Convert embeddings
-    let embeddings: Vec<Array2<f32>> = req
-        .documents
-        .iter()
-        .map(to_ndarray)
-        .collect::<ApiResult<Vec<_>>>()?;
-
-    if embeddings.is_empty() {
-        return Err(ApiError::BadRequest(
-            "At least one document is required to create an index".to_string(),
-        ));
-    }
-
-    // Validate metadata length if provided
-    if let Some(ref meta) = req.metadata {
-        if meta.len() != embeddings.len() {
-            return Err(ApiError::BadRequest(format!(
-                "Metadata length ({}) must match documents length ({})",
-                meta.len(),
-                embeddings.len()
-            )));
-        }
-    }
-
-    // Get dimension from first document
-    let dimension = embeddings[0].ncols();
-
-    // Build config
-    let config = IndexConfig {
+    // Build stored config
+    let stored_config = IndexConfigStored {
         nbits: req.config.nbits.unwrap_or(4),
         batch_size: req.config.batch_size.unwrap_or(50_000),
         seed: req.config.seed,
-        ..Default::default()
     };
 
-    // Create index
-    let index_path = state.index_path(&req.name);
-    let path_str = index_path.to_string_lossy().to_string();
+    // Create index directory
+    std::fs::create_dir_all(&index_path)
+        .map_err(|e| ApiError::Internal(format!("Failed to create index directory: {}", e)))?;
 
-    let index = Index::create_with_kmeans(&embeddings, &path_str, &config)
-        .map_err(|e| ApiError::IndexCreationError(e.to_string()))?;
+    // Store config.json
+    let config_path = index_path.join("config.json");
+    let config_file = std::fs::File::create(&config_path)
+        .map_err(|e| ApiError::Internal(format!("Failed to create config file: {}", e)))?;
+    serde_json::to_writer_pretty(config_file, &stored_config)
+        .map_err(|e| ApiError::Internal(format!("Failed to write config: {}", e)))?;
 
-    // Create metadata if provided
-    if let Some(meta) = req.metadata {
-        filtering::create(&path_str, &meta).map_err(|e| {
-            ApiError::IndexCreationError(format!("Failed to create metadata: {}", e))
-        })?;
-    }
-
-    let response = CreateIndexResponse {
-        name: req.name.clone(),
-        num_documents: index.metadata.num_documents,
-        num_embeddings: index.metadata.num_embeddings,
-        num_partitions: index.metadata.num_partitions,
-        dimension,
-    };
-
-    // Register the index
-    let loaded = if state.config.use_mmap {
-        let mmap_idx = MmapIndex::load(&path_str)?;
-        LoadedIndex::Mmap(mmap_idx)
-    } else {
-        LoadedIndex::Regular(index)
-    };
-    state.register_index(&req.name, loaded);
-
-    Ok(Json(response))
+    Ok(Json(CreateIndexResponse {
+        name: req.name,
+        config: stored_config,
+        message: "Index declared. Use POST /indices/{name}/update to add documents.".to_string(),
+    }))
 }
 
 /// Get information about a specific index.
@@ -363,4 +323,133 @@ pub async fn delete_index(
         deleted: true,
         name,
     }))
+}
+
+/// Update an index by adding documents.
+///
+/// The index must have been declared first via `POST /indices`.
+/// If this is the first update, creates the actual index files.
+/// Subsequent updates add documents to the existing index.
+#[utoipa::path(
+    post,
+    path = "/indices/{name}/update",
+    tag = "indices",
+    params(
+        ("name" = String, Path, description = "Index name")
+    ),
+    request_body = UpdateIndexRequest,
+    responses(
+        (status = 200, description = "Index updated successfully", body = UpdateIndexResponse),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Index not declared", body = ErrorResponse)
+    )
+)]
+pub async fn update_index(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(req): Json<UpdateIndexRequest>,
+) -> ApiResult<Json<UpdateIndexResponse>> {
+    // Validate name
+    if name.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Index name cannot be empty".to_string(),
+        ));
+    }
+
+    // Get index path
+    let index_path = state.index_path(&name);
+    let path_str = index_path.to_string_lossy().to_string();
+
+    // Check if index was declared (config.json must exist)
+    let config_path = index_path.join("config.json");
+    if !config_path.exists() {
+        return Err(ApiError::IndexNotDeclared(name));
+    }
+
+    // Load stored config
+    let config_file = std::fs::File::open(&config_path)
+        .map_err(|e| ApiError::Internal(format!("Failed to open config: {}", e)))?;
+    let stored_config: IndexConfigStored = serde_json::from_reader(config_file)
+        .map_err(|e| ApiError::Internal(format!("Failed to parse config: {}", e)))?;
+
+    // Convert embeddings
+    let embeddings: Vec<Array2<f32>> = req
+        .documents
+        .iter()
+        .map(to_ndarray)
+        .collect::<ApiResult<Vec<_>>>()?;
+
+    if embeddings.is_empty() {
+        return Err(ApiError::BadRequest(
+            "At least one document is required".to_string(),
+        ));
+    }
+
+    // Validate metadata length if provided
+    if let Some(ref meta) = req.metadata {
+        if meta.len() != embeddings.len() {
+            return Err(ApiError::BadRequest(format!(
+                "Metadata length ({}) must match documents length ({})",
+                meta.len(),
+                embeddings.len()
+            )));
+        }
+    }
+
+    // Get dimension from first document
+    let dimension = embeddings[0].ncols();
+    let documents_added = embeddings.len();
+
+    // Check if this is first update (no metadata.json yet = index not populated)
+    let created = !index_path.join("metadata.json").exists();
+
+    // Build IndexConfig from stored config
+    let index_config = IndexConfig {
+        nbits: stored_config.nbits,
+        batch_size: stored_config.batch_size,
+        seed: stored_config.seed,
+        ..Default::default()
+    };
+    let update_config = UpdateConfig::default();
+
+    // Use update_or_create
+    let index = Index::update_or_create(&embeddings, &path_str, &index_config, &update_config)
+        .map_err(|e| ApiError::IndexCreationError(e.to_string()))?;
+
+    // Handle metadata
+    if let Some(meta) = req.metadata {
+        if filtering::exists(&path_str) {
+            // Update existing metadata database
+            filtering::update(&path_str, &meta).map_err(|e| {
+                ApiError::IndexCreationError(format!("Failed to update metadata: {}", e))
+            })?;
+        } else {
+            // Create new metadata database
+            filtering::create(&path_str, &meta).map_err(|e| {
+                ApiError::IndexCreationError(format!("Failed to create metadata: {}", e))
+            })?;
+        }
+    }
+
+    let response = UpdateIndexResponse {
+        name: name.clone(),
+        created,
+        documents_added,
+        total_documents: index.metadata.num_documents,
+        num_embeddings: index.metadata.num_embeddings,
+        num_partitions: index.metadata.num_partitions,
+        dimension,
+    };
+
+    // Register/reload the index in state
+    state.unload_index(&name);
+    let loaded = if state.config.use_mmap {
+        let mmap_idx = MmapIndex::load(&path_str)?;
+        LoadedIndex::Mmap(mmap_idx)
+    } else {
+        LoadedIndex::Regular(index)
+    };
+    state.register_index(&name, loaded);
+
+    Ok(Json(response))
 }

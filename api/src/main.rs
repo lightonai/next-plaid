@@ -83,6 +83,7 @@ use state::{ApiConfig, AppState};
         handlers::documents::delete_index,
         handlers::documents::add_documents,
         handlers::documents::delete_documents,
+        handlers::documents::update_index,
         handlers::search::search,
         handlers::search::search_filtered,
         handlers::metadata::get_all_metadata,
@@ -94,10 +95,12 @@ use state::{ApiConfig, AppState};
     ),
     components(schemas(
         models::HealthResponse,
+        models::IndexSummary,
         models::ErrorResponse,
         models::CreateIndexRequest,
         models::CreateIndexResponse,
         models::IndexConfigRequest,
+        models::IndexConfigStored,
         models::IndexInfoResponse,
         models::DocumentEmbeddings,
         models::AddDocumentsRequest,
@@ -105,6 +108,8 @@ use state::{ApiConfig, AppState};
         models::DeleteDocumentsRequest,
         models::DeleteDocumentsResponse,
         models::DeleteIndexResponse,
+        models::UpdateIndexRequest,
+        models::UpdateIndexResponse,
         models::QueryEmbeddings,
         models::SearchRequest,
         models::SearchParamsRequest,
@@ -124,7 +129,10 @@ use state::{ApiConfig, AppState};
 )]
 struct ApiDoc;
 
-/// Health check endpoint.
+/// Health check and root endpoint.
+///
+/// Returns service status, version, index directory path, and a list of all available
+/// indices with their configuration (nbits, num_documents, dimension, etc.).
 #[utoipa::path(
     get,
     path = "/health",
@@ -134,10 +142,17 @@ struct ApiDoc;
     )
 )]
 async fn health(state: axum::extract::State<Arc<AppState>>) -> Json<HealthResponse> {
+    // Ensure index directory exists
+    if !state.config.index_dir.exists() {
+        std::fs::create_dir_all(&state.config.index_dir).ok();
+    }
+
     Json(HealthResponse {
         status: "healthy".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         loaded_indices: state.loaded_count(),
+        index_dir: state.config.index_dir.to_string_lossy().to_string(),
+        indices: state.get_all_index_summaries(),
     })
 }
 
@@ -162,6 +177,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/indices/{name}/documents",
             post(handlers::add_documents).delete(handlers::delete_documents),
         )
+        .route("/indices/{name}/update", post(handlers::update_index))
         .route("/indices/{name}/search", post(handlers::search))
         .route(
             "/indices/{name}/search/filtered",

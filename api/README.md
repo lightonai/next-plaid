@@ -4,7 +4,8 @@ A REST API for deploying and querying lategrep multi-vector search indices.
 
 ## Features
 
-- **Index Management**: Create, load, and delete indices
+- **Index Management**: Declare, update, load, and delete indices
+- **Two-Phase Creation**: Declare index configuration first, then add documents via update
 - **Document Upload**: Add documents with embeddings and metadata
 - **Search**: Single and batch query search with optional metadata filtering
 - **Metadata**: SQLite-based metadata storage with SQL query support
@@ -94,9 +95,24 @@ Response:
 {
   "status": "healthy",
   "version": "0.1.0",
-  "loaded_indices": 2
+  "loaded_indices": 2,
+  "index_dir": "./indices",
+  "indices": [
+    {
+      "name": "my_index",
+      "num_documents": 1000,
+      "num_embeddings": 50000,
+      "num_partitions": 512,
+      "dimension": 128,
+      "nbits": 4,
+      "avg_doclen": 50.0,
+      "has_metadata": true
+    }
+  ]
 }
 ```
+
+The health endpoint also ensures the index directory exists and returns a summary of all available indices with their configuration.
 
 ### Index Management
 
@@ -112,7 +128,9 @@ Response:
 ["my_index", "another_index"]
 ```
 
-#### Create Index
+#### Declare Index (Create)
+
+Declares an index with its configuration. This does NOT create the actual index yet - use the Update endpoint to add documents and create the index.
 
 ```
 POST /indices
@@ -123,14 +141,6 @@ Request:
 ```json
 {
   "name": "my_index",
-  "documents": [
-    {"embeddings": [[0.1, 0.2, ...], [0.3, 0.4, ...]]},
-    {"embeddings": [[0.5, 0.6, ...]]}
-  ],
-  "metadata": [
-    {"title": "Doc 1", "category": "science"},
-    {"title": "Doc 2", "category": "history"}
-  ],
   "config": {
     "nbits": 4,
     "batch_size": 50000
@@ -143,10 +153,12 @@ Response:
 ```json
 {
   "name": "my_index",
-  "num_documents": 2,
-  "num_embeddings": 3,
-  "num_partitions": 16,
-  "dimension": 128
+  "config": {
+    "nbits": 4,
+    "batch_size": 50000,
+    "seed": null
+  },
+  "message": "Index declared. Use POST /indices/my_index/update to add documents."
 }
 ```
 
@@ -175,6 +187,57 @@ Response:
 
 ```
 DELETE /indices/{name}
+```
+
+#### Update Index (Add Documents)
+
+Adds documents to an index. The index must be declared first via `POST /indices`. On the first update, the actual search index is created. Subsequent updates add documents incrementally.
+
+**Important**: The index configuration (nbits, batch_size, etc.) is taken from the stored config set during declaration. You cannot change the config after declaration.
+
+```
+POST /indices/{name}/update
+```
+
+Request:
+
+```json
+{
+  "documents": [
+    {"embeddings": [[0.1, 0.2, ...], [0.3, 0.4, ...]]},
+    {"embeddings": [[0.5, 0.6, ...]]}
+  ],
+  "metadata": [
+    {"title": "Doc 1", "category": "science"},
+    {"title": "Doc 2", "category": "history"}
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "name": "my_index",
+  "created": true,
+  "documents_added": 2,
+  "total_documents": 2,
+  "num_embeddings": 3,
+  "num_partitions": 16,
+  "dimension": 128
+}
+```
+
+The `created` field indicates whether this was the first update (index created, `true`) or a subsequent update (`false`).
+
+**Error Response (Index Not Declared)**:
+
+If you try to update an index that hasn't been declared:
+
+```json
+{
+  "error": "Index not declared: my_index. Call POST /indices first to declare the index."
+}
 ```
 
 ### Documents
@@ -493,25 +556,34 @@ for i in range(10):
 
 ### Step 3: Create the Index
 
+The index creation is a two-phase process:
+1. **Declare** the index with its configuration
+2. **Update** the index to add documents
+
 ```python
-# Create the index with documents and metadata
+# Step 3a: Declare the index with configuration
 response = requests.post(f"{API_URL}/indices", json={
     "name": "papers",
-    "documents": documents,
-    "metadata": metadata,
     "config": {
         "nbits": 4,        # 4-bit quantization (good balance of speed/accuracy)
         "batch_size": 50000  # Process up to 50k tokens per batch
     }
 })
+print(f"Declared index: {response.json()['message']}")
+
+# Step 3b: Add documents via update
+response = requests.post(f"{API_URL}/indices/papers/update", json={
+    "documents": documents,
+    "metadata": metadata
+})
 
 result = response.json()
-print(f"Created index with {result['num_documents']} documents")
+print(f"Created index with {result['total_documents']} documents")
 print(f"Total embeddings: {result['num_embeddings']}")
 print(f"Partitions (centroids): {result['num_partitions']}")
-# Created index with 100 documents
-# Total embeddings: ~4000
-# Partitions (centroids): 64
+# Created index with 10 documents
+# Total embeddings: ~400
+# Partitions (centroids): 16
 ```
 
 ### Step 4: Basic Search
@@ -710,13 +782,19 @@ def main():
             "score": i * 2
         })
 
-    # Create index
+    # Declare index (stores config only)
     resp = requests.post(f"{API_URL}/indices", json={
         "name": "tutorial_index",
+        "config": {"nbits": 4}
+    })
+    print(f"Declared index: {resp.json()['message']}")
+
+    # Add documents via update (creates the actual index)
+    resp = requests.post(f"{API_URL}/indices/tutorial_index/update", json={
         "documents": documents,
         "metadata": metadata
     })
-    print(f"Created index: {resp.json()}")
+    print(f"Created index with {resp.json()['total_documents']} documents")
 
     # Search
     query = np.random.randn(5, 128).astype(np.float32)

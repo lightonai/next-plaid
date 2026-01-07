@@ -60,6 +60,9 @@ let results = index.search_batch(&queries, &params, true)?;  // parallel=true
 // Update (incremental with buffer + centroid expansion)
 index.update(&new_embeddings, &update_config)?;
 
+// Update or create (creates index if doesn't exist, otherwise updates)
+let index = Index::update_or_create(&embeddings, "my_index", &index_config, &update_config)?;
+
 // Delete documents
 index.delete(&doc_ids)?;
 
