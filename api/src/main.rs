@@ -37,7 +37,7 @@ use std::time::Duration;
 
 use axum::{
     extract::DefaultBodyLimit,
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use tower_http::{
@@ -85,6 +85,7 @@ use state::{ApiConfig, AppState};
         handlers::documents::add_documents,
         handlers::documents::delete_documents,
         handlers::documents::update_index,
+        handlers::documents::update_index_config,
         handlers::search::search,
         handlers::search::search_filtered,
         handlers::metadata::get_all_metadata,
@@ -126,6 +127,8 @@ use state::{ApiConfig, AppState};
         models::AddMetadataRequest,
         models::AddMetadataResponse,
         models::MetadataCountResponse,
+        models::UpdateIndexConfigRequest,
+        models::UpdateIndexConfigResponse,
     ))
 )]
 struct ApiDoc;
@@ -192,6 +195,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(handlers::add_documents).delete(handlers::delete_documents),
         )
         .route("/indices/{name}/update", post(handlers::update_index))
+        .route("/indices/{name}/config", put(handlers::update_index_config))
         .route("/indices/{name}/search", post(handlers::search))
         .route(
             "/indices/{name}/search/filtered",

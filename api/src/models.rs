@@ -44,6 +44,11 @@ pub struct IndexConfigRequest {
     #[serde(default)]
     #[schema(example = 999)]
     pub start_from_scratch: Option<usize>,
+    /// Maximum number of documents to keep in the index (optional, None = unlimited)
+    /// When the limit is exceeded after adding documents, oldest documents (lowest IDs) are evicted.
+    #[serde(default)]
+    #[schema(example = 10000)]
+    pub max_documents: Option<usize>,
 }
 
 /// Response after declaring an index.
@@ -75,6 +80,10 @@ pub struct IndexConfigStored {
     #[serde(default = "default_start_from_scratch")]
     #[schema(example = 999)]
     pub start_from_scratch: usize,
+    /// Maximum number of documents to keep (None = unlimited)
+    #[serde(default)]
+    #[schema(example = 10000)]
+    pub max_documents: Option<usize>,
 }
 
 fn default_start_from_scratch() -> usize {
@@ -108,6 +117,10 @@ pub struct IndexInfoResponse {
     /// Number of metadata entries (if metadata exists)
     #[schema(example = 1000)]
     pub metadata_count: Option<usize>,
+    /// Maximum documents limit (None if unlimited)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 10000)]
+    pub max_documents: Option<usize>,
 }
 
 // =============================================================================
@@ -428,6 +441,10 @@ pub struct IndexSummary {
     /// Whether metadata database exists
     #[schema(example = true)]
     pub has_metadata: bool,
+    /// Maximum documents limit (None if unlimited)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 10000)]
+    pub max_documents: Option<usize>,
 }
 
 /// Request to update an index by adding documents.
@@ -466,6 +483,33 @@ pub struct UpdateIndexResponse {
     /// Embedding dimension
     #[schema(example = 128)]
     pub dimension: usize,
+}
+
+// =============================================================================
+// Index Configuration
+// =============================================================================
+
+/// Request to update index configuration.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateIndexConfigRequest {
+    /// New maximum documents limit (set to null to remove limit)
+    #[schema(example = 5000)]
+    pub max_documents: Option<usize>,
+}
+
+/// Response after updating index configuration.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct UpdateIndexConfigResponse {
+    /// Index name
+    #[schema(example = "my_index")]
+    pub name: String,
+    /// Updated configuration
+    pub config: IndexConfigStored,
+    /// Message about the update
+    #[schema(
+        example = "max_documents set to 5000. Eviction will occur on next document addition if over limit."
+    )]
+    pub message: String,
 }
 
 // =============================================================================

@@ -261,6 +261,19 @@ impl AppState {
 
         let has_metadata = lategrep::filtering::exists(&path_str);
 
+        // Read config.json to get max_documents
+        let config_path = path.join("config.json");
+        let max_documents = if config_path.exists() {
+            std::fs::File::open(&config_path)
+                .ok()
+                .and_then(|f| {
+                    serde_json::from_reader::<_, crate::models::IndexConfigStored>(f).ok()
+                })
+                .and_then(|c| c.max_documents)
+        } else {
+            None
+        };
+
         Ok(crate::models::IndexSummary {
             name: name.to_string(),
             num_documents: metadata["num_documents"].as_u64().unwrap_or(0) as usize,
@@ -270,6 +283,7 @@ impl AppState {
             nbits: metadata["nbits"].as_u64().unwrap_or(4) as usize,
             avg_doclen: metadata["avg_doclen"].as_f64().unwrap_or(0.0),
             has_metadata,
+            max_documents,
         })
     }
 }

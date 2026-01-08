@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use ndarray::Array2;
@@ -201,7 +201,8 @@ fn build_test_router(state: Arc<AppState>) -> Router {
             "/{name}/documents",
             post(handlers::add_documents).delete(handlers::delete_documents),
         )
-        .route("/{name}/update", post(handlers::update_index));
+        .route("/{name}/update", post(handlers::update_index))
+        .route("/{name}/config", put(handlers::update_index_config));
 
     // Search routes
     let search_routes = Router::new()
@@ -1245,4 +1246,189 @@ async fn test_start_from_scratch_with_30_documents() {
     assert_eq!(body.dimension, dim);
     assert!(body.num_embeddings > 0);
     assert!(body.num_partitions > 0);
+}
+
+#[tokio::test]
+async fn test_max_documents_eviction() {
+    let fixture = TestFixture::new().await;
+    let dim = 32;
+
+    // Step 1: Create index with max_documents = 5
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices"))
+        .json(&json!({
+            "name": "max_docs_test",
+            "config": {
+                "nbits": 4,
+                "max_documents": 5
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success(), "Status: {}", resp.status());
+    let body: CreateIndexResponse = resp.json().await.unwrap();
+    assert_eq!(body.name, "max_docs_test");
+    assert_eq!(body.config.max_documents, Some(5));
+
+    // Step 2: Add 3 documents (under limit)
+    let documents = generate_documents(3, 10, dim);
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/max_docs_test/update"))
+        .json(&json!({
+            "documents": documents
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+    fixture.wait_for_index("max_docs_test", 3, 10000).await;
+
+    // Verify 3 documents
+    let resp = fixture
+        .client
+        .get(fixture.url("/indices/max_docs_test"))
+        .send()
+        .await
+        .unwrap();
+    let body: IndexInfoResponse = resp.json().await.unwrap();
+    assert_eq!(body.num_documents, 3);
+    assert_eq!(body.max_documents, Some(5));
+
+    // Step 3: Add 5 more documents (should trigger eviction of 3 oldest)
+    let documents = generate_documents(5, 10, dim);
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/max_docs_test/update"))
+        .json(&json!({
+            "documents": documents
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+
+    // Wait and verify - should have exactly 5 documents after eviction
+    // Give more time for eviction to complete
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    fixture.wait_for_index("max_docs_test", 5, 15000).await;
+
+    let resp = fixture
+        .client
+        .get(fixture.url("/indices/max_docs_test"))
+        .send()
+        .await
+        .unwrap();
+    let body: IndexInfoResponse = resp.json().await.unwrap();
+    assert_eq!(
+        body.num_documents, 5,
+        "Expected 5 documents after eviction, got {}",
+        body.num_documents
+    );
+}
+
+#[tokio::test]
+async fn test_update_max_documents_config() {
+    let fixture = TestFixture::new().await;
+    let dim = 32;
+
+    // Step 1: Create index without max_documents limit
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices"))
+        .json(&json!({
+            "name": "config_update_test"
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success());
+
+    // Add some documents
+    let documents = generate_documents(10, 10, dim);
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/config_update_test/update"))
+        .json(&json!({
+            "documents": documents
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+    fixture
+        .wait_for_index("config_update_test", 10, 10000)
+        .await;
+
+    // Check index info first
+    let resp = fixture
+        .client
+        .get(fixture.url("/indices/config_update_test"))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "GET index info failed: {}",
+        resp.status()
+    );
+
+    // Step 2: Update max_documents to 5
+    let url = fixture.url("/indices/config_update_test/config");
+    let resp = fixture
+        .client
+        .put(&url)
+        .json(&json!({
+            "max_documents": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(
+        resp.status().is_success(),
+        "PUT config failed with status: {}",
+        resp.status()
+    );
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["config"]["max_documents"], 5);
+
+    // Step 3: Add 1 more document to trigger eviction
+    let documents = generate_documents(1, 10, dim);
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/config_update_test/update"))
+        .json(&json!({
+            "documents": documents
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+
+    // Wait for eviction
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    fixture.wait_for_index("config_update_test", 5, 15000).await;
+
+    // Verify only 5 documents remain
+    let resp = fixture
+        .client
+        .get(fixture.url("/indices/config_update_test"))
+        .send()
+        .await
+        .unwrap();
+    let body: IndexInfoResponse = resp.json().await.unwrap();
+    assert_eq!(
+        body.num_documents, 5,
+        "Expected 5 documents after eviction, got {}",
+        body.num_documents
+    );
 }

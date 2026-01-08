@@ -21,7 +21,8 @@ use crate::error::{ApiError, ApiResult};
 use crate::models::{
     AddDocumentsRequest, CreateIndexRequest, CreateIndexResponse, DeleteDocumentsRequest,
     DeleteDocumentsResponse, DeleteIndexResponse, DocumentEmbeddings, ErrorResponse,
-    IndexConfigStored, IndexInfoResponse, UpdateIndexRequest,
+    IndexConfigStored, IndexInfoResponse, UpdateIndexConfigRequest, UpdateIndexConfigResponse,
+    UpdateIndexRequest,
 };
 use crate::state::{AppState, LoadedIndex};
 
@@ -74,6 +75,37 @@ fn to_ndarray(doc: &DocumentEmbeddings) -> ApiResult<Array2<f32>> {
         .map_err(|e| ApiError::BadRequest(format!("Failed to create array: {}", e)))
 }
 
+/// Evict oldest documents if index exceeds max_documents limit.
+/// Returns the number of documents evicted.
+fn evict_oldest_documents(index: &mut Index, max_documents: usize) -> ApiResult<usize> {
+    let current_count = index.metadata.num_documents;
+
+    if current_count <= max_documents {
+        return Ok(0);
+    }
+
+    let num_to_evict = current_count - max_documents;
+    // Oldest documents have the lowest IDs (0, 1, 2, ...)
+    let ids_to_delete: Vec<i64> = (0..num_to_evict as i64).collect();
+
+    tracing::info!(
+        "Evicting {} oldest documents (current: {}, max: {})",
+        num_to_evict,
+        current_count,
+        max_documents
+    );
+
+    let deleted = index.delete(&ids_to_delete)?;
+
+    tracing::info!(
+        "Evicted {} documents, {} remaining",
+        deleted,
+        index.metadata.num_documents
+    );
+
+    Ok(deleted)
+}
+
 /// Declare a new index with its configuration.
 #[utoipa::path(
     post,
@@ -113,6 +145,7 @@ pub async fn create_index(
         batch_size: req.config.batch_size.unwrap_or(50_000),
         seed: req.config.seed,
         start_from_scratch: req.config.start_from_scratch.unwrap_or(999),
+        max_documents: req.config.max_documents,
     };
 
     // Create index directory
@@ -161,6 +194,17 @@ pub async fn get_index_info(
         None
     };
 
+    // Load config to get max_documents
+    let config_path = state.index_path(&name).join("config.json");
+    let max_documents = if config_path.exists() {
+        std::fs::File::open(&config_path)
+            .ok()
+            .and_then(|f| serde_json::from_reader::<_, IndexConfigStored>(f).ok())
+            .and_then(|c| c.max_documents)
+    } else {
+        None
+    };
+
     Ok(Json(IndexInfoResponse {
         name,
         num_documents: idx.num_documents(),
@@ -170,6 +214,7 @@ pub async fn get_index_info(
         dimension: idx.embedding_dim(),
         has_metadata,
         metadata_count,
+        max_documents,
     }))
 }
 
@@ -275,6 +320,20 @@ pub async fn add_documents(
             } else {
                 let update_config = UpdateConfig::default();
                 index.update(&embeddings, &update_config)?;
+            }
+
+            // Eviction: Load config to check max_documents
+            let config_path = state_clone.index_path(&name_inner).join("config.json");
+            if let Ok(config_file) = std::fs::File::open(&config_path) {
+                if let Ok(stored_config) =
+                    serde_json::from_reader::<_, IndexConfigStored>(config_file)
+                {
+                    if let Some(max_docs) = stored_config.max_documents {
+                        if let Err(e) = evict_oldest_documents(&mut index, max_docs) {
+                            tracing::warn!("Failed to evict documents from {}: {}", name_inner, e);
+                        }
+                    }
+                }
             }
 
             // Reload state
@@ -470,7 +529,7 @@ pub async fn update_index(
             let update_config = UpdateConfig::default();
 
             // Run Update
-            let _index =
+            let mut index =
                 Index::update_or_create(&embeddings, &path_str, &index_config, &update_config)
                     .map_err(|e| ApiError::IndexCreationError(e.to_string()))?;
 
@@ -484,6 +543,16 @@ pub async fn update_index(
                     filtering::create(&path_str, &meta).map_err(|e| {
                         ApiError::IndexCreationError(format!("Failed to create metadata: {}", e))
                     })?;
+                }
+            }
+
+            // Eviction: Check if over max_documents limit
+            if let Some(max_docs) = stored_config.max_documents {
+                if let Err(e) = evict_oldest_documents(&mut index, max_docs) {
+                    tracing::warn!(
+                        "Failed to evict documents from {}: {}. Index may exceed max_documents limit.",
+                        name_inner, e
+                    );
                 }
             }
 
@@ -512,4 +581,67 @@ pub async fn update_index(
 
     // Immediate Response
     Ok((StatusCode::ACCEPTED, Json("Update queued in background")))
+}
+
+/// Update index configuration (max_documents).
+///
+/// Changes the max_documents limit. If the new limit is lower than the current
+/// document count, eviction will NOT happen immediately - it will occur on the
+/// next document addition.
+#[utoipa::path(
+    put,
+    path = "/indices/{name}/config",
+    tag = "indices",
+    params(
+        ("name" = String, Path, description = "Index name")
+    ),
+    request_body = UpdateIndexConfigRequest,
+    responses(
+        (status = 200, description = "Configuration updated", body = UpdateIndexConfigResponse),
+        (status = 404, description = "Index not found", body = ErrorResponse)
+    )
+)]
+pub async fn update_index_config(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(req): Json<UpdateIndexConfigRequest>,
+) -> ApiResult<Json<UpdateIndexConfigResponse>> {
+    let lock = get_index_lock(&name);
+    let _guard = lock.lock().await;
+
+    let index_path = state.index_path(&name);
+    let config_path = index_path.join("config.json");
+
+    if !config_path.exists() {
+        return Err(ApiError::IndexNotFound(name));
+    }
+
+    // Load existing config
+    let config_file = std::fs::File::open(&config_path)
+        .map_err(|e| ApiError::Internal(format!("Failed to open config: {}", e)))?;
+    let mut stored_config: IndexConfigStored = serde_json::from_reader(config_file)
+        .map_err(|e| ApiError::Internal(format!("Failed to parse config: {}", e)))?;
+
+    // Update max_documents
+    stored_config.max_documents = req.max_documents;
+
+    // Save updated config
+    let config_file = std::fs::File::create(&config_path)
+        .map_err(|e| ApiError::Internal(format!("Failed to create config file: {}", e)))?;
+    serde_json::to_writer_pretty(config_file, &stored_config)
+        .map_err(|e| ApiError::Internal(format!("Failed to write config: {}", e)))?;
+
+    let message = match req.max_documents {
+        Some(max) => format!(
+            "max_documents set to {}. Eviction will occur on next document addition if over limit.",
+            max
+        ),
+        None => "max_documents limit removed (unlimited).".to_string(),
+    };
+
+    Ok(Json(UpdateIndexConfigResponse {
+        name,
+        config: stored_config,
+        message,
+    }))
 }
