@@ -76,15 +76,48 @@ impl TestFixture {
         format!("{}{}", self.base_url, path)
     }
 
+    /// Wait for an index to be populated by polling the index info endpoint.
+    async fn wait_for_index(&self, name: &str, expected_docs: usize, max_wait_ms: u64) {
+        let start = std::time::Instant::now();
+        loop {
+            let resp = self
+                .client
+                .get(self.url(&format!("/indices/{}", name)))
+                .send()
+                .await;
+
+            if let Ok(resp) = resp {
+                if resp.status().is_success() {
+                    if let Ok(info) = resp.json::<IndexInfoResponse>().await {
+                        if info.num_documents >= expected_docs {
+                            return;
+                        }
+                    }
+                }
+            }
+
+            if start.elapsed().as_millis() as u64 > max_wait_ms {
+                panic!(
+                    "Timeout waiting for index '{}' to have {} documents",
+                    name, expected_docs
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// Helper to create and populate an index in one step.
-    /// This is the new workflow: 1) declare index, 2) update with documents.
+    /// This is the new workflow: 1) declare index, 2) update with documents (async).
+    /// Returns the IndexInfoResponse after the background task completes.
     async fn create_and_populate_index(
         &self,
         name: &str,
         documents: Vec<Value>,
         metadata: Option<Vec<Value>>,
         config: Option<Value>,
-    ) -> UpdateIndexResponse {
+    ) -> IndexInfoResponse {
+        let num_docs = documents.len();
+
         // Step 1: Declare index
         let create_body = if let Some(cfg) = config {
             json!({
@@ -110,7 +143,7 @@ impl TestFixture {
             resp.status()
         );
 
-        // Step 2: Update with documents
+        // Step 2: Update with documents (async - returns 202)
         let update_body = if let Some(meta) = metadata {
             json!({
                 "documents": documents,
@@ -130,11 +163,21 @@ impl TestFixture {
             .await
             .unwrap();
         assert!(
-            resp.status().is_success(),
-            "Failed to update index: {}",
+            resp.status() == reqwest::StatusCode::ACCEPTED,
+            "Expected 202 Accepted, got: {}",
             resp.status()
         );
 
+        // Step 3: Wait for the background task to complete
+        self.wait_for_index(name, num_docs, 10000).await;
+
+        // Step 4: Get and return index info
+        let resp = self
+            .client
+            .get(self.url(&format!("/indices/{}", name)))
+            .send()
+            .await
+            .unwrap();
         resp.json().await.unwrap()
     }
 }
@@ -285,7 +328,7 @@ async fn test_create_index() {
     assert_eq!(body.name, "test_index");
     assert_eq!(body.config.nbits, 4);
 
-    // Step 2: Update with documents
+    // Step 2: Update with documents (async - returns 202 Accepted)
     let resp = fixture
         .client
         .post(fixture.url("/indices/test_index/update"))
@@ -297,14 +340,28 @@ async fn test_create_index() {
         .await
         .unwrap();
 
-    assert!(resp.status().is_success(), "Status: {}", resp.status());
-    let body: UpdateIndexResponse = resp.json().await.unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::ACCEPTED,
+        "Expected 202 Accepted, got: {}",
+        resp.status()
+    );
+
+    // Step 3: Wait for background task to complete and verify index
+    fixture.wait_for_index("test_index", 10, 10000).await;
+
+    let resp = fixture
+        .client
+        .get(fixture.url("/indices/test_index"))
+        .send()
+        .await
+        .unwrap();
+    let body: IndexInfoResponse = resp.json().await.unwrap();
     assert_eq!(body.name, "test_index");
-    assert_eq!(body.total_documents, 10);
+    assert_eq!(body.num_documents, 10);
     assert_eq!(body.dimension, dim);
     assert!(body.num_embeddings > 0);
     assert!(body.num_partitions > 0);
-    assert!(body.created); // First update creates the index
 }
 
 #[tokio::test]
@@ -388,7 +445,7 @@ async fn test_add_documents() {
         .create_and_populate_index("add_docs_test", documents, None, None)
         .await;
 
-    // Add more documents
+    // Add more documents (async - returns 202 Accepted)
     let new_documents = generate_documents(3, 10, dim);
     let resp = fixture
         .client
@@ -400,11 +457,24 @@ async fn test_add_documents() {
         .await
         .unwrap();
 
-    assert!(resp.status().is_success());
-    let body: AddDocumentsResponse = resp.json().await.unwrap();
-    assert_eq!(body.documents_added, 3);
-    assert_eq!(body.total_documents, 8);
-    assert_eq!(body.start_id, 5);
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::ACCEPTED,
+        "Expected 202 Accepted"
+    );
+
+    // Wait for background task to complete
+    fixture.wait_for_index("add_docs_test", 8, 10000).await;
+
+    // Verify index info
+    let resp = fixture
+        .client
+        .get(fixture.url("/indices/add_docs_test"))
+        .send()
+        .await
+        .unwrap();
+    let body: IndexInfoResponse = resp.json().await.unwrap();
+    assert_eq!(body.num_documents, 8);
 }
 
 #[tokio::test]
@@ -424,7 +494,7 @@ async fn test_add_documents_with_metadata() {
         .create_and_populate_index("add_meta_test", documents, Some(metadata), None)
         .await;
 
-    // Add more with metadata
+    // Add more with metadata (async - returns 202 Accepted)
     let new_documents = generate_documents(2, 10, dim);
     let new_metadata = vec![
         json!({"title": "Doc 3", "extra": "value"}),
@@ -442,7 +512,14 @@ async fn test_add_documents_with_metadata() {
         .await
         .unwrap();
 
-    assert!(resp.status().is_success());
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::ACCEPTED,
+        "Expected 202 Accepted"
+    );
+
+    // Wait for background task to complete
+    fixture.wait_for_index("add_meta_test", 5, 10000).await;
 
     // Verify metadata
     let resp = fixture

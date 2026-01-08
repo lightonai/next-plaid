@@ -6,7 +6,7 @@ This script:
 1. Loads SciFact embeddings (computes and caches if not available)
 2. Builds and launches the lategrep REST API server
 3. Declares an index via POST /indices
-4. Adds documents in batches via POST /indices/{name}/update
+4. Adds documents in batches via POST /indices/{name}/update (CONCURRENTLY)
 5. Runs search queries via POST /indices/{name}/search
 6. Evaluates retrieval quality
 7. Measures API server memory usage
@@ -20,6 +20,7 @@ Requirements:
 """
 
 import argparse
+import concurrent.futures
 import json
 import math
 import subprocess
@@ -557,17 +558,42 @@ def run_api_benchmark(
             print("    Declaring index...")
             client.declare_index(index_name, nbits=config.nbits)
 
-            # Add documents in batches
+            # Add documents in batches (CONCURRENTLY)
             total_docs = len(doc_embeddings)
             batch_size = config.batch_size
-            num_batches = (total_docs + batch_size - 1) // batch_size
+            batch_size = 100
 
-            print(f"    Adding {total_docs} documents in batches of {batch_size}...")
+            # 1. Prepare all batches
+            batches = []
+            for i in range(0, total_docs, batch_size):
+                batches.append(doc_embeddings[i : i + batch_size])
+            num_batches = len(batches)
+
+            print(f"    Adding {total_docs} documents in {num_batches} batches (Concurrent)...")
+
             start_index = time.perf_counter()
 
-            for i in tqdm(range(0, total_docs, batch_size), desc="    Indexing", unit="batch"):
-                batch = doc_embeddings[i : i + batch_size]
-                client.update_index(index_name, batch)
+            # 2. Send all batches at the same time using ThreadPoolExecutor
+            # We use a high max_workers count to ensure we flood the server
+            # and test the queue/wait mechanism.
+            max_workers = min(num_batches, 200)
+
+            # Helper function for threading
+            def send_batch(batch_data):
+                return client.update_index(index_name, batch_data)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all tasks immediately
+                futures = [executor.submit(send_batch, b) for b in batches]
+
+                # Wait for all to complete and show progress
+                for future in tqdm(
+                    concurrent.futures.as_completed(futures),
+                    total=len(futures),
+                    desc="    Indexing",
+                ):
+                    # Check for exceptions
+                    future.result()
 
             index_time = time.perf_counter() - start_index
             index_peak_mb, _ = mem_monitor.get_current_peak()

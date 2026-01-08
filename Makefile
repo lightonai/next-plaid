@@ -94,12 +94,12 @@ compare-reference:
 
 # Benchmark SciFact with updates (batch size 800) - compares fast-plaid and lategrep
 benchmark-scifact-update:
-	cargo build --release --features npy --example benchmark_cli
+	cargo build --release --features npy,accelerate --example benchmark_cli
 	cd docs && uv sync --extra eval --extra fast-plaid && uv run python benchmark_scifact_update.py --batch-size 800
 
 # Benchmark SciFact via REST API (uses cached embeddings, with OpenBLAS)
 benchmark-scifact-api:
-	cargo build --release -p lategrep-api --features openblas
+	cargo build --release -p lategrep-api --features accelerate
 	cd docs && uv sync --extra eval && uv run python benchmark_scifact_api.py --batch-size 100
 
 launch-api-debug:

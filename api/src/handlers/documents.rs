@@ -2,23 +2,46 @@
 //!
 //! Handles index creation, document upload, and deletion.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 
 use axum::{
     extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
     Json,
 };
 use ndarray::Array2;
+use tokio::sync::Mutex;
+use tokio::task;
 
 use lategrep::{filtering, Index, IndexConfig, MmapIndex, UpdateConfig};
 
 use crate::error::{ApiError, ApiResult};
 use crate::models::{
-    AddDocumentsRequest, AddDocumentsResponse, CreateIndexRequest, CreateIndexResponse,
-    DeleteDocumentsRequest, DeleteDocumentsResponse, DeleteIndexResponse, DocumentEmbeddings,
-    ErrorResponse, IndexConfigStored, IndexInfoResponse, UpdateIndexRequest, UpdateIndexResponse,
+    AddDocumentsRequest, CreateIndexRequest, CreateIndexResponse, DeleteDocumentsRequest,
+    DeleteDocumentsResponse, DeleteIndexResponse, DocumentEmbeddings, ErrorResponse,
+    IndexConfigStored, IndexInfoResponse, UpdateIndexRequest,
 };
 use crate::state::{AppState, LoadedIndex};
+
+// --- Concurrency Control ---
+
+/// Global registry to manage locks per index name.
+/// We use tokio::sync::Mutex to allow tasks to wait asynchronously without blocking threads.
+static INDEX_LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+/// Helper to get (or create) an async mutex for a specific index name.
+fn get_index_lock(name: &str) -> Arc<Mutex<()>> {
+    let locks: &std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> =
+        INDEX_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut map = locks.lock().unwrap();
+    map.entry(name.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+// ---------------------------
 
 /// Convert document embeddings from JSON format to ndarray.
 fn to_ndarray(doc: &DocumentEmbeddings) -> ApiResult<Array2<f32>> {
@@ -52,9 +75,6 @@ fn to_ndarray(doc: &DocumentEmbeddings) -> ApiResult<Array2<f32>> {
 }
 
 /// Declare a new index with its configuration.
-///
-/// This only declares the index and stores its configuration.
-/// Use `POST /indices/{name}/update` to add documents to the index.
 #[utoipa::path(
     post,
     path = "/indices",
@@ -76,6 +96,10 @@ pub async fn create_index(
             "Index name cannot be empty".to_string(),
         ));
     }
+
+    // Lock mainly to prevent race condition on file existence check
+    let lock = get_index_lock(&req.name);
+    let _guard = lock.lock().await;
 
     // Check if index already exists (either declared or populated)
     let index_path = state.index_path(&req.name);
@@ -162,6 +186,8 @@ pub async fn list_indices(State(state): State<Arc<AppState>>) -> Json<Vec<String
 }
 
 /// Add documents to an existing index.
+///
+/// Returns 202 Accepted immediately and processes in background.
 #[utoipa::path(
     post,
     path = "/indices/{name}/documents",
@@ -171,7 +197,7 @@ pub async fn list_indices(State(state): State<Arc<AppState>>) -> Json<Vec<String
     ),
     request_body = AddDocumentsRequest,
     responses(
-        (status = 200, description = "Documents added successfully", body = AddDocumentsResponse),
+        (status = 202, description = "Request accepted for background processing", body = String),
         (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 404, description = "Index not found", body = ErrorResponse)
     )
@@ -180,7 +206,7 @@ pub async fn add_documents(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
     Json(req): Json<AddDocumentsRequest>,
-) -> ApiResult<Json<AddDocumentsResponse>> {
+) -> ApiResult<impl IntoResponse> {
     if req.documents.is_empty() {
         return Err(ApiError::BadRequest("No documents provided".to_string()));
     }
@@ -196,22 +222,19 @@ pub async fn add_documents(
         }
     }
 
-    // Convert embeddings
+    // Perform CPU-intensive validation/conversion synchronously to fail fast
     let embeddings: Vec<Array2<f32>> = req
         .documents
         .iter()
         .map(to_ndarray)
         .collect::<ApiResult<Vec<_>>>()?;
 
-    // Get index
+    // Check index existence and dimensions synchronously
     let index_arc = state.get_index(&name)?;
-
-    // Validate dimension
     let expected_dim = {
         let idx = index_arc.read();
         idx.embedding_dim()
     };
-
     for emb in embeddings.iter() {
         if emb.ncols() != expected_dim {
             return Err(ApiError::DimensionMismatch {
@@ -221,38 +244,54 @@ pub async fn add_documents(
         }
     }
 
-    // Get start ID before update
-    let start_id = {
-        let idx = index_arc.read();
-        idx.num_documents()
-    };
+    // Prepare data for background task
+    let name_clone = name.clone();
+    let state_clone = state.clone();
+    let metadata = req.metadata;
+    let lock = get_index_lock(&name);
 
-    // We need to reload the index as a mutable Index for update
-    // This is a limitation of the current design - mmap indices can't be updated
-    let path_str = state.index_path(&name).to_string_lossy().to_string();
-    let mut index = Index::load(&path_str)?;
+    // Spawn background task
+    tokio::spawn(async move {
+        // 1. Acquire async lock
+        let _guard = lock.lock().await;
 
-    let documents_added = embeddings.len();
+        // Clone name AGAIN for the inner closure, so `name_clone` stays valid for error logging
+        let name_inner = name_clone.clone();
 
-    // Update with metadata if provided
-    if let Some(meta) = req.metadata {
-        let update_config = UpdateConfig::default();
-        index.update_with_metadata(&embeddings, &update_config, Some(&meta))?;
-    } else {
-        let update_config = UpdateConfig::default();
-        index.update(&embeddings, &update_config)?;
-    }
+        // 2. Perform heavy IO work in a blocking task
+        let result = task::spawn_blocking(move || -> ApiResult<()> {
+            // Load index for update
+            let path_str = state_clone
+                .index_path(&name_inner)
+                .to_string_lossy()
+                .to_string();
+            let mut index = Index::load(&path_str)?;
 
-    let total_documents = index.metadata.num_documents;
+            // Update
+            if let Some(meta) = metadata {
+                let update_config = UpdateConfig::default();
+                index.update_with_metadata(&embeddings, &update_config, Some(&meta))?;
+            } else {
+                let update_config = UpdateConfig::default();
+                index.update(&embeddings, &update_config)?;
+            }
 
-    // Reload the index in the state
-    state.reload_index(&name)?;
+            // Reload state
+            state_clone.reload_index(&name_inner)?;
+            Ok(())
+        })
+        .await;
 
-    Ok(Json(AddDocumentsResponse {
-        documents_added,
-        total_documents,
-        start_id,
-    }))
+        // Log errors
+        match result {
+            Ok(Err(e)) => eprintln!("Background error adding documents to {}: {}", name_clone, e),
+            Err(e) => eprintln!("Background task panicked for {}: {}", name_clone, e),
+            _ => {} // Success
+        }
+    });
+
+    // Return 202 Accepted immediately
+    Ok((StatusCode::ACCEPTED, Json("Update queued in background")))
 }
 
 /// Delete documents from an index by their IDs.
@@ -279,15 +318,23 @@ pub async fn delete_documents(
         return Err(ApiError::BadRequest("No document IDs provided".to_string()));
     }
 
-    // Load index for modification
-    let path_str = state.index_path(&name).to_string_lossy().to_string();
-    let mut index = Index::load(&path_str)?;
+    // Deletions are usually fast, but we must lock to avoid conflict with updates.
+    let lock = get_index_lock(&name);
+    let _guard = lock.lock().await;
 
-    let deleted = index.delete(&req.document_ids)?;
-    let remaining = index.metadata.num_documents;
+    // Run blocking IO in separate thread
+    let (deleted, remaining) = task::spawn_blocking(move || -> ApiResult<(usize, usize)> {
+        let path_str = state.index_path(&name).to_string_lossy().to_string();
+        let mut index = Index::load(&path_str)?;
 
-    // Reload the index in the state
-    state.reload_index(&name)?;
+        let deleted = index.delete(&req.document_ids)?;
+        let remaining = index.metadata.num_documents;
+
+        state.reload_index(&name)?;
+        Ok((deleted, remaining))
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))??;
 
     Ok(Json(DeleteDocumentsResponse { deleted, remaining }))
 }
@@ -309,6 +356,9 @@ pub async fn delete_index(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> ApiResult<Json<DeleteIndexResponse>> {
+    let lock = get_index_lock(&name);
+    let _guard = lock.lock().await;
+
     // Unload from memory
     state.unload_index(&name);
 
@@ -327,9 +377,7 @@ pub async fn delete_index(
 
 /// Update an index by adding documents.
 ///
-/// The index must have been declared first via `POST /indices`.
-/// If this is the first update, creates the actual index files.
-/// Subsequent updates add documents to the existing index.
+/// Returns 202 Accepted immediately and processes in background.
 #[utoipa::path(
     post,
     path = "/indices/{name}/update",
@@ -339,7 +387,7 @@ pub async fn delete_index(
     ),
     request_body = UpdateIndexRequest,
     responses(
-        (status = 200, description = "Index updated successfully", body = UpdateIndexResponse),
+        (status = 202, description = "Request accepted for background processing", body = String),
         (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 404, description = "Index not declared", body = ErrorResponse)
     )
@@ -348,7 +396,7 @@ pub async fn update_index(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
     Json(req): Json<UpdateIndexRequest>,
-) -> ApiResult<Json<UpdateIndexResponse>> {
+) -> ApiResult<impl IntoResponse> {
     // Validate name
     if name.is_empty() {
         return Err(ApiError::BadRequest(
@@ -356,23 +404,14 @@ pub async fn update_index(
         ));
     }
 
-    // Get index path
+    // Basic Validation (Fail fast)
     let index_path = state.index_path(&name);
-    let path_str = index_path.to_string_lossy().to_string();
-
-    // Check if index was declared (config.json must exist)
     let config_path = index_path.join("config.json");
     if !config_path.exists() {
         return Err(ApiError::IndexNotDeclared(name));
     }
 
-    // Load stored config
-    let config_file = std::fs::File::open(&config_path)
-        .map_err(|e| ApiError::Internal(format!("Failed to open config: {}", e)))?;
-    let stored_config: IndexConfigStored = serde_json::from_reader(config_file)
-        .map_err(|e| ApiError::Internal(format!("Failed to parse config: {}", e)))?;
-
-    // Convert embeddings
+    // Heavy CPU work: convert to ndarray
     let embeddings: Vec<Array2<f32>> = req
         .documents
         .iter()
@@ -385,7 +424,6 @@ pub async fn update_index(
         ));
     }
 
-    // Validate metadata length if provided
     if let Some(ref meta) = req.metadata {
         if meta.len() != embeddings.len() {
             return Err(ApiError::BadRequest(format!(
@@ -396,60 +434,80 @@ pub async fn update_index(
         }
     }
 
-    // Get dimension from first document
-    let dimension = embeddings[0].ncols();
-    let documents_added = embeddings.len();
+    // Prepare data for background task
+    let name_clone = name.clone();
+    let state_clone = state.clone();
+    let metadata = req.metadata;
+    let lock = get_index_lock(&name);
+    let path_str = index_path.to_string_lossy().to_string();
 
-    // Check if this is first update (no metadata.json yet = index not populated)
-    let created = !index_path.join("metadata.json").exists();
+    // Spawn background task
+    tokio::spawn(async move {
+        // 1. Queue logic: Wait for lock asynchronously
+        let _guard = lock.lock().await;
 
-    // Build IndexConfig from stored config
-    let index_config = IndexConfig {
-        nbits: stored_config.nbits,
-        batch_size: stored_config.batch_size,
-        seed: stored_config.seed,
-        ..Default::default()
-    };
-    let update_config = UpdateConfig::default();
+        // Clone name AGAIN for the inner closure
+        let name_inner = name_clone.clone();
 
-    // Use update_or_create
-    let index = Index::update_or_create(&embeddings, &path_str, &index_config, &update_config)
-        .map_err(|e| ApiError::IndexCreationError(e.to_string()))?;
+        // 2. Heavy Lifting: Move to blocking thread
+        let result = task::spawn_blocking(move || -> ApiResult<()> {
+            // Load stored config
+            let config_file =
+                std::fs::File::open(state_clone.index_path(&name_inner).join("config.json"))
+                    .map_err(|e| ApiError::Internal(format!("Failed to open config: {}", e)))?;
+            let stored_config: IndexConfigStored = serde_json::from_reader(config_file)
+                .map_err(|e| ApiError::Internal(format!("Failed to parse config: {}", e)))?;
 
-    // Handle metadata
-    if let Some(meta) = req.metadata {
-        if filtering::exists(&path_str) {
-            // Update existing metadata database
-            filtering::update(&path_str, &meta).map_err(|e| {
-                ApiError::IndexCreationError(format!("Failed to update metadata: {}", e))
-            })?;
-        } else {
-            // Create new metadata database
-            filtering::create(&path_str, &meta).map_err(|e| {
-                ApiError::IndexCreationError(format!("Failed to create metadata: {}", e))
-            })?;
+            // Build IndexConfig
+            let index_config = IndexConfig {
+                nbits: stored_config.nbits,
+                batch_size: stored_config.batch_size,
+                seed: stored_config.seed,
+                ..Default::default()
+            };
+            let update_config = UpdateConfig::default();
+
+            // Run Update
+            let _index =
+                Index::update_or_create(&embeddings, &path_str, &index_config, &update_config)
+                    .map_err(|e| ApiError::IndexCreationError(e.to_string()))?;
+
+            // Handle Metadata
+            if let Some(meta) = metadata {
+                if filtering::exists(&path_str) {
+                    filtering::update(&path_str, &meta).map_err(|e| {
+                        ApiError::IndexCreationError(format!("Failed to update metadata: {}", e))
+                    })?;
+                } else {
+                    filtering::create(&path_str, &meta).map_err(|e| {
+                        ApiError::IndexCreationError(format!("Failed to create metadata: {}", e))
+                    })?;
+                }
+            }
+
+            // Reload State
+            state_clone.unload_index(&name_inner);
+            let loaded = if state_clone.config.use_mmap {
+                let mmap_idx = MmapIndex::load(&path_str)?;
+                LoadedIndex::Mmap(mmap_idx)
+            } else {
+                let idx = Index::load(&path_str)?;
+                LoadedIndex::Regular(idx)
+            };
+            state_clone.register_index(&name_inner, loaded);
+
+            Ok(())
+        })
+        .await;
+
+        // Error Logging
+        match result {
+            Ok(Err(e)) => eprintln!("Background error updating {}: {}", name_clone, e),
+            Err(e) => eprintln!("Background task panicked for {}: {}", name_clone, e),
+            _ => {}
         }
-    }
+    });
 
-    let response = UpdateIndexResponse {
-        name: name.clone(),
-        created,
-        documents_added,
-        total_documents: index.metadata.num_documents,
-        num_embeddings: index.metadata.num_embeddings,
-        num_partitions: index.metadata.num_partitions,
-        dimension,
-    };
-
-    // Register/reload the index in state
-    state.unload_index(&name);
-    let loaded = if state.config.use_mmap {
-        let mmap_idx = MmapIndex::load(&path_str)?;
-        LoadedIndex::Mmap(mmap_idx)
-    } else {
-        LoadedIndex::Regular(index)
-    };
-    state.register_index(&name, loaded);
-
-    Ok(Json(response))
+    // Immediate Response
+    Ok((StatusCode::ACCEPTED, Json("Update queued in background")))
 }

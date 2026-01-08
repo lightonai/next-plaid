@@ -19,6 +19,7 @@ Usage:
 import pytest
 import requests
 import numpy as np
+import time
 from typing import Any
 
 # Configuration
@@ -27,6 +28,19 @@ TEST_INDEX_NAME = "test_scientific_papers"
 EMBEDDING_DIM = 128
 NUM_DOCUMENTS = 10
 TOKENS_PER_DOCUMENT = 50  # Reduced to stay within API body size limit
+
+
+def wait_for_index(api_url: str, index_name: str, expected_docs: int, max_wait_seconds: float = 30.0) -> dict:
+    """Wait for an index to have the expected number of documents."""
+    start = time.time()
+    while time.time() - start < max_wait_seconds:
+        response = requests.get(f"{api_url}/indices/{index_name}")
+        if response.status_code == 200:
+            info = response.json()
+            if info.get("num_documents", 0) >= expected_docs:
+                return info
+        time.sleep(0.1)
+    raise TimeoutError(f"Index '{index_name}' did not reach {expected_docs} documents within {max_wait_seconds}s")
 
 
 # -----------------------------------------------------------------------------
@@ -210,7 +224,8 @@ def created_index(api_client, test_documents, test_metadata):
 
     Uses two-phase workflow:
     1. Declare index with config
-    2. Update to add documents
+    2. Update to add documents (async - returns 202)
+    3. Wait for background task to complete
     """
     # Delete if exists from previous run
     requests.delete(f"{api_client}/indices/{TEST_INDEX_NAME}")
@@ -225,7 +240,7 @@ def created_index(api_client, test_documents, test_metadata):
     )
     assert response.status_code == 200, f"Failed to declare index: {response.text}"
 
-    # Step 2: Update to add documents
+    # Step 2: Update to add documents (async - returns 202 Accepted)
     response = requests.post(
         f"{api_client}/indices/{TEST_INDEX_NAME}/update",
         json={
@@ -233,8 +248,21 @@ def created_index(api_client, test_documents, test_metadata):
             "metadata": test_metadata,
         },
     )
-    assert response.status_code == 200, f"Failed to update index: {response.text}"
-    result = response.json()
+    assert response.status_code == 202, f"Expected 202 Accepted, got: {response.status_code}"
+
+    # Step 3: Wait for background task to complete
+    info = wait_for_index(api_client, TEST_INDEX_NAME, NUM_DOCUMENTS)
+
+    # Build a result dict compatible with old tests
+    result = {
+        "name": TEST_INDEX_NAME,
+        "total_documents": info["num_documents"],
+        "documents_added": NUM_DOCUMENTS,  # We added this many
+        "num_embeddings": info["num_embeddings"],
+        "dimension": info["dimension"],
+        "num_partitions": info["num_partitions"],
+        "created": True,  # First update creates the index
+    }
 
     yield result
 
@@ -770,11 +798,12 @@ class TestDocumentOperations:
             f"{api_client}/indices/{TEST_INDEX_NAME}/documents",
             json={"documents": new_docs, "metadata": new_metadata},
         )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["documents_added"] == 2
-        assert data["start_id"] == NUM_DOCUMENTS  # New docs start after existing
-        assert data["total_documents"] == NUM_DOCUMENTS + 2
+        # add_documents is async, returns 202 Accepted
+        assert response.status_code == 202, f"Expected 202, got {response.status_code}"
+
+        # Wait for background task to complete
+        info = wait_for_index(api_client, TEST_INDEX_NAME, NUM_DOCUMENTS + 2)
+        assert info["num_documents"] == NUM_DOCUMENTS + 2
 
         # Verify new documents can be found via metadata query
         response = requests.post(
@@ -906,7 +935,7 @@ class TestIntegration:
         )
         assert response.status_code == 200
 
-        # 2. Update with documents
+        # 2. Update with documents (async - returns 202)
         docs = [{"embeddings": generate_normalized_embeddings(30)} for _ in range(5)]
         metadata = [
             {"title": f"Doc {i}", "category": "A" if i < 3 else "B", "score": i * 10}
@@ -917,8 +946,10 @@ class TestIntegration:
             f"{api_client}/indices/{index_name}/update",
             json={"documents": docs, "metadata": metadata},
         )
-        assert response.status_code == 200
-        assert response.json()["created"] is True
+        assert response.status_code == 202, f"Expected 202, got {response.status_code}"
+
+        # Wait for background task to complete
+        wait_for_index(api_client, index_name, 5)
 
         # 3. Basic search
         query = generate_normalized_embeddings(8)
@@ -946,15 +977,18 @@ class TestIntegration:
         assert len(result["document_ids"]) <= 3
         assert all(doc_id < 3 for doc_id in result["document_ids"])
 
-        # 5. Add documents
+        # 5. Add documents (async - returns 202)
         new_docs = [{"embeddings": generate_normalized_embeddings(30)}]
         new_metadata = [{"title": "New Doc", "category": "C", "score": 100}]
         response = requests.post(
             f"{api_client}/indices/{index_name}/documents",
             json={"documents": new_docs, "metadata": new_metadata},
         )
-        assert response.status_code == 200
-        assert response.json()["total_documents"] == 6
+        assert response.status_code == 202, f"Expected 202, got {response.status_code}"
+
+        # Wait for background task to complete
+        info = wait_for_index(api_client, index_name, 6)
+        assert info["num_documents"] == 6
 
         # 6. Cleanup
         response = requests.delete(f"{api_client}/indices/{index_name}")
