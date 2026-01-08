@@ -1176,3 +1176,73 @@ async fn test_large_batch_search() {
         assert_eq!(result.document_ids.len(), result.scores.len());
     }
 }
+
+#[tokio::test]
+async fn test_start_from_scratch_with_30_documents() {
+    let fixture = TestFixture::new().await;
+    let dim = 32;
+
+    // Step 1: Declare the index with start_from_scratch = 10
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices"))
+        .json(&json!({
+            "name": "start_scratch_test",
+            "config": {
+                "nbits": 4,
+                "start_from_scratch": 10
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success(), "Status: {}", resp.status());
+    let body: CreateIndexResponse = resp.json().await.unwrap();
+    assert_eq!(body.name, "start_scratch_test");
+    assert_eq!(body.config.start_from_scratch, 10);
+
+    // Step 2: Upload 30 documents
+    let documents = generate_documents(30, 15, dim);
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/start_scratch_test/update"))
+        .json(&json!({
+            "documents": documents
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::ACCEPTED,
+        "Expected 202 Accepted, got: {}",
+        resp.status()
+    );
+
+    // Step 3: Wait for background task to complete
+    fixture
+        .wait_for_index("start_scratch_test", 30, 15000)
+        .await;
+
+    // Step 4: Verify the index has 30 documents using the index info endpoint
+    let resp = fixture
+        .client
+        .get(fixture.url("/indices/start_scratch_test"))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success());
+    let body: IndexInfoResponse = resp.json().await.unwrap();
+    assert_eq!(body.name, "start_scratch_test");
+    assert_eq!(
+        body.num_documents, 30,
+        "Expected 30 documents, got {}",
+        body.num_documents
+    );
+    assert_eq!(body.dimension, dim);
+    assert!(body.num_embeddings > 0);
+    assert!(body.num_partitions > 0);
+}

@@ -38,6 +38,12 @@ pub struct IndexConfigRequest {
     #[serde(default)]
     #[schema(example = 42)]
     pub seed: Option<u64>,
+    /// Threshold for rebuilding index from scratch (default: 999)
+    /// When num_documents <= start_from_scratch, the index will be rebuilt
+    /// entirely on updates instead of using incremental updates.
+    #[serde(default)]
+    #[schema(example = 999)]
+    pub start_from_scratch: Option<usize>,
 }
 
 /// Response after declaring an index.
@@ -65,6 +71,14 @@ pub struct IndexConfigStored {
     /// Random seed for reproducibility
     #[schema(example = 42)]
     pub seed: Option<u64>,
+    /// Threshold for rebuilding index from scratch
+    #[serde(default = "default_start_from_scratch")]
+    #[schema(example = 999)]
+    pub start_from_scratch: usize,
+}
+
+fn default_start_from_scratch() -> usize {
+    999
 }
 
 /// Index status/info response.
@@ -380,6 +394,9 @@ pub struct HealthResponse {
     /// Index directory path
     #[schema(example = "./indices")]
     pub index_dir: String,
+    /// Memory usage of the API process in bytes
+    #[schema(example = 104857600)]
+    pub memory_usage_bytes: u64,
     /// List of available indices with their configuration
     pub indices: Vec<IndexSummary>,
 }

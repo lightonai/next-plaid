@@ -112,6 +112,7 @@ pub async fn create_index(
         nbits: req.config.nbits.unwrap_or(4),
         batch_size: req.config.batch_size.unwrap_or(50_000),
         seed: req.config.seed,
+        start_from_scratch: req.config.start_from_scratch.unwrap_or(999),
     };
 
     // Create index directory
@@ -463,6 +464,7 @@ pub async fn update_index(
                 nbits: stored_config.nbits,
                 batch_size: stored_config.batch_size,
                 seed: stored_config.seed,
+                start_from_scratch: stored_config.start_from_scratch,
                 ..Default::default()
             };
             let update_config = UpdateConfig::default();

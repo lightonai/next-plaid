@@ -148,11 +148,24 @@ async fn health(state: axum::extract::State<Arc<AppState>>) -> Json<HealthRespon
         std::fs::create_dir_all(&state.config.index_dir).ok();
     }
 
+    // Get current process memory usage
+    let memory_usage_bytes = {
+        let pid = sysinfo::get_current_pid().ok();
+        let mut system = sysinfo::System::new();
+        if let Some(pid) = pid {
+            system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+            system.process(pid).map(|p| p.memory()).unwrap_or(0)
+        } else {
+            0
+        }
+    };
+
     Json(HealthResponse {
         status: "healthy".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         loaded_indices: state.loaded_count(),
         index_dir: state.config.index_dir.to_string_lossy().to_string(),
+        memory_usage_bytes,
         indices: state.get_all_index_summaries(),
     })
 }
