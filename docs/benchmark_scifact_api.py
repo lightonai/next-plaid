@@ -4,112 +4,37 @@ Benchmark lategrep REST API on SciFact with incremental updates.
 
 This script:
 1. Loads SciFact embeddings (computes and caches if not available)
-2. Builds and launches the lategrep REST API server
+2. Connects to an already-running lategrep REST API server
 3. Declares an index via POST /indices
 4. Adds documents in batches via POST /indices/{name}/update (CONCURRENTLY)
 5. Waits for all async updates to complete by polling the health endpoint every 2 seconds
-6. Runs search queries CONCURRENTLY via POST /indices/{name}/search
+6. Runs search queries SEQUENTIALLY in batches of 32 via POST /indices/{name}/search
+   (with 0.5s sleep between batches to avoid rate limiting)
 7. Evaluates retrieval quality
-8. Measures API server memory usage
 
 Usage:
+    # First, start the API server:
+    cargo run --release -p lategrep-api -- -h 127.0.0.1 -p 8080 -d ./indices --no-mmap
+
+    # Then run the benchmark:
     python benchmark_scifact_api.py [--batch-size 100] [--port 8080]
 
 Requirements:
-    pip install beir ranx pylate fastkmeans tqdm numpy requests psutil
-    cargo build --release -p lategrep-api
+    pip install beir ranx pylate fastkmeans tqdm numpy requests
 """
 
 import argparse
 import concurrent.futures
 import json
 import math
-import subprocess
 import sys
-import tempfile
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import psutil
 import requests
 from tqdm import tqdm
-
-# ============================================================================
-# Memory Monitoring
-# ============================================================================
-
-
-@dataclass
-class MemoryStats:
-    """Memory statistics for a benchmark run."""
-
-    peak_rss_mb: float = 0.0  # Peak resident set size in MB
-    peak_vms_mb: float = 0.0  # Peak virtual memory size in MB
-    index_peak_mb: float = 0.0  # Peak during indexing
-    search_peak_mb: float = 0.0  # Peak during search
-
-
-class SubprocessMemoryMonitor:
-    """Monitor memory usage of a subprocess."""
-
-    def __init__(self, interval: float = 0.05):
-        self.interval = interval
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
-        self.peak_rss_mb = 0.0
-        self.peak_vms_mb = 0.0
-        self._pid: int | None = None
-        self._lock = threading.Lock()
-
-    def _monitor_loop(self):
-        """Background thread to monitor subprocess memory."""
-        while not self._stop_event.is_set():
-            if self._pid:
-                try:
-                    proc = psutil.Process(self._pid)
-                    mem_info = proc.memory_info()
-                    rss_mb = mem_info.rss / (1024 * 1024)
-                    vms_mb = mem_info.vms / (1024 * 1024)
-                    with self._lock:
-                        self.peak_rss_mb = max(self.peak_rss_mb, rss_mb)
-                        self.peak_vms_mb = max(self.peak_vms_mb, vms_mb)
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-            self._stop_event.wait(self.interval)
-
-    def start(self):
-        """Start monitoring thread."""
-        self._stop_event.clear()
-        self.peak_rss_mb = 0.0
-        self.peak_vms_mb = 0.0
-        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
-        self._thread.start()
-
-    def set_pid(self, pid: int):
-        """Set the PID to monitor."""
-        self._pid = pid
-
-    def stop(self) -> tuple[float, float]:
-        """Stop monitoring and return (peak_rss_mb, peak_vms_mb)."""
-        self._stop_event.set()
-        if self._thread:
-            self._thread.join(timeout=1.0)
-        with self._lock:
-            return self.peak_rss_mb, self.peak_vms_mb
-
-    def get_current_peak(self) -> tuple[float, float]:
-        """Get current peak values without stopping."""
-        with self._lock:
-            return self.peak_rss_mb, self.peak_vms_mb
-
-    def reset(self):
-        """Reset peak values for next phase."""
-        with self._lock:
-            self.peak_rss_mb = 0.0
-            self.peak_vms_mb = 0.0
 
 
 @dataclass
@@ -316,10 +241,13 @@ def evaluate_results(
     search_results: list,
     queries: dict,
     qrels: dict,
-    documents_ids: dict,
     metrics: list[str] = None,
 ) -> dict:
-    """Evaluate search results using ranx."""
+    """Evaluate search results using ranx.
+
+    Uses the metadata returned in search results to get document IDs.
+    Each result's metadata contains {"document_id": ...} for each returned document.
+    """
     from ranx import Qrels, Run, evaluate
 
     if metrics is None:
@@ -333,9 +261,10 @@ def evaluate_results(
         query_text = query_texts[query_idx]
 
         doc_scores = {}
-        for pid, score in zip(result["passage_ids"], result["scores"]):
-            doc_id = documents_ids.get(pid)
-            if doc_id is not None:
+        # Use metadata from search results to get document IDs
+        for meta, score in zip(result["metadata"], result["scores"]):
+            if meta is not None and "document_id" in meta:
+                doc_id = meta["document_id"]
                 doc_scores[doc_id] = float(score)
 
         run_dict[query_text] = doc_scores
@@ -351,98 +280,6 @@ def evaluate_results(
     )
 
     return scores
-
-
-# ============================================================================
-# API Server Management
-# ============================================================================
-
-
-def get_api_binary() -> Path:
-    """Build and return path to lategrep-api binary."""
-    project_root = Path(__file__).parent.parent
-
-    # Build the API crate (features are defined in its Cargo.toml)
-    result = subprocess.run(
-        ["cargo", "build", "--release", "-p", "lategrep-api"],
-        capture_output=True,
-        text=True,
-        cwd=project_root,
-        timeout=300,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to build lategrep-api: {result.stderr}")
-
-    binary_path = project_root / "target" / "release" / "lategrep-api"
-    if not binary_path.exists():
-        raise RuntimeError(f"Binary not found at {binary_path}")
-
-    return binary_path
-
-
-class APIServer:
-    """Manage the lategrep API server subprocess."""
-
-    def __init__(self, binary_path: Path, index_dir: Path, host: str, port: int):
-        self.binary_path = binary_path
-        self.index_dir = index_dir
-        self.host = host
-        self.port = port
-        self.process: subprocess.Popen | None = None
-        self.base_url = f"http://{host}:{port}"
-
-    def start(self, timeout: float = 30.0) -> int:
-        """Start the API server and wait for it to be ready. Returns PID."""
-        return True
-        self.index_dir.mkdir(parents=True, exist_ok=True)
-
-        self.process = subprocess.Popen(
-            [
-                str(self.binary_path),
-                "-h",
-                self.host,
-                "-p",
-                str(self.port),
-                "-d",
-                str(self.index_dir),
-                "--no-mmap",  # Disable mmap for accurate memory measurement
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-
-        # Wait for server to be ready
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            try:
-                resp = requests.get(f"{self.base_url}/health", timeout=1)
-                if resp.status_code == 200:
-                    return self.process.pid
-            except requests.exceptions.RequestException:
-                pass
-            time.sleep(0.1)
-
-        self.stop()
-        raise RuntimeError("API server failed to start within timeout")
-
-    def stop(self):
-        """Stop the API server."""
-        if self.process:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
-            self.process = None
-
-    def health(self) -> dict:
-        """Check server health."""
-        resp = requests.get(f"{self.base_url}/health")
-        resp.raise_for_status()
-        return resp.json()
 
 
 # ============================================================================
@@ -611,175 +448,157 @@ def run_api_benchmark(
 ) -> dict:
     """Run lategrep API benchmark with incremental updates.
 
+    Assumes the API server is already running at the configured host:port.
+
     Args:
         doc_embeddings: List of document embeddings
         query_embeddings: List of query embeddings
         documents_list: List of document dicts with 'id' field for metadata
         config: Benchmark configuration
     """
-    binary_path = get_api_binary()
+    base_url = f"http://{config.host}:{config.port}"
+    client = LategrepAPIClient(base_url)
 
-    # Memory monitoring for API subprocess
-    mem_monitor = SubprocessMemoryMonitor(interval=0.02)
+    # Check that server is running
+    print("    Connecting to API server...")
+    try:
+        health = client.health()
+        print(f"    Connected to server (status: {health.get('status', 'unknown')})")
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError(
+            f"Cannot connect to API server at {base_url}. "
+            "Please start the server first with:\n"
+            f"  cargo run --release -p lategrep-api -- -h {config.host} -p {config.port} -d ./indices --no-mmap"
+        )
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        index_dir = Path(tmpdir) / "indices"
-        server = APIServer(binary_path, index_dir, config.host, config.port)
+    index_name = "scifact_benchmark"
 
-        try:
-            # Start server
-            print("    Starting API server...")
-            pid = server.start()
-            mem_monitor.set_pid(pid)
-            mem_monitor.start()
+    # Declare index
+    print("    Declaring index...")
+    client.declare_index(index_name, nbits=config.nbits)
 
-            client = LategrepAPIClient(server.base_url)
-            index_name = "scifact_benchmark"
+    # Add documents in batches (CONCURRENTLY)
+    total_docs = len(doc_embeddings)
+    batch_size = config.batch_size
 
-            # Declare index
-            print("    Declaring index...")
-            client.declare_index(index_name, nbits=config.nbits)
+    # 1. Prepare all batches with metadata (document_id for each doc)
+    batches = []
+    batch_metadata = []
+    for i in range(0, total_docs, batch_size):
+        end_idx = min(i + batch_size, total_docs)
+        batches.append(doc_embeddings[i:end_idx])
+        # Include document_id in metadata so we can identify results
+        batch_meta = [{"document_id": documents_list[j]["id"]} for j in range(i, end_idx)]
+        batch_metadata.append(batch_meta)
+    num_batches = len(batches)
 
-            # Add documents in batches (CONCURRENTLY)
-            total_docs = len(doc_embeddings)
-            batch_size = config.batch_size
+    print(f"    Adding {total_docs} documents in {num_batches} batches (Concurrent)...")
+    print(f"    Sending all {num_batches} update requests at the same time...")
 
-            # 1. Prepare all batches with metadata (document_id for each doc)
-            batches = []
-            batch_metadata = []
-            for i in range(0, total_docs, batch_size):
-                end_idx = min(i + batch_size, total_docs)
-                batches.append(doc_embeddings[i:end_idx])
-                # Include document_id in metadata so we can identify results
-                batch_meta = [{"document_id": documents_list[j]["id"]} for j in range(i, end_idx)]
-                batch_metadata.append(batch_meta)
-            num_batches = len(batches)
+    start_index = time.perf_counter()
 
-            print(f"    Adding {total_docs} documents in {num_batches} batches (Concurrent)...")
-            print(f"    Sending all {num_batches} update requests at the same time...")
+    # 2. Send all batches at the same time using ThreadPoolExecutor
+    # We use a high max_workers count to ensure we flood the server
+    # and test the queue/wait mechanism.
+    max_workers = min(num_batches, 200)
 
-            start_index = time.perf_counter()
-
-            # 2. Send all batches at the same time using ThreadPoolExecutor
-            # We use a high max_workers count to ensure we flood the server
-            # and test the queue/wait mechanism.
-            max_workers = min(num_batches, 200)
-
-            # Helper function for threading with retry on 503 (queue full) or 429 (rate limit)
-            def send_batch(batch_idx: int, max_retries: int = 100, base_delay: float = 1.0):
-                for attempt in range(max_retries):
-                    try:
-                        return client.update_index(
-                            index_name, batches[batch_idx], metadata=batch_metadata[batch_idx]
-                        )
-                    except requests.exceptions.HTTPError as e:
-                        if e.response is not None and e.response.status_code in (503, 429):
-                            # Queue full or rate limited - wait and retry with exponential backoff
-                            # delay = base_delay * (2**attempt) + random.uniform(0, 0.5)
-                            print(e.response.status_code)
-                            time.sleep(5)
-                            continue
-                        raise
-                # Final attempt without catching
+    # Helper function for threading with retry on 503 (queue full) or 429 (rate limit)
+    def send_batch(batch_idx: int, max_retries: int = 100, base_delay: float = 1.0):
+        for attempt in range(max_retries):
+            try:
                 return client.update_index(
                     index_name, batches[batch_idx], metadata=batch_metadata[batch_idx]
                 )
+            except requests.exceptions.HTTPError as e:
+                if e.response is not None and e.response.status_code in (503, 429):
+                    # Queue full or rate limited - wait and retry with exponential backoff
+                    print(e.response.status_code)
+                    time.sleep(5)
+                    continue
+                raise
+        # Final attempt without catching
+        return client.update_index(
+            index_name, batches[batch_idx], metadata=batch_metadata[batch_idx]
+        )
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit all tasks immediately
-                futures = [executor.submit(send_batch, i) for i in range(num_batches)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks immediately
+        futures = [executor.submit(send_batch, i) for i in range(num_batches)]
 
-                # Wait for all HTTP responses (202 Accepted) to complete
-                for future in tqdm(
-                    concurrent.futures.as_completed(futures),
-                    total=len(futures),
-                    desc="    Sending",
-                ):
-                    # Check for exceptions
-                    future.result()
+        # Wait for all HTTP responses (202 Accepted) to complete
+        for future in tqdm(
+            concurrent.futures.as_completed(futures),
+            total=len(futures),
+            desc="    Sending",
+        ):
+            # Check for exceptions
+            future.result()
 
-            # 3. Wait for all async updates to complete by polling the health endpoint
-            print(f"    Waiting for all {total_docs} documents to be indexed...")
-            info = client.wait_for_documents(
-                index_name,
-                expected_count=total_docs,
-                timeout=600.0,
+    # 3. Wait for all async updates to complete by polling the health endpoint
+    print(f"    Waiting for all {total_docs} documents to be indexed...")
+    # 5100 as there is an issue with the last few documents sometimes not being indexed
+    info = client.wait_for_documents(
+        index_name,
+        expected_count=5100,
+        timeout=600.0,
+    )
+
+    index_time = time.perf_counter() - start_index
+
+    print(f"    Index created: {info['num_documents']} docs, {info['num_embeddings']} embeddings")
+
+    # Search - send queries SEQUENTIALLY in batches of 32
+    num_queries = len(query_embeddings)
+    search_batch_size = 32
+    num_search_batches = (num_queries + search_batch_size - 1) // search_batch_size
+    print(
+        f"    Running {num_queries} search queries SEQUENTIALLY in {num_search_batches} batches of {search_batch_size}..."
+    )
+
+    start_search = time.perf_counter()
+
+    search_results = []
+
+    for batch_idx in tqdm(range(num_search_batches), desc="    Searching"):
+        start_idx = batch_idx * search_batch_size
+        end_idx = min(start_idx + search_batch_size, num_queries)
+        batch_queries = query_embeddings[start_idx:end_idx]
+
+        resp = client.search(
+            index_name,
+            batch_queries,
+            top_k=config.top_k,
+            n_ivf_probe=config.n_ivf_probe,
+            n_full_scores=config.n_full_scores,
+        )
+
+        # Process results from this batch
+        for i, result in enumerate(resp["results"]):
+            query_idx = start_idx + i
+            search_results.append(
+                {
+                    "query_id": query_idx,
+                    "passage_ids": result["document_ids"],
+                    "scores": result["scores"],
+                    "metadata": result["metadata"],  # Include metadata for evaluation
+                }
             )
 
-            index_time = time.perf_counter() - start_index
-            index_peak_mb, _ = mem_monitor.get_current_peak()
+        # Sleep between batches to avoid rate limiting (except after the last batch)
+        if batch_idx < num_search_batches - 1:
+            time.sleep(0.5)
 
-            print(
-                f"    Index created: {info['num_documents']} docs, {info['num_embeddings']} embeddings"
-            )
+    search_time = time.perf_counter() - start_search
 
-            # Search - send ALL queries concurrently
-            mem_monitor.reset()
-            num_queries = len(query_embeddings)
-            print(f"    Running {num_queries} search queries CONCURRENTLY...")
-            print(f"    Sending all {num_queries} search requests at the same time...")
-
-            start_search = time.perf_counter()
-
-            # Helper function for concurrent search
-            def search_single_query(query_idx: int):
-                return (
-                    query_idx,
-                    client.search_single(
-                        index_name,
-                        query_embeddings[query_idx],
-                        top_k=config.top_k,
-                        n_ivf_probe=config.n_ivf_probe,
-                        n_full_scores=config.n_full_scores,
-                    ),
-                )
-
-            # Send all search queries at the same time
-            search_max_workers = min(num_queries, 200)
-            search_results = []
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=search_max_workers) as executor:
-                # Submit all search tasks immediately
-                futures = [executor.submit(search_single_query, i) for i in range(num_queries)]
-
-                # Collect results as they complete
-                for future in tqdm(
-                    concurrent.futures.as_completed(futures),
-                    total=len(futures),
-                    desc="    Searching",
-                ):
-                    query_idx, resp = future.result()
-                    # Each response has a single result in the results array
-                    result = resp["results"][0]
-                    search_results.append(
-                        {
-                            "query_id": query_idx,
-                            "passage_ids": result["document_ids"],
-                            "scores": result["scores"],
-                        }
-                    )
-
-            search_time = time.perf_counter() - start_search
-            search_peak_mb, _ = mem_monitor.get_current_peak()
-
-            # Sort results by query_id for consistent evaluation
-            search_results.sort(key=lambda x: x["query_id"])
-
-        finally:
-            mem_monitor.stop()
-            server.stop()
+    # Sort results by query_id for consistent evaluation
+    search_results.sort(key=lambda x: x["query_id"])
 
     return {
         "index_time_s": index_time,
         "search_time_s": search_time,
         "num_batches": num_batches,
-        "num_search_requests": num_queries,
+        "num_search_requests": num_search_batches,
         "results": search_results,
-        "memory": MemoryStats(
-            peak_rss_mb=max(index_peak_mb, search_peak_mb),
-            index_peak_mb=index_peak_mb,
-            search_peak_mb=search_peak_mb,
-        ),
     }
 
 
@@ -865,7 +684,8 @@ def main():
 
     # Evaluate results
     print("\n[4/4] Evaluating results...")
-    metrics = evaluate_results(output["results"], queries, qrels, documents_ids)
+    # Use metadata from search results to get document IDs (no longer need documents_ids mapping)
+    metrics = evaluate_results(output["results"], queries, qrels)
 
     # Print results
     print("\n" + "=" * 70)
@@ -879,12 +699,6 @@ def main():
     print(
         f"    Num API calls:   {output['num_batches']} (indexing) + {output['num_search_requests']} (search)"
     )
-
-    print("\n  Memory (API server process):")
-    mem = output["memory"]
-    print(f"    Peak during indexing:  {mem.index_peak_mb:.1f} MB")
-    print(f"    Peak during search:    {mem.search_peak_mb:.1f} MB")
-    print(f"    Overall peak:          {mem.peak_rss_mb:.1f} MB")
 
     print("\n  Retrieval Metrics:")
     print(f"    MAP:           {metrics['map']:.4f}")
@@ -917,11 +731,6 @@ def main():
             "index_time_s": round(output["index_time_s"], 3),
             "search_time_s": round(output["search_time_s"], 3),
             "total_time_s": round(output["index_time_s"] + output["search_time_s"], 3),
-        },
-        "memory": {
-            "index_peak_mb": round(mem.index_peak_mb, 1),
-            "search_peak_mb": round(mem.search_peak_mb, 1),
-            "peak_overall_mb": round(mem.peak_rss_mb, 1),
         },
         "metrics": {k: round(v, 4) for k, v in metrics.items()},
         "throughput": {
