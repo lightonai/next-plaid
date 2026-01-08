@@ -97,12 +97,15 @@ pub async fn search(
     }
 
     // Build search parameters
+    let top_k = req.params.top_k.unwrap_or(state.config.default_top_k);
     let params = SearchParameters {
-        top_k: req.params.top_k.unwrap_or(state.config.default_top_k),
+        top_k,
         n_ivf_probe: req.params.n_ivf_probe.unwrap_or(8),
         n_full_scores: req.params.n_full_scores.unwrap_or(4096),
         batch_size: 2000,
     };
+
+    let start = std::time::Instant::now();
 
     // Perform search based on index type
     let results = match &*idx {
@@ -153,6 +156,15 @@ pub async fn search(
         }
     };
 
+    let duration = start.elapsed();
+    tracing::info!(
+        index = %name,
+        queries = queries.len(),
+        top_k = top_k,
+        duration_ms = duration.as_millis() as u64,
+        "Search completed"
+    );
+
     Ok(Json(SearchResponse {
         num_queries: queries.len(),
         results,
@@ -198,6 +210,13 @@ pub async fn search_filtered(
         &req.filter_parameters,
     )
     .map_err(|e| ApiError::BadRequest(format!("Invalid filter condition: {}", e)))?;
+
+    tracing::debug!(
+        index = %name,
+        filter = %req.filter_condition,
+        matching_docs = subset.len(),
+        "Filter applied"
+    );
 
     // Convert to standard search request with subset
     let search_req = SearchRequest {

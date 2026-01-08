@@ -116,6 +116,13 @@ pub async fn query_metadata(
     let document_ids = filtering::where_condition(&path_str, &req.condition, &req.parameters)
         .map_err(|e| ApiError::BadRequest(format!("Invalid condition: {}", e)))?;
 
+    tracing::debug!(
+        index = %name,
+        condition = %req.condition,
+        results = document_ids.len(),
+        "Metadata queried"
+    );
+
     Ok(Json(QueryMetadataResponse {
         count: document_ids.len(),
         document_ids,
@@ -262,6 +269,8 @@ pub async fn add_metadata(
         filtering::create(&path_str, &req.metadata)
             .map_err(|e| ApiError::Internal(format!("Failed to create metadata: {}", e)))?
     };
+
+    tracing::info!(index = %name, count = added, "Metadata added");
 
     Ok(Json(AddMetadataResponse { added }))
 }

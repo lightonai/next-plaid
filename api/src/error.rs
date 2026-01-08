@@ -61,6 +61,10 @@ pub enum ApiError {
     #[error("Internal error: {0}")]
     Internal(String),
 
+    /// Service temporarily unavailable (e.g., queue full)
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
+
     /// Lategrep library error
     #[error("Lategrep error: {0}")]
     Lategrep(#[from] lategrep::Error),
@@ -123,6 +127,11 @@ impl IntoResponse for ApiError {
             ApiError::Internal(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
+                msg.clone(),
+            ),
+            ApiError::ServiceUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
                 msg.clone(),
             ),
             ApiError::Lategrep(e) => (

@@ -394,6 +394,7 @@ class APIServer:
 
     def start(self, timeout: float = 30.0) -> int:
         """Start the API server and wait for it to be ready. Returns PID."""
+        return True
         self.index_dir.mkdir(parents=True, exist_ok=True)
 
         self.process = subprocess.Popen(
@@ -584,6 +585,7 @@ class LategrepAPIClient:
             except requests.exceptions.RequestException:
                 # Server might be busy, continue polling
                 pass
+            print("    Waiting for documents to be indexed...")
             time.sleep(2.0)
 
         raise TimeoutError(
@@ -663,8 +665,22 @@ def run_api_benchmark(
             # and test the queue/wait mechanism.
             max_workers = min(num_batches, 200)
 
-            # Helper function for threading
-            def send_batch(batch_idx: int):
+            # Helper function for threading with retry on 503 (queue full) or 429 (rate limit)
+            def send_batch(batch_idx: int, max_retries: int = 100, base_delay: float = 1.0):
+                for attempt in range(max_retries):
+                    try:
+                        return client.update_index(
+                            index_name, batches[batch_idx], metadata=batch_metadata[batch_idx]
+                        )
+                    except requests.exceptions.HTTPError as e:
+                        if e.response is not None and e.response.status_code in (503, 429):
+                            # Queue full or rate limited - wait and retry with exponential backoff
+                            # delay = base_delay * (2**attempt) + random.uniform(0, 0.5)
+                            print(e.response.status_code)
+                            time.sleep(5)
+                            continue
+                        raise
+                # Final attempt without catching
                 return client.update_index(
                     index_name, batches[batch_idx], metadata=batch_metadata[batch_idx]
                 )

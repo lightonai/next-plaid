@@ -10,6 +10,8 @@ A REST API for deploying and querying lategrep multi-vector search indices.
 - **Search**: Single and batch query search with optional metadata filtering
 - **Metadata**: SQLite-based metadata storage with SQL query support
 - **Memory Monitoring**: Health endpoint reports API process memory usage
+- **Rate Limiting**: Built-in protection against overload (50 req/sec sustained, 100 burst)
+- **Graceful Shutdown**: Clean shutdown on SIGTERM/SIGINT for container deployments
 - **OpenAPI/Swagger**: Interactive API documentation
 
 ## API Documentation
@@ -985,6 +987,47 @@ The API has a 5-minute timeout for long operations like index creation.
 ### CORS
 
 CORS is enabled by default to allow requests from any origin.
+
+### Rate Limiting
+
+The API includes built-in rate limiting to protect against accidental overload:
+
+- **Sustained rate**: 50 requests per second
+- **Burst allowance**: Up to 100 requests in a short burst
+
+When the rate limit is exceeded, the API returns HTTP 429 with a JSON response:
+
+```json
+{
+  "code": "RATE_LIMITED",
+  "message": "Too many requests. Please retry after the specified time.",
+  "retry_after_seconds": 2
+}
+```
+
+The response also includes a `retry-after: 2` header indicating how long to wait before retrying.
+
+### Graceful Shutdown
+
+The API handles shutdown signals gracefully for clean container deployments:
+
+- **SIGINT** (Ctrl+C): Initiates graceful shutdown
+- **SIGTERM**: Initiates graceful shutdown (used by Docker, Kubernetes, etc.)
+
+On receiving a shutdown signal:
+1. The server stops accepting new connections
+2. In-flight requests are allowed to complete
+3. The server exits cleanly
+
+This ensures no requests are dropped during deployments or restarts:
+
+```bash
+# Docker stop sends SIGTERM, waits for graceful shutdown
+docker stop lategrep-api
+
+# Kubernetes pod termination also uses SIGTERM
+kubectl delete pod lategrep-api-xxxxx
+```
 
 ## Performance
 

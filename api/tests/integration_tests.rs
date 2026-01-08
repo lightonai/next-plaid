@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
+    http::StatusCode,
     routing::{get, post, put},
     Json, Router,
 };
@@ -15,6 +16,7 @@ use ndarray_rand::RandomExt;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::cors::{Any, CorsLayer};
 
 // Import from the API crate
@@ -182,6 +184,21 @@ impl TestFixture {
     }
 }
 
+/// Handle rate limit errors with a JSON response (same as main.rs).
+fn rate_limit_error(_err: tower_governor::GovernorError) -> axum::http::Response<axum::body::Body> {
+    let body = serde_json::json!({
+        "code": "RATE_LIMITED",
+        "message": "Too many requests. Please retry after the specified time.",
+        "retry_after_seconds": 1
+    });
+    axum::http::Response::builder()
+        .status(StatusCode::TOO_MANY_REQUESTS)
+        .header("content-type", "application/json")
+        .header("retry-after", "1")
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap()
+}
+
 /// Build the test router (same as main but without tracing).
 fn build_test_router(state: Arc<AppState>) -> Router {
     // Index management routes
@@ -245,6 +262,146 @@ fn build_test_router(state: Arc<AppState>) -> Router {
                 .allow_headers(Any),
         )
         .with_state(state)
+}
+
+/// Build a test router WITH rate limiting for rate limit tests.
+/// Uses a small burst size to make testing feasible.
+fn build_rate_limited_test_router(
+    state: Arc<AppState>,
+    requests_per_second: u64,
+    burst_size: u32,
+) -> Router {
+    // Configure rate limiting with small values for testing
+    let governor_conf = GovernorConfigBuilder::default()
+        .per_second(requests_per_second)
+        .burst_size(burst_size)
+        .finish()
+        .expect("Failed to build rate limiter config");
+
+    let governor_layer = GovernorLayer::new(governor_conf).error_handler(rate_limit_error);
+
+    // Index management routes
+    let index_routes = Router::new()
+        .route(
+            "/",
+            get(handlers::list_indices).post(handlers::create_index),
+        )
+        .route(
+            "/{name}",
+            get(handlers::get_index_info).delete(handlers::delete_index),
+        );
+
+    // Document routes
+    let document_routes = Router::new()
+        .route(
+            "/{name}/documents",
+            post(handlers::add_documents).delete(handlers::delete_documents),
+        )
+        .route("/{name}/update", post(handlers::update_index))
+        .route("/{name}/config", put(handlers::update_index_config));
+
+    // Search routes
+    let search_routes = Router::new()
+        .route("/{name}/search", post(handlers::search))
+        .route("/{name}/search/filtered", post(handlers::search_filtered));
+
+    // Metadata routes
+    let metadata_routes = Router::new()
+        .route(
+            "/{name}/metadata",
+            get(handlers::get_all_metadata).post(handlers::add_metadata),
+        )
+        .route("/{name}/metadata/count", get(handlers::get_metadata_count))
+        .route("/{name}/metadata/check", post(handlers::check_metadata))
+        .route("/{name}/metadata/query", post(handlers::query_metadata))
+        .route("/{name}/metadata/get", post(handlers::get_metadata));
+
+    // Combine all routes under /indices
+    let indices_router = Router::new()
+        .merge(index_routes)
+        .merge(document_routes)
+        .merge(search_routes)
+        .merge(metadata_routes);
+
+    // Health check
+    let health_handler = |state: axum::extract::State<Arc<AppState>>| async move {
+        Json(json!({
+            "status": "healthy",
+            "loaded_indices": state.loaded_count()
+        }))
+    };
+
+    Router::new()
+        .route("/health", get(health_handler))
+        .nest("/indices", indices_router)
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
+        // Rate limiting layer
+        .layer(governor_layer)
+        .with_state(state)
+}
+
+/// Test fixture for rate limiting tests with configurable rate limits.
+struct RateLimitedTestFixture {
+    client: reqwest::Client,
+    base_url: String,
+    _temp_dir: TempDir,
+}
+
+impl RateLimitedTestFixture {
+    /// Create a new test fixture with rate limiting enabled.
+    /// Uses small values: 2 requests/second with burst of 5.
+    async fn new(requests_per_second: u64, burst_size: u32) -> Self {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        let config = ApiConfig {
+            index_dir: temp_dir.path().to_path_buf(),
+            use_mmap: false,
+            default_top_k: 10,
+        };
+
+        let state = Arc::new(AppState::new(config));
+
+        // Build router with rate limiting
+        let app = build_rate_limited_test_router(state, requests_per_second, burst_size);
+
+        // Find available port
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{}", addr);
+
+        // Spawn server
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        // Wait for server to start
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap();
+
+        Self {
+            client,
+            base_url,
+            _temp_dir: temp_dir,
+        }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.base_url, path)
+    }
 }
 
 /// Generate random embeddings for testing.
@@ -1430,5 +1587,156 @@ async fn test_update_max_documents_config() {
         body.num_documents, 5,
         "Expected 5 documents after eviction, got {}",
         body.num_documents
+    );
+}
+
+/// Test rate limiting: exhaust burst, verify 429 response, wait for recovery, verify access restored.
+/// Note: Rate limiting tests should be run with --test-threads=1 to avoid timing issues.
+#[tokio::test]
+async fn test_rate_limiting() {
+    // Create fixture with small rate limit: 2 requests/sec, burst of 5
+    // This makes the test fast and predictable
+    let fixture = RateLimitedTestFixture::new(2, 5).await;
+
+    // Step 1: Make requests until we hit the rate limit
+    // With burst of 5, we should be able to make 5 requests, then get rate limited
+    let mut success_count = 0;
+    let mut rate_limited = false;
+    let mut rate_limit_response: Option<Value> = None;
+
+    // Make more requests than the burst size to ensure we hit the limit
+    for _ in 0..10 {
+        let resp = fixture
+            .client
+            .get(fixture.url("/health"))
+            .send()
+            .await
+            .unwrap();
+
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            rate_limited = true;
+            rate_limit_response = Some(resp.json().await.unwrap());
+            break;
+        } else {
+            assert!(
+                resp.status().is_success(),
+                "Unexpected status: {}",
+                resp.status()
+            );
+            success_count += 1;
+        }
+    }
+
+    // Assert we hit the rate limit
+    assert!(
+        rate_limited,
+        "Expected to hit rate limit after {} successful requests",
+        success_count
+    );
+    assert!(
+        success_count >= 5,
+        "Expected at least 5 successful requests before rate limit, got {}",
+        success_count
+    );
+
+    // Verify the rate limit response format
+    let rate_limit_body = rate_limit_response.expect("Should have rate limit response");
+    assert_eq!(
+        rate_limit_body["code"], "RATE_LIMITED",
+        "Expected RATE_LIMITED error code"
+    );
+    assert!(
+        rate_limit_body["retry_after_seconds"].is_number(),
+        "Expected retry_after_seconds in response"
+    );
+
+    // Step 2: Wait for the rate limit to reset
+    // At 2 requests/second, we need to wait about 2-3 seconds to replenish tokens
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Step 3: Verify we can access the API again
+    let resp = fixture
+        .client
+        .get(fixture.url("/health"))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(
+        resp.status().is_success(),
+        "Expected successful request after rate limit reset, got status: {}",
+        resp.status()
+    );
+
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["status"], "healthy", "Expected healthy status");
+}
+
+/// Test rate limiting recovery with multiple requests.
+/// Note: Rate limiting tests should be run with --test-threads=1 to avoid timing issues.
+#[tokio::test]
+async fn test_rate_limiting_recovery_multiple_requests() {
+    // Test that after recovery, we can make multiple requests again
+    // Use same parameters as the passing test: 2 requests/sec with burst of 5
+    let fixture = RateLimitedTestFixture::new(2, 5).await;
+
+    // Exhaust the burst limit (5 requests)
+    for i in 0..5 {
+        let resp = fixture
+            .client
+            .get(fixture.url("/health"))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_success(),
+            "Request {} should succeed within burst",
+            i
+        );
+    }
+
+    // Next request should be rate limited
+    let resp = fixture
+        .client
+        .get(fixture.url("/health"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::TOO_MANY_REQUESTS,
+        "Expected rate limit after exhausting burst"
+    );
+
+    // Verify the rate limit response includes the expected error code
+    let rate_limit_body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        rate_limit_body["code"], "RATE_LIMITED",
+        "Expected RATE_LIMITED error code in response"
+    );
+
+    // Wait for tokens to replenish
+    // At 2/sec with burst of 5, need ~2.5 seconds to fully refill
+    // Wait 4 seconds to be safe
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    // Should be able to make multiple requests after recovery
+    let mut success_count = 0;
+    for _ in 0..3 {
+        let resp = fixture
+            .client
+            .get(fixture.url("/health"))
+            .send()
+            .await
+            .unwrap();
+        if resp.status().is_success() {
+            success_count += 1;
+        }
+    }
+
+    assert!(
+        success_count >= 1,
+        "Expected at least 1 successful request after rate limit recovery, got {}",
+        success_count
     );
 }

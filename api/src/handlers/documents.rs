@@ -12,7 +12,7 @@ use axum::{
     Json,
 };
 use ndarray::Array2;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tokio::task;
 
 use lategrep::{filtering, Index, IndexConfig, MmapIndex, UpdateConfig};
@@ -28,9 +28,18 @@ use crate::state::{AppState, LoadedIndex};
 
 // --- Concurrency Control ---
 
+/// Maximum number of queued background tasks per index.
+/// When exceeded, new requests get 503 Service Unavailable.
+const MAX_QUEUED_TASKS_PER_INDEX: usize = 10;
+
 /// Global registry to manage locks per index name.
 /// We use tokio::sync::Mutex to allow tasks to wait asynchronously without blocking threads.
 static INDEX_LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+
+/// Global registry to manage semaphores per index name.
+/// Limits the number of queued background tasks to prevent resource exhaustion.
+static INDEX_SEMAPHORES: OnceLock<std::sync::Mutex<HashMap<String, Arc<Semaphore>>>> =
+    OnceLock::new();
 
 /// Helper to get (or create) an async mutex for a specific index name.
 fn get_index_lock(name: &str) -> Arc<Mutex<()>> {
@@ -39,6 +48,17 @@ fn get_index_lock(name: &str) -> Arc<Mutex<()>> {
     let mut map = locks.lock().unwrap();
     map.entry(name.to_string())
         .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+/// Helper to get (or create) a semaphore for a specific index name.
+/// The semaphore limits queued background tasks to prevent unbounded growth.
+fn get_index_semaphore(name: &str) -> Arc<Semaphore> {
+    let sems: &std::sync::Mutex<HashMap<String, Arc<Semaphore>>> =
+        INDEX_SEMAPHORES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut map = sems.lock().unwrap();
+    map.entry(name.to_string())
+        .or_insert_with(|| Arc::new(Semaphore::new(MAX_QUEUED_TASKS_PER_INDEX)))
         .clone()
 }
 
@@ -158,6 +178,8 @@ pub async fn create_index(
         .map_err(|e| ApiError::Internal(format!("Failed to create config file: {}", e)))?;
     serde_json::to_writer_pretty(config_file, &stored_config)
         .map_err(|e| ApiError::Internal(format!("Failed to write config: {}", e)))?;
+
+    tracing::info!(index = %req.name, nbits = stored_config.nbits, "Index declared");
 
     Ok(Json(CreateIndexResponse {
         name: req.name,
@@ -296,13 +318,28 @@ pub async fn add_documents(
     let metadata = req.metadata;
     let lock = get_index_lock(&name);
 
+    // Acquire semaphore permit to limit queued tasks
+    let semaphore = get_index_semaphore(&name);
+    let permit = semaphore.clone().try_acquire_owned().map_err(|_| {
+        ApiError::ServiceUnavailable(format!(
+            "Update queue full for index '{}'. Max {} pending updates. Retry later.",
+            name, MAX_QUEUED_TASKS_PER_INDEX
+        ))
+    })?;
+
+    let doc_count = embeddings.len();
+
     // Spawn background task
     tokio::spawn(async move {
+        // Permit is held until this task completes (dropped at end of async block)
+        let _permit = permit;
+
         // 1. Acquire async lock
         let _guard = lock.lock().await;
 
         // Clone name AGAIN for the inner closure, so `name_clone` stays valid for error logging
         let name_inner = name_clone.clone();
+        let start = std::time::Instant::now();
 
         // 2. Perform heavy IO work in a blocking task
         let result = task::spawn_blocking(move || -> ApiResult<()> {
@@ -342,11 +379,24 @@ pub async fn add_documents(
         })
         .await;
 
-        // Log errors
+        let duration = start.elapsed();
+
+        // Log result
         match result {
-            Ok(Err(e)) => eprintln!("Background error adding documents to {}: {}", name_clone, e),
-            Err(e) => eprintln!("Background task panicked for {}: {}", name_clone, e),
-            _ => {} // Success
+            Ok(Ok(())) => {
+                tracing::info!(
+                    index = %name_clone,
+                    documents = doc_count,
+                    duration_ms = duration.as_millis() as u64,
+                    "Documents added successfully"
+                );
+            }
+            Ok(Err(e)) => {
+                tracing::error!(index = %name_clone, error = %e, "Background error adding documents");
+            }
+            Err(e) => {
+                tracing::error!(index = %name_clone, error = %e, "Background task panicked");
+            }
         }
     });
 
@@ -382,6 +432,9 @@ pub async fn delete_documents(
     let lock = get_index_lock(&name);
     let _guard = lock.lock().await;
 
+    let start = std::time::Instant::now();
+    let name_for_log = name.clone();
+
     // Run blocking IO in separate thread
     let (deleted, remaining) = task::spawn_blocking(move || -> ApiResult<(usize, usize)> {
         let path_str = state.index_path(&name).to_string_lossy().to_string();
@@ -395,6 +448,15 @@ pub async fn delete_documents(
     })
     .await
     .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))??;
+
+    let duration = start.elapsed();
+    tracing::info!(
+        index = %name_for_log,
+        deleted = deleted,
+        remaining = remaining,
+        duration_ms = duration.as_millis() as u64,
+        "Documents deleted"
+    );
 
     Ok(Json(DeleteDocumentsResponse { deleted, remaining }))
 }
@@ -428,6 +490,8 @@ pub async fn delete_index(
         std::fs::remove_dir_all(&path)
             .map_err(|e| ApiError::Internal(format!("Failed to delete index: {}", e)))?;
     }
+
+    tracing::info!(index = %name, "Index deleted");
 
     Ok(Json(DeleteIndexResponse {
         deleted: true,
@@ -501,13 +565,28 @@ pub async fn update_index(
     let lock = get_index_lock(&name);
     let path_str = index_path.to_string_lossy().to_string();
 
+    // Acquire semaphore permit to limit queued tasks
+    let semaphore = get_index_semaphore(&name);
+    let permit = semaphore.clone().try_acquire_owned().map_err(|_| {
+        ApiError::ServiceUnavailable(format!(
+            "Update queue full for index '{}'. Max {} pending updates. Retry later.",
+            name, MAX_QUEUED_TASKS_PER_INDEX
+        ))
+    })?;
+
+    let doc_count = embeddings.len();
+
     // Spawn background task
     tokio::spawn(async move {
+        // Permit is held until this task completes (dropped at end of async block)
+        let _permit = permit;
+
         // 1. Queue logic: Wait for lock asynchronously
         let _guard = lock.lock().await;
 
         // Clone name AGAIN for the inner closure
         let name_inner = name_clone.clone();
+        let start = std::time::Instant::now();
 
         // 2. Heavy Lifting: Move to blocking thread
         let result = task::spawn_blocking(move || -> ApiResult<()> {
@@ -571,11 +650,24 @@ pub async fn update_index(
         })
         .await;
 
-        // Error Logging
+        let duration = start.elapsed();
+
+        // Log result
         match result {
-            Ok(Err(e)) => eprintln!("Background error updating {}: {}", name_clone, e),
-            Err(e) => eprintln!("Background task panicked for {}: {}", name_clone, e),
-            _ => {}
+            Ok(Ok(())) => {
+                tracing::info!(
+                    index = %name_clone,
+                    documents = doc_count,
+                    duration_ms = duration.as_millis() as u64,
+                    "Index update completed successfully"
+                );
+            }
+            Ok(Err(e)) => {
+                tracing::error!(index = %name_clone, error = %e, "Background error updating index");
+            }
+            Err(e) => {
+                tracing::error!(index = %name_clone, error = %e, "Background task panicked");
+            }
         }
     });
 
@@ -632,11 +724,17 @@ pub async fn update_index_config(
         .map_err(|e| ApiError::Internal(format!("Failed to write config: {}", e)))?;
 
     let message = match req.max_documents {
-        Some(max) => format!(
-            "max_documents set to {}. Eviction will occur on next document addition if over limit.",
-            max
-        ),
-        None => "max_documents limit removed (unlimited).".to_string(),
+        Some(max) => {
+            tracing::info!(index = %name, max_documents = max, "Index config updated");
+            format!(
+                "max_documents set to {}. Eviction will occur on next document addition if over limit.",
+                max
+            )
+        }
+        None => {
+            tracing::info!(index = %name, max_documents = "unlimited", "Index config updated");
+            "max_documents limit removed (unlimited).".to_string()
+        }
     };
 
     Ok(Json(UpdateIndexConfigResponse {

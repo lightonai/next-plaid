@@ -37,9 +37,12 @@ use std::time::Duration;
 
 use axum::{
     extract::DefaultBodyLimit,
+    http::StatusCode,
     routing::{get, post, put},
     Json, Router,
 };
+use tower::limit::ConcurrencyLimitLayer;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::{
     cors::{Any, CorsLayer},
     timeout::TimeoutLayer,
@@ -173,14 +176,96 @@ async fn health(state: axum::extract::State<Arc<AppState>>) -> Json<HealthRespon
     })
 }
 
+/// Handle rate limit errors with a JSON response.
+fn rate_limit_error(_err: tower_governor::GovernorError) -> axum::http::Response<axum::body::Body> {
+    let body = serde_json::json!({
+        "code": "RATE_LIMITED",
+        "message": "Too many requests. Please retry after the specified time.",
+        "retry_after_seconds": 2
+    });
+    axum::http::Response::builder()
+        .status(StatusCode::TOO_MANY_REQUESTS)
+        .header("content-type", "application/json")
+        .header("retry-after", "2")
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap()
+}
+
+/// Graceful shutdown signal handler.
+/// Listens for SIGINT (Ctrl+C) and SIGTERM (container stop).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            tracing::info!("Received SIGINT (Ctrl+C), starting graceful shutdown...");
+        },
+        _ = terminate => {
+            tracing::info!("Received SIGTERM, starting graceful shutdown...");
+        },
+    }
+}
+
 /// Build the API router.
 fn build_router(state: Arc<AppState>) -> Router {
-    // Build main router - use without_v07_checks to allow :param syntax
-    Router::new()
-        .without_v07_checks()
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+    // Configure rate limiting: 50 requests/second with burst of 100
+    let governor_conf = GovernorConfigBuilder::default()
+        .per_second(50)
+        .burst_size(100)
+        .finish()
+        .expect("Failed to build rate limiter config");
+
+    let governor_layer = GovernorLayer::new(governor_conf).error_handler(rate_limit_error);
+
+    // Health endpoints - exempt from rate limiting to ensure monitoring always works
+    let health_router = Router::new()
         .route("/health", get(health))
         .route("/", get(health))
+        .layer(TraceLayer::new_for_http())
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(30), // Short timeout for health checks
+        ))
+        .with_state(state.clone());
+
+    // Update endpoint - exempt from rate limiting (has per-index semaphore protection)
+    let update_router = Router::new()
+        .without_v07_checks()
+        .route("/indices/{name}/update", post(handlers::update_index))
+        .layer(TraceLayer::new_for_http())
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(300),
+        ))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
+        .layer(ConcurrencyLimitLayer::new(100))
+        .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
+        .with_state(state.clone());
+
+    // API router with rate limiting - use without_v07_checks to allow :param syntax
+    let api_router = Router::new()
+        .without_v07_checks()
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         // Index routes
         .route(
             "/indices",
@@ -194,7 +279,6 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/indices/{name}/documents",
             post(handlers::add_documents).delete(handlers::delete_documents),
         )
-        .route("/indices/{name}/update", post(handlers::update_index))
         .route("/indices/{name}/config", put(handlers::update_index_config))
         .route("/indices/{name}/search", post(handlers::search))
         .route(
@@ -229,9 +313,19 @@ fn build_router(state: Arc<AppState>) -> Router {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
+        // Rate limiting: 50 req/sec sustained, burst up to 100
+        .layer(governor_layer)
+        // Global concurrency limit: max 100 in-flight requests
+        .layer(ConcurrencyLimitLayer::new(100))
         // Allow large payloads for embedding uploads (100 MB)
         .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
-        .with_state(state)
+        .with_state(state);
+
+    // Merge routers: health first (takes precedence), then update (no rate limit), then API
+    Router::new()
+        .merge(health_router)
+        .merge(update_router)
+        .merge(api_router)
 }
 
 #[tokio::main]
@@ -346,7 +440,18 @@ Examples:
     let addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
     tracing::info!("Listening on http://{}", addr);
     tracing::info!("Swagger UI available at http://{}/swagger-ui", addr);
+    tracing::info!("Rate limiting: 50 req/sec sustained, 100 burst (health & update exempt)");
+    tracing::info!("Concurrency limit: 100 in-flight requests");
+    tracing::info!("Update queue limit: 10 pending tasks per index");
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .unwrap();
+
+    tracing::info!("Server shutdown complete");
 }

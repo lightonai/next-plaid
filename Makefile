@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api ci-api test-api-integration
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api ci-api test-api-integration test-api-rate-limit
 
 all: fmt lint test
 
@@ -74,6 +74,10 @@ ci-api:
 # Run API integration tests (starts server, runs Python tests, cleans up)
 test-api-integration:
 	./scripts/run-api-tests.sh
+
+# Run API rate limiting tests (must run serially due to timing sensitivity)
+test-api-rate-limit:
+	cd api && cargo test test_rate_limiting --features accelerate -- --test-threads=1
 
 # Install git hooks
 install-hooks:
