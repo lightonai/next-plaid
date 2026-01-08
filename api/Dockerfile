@@ -55,9 +55,10 @@ EXPOSE 8080
 ENV RUST_LOG=info
 ENV INDEX_DIR=/data/indices
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# Health check - aggressive settings for faster freeze detection
+# Detection time: ~30s (15s interval × 2 retries)
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=2 \
+    CMD curl -f --max-time 5 http://localhost:8080/health || exit 1
 
 # Run the API
 ENTRYPOINT ["lategrep-api"]

@@ -7,7 +7,6 @@ A REST API for deploying and querying lategrep multi-vector search indices.
 - **Index Management**: Declare, update, load, and delete indices
 - **Two-Phase Creation**: Declare index configuration first, then add documents via update
 - **Document Upload**: Add documents with embeddings and metadata
-- **Automatic Document Eviction**: Configure `max_documents` to limit index size with automatic eviction of oldest documents
 - **Search**: Single and batch query search with optional metadata filtering
 - **Metadata**: SQLite-based metadata storage with SQL query support
 - **Memory Monitoring**: Health endpoint reports API process memory usage
@@ -130,7 +129,7 @@ Response:
       "nbits": 4,
       "avg_doclen": 50.0,
       "has_metadata": true,
-      "max_documents": 10000
+      "max_documents": 2500000
     }
   ]
 }
@@ -168,8 +167,7 @@ Request:
   "config": {
     "nbits": 4,
     "batch_size": 50000,
-    "start_from_scratch": 999,
-    "max_documents": 10000
+    "start_from_scratch": 999
   }
 }
 ```
@@ -182,7 +180,7 @@ Request:
 | `batch_size`        | 50000   | Tokens per batch during indexing.                                                                                |
 | `seed`              | null    | Random seed for reproducibility.                                                                                 |
 | `start_from_scratch`| 999     | Rebuild threshold. When num_documents <= this value, the index is rebuilt entirely on updates instead of incrementally. |
-| `max_documents`     | null    | Maximum documents to keep. When exceeded after adding documents, oldest documents (lowest IDs) are evicted.       |
+| `max_documents`     | null    | Optional limit on documents. When exceeded, oldest documents (lowest IDs) are evicted. See [Document Eviction](#automatic-document-eviction). |
 
 Response:
 
@@ -193,8 +191,7 @@ Response:
     "nbits": 4,
     "batch_size": 50000,
     "seed": null,
-    "start_from_scratch": 999,
-    "max_documents": 10000
+    "start_from_scratch": 999
   },
   "message": "Index declared. Use POST /indices/my_index/update to add documents."
 }
@@ -218,7 +215,7 @@ Response:
   "dimension": 128,
   "has_metadata": true,
   "metadata_count": 1000,
-  "max_documents": 10000
+  "max_documents": 2500000
 }
 ```
 
@@ -236,7 +233,7 @@ Request:
 
 ```json
 {
-  "max_documents": 5000
+  "max_documents": 2500000
 }
 ```
 
@@ -250,9 +247,9 @@ Response:
     "batch_size": 50000,
     "seed": null,
     "start_from_scratch": 999,
-    "max_documents": 5000
+    "max_documents": 2500000
   },
-  "message": "max_documents set to 5000. Eviction will occur on next document addition if over limit."
+  "message": "max_documents set to 2500000. Eviction will occur on next document addition if over limit."
 }
 ```
 
@@ -269,33 +266,6 @@ To remove the limit entirely, set `max_documents` to `null`:
 ```
 DELETE /indices/{name}
 ```
-
-### Automatic Document Eviction
-
-When an index has a `max_documents` limit configured, the API automatically evicts the oldest documents when the limit is exceeded. This prevents unbounded index growth.
-
-**How it works:**
-
-1. Documents are added to the index
-2. After the add operation completes, the system checks if `num_documents > max_documents`
-3. If over the limit, the oldest documents (those with the lowest IDs) are deleted
-4. Eviction is logged for observability
-
-**Example scenario:**
-
-- Index has `max_documents: 100`
-- Currently contains 95 documents (IDs 0-94)
-- You add 10 new documents (IDs 95-104)
-- After the add, the index has 105 documents
-- Eviction removes the 5 oldest documents (IDs 0-4)
-- Final index contains 100 documents (IDs 5-104)
-
-**Notes:**
-
-- Eviction only happens on document addition, not when lowering the `max_documents` limit via config update
-- Document IDs are sequential and determine "age" (lower ID = older document)
-- After eviction, document IDs are NOT renumbered - they maintain their original values
-- Associated metadata for evicted documents is also removed
 
 #### Update Index (Add Documents)
 
@@ -597,6 +567,33 @@ Request (by condition):
 }
 ```
 
+### Automatic Document Eviction
+
+When an index has a `max_documents` limit configured, the API automatically evicts the oldest documents when the limit is exceeded. This prevents unbounded index growth.
+
+**How it works:**
+
+1. Documents are added to the index
+2. After the add operation completes, the system checks if `num_documents > max_documents`
+3. If over the limit, the oldest documents (those with the lowest IDs) are deleted
+4. Eviction is logged for observability
+
+**Example scenario:**
+
+- Index has `max_documents: 100`
+- Currently contains 95 documents (IDs 0-94)
+- You add 10 new documents (IDs 95-104)
+- After the add, the index has 105 documents
+- Eviction removes the 5 oldest documents (IDs 0-4)
+- Final index contains 100 documents (IDs 5-104)
+
+**Notes:**
+
+- Eviction only happens on document addition, not when lowering the `max_documents` limit via config update
+- Document IDs are sequential and determine "age" (lower ID = older document)
+- After eviction, document IDs are NOT renumbered - they maintain their original values
+- Associated metadata for evicted documents is also removed
+
 ## Tutorial: Building a Document Search System
 
 This tutorial walks through building a complete document search system using the Lategrep API. We'll create an index with scientific papers, add metadata, and perform various types of searches.
@@ -676,7 +673,7 @@ response = requests.post(f"{API_URL}/indices", json={
     "config": {
         "nbits": 4,           # 4-bit quantization (good balance of speed/accuracy)
         "batch_size": 50000,  # Process up to 50k tokens per batch
-        "max_documents": 1000 # Optional: limit index size (oldest docs evicted when exceeded)
+        "max_documents": 2500000 # Optional: limit index size (oldest docs evicted when exceeded)
     }
 })
 print(f"Declared index: {response.json()['message']}")
