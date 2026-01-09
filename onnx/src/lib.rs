@@ -320,13 +320,16 @@ impl OnnxColBERT {
     /// # Returns
     /// A vector of 2D arrays, one per input text. Each array has shape [num_tokens, embedding_dim].
     /// For queries with expansion, num_tokens equals query_length.
-    /// For documents, num_tokens equals the actual number of non-padding tokens.
+    /// For documents, num_tokens equals the actual number of non-skiplist tokens.
     pub fn encode(&mut self, texts: &[&str], is_query: bool) -> Result<Vec<Array2<f32>>> {
         let (prefix, max_length) = if is_query {
             (&self.config.query_prefix, self.config.query_length)
         } else {
             (&self.config.document_prefix, self.config.document_length)
         };
+
+        // For documents, filter skiplist by default (matches PyLate behavior)
+        let filter_skiplist = !is_query;
 
         let mut all_embeddings = Vec::with_capacity(texts.len());
 
@@ -338,7 +341,8 @@ impl OnnxColBERT {
                 .encode(text_with_prefix.as_str(), true)
                 .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
 
-            let mut input_ids: Vec<i64> = encoding.get_ids().iter().map(|&x| x as i64).collect();
+            let token_ids: Vec<u32> = encoding.get_ids().to_vec();
+            let mut input_ids: Vec<i64> = token_ids.iter().map(|&x| x as i64).collect();
             let mut attention_mask: Vec<i64> = encoding
                 .get_attention_mask()
                 .iter()
@@ -346,12 +350,14 @@ impl OnnxColBERT {
                 .collect();
             let mut token_type_ids: Vec<i64> =
                 encoding.get_type_ids().iter().map(|&x| x as i64).collect();
+            let mut token_ids_vec: Vec<u32> = token_ids;
 
             // Truncate if needed
             if input_ids.len() > max_length {
                 input_ids.truncate(max_length);
                 attention_mask.truncate(max_length);
                 token_type_ids.truncate(max_length);
+                token_ids_vec.truncate(max_length);
             }
 
             // Pad to max_length
@@ -359,13 +365,13 @@ impl OnnxColBERT {
                 if is_query && self.config.do_query_expansion {
                     // For queries with expansion, pad with MASK tokens and set attention to 1
                     input_ids.push(self.config.mask_token_id as i64);
-                    // Attention mask for expansion tokens depends on attend_to_expansion_tokens
-                    // but for the ONNX model, we always set attention to 1 for queries
                     attention_mask.push(1);
+                    token_ids_vec.push(self.config.mask_token_id);
                 } else {
                     // For documents (or queries without expansion), pad with PAD tokens
                     input_ids.push(self.config.pad_token_id as i64);
                     attention_mask.push(0);
+                    token_ids_vec.push(self.config.pad_token_id);
                 }
                 token_type_ids.push(0);
             }
@@ -409,39 +415,219 @@ impl OnnxColBERT {
                 let flat: Vec<f32> = data[..seq_len_out * embedding_dim].to_vec();
                 let arr = Array2::from_shape_vec((seq_len_out, embedding_dim), flat)?;
                 all_embeddings.push(arr);
-            } else if is_query {
-                // For queries without expansion, filter by attention mask (remove padding)
+            } else {
+                // For queries without expansion or documents, filter by attention mask and skiplist
                 let mut filtered_rows: Vec<Vec<f32>> = Vec::new();
-                for (i, &mask) in attention_mask.iter().enumerate() {
-                    if mask == 1 && i < seq_len_out {
-                        let start = i * embedding_dim;
-                        let end = start + embedding_dim;
-                        let row: Vec<f32> = data[start..end].to_vec();
-                        filtered_rows.push(row);
+                for (i, (&mask, &token_id)) in attention_mask.iter().zip(token_ids_vec.iter()).enumerate() {
+                    if mask == 0 || i >= seq_len_out {
+                        continue;
                     }
+                    // Skip skiplist tokens if filtering is enabled (for documents)
+                    if filter_skiplist && self.skiplist_ids.contains(&token_id) {
+                        continue;
+                    }
+                    let start = i * embedding_dim;
+                    let end = start + embedding_dim;
+                    filtered_rows.push(data[start..end].to_vec());
                 }
                 let num_tokens = filtered_rows.len();
                 let filtered_flat: Vec<f32> = filtered_rows.into_iter().flatten().collect();
                 let filtered_arr =
                     Array2::from_shape_vec((num_tokens, embedding_dim), filtered_flat)?;
                 all_embeddings.push(filtered_arr);
+            }
+        }
+
+        Ok(all_embeddings)
+    }
+
+    /// Encode texts into ColBERT embeddings using batched inference.
+    ///
+    /// This method processes all texts in a single ONNX inference call,
+    /// which is significantly faster than encoding texts one at a time.
+    /// Texts are padded to the longest sequence in the batch (or max_length).
+    ///
+    /// # Arguments
+    /// * `texts` - Slice of texts to encode
+    /// * `is_query` - If true, encode as queries (with expansion); if false, encode as documents
+    ///
+    /// # Returns
+    /// A vector of 2D arrays, one per input text. Each array has shape [num_tokens, embedding_dim].
+    pub fn encode_batch(&mut self, texts: &[&str], is_query: bool) -> Result<Vec<Array2<f32>>> {
+        // For documents, filter skiplist by default (matches PyLate behavior)
+        self.encode_batch_with_options(texts, is_query, !is_query)
+    }
+
+    /// Encode texts into ColBERT embeddings using batched inference with options.
+    ///
+    /// # Arguments
+    /// * `texts` - Slice of texts to encode
+    /// * `is_query` - If true, encode as queries (with expansion); if false, encode as documents
+    /// * `filter_skiplist` - If true and encoding documents, filter out skiplist tokens
+    ///
+    /// # Returns
+    /// A vector of 2D arrays, one per input text. Each array has shape [num_tokens, embedding_dim].
+    pub fn encode_batch_with_options(
+        &mut self,
+        texts: &[&str],
+        is_query: bool,
+        filter_skiplist: bool,
+    ) -> Result<Vec<Array2<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let (prefix, max_length) = if is_query {
+            (&self.config.query_prefix, self.config.query_length)
+        } else {
+            (&self.config.document_prefix, self.config.document_length)
+        };
+
+        // First pass: tokenize all texts and find the max length in batch
+        let mut encodings: Vec<(Vec<i64>, Vec<i64>, Vec<i64>, Vec<u32>)> = Vec::with_capacity(texts.len());
+        let mut batch_max_len = 0usize;
+
+        for text in texts {
+            let text_with_prefix = format!("{}{}", prefix, text);
+
+            let encoding = self
+                .tokenizer
+                .encode(text_with_prefix.as_str(), true)
+                .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
+
+            let token_ids: Vec<u32> = encoding.get_ids().to_vec();
+            let mut input_ids: Vec<i64> = token_ids.iter().map(|&x| x as i64).collect();
+            let mut attention_mask: Vec<i64> = encoding
+                .get_attention_mask()
+                .iter()
+                .map(|&x| x as i64)
+                .collect();
+            let mut token_type_ids: Vec<i64> =
+                encoding.get_type_ids().iter().map(|&x| x as i64).collect();
+            let mut token_ids_vec: Vec<u32> = token_ids;
+
+            // Truncate if needed
+            if input_ids.len() > max_length {
+                input_ids.truncate(max_length);
+                attention_mask.truncate(max_length);
+                token_type_ids.truncate(max_length);
+                token_ids_vec.truncate(max_length);
+            }
+
+            let original_len = input_ids.len();
+            batch_max_len = batch_max_len.max(original_len);
+            encodings.push((input_ids, attention_mask, token_type_ids, token_ids_vec));
+        }
+
+        // For queries with expansion, always use query_length
+        if is_query && self.config.do_query_expansion {
+            batch_max_len = max_length;
+        }
+
+        // Second pass: pad all sequences to batch_max_len and flatten into batch tensors
+        let batch_size = texts.len();
+        let mut all_input_ids: Vec<i64> = Vec::with_capacity(batch_size * batch_max_len);
+        let mut all_attention_mask: Vec<i64> = Vec::with_capacity(batch_size * batch_max_len);
+        let mut all_token_type_ids: Vec<i64> = Vec::with_capacity(batch_size * batch_max_len);
+        let mut all_token_ids: Vec<Vec<u32>> = Vec::with_capacity(batch_size);
+        let mut original_lengths: Vec<usize> = Vec::with_capacity(batch_size);
+
+        for (mut input_ids, mut attention_mask, mut token_type_ids, mut token_ids) in encodings {
+            original_lengths.push(input_ids.len());
+
+            // Pad to batch_max_len
+            while input_ids.len() < batch_max_len {
+                if is_query && self.config.do_query_expansion {
+                    // For queries with expansion, pad with MASK tokens
+                    input_ids.push(self.config.mask_token_id as i64);
+                    attention_mask.push(1);
+                    token_ids.push(self.config.mask_token_id);
+                } else {
+                    // For documents, pad with PAD tokens
+                    input_ids.push(self.config.pad_token_id as i64);
+                    attention_mask.push(0);
+                    token_ids.push(self.config.pad_token_id);
+                }
+                token_type_ids.push(0);
+            }
+
+            all_input_ids.extend(input_ids);
+            all_attention_mask.extend(attention_mask);
+            all_token_type_ids.extend(token_type_ids);
+            all_token_ids.push(token_ids);
+        }
+
+        // Create batch tensors [batch_size, seq_len]
+        let input_ids_tensor =
+            Tensor::from_array(([batch_size, batch_max_len], all_input_ids))?;
+        let attention_mask_tensor =
+            Tensor::from_array(([batch_size, batch_max_len], all_attention_mask.clone()))?;
+
+        // Run batched inference
+        let outputs = if self.config.uses_token_type_ids {
+            let token_type_ids_tensor =
+                Tensor::from_array(([batch_size, batch_max_len], all_token_type_ids))?;
+            self.session.run(ort::inputs![
+                "input_ids" => input_ids_tensor,
+                "attention_mask" => attention_mask_tensor,
+                "token_type_ids" => token_type_ids_tensor,
+            ])?
+        } else {
+            self.session.run(ort::inputs![
+                "input_ids" => input_ids_tensor,
+                "attention_mask" => attention_mask_tensor,
+            ])?
+        };
+
+        // Extract output [batch_size, seq_len, embedding_dim]
+        let (output_shape, output_data) = outputs["output"]
+            .try_extract_tensor::<f32>()
+            .context("Failed to extract output tensor")?;
+
+        let shape_slice: Vec<i64> = output_shape.iter().copied().collect();
+        let embedding_dim = shape_slice[2] as usize;
+
+        // Split batch output into individual embeddings
+        let mut all_embeddings = Vec::with_capacity(batch_size);
+        for i in 0..batch_size {
+            let batch_offset = i * batch_max_len * embedding_dim;
+            let attention_offset = i * batch_max_len;
+
+            if is_query && self.config.do_query_expansion {
+                // For queries with expansion, return all tokens (including MASK expansion)
+                let end = batch_offset + batch_max_len * embedding_dim;
+                let flat: Vec<f32> = output_data[batch_offset..end].to_vec();
+                let arr = Array2::from_shape_vec((batch_max_len, embedding_dim), flat)?;
+                all_embeddings.push(arr);
             } else {
-                // For documents, filter by attention mask (remove padding)
+                // For documents (or queries without expansion), filter by attention mask and skiplist
+                let orig_len = original_lengths[i];
+                let token_ids = &all_token_ids[i];
+
                 let mut filtered_rows: Vec<Vec<f32>> = Vec::new();
-                for (i, &mask) in attention_mask.iter().enumerate() {
-                    if mask == 1 && i < seq_len_out {
-                        let start = i * embedding_dim;
-                        let end = start + embedding_dim;
-                        let row: Vec<f32> = data[start..end].to_vec();
-                        filtered_rows.push(row);
+                for j in 0..orig_len {
+                    let mask = all_attention_mask[attention_offset + j];
+                    let token_id = token_ids[j];
+
+                    // Skip padding tokens
+                    if mask == 0 {
+                        continue;
                     }
+
+                    // Skip skiplist tokens if filtering is enabled
+                    if !is_query && filter_skiplist && self.skiplist_ids.contains(&token_id) {
+                        continue;
+                    }
+
+                    let start = batch_offset + j * embedding_dim;
+                    let end = start + embedding_dim;
+                    filtered_rows.push(output_data[start..end].to_vec());
                 }
 
                 let num_tokens = filtered_rows.len();
-                let filtered_flat: Vec<f32> = filtered_rows.into_iter().flatten().collect();
-                let filtered_arr =
-                    Array2::from_shape_vec((num_tokens, embedding_dim), filtered_flat)?;
-                all_embeddings.push(filtered_arr);
+                let flat: Vec<f32> = filtered_rows.into_iter().flatten().collect();
+                let arr = Array2::from_shape_vec((num_tokens, embedding_dim), flat)?;
+                all_embeddings.push(arr);
             }
         }
 

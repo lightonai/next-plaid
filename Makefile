@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-onnx-api benchmark-onnx-api-answerai benchmark-onnx-api-gte ci-api test-api-integration test-api-rate-limit
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-onnx-api benchmark-onnx-api-answerai benchmark-onnx-api-gte ci-api test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt
 
 all: fmt lint test
 
@@ -159,3 +159,40 @@ launch-api-debug:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
 	rm -rf api/indices
 	cd api && RUST_LOG=debug cargo run --release
+
+# =============================================================================
+# ONNX ColBERT targets
+# =============================================================================
+
+# Set up ONNX Python environment
+onnx-setup:
+	cd onnx/python && uv sync
+
+# Export default model (answerai-colbert-small-v1) to ONNX
+onnx-export:
+	cd onnx/python && uv run python export_onnx.py
+
+# Export all supported models to ONNX
+onnx-export-all:
+	cd onnx/python && uv run python export_onnx.py --all
+
+# Run Python benchmark (PyLate vs ONNX-Python)
+onnx-benchmark:
+	cd onnx/python && uv run python generate_reference.py --benchmark
+
+# Run Rust ONNX benchmark (compares against PyLate)
+onnx-benchmark-rust: onnx-benchmark
+	cd onnx && cargo run --release --bin benchmark_encoding -- --model-dir models/answerai-colbert-small-v1
+
+# Compare Rust ONNX embeddings against PyLate reference
+onnx-compare:
+	cd onnx/python && uv run python generate_reference.py
+	cd onnx && cargo run --release --bin compare_pylate
+
+# Lint ONNX Python code
+onnx-lint:
+	cd onnx/python && uv run --extra dev ruff check .
+
+# Format ONNX Python code
+onnx-fmt:
+	cd onnx/python && uv run --extra dev ruff format .

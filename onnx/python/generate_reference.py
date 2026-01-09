@@ -586,6 +586,22 @@ def run_benchmark(
         json.dump({"documents": documents, "target_tokens": target_tokens}, f)
     print(f"Documents saved to {docs_path}")
 
+    # Save PyLate embeddings for correctness verification (first 10 docs)
+    print("\nSaving PyLate embeddings for correctness verification...")
+    verification_embeddings = []
+    for i in range(min(10, num_docs)):
+        emb = pylate_embeddings[i]
+        verification_embeddings.append({
+            "doc_index": i,
+            "shape": list(emb.shape),
+            "embeddings": emb.tolist(),
+        })
+
+    verification_path = model_dir / "pylate_verification_embeddings.json"
+    with open(verification_path, "w") as f:
+        json.dump(verification_embeddings, f)
+    print(f"Verification embeddings saved to {verification_path}")
+
     return results
 
 
