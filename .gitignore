@@ -45,4 +45,6 @@ evaluation_datasets/
 # Claude
 .claude/
 api/target/
+onnx/target/
+onnx/models/
 *.ipynb
