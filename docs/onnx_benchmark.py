@@ -241,9 +241,7 @@ def encode_with_onnx(
     texts: list[str],
     output_dir: Path,
     is_query: bool,
-    model_path: Path,
-    tokenizer_path: Path,
-    config_path: Path = None,
+    model_dir: Path,
 ) -> None:
     """Encode texts using ONNX Runtime (Rust).
 
@@ -252,9 +250,7 @@ def encode_with_onnx(
         texts: List of texts to encode
         output_dir: Directory to save embeddings
         is_query: True for queries, False for documents
-        model_path: Path to ONNX model
-        tokenizer_path: Path to tokenizer.json
-        config_path: Optional path to config_sentence_transformers.json
+        model_dir: Path to model directory containing model.onnx, tokenizer.json, etc.
     """
     # Write texts to JSON
     input_file = output_dir / "input_texts.json"
@@ -269,15 +265,9 @@ def encode_with_onnx(
         str(input_file),
         "--output-dir",
         str(output_dir),
-        "--model",
-        str(model_path),
-        "--tokenizer",
-        str(tokenizer_path),
+        "--model-dir",
+        str(model_dir),
     ]
-
-    # Add config path if provided
-    if config_path and config_path.exists():
-        cmd.extend(["--config", str(config_path)])
 
     if is_query:
         cmd.append("--is-query")
@@ -591,9 +581,7 @@ def main():
             doc_texts,
             doc_embeddings_dir,
             is_query=False,
-            model_path=model_path,
-            tokenizer_path=tokenizer_path,
-            config_path=config_path,
+            model_dir=model_subdir,
         )
         doc_encode_time = time.perf_counter() - start
         print(f"    Time: {doc_encode_time:.2f}s ({len(documents) / doc_encode_time:.1f} docs/s)")
@@ -607,9 +595,7 @@ def main():
             query_texts,
             query_embeddings_dir,
             is_query=True,
-            model_path=model_path,
-            tokenizer_path=tokenizer_path,
-            config_path=config_path,
+            model_dir=model_subdir,
         )
         query_encode_time = time.perf_counter() - start
         print(
