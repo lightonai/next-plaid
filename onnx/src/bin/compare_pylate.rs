@@ -4,17 +4,16 @@
 //! them against the Rust ONNX implementation to verify correctness.
 
 use anyhow::{Context, Result};
+use colbert_onnx::Colbert;
 use ndarray::{Array1, Array2};
-use onnx_experiment::{ColBertConfig, OnnxColBERT};
 use serde::Deserialize;
 use std::fs;
 
-const MODEL_DIR: &str = "models";
-const ONNX_MODEL_PATH: &str = "models/answerai-colbert-small-v1.onnx";
-const TOKENIZER_PATH: &str = "models/tokenizer.json";
-const REFERENCE_PATH: &str = "models/reference_embeddings.json";
+const MODEL_DIR: &str = "models/answerai-colbert-small-v1";
+const REFERENCE_PATH: &str = "models/answerai-colbert-small-v1/reference_embeddings.json";
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 struct ReferenceEmbedding {
     text: String,
     is_query: bool,
@@ -83,27 +82,16 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Load config
-    let config = ColBertConfig::from_model_dir(MODEL_DIR).ok();
-    if let Some(ref cfg) = config {
-        println!("Loaded config:");
-        println!("  query_prefix: {:?}", cfg.query_prefix);
-        println!("  document_prefix: {:?}", cfg.document_prefix);
-        println!("  query_length: {}", cfg.query_length);
-        println!("  document_length: {}", cfg.document_length);
-        println!("  do_query_expansion: {}", cfg.do_query_expansion);
-        println!("  skiplist_words: {} items", cfg.skiplist_words.len());
-        println!();
-    }
-
     // Load model
-    println!("Loading ONNX model...");
-    let mut model = OnnxColBERT::new(ONNX_MODEL_PATH, TOKENIZER_PATH, config, 4)?;
+    println!("Loading ONNX model from {}...", MODEL_DIR);
+    let mut model = Colbert::from_pretrained(MODEL_DIR)?;
+    println!("  embedding_dim: {}", model.embedding_dim());
+    println!();
 
     // Load reference embeddings
     println!("Loading reference embeddings...\n");
-    let content = fs::read_to_string(REFERENCE_PATH)
-        .context("Failed to read reference embeddings")?;
+    let content =
+        fs::read_to_string(REFERENCE_PATH).context("Failed to read reference embeddings")?;
     let references: Vec<ReferenceEmbedding> = serde_json::from_str(&content)?;
 
     println!("{:-<80}", "");
@@ -118,11 +106,9 @@ fn main() -> Result<()> {
 
         // Encode with Rust ONNX
         let rust_embeddings = if reference.is_query {
-            model.encode(&[reference.text.as_str()], true)?
+            model.encode_queries(&[reference.text.as_str()])?
         } else {
-            // For documents, use encode_with_tokens to get skiplist filtering
-            let (embs, _) = model.encode_with_tokens(&[reference.text.as_str()], false, true)?;
-            embs
+            model.encode_documents(&[reference.text.as_str()])?
         };
         let rust_emb = &rust_embeddings[0];
 
@@ -175,7 +161,10 @@ fn main() -> Result<()> {
     println!("Average cosine similarities:");
     println!("  Rust ONNX vs PyLate:      {:.6}", avg_rust_vs_pylate);
     println!("  Rust ONNX vs Python ONNX: {:.6}", avg_rust_vs_python_onnx);
-    println!("\nMax absolute difference (Rust vs PyLate): {:.2e}", max_diff);
+    println!(
+        "\nMax absolute difference (Rust vs PyLate): {:.2e}",
+        max_diff
+    );
 
     println!("\n=== CONCLUSION ===\n");
 

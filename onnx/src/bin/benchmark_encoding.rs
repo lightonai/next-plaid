@@ -13,7 +13,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use ndarray::Array2;
-use onnx_experiment::{ColBertConfig, OnnxColBERT};
+use colbert_onnx::Colbert;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -235,12 +235,9 @@ fn main() -> Result<()> {
 
     // Load Rust ONNX model
     println!("\nLoading ONNX model...");
-    let config = ColBertConfig::from_model_dir(&args.model_dir).ok();
-    let mut model = OnnxColBERT::from_model_dir(&args.model_dir, args.threads)?;
-
-    if let Some(ref cfg) = config {
-        println!("Config: document_length={}, embedding_dim={}", cfg.document_length, cfg.embedding_dim);
-    }
+    let mut model = Colbert::from_pretrained_with_threads(&args.model_dir, args.threads)?;
+    let config = model.config();
+    println!("Config: document_length={}, embedding_dim={}", config.document_length, config.embedding_dim);
 
     // Convert to &str for encoding
     let docs_refs: Vec<&str> = bench_docs.documents.iter().map(|s| s.as_str()).collect();
@@ -248,13 +245,13 @@ fn main() -> Result<()> {
     // Warmup
     println!("\nWarming up ({} iterations)...", args.warmup);
     let warmup_docs: Vec<&str> = docs_refs[..args.warmup.min(num_docs)].to_vec();
-    let _ = model.encode_batch(&warmup_docs, false)?;
+    let _ = model.encode_documents(&warmup_docs)?;
 
     // ============ SEQUENTIAL BENCHMARK ============
     println!("\n--- Sequential encoding (one document at a time) ---");
     let start = Instant::now();
     for doc in &docs_refs {
-        let _ = model.encode(&[*doc], false)?;
+        let _ = model.encode_documents(&[*doc])?;
     }
     let sequential_time = start.elapsed().as_secs_f64();
     let sequential_docs_per_sec = num_docs as f64 / sequential_time;
@@ -263,16 +260,10 @@ fn main() -> Result<()> {
     println!("  Avg per document: {:.3}ms", 1000.0 * sequential_time / num_docs as f64);
 
     // ============ BATCHED BENCHMARK ============
-    let batch_size = if args.batch_size == 0 { num_docs } else { args.batch_size };
-    println!("\n--- Batched encoding (batch_size={}) ---", batch_size);
+    println!("\n--- Batched encoding (optimized) ---");
 
     let start = Instant::now();
-    let mut batched_embeddings: Vec<Array2<f32>> = Vec::with_capacity(num_docs);
-
-    for chunk in docs_refs.chunks(batch_size) {
-        let chunk_embeddings = model.encode_batch(chunk, false)?;
-        batched_embeddings.extend(chunk_embeddings);
-    }
+    let batched_embeddings = model.encode_documents(&docs_refs)?;
     let batched_time = start.elapsed().as_secs_f64();
     let batched_docs_per_sec = num_docs as f64 / batched_time;
 

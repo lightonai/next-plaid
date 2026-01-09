@@ -1,18 +1,15 @@
 [package]
-name = "onnx_experiment"
+name = "colbert-onnx"
 version = "0.1.0"
 edition = "2021"
-description = "ONNX Runtime experiment for ColBERT inference"
+description = "Fast ColBERT multi-vector encoding using ONNX Runtime"
+license = "MIT"
 
 [workspace]
 
 [lib]
-name = "onnx_experiment"
+name = "colbert_onnx"
 path = "src/lib.rs"
-
-[[bin]]
-name = "onnx_experiment"
-path = "src/main.rs"
 
 [[bin]]
 name = "benchmark"

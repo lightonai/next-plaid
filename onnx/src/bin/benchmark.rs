@@ -1,12 +1,10 @@
 //! Benchmark ONNX Runtime (Rust) embedding computation speed.
 
 use anyhow::Result;
-use onnx_experiment::{ColBertConfig, OnnxColBERT};
+use colbert_onnx::Colbert;
 use std::time::Instant;
 
-const ONNX_MODEL_PATH: &str = "models/answerai-colbert-small-v1.onnx";
-const TOKENIZER_PATH: &str = "models/tokenizer.json";
-const MODEL_DIR: &str = "models";
+const MODEL_DIR: &str = "models/answerai-colbert-small-v1";
 
 fn main() -> Result<()> {
     println!("{}", "=".repeat(60));
@@ -32,17 +30,16 @@ fn main() -> Result<()> {
         "How is the weather?",
     ];
 
-    // Load config if available
-    let config = ColBertConfig::from_model_dir(MODEL_DIR).ok();
-    if let Some(ref cfg) = config {
-        println!("\nUsing config: query_length={}, document_length={}", cfg.query_length, cfg.document_length);
-    }
+    // Load model
+    println!("\nLoading model from {}...", MODEL_DIR);
+    let mut model = Colbert::from_pretrained(MODEL_DIR)?;
+    let config = model.config();
+    println!("Config: query_length={}, document_length={}", config.query_length, config.document_length);
 
     // Warmup
     println!("\nWarming up...");
-    let mut model = OnnxColBERT::new(ONNX_MODEL_PATH, TOKENIZER_PATH, config, 4)?;
-    let _ = model.encode(&documents[..2], false)?;
-    let _ = model.encode(&queries[..2], true)?;
+    let _ = model.encode_documents(&documents[..2])?;
+    let _ = model.encode_queries(&queries[..2])?;
 
     // Benchmark parameters
     let num_iterations = 100;
@@ -55,7 +52,7 @@ fn main() -> Result<()> {
     );
     let start = Instant::now();
     for _ in 0..num_iterations {
-        let _ = model.encode(&documents, false)?;
+        let _ = model.encode_documents(&documents)?;
     }
     let doc_time = start.elapsed().as_secs_f64();
     let doc_per_sec = (documents.len() * num_iterations) as f64 / doc_time;
@@ -75,7 +72,7 @@ fn main() -> Result<()> {
     );
     let start = Instant::now();
     for _ in 0..num_iterations {
-        let _ = model.encode(&queries, true)?;
+        let _ = model.encode_queries(&queries)?;
     }
     let query_time = start.elapsed().as_secs_f64();
     let query_per_sec = (queries.len() * num_iterations) as f64 / query_time;

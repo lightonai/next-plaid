@@ -1,7 +1,7 @@
 //! Benchmark different thread counts to find optimal configuration.
 
 use anyhow::Result;
-use onnx_experiment::OnnxColBERT;
+use colbert_onnx::Colbert;
 use serde::Deserialize;
 use std::fs;
 use std::time::Instant;
@@ -35,14 +35,14 @@ fn main() -> Result<()> {
     println!("{}", "-".repeat(45));
 
     for num_threads in thread_counts {
-        let mut model = OnnxColBERT::from_model_dir(MODEL_DIR, num_threads)?;
+        let mut model = Colbert::from_pretrained_with_threads(MODEL_DIR, num_threads)?;
 
         // Warmup
-        let _ = model.encode_batch_chunked(&doc_refs[..8], false, 8)?;
+        let _ = model.encode_documents(&doc_refs[..8])?;
 
         // Benchmark
         let start = Instant::now();
-        let _ = model.encode_batch_chunked(&doc_refs, false, 8)?;
+        let _ = model.encode_documents(&doc_refs)?;
         let time = start.elapsed().as_secs_f64();
         let rate = num_docs as f64 / time;
         let ms_per_doc = 1000.0 / rate;
