@@ -91,34 +91,47 @@ impl UpdateConfig {
 /// Load buffered embeddings from buffer.npy.
 ///
 /// Returns an empty vector if buffer.npy doesn't exist.
+/// Uses buffer_lengths.json to split the flattened array back into per-document arrays.
 #[cfg(feature = "npy")]
 pub fn load_buffer(index_path: &Path) -> Result<Vec<Array2<f32>>> {
+    use ndarray_npy::ReadNpyExt;
+
     let buffer_path = index_path.join("buffer.npy");
+    let lengths_path = index_path.join("buffer_lengths.json");
+
     if !buffer_path.exists() {
         return Ok(Vec::new());
     }
 
-    // Load as object array (similar to fast-plaid's allow_pickle=True)
-    use std::io::Read;
-    let mut file = File::open(&buffer_path)?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    // Load the flattened embeddings array
+    let flat: Array2<f32> = match Array2::read_npy(File::open(&buffer_path)?) {
+        Ok(arr) => arr,
+        Err(_) => return Ok(Vec::new()),
+    };
 
-    // Parse the npy format header to get shape info
-    // For simplicity, we'll load the raw data assuming it's stored as a list of arrays
-    // This matches fast-plaid's np.save with allow_pickle=True format
+    // Load lengths to split back into per-document arrays
+    if lengths_path.exists() {
+        let lengths: Vec<i64> =
+            serde_json::from_reader(BufReader::new(File::open(&lengths_path)?))?;
 
-    // Alternative approach: read using ndarray-npy as a contiguous array
-    // and split by stored lengths
-    use ndarray_npy::ReadNpyExt;
+        let mut result = Vec::with_capacity(lengths.len());
+        let mut offset = 0;
 
-    // Try to read as a 2D array first (single batch case)
-    if let Ok(arr) = Array2::<f32>::read_npy(File::open(&buffer_path)?) {
-        return Ok(vec![arr]);
+        for &len in &lengths {
+            let len_usize = len as usize;
+            if offset + len_usize > flat.nrows() {
+                break;
+            }
+            let doc_emb = flat.slice(s![offset..offset + len_usize, ..]).to_owned();
+            result.push(doc_emb);
+            offset += len_usize;
+        }
+
+        return Ok(result);
     }
 
-    // If that fails, the buffer might be empty or in a different format
-    Ok(Vec::new())
+    // Fallback: if no lengths file, return as single document (legacy behavior)
+    Ok(vec![flat])
 }
 
 /// Save embeddings to buffer.npy.
@@ -880,5 +893,65 @@ mod tests {
         // Only the point at (5,5) should be an outlier
         assert_eq!(outliers.len(), 1);
         assert_eq!(outliers[0], 2);
+    }
+
+    #[test]
+    #[cfg(feature = "npy")]
+    fn test_buffer_roundtrip() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+
+        // Create 3 documents with different numbers of embeddings
+        let embeddings = vec![
+            Array2::from_shape_vec((3, 4), (0..12).map(|x| x as f32).collect()).unwrap(),
+            Array2::from_shape_vec((2, 4), (12..20).map(|x| x as f32).collect()).unwrap(),
+            Array2::from_shape_vec((5, 4), (20..40).map(|x| x as f32).collect()).unwrap(),
+        ];
+
+        // Save buffer
+        save_buffer(dir.path(), &embeddings).unwrap();
+
+        // Load buffer and verify we get 3 documents, not 1
+        let loaded = load_buffer(dir.path()).unwrap();
+
+        assert_eq!(loaded.len(), 3, "Should have 3 documents, not 1");
+        assert_eq!(loaded[0].nrows(), 3, "First doc should have 3 rows");
+        assert_eq!(loaded[1].nrows(), 2, "Second doc should have 2 rows");
+        assert_eq!(loaded[2].nrows(), 5, "Third doc should have 5 rows");
+
+        // Verify content matches
+        assert_eq!(loaded[0], embeddings[0]);
+        assert_eq!(loaded[1], embeddings[1]);
+        assert_eq!(loaded[2], embeddings[2]);
+    }
+
+    #[test]
+    #[cfg(feature = "npy")]
+    fn test_buffer_info_matches_buffer_len() {
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+
+        // Create 5 documents
+        let embeddings: Vec<Array2<f32>> = (0..5)
+            .map(|i| {
+                let rows = i + 2; // 2, 3, 4, 5, 6 rows
+                Array2::from_shape_fn((rows, 4), |(r, c)| (r * 4 + c) as f32)
+            })
+            .collect();
+
+        save_buffer(dir.path(), &embeddings).unwrap();
+
+        // Verify buffer_info.json matches actual document count
+        let info_count = load_buffer_info(dir.path()).unwrap();
+        let loaded = load_buffer(dir.path()).unwrap();
+
+        assert_eq!(info_count, 5, "buffer_info should report 5 docs");
+        assert_eq!(
+            loaded.len(),
+            5,
+            "load_buffer should return 5 docs to match buffer_info"
+        );
     }
 }

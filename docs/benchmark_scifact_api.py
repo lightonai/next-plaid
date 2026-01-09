@@ -563,7 +563,7 @@ def run_api_benchmark(
     print(f"    Waiting for all {total_docs} documents to be indexed...")
     info = client.wait_for_documents(
         index_name,
-        expected_count=5100,
+        expected_count=total_docs,
         timeout=600.0,
     )
 

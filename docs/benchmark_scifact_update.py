@@ -533,6 +533,8 @@ def run_lategrep_with_updates(
 
         num_batches = 1
 
+        batch_size = 83
+
         # Update with remaining batches
         for i in range(initial_docs, total_docs, batch_size):
             batch = doc_embeddings[i : i + batch_size]
