@@ -140,9 +140,8 @@ pub struct DocumentEmbeddings {
 pub struct AddDocumentsRequest {
     /// List of document embeddings
     pub documents: Vec<DocumentEmbeddings>,
-    /// Optional metadata for each document (must match documents length)
-    #[serde(default)]
-    pub metadata: Option<Vec<serde_json::Value>>,
+    /// Metadata for each document (must match documents length)
+    pub metadata: Vec<serde_json::Value>,
 }
 
 /// Response after adding documents.
@@ -214,6 +213,9 @@ pub struct QueryResultResponse {
     /// Relevance scores for each document
     #[schema(example = json!([0.95, 0.87, 0.82, 0.75]))]
     pub scores: Vec<f32>,
+    /// Metadata for each document (None if document has no metadata)
+    #[schema(example = json!([{"title": "Doc 1", "category": "science"}, {"title": "Doc 2", "category": "history"}, null, {"title": "Doc 4"}]))]
+    pub metadata: Vec<Option<serde_json::Value>>,
 }
 
 /// Response containing search results.
@@ -454,9 +456,8 @@ pub struct IndexSummary {
 pub struct UpdateIndexRequest {
     /// Document embeddings to add
     pub documents: Vec<DocumentEmbeddings>,
-    /// Optional metadata for each document (must match documents length)
-    #[serde(default)]
-    pub metadata: Option<Vec<serde_json::Value>>,
+    /// Metadata for each document (must match documents length)
+    pub metadata: Vec<serde_json::Value>,
 }
 
 /// Response after updating or creating an index.

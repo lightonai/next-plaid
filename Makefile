@@ -101,10 +101,19 @@ benchmark-scifact-update:
 	cargo build --release --features npy,accelerate --example benchmark_cli
 	cd docs && uv sync --extra eval --extra fast-plaid && uv run python benchmark_scifact_update.py --batch-size 800
 
-# Benchmark SciFact via REST API (uses cached embeddings, with OpenBLAS)
+# Benchmark SciFact via REST API (uses cached embeddings, with accelerate)
+# Starts the server in background, runs benchmark, then stops server
 benchmark-scifact-api:
+	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
+	rm -rf api/indices
 	cargo build --release -p lategrep-api --features accelerate
-	cd docs && uv sync --extra eval && uv run python benchmark_scifact_api.py --batch-size 100
+	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices --no-mmap & \
+	API_PID=$$!; \
+	sleep 2; \
+	cd docs && uv sync --extra eval && uv run python benchmark_scifact_api.py --batch-size 100; \
+	EXIT_CODE=$$?; \
+	kill $$API_PID 2>/dev/null || true; \
+	exit $$EXIT_CODE
 
 launch-api-debug:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true

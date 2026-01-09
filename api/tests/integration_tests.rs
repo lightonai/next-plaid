@@ -111,11 +111,12 @@ impl TestFixture {
     /// Helper to create and populate an index in one step.
     /// This is the new workflow: 1) declare index, 2) update with documents (async).
     /// Returns the IndexInfoResponse after the background task completes.
+    /// Note: metadata is required and must match documents length.
     async fn create_and_populate_index(
         &self,
         name: &str,
         documents: Vec<Value>,
-        metadata: Option<Vec<Value>>,
+        metadata: Vec<Value>,
         config: Option<Value>,
     ) -> IndexInfoResponse {
         let num_docs = documents.len();
@@ -146,16 +147,11 @@ impl TestFixture {
         );
 
         // Step 2: Update with documents (async - returns 202)
-        let update_body = if let Some(meta) = metadata {
-            json!({
-                "documents": documents,
-                "metadata": meta
-            })
-        } else {
-            json!({
-                "documents": documents
-            })
-        };
+        // Metadata is required
+        let update_body = json!({
+            "documents": documents,
+            "metadata": metadata
+        });
 
         let resp = self
             .client
@@ -421,6 +417,13 @@ fn generate_documents(num_docs: usize, tokens_per_doc: usize, dim: usize) -> Vec
         .collect()
 }
 
+/// Generate default metadata for a given number of documents.
+fn generate_default_metadata(num_docs: usize) -> Vec<Value> {
+    (0..num_docs)
+        .map(|i| json!({"doc_id": i, "title": format!("Document {}", i)}))
+        .collect()
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -558,8 +561,9 @@ async fn test_get_index_info() {
 
     // Create and populate index
     let documents = generate_documents(10, 15, 48);
+    let metadata = generate_default_metadata(10);
     fixture
-        .create_and_populate_index("info_test", documents, None, None)
+        .create_and_populate_index("info_test", documents, metadata, None)
         .await;
 
     // Get info
@@ -575,7 +579,9 @@ async fn test_get_index_info() {
     assert_eq!(body.name, "info_test");
     assert_eq!(body.num_documents, 10);
     assert_eq!(body.dimension, 48);
-    assert!(!body.has_metadata);
+    // Metadata is now always provided when creating an index
+    assert!(body.has_metadata);
+    assert_eq!(body.metadata_count, Some(10));
 }
 
 #[tokio::test]
@@ -599,17 +605,20 @@ async fn test_add_documents() {
 
     // Create and populate index
     let documents = generate_documents(5, 10, dim);
+    let metadata = generate_default_metadata(5);
     fixture
-        .create_and_populate_index("add_docs_test", documents, None, None)
+        .create_and_populate_index("add_docs_test", documents, metadata, None)
         .await;
 
     // Add more documents (async - returns 202 Accepted)
     let new_documents = generate_documents(3, 10, dim);
+    let new_metadata = generate_default_metadata(3);
     let resp = fixture
         .client
         .post(fixture.url("/indices/add_docs_test/documents"))
         .json(&json!({
-            "documents": new_documents
+            "documents": new_documents,
+            "metadata": new_metadata
         }))
         .send()
         .await
@@ -649,7 +658,7 @@ async fn test_add_documents_with_metadata() {
     ];
 
     fixture
-        .create_and_populate_index("add_meta_test", documents, Some(metadata), None)
+        .create_and_populate_index("add_meta_test", documents, metadata, None)
         .await;
 
     // Add more with metadata (async - returns 202 Accepted)
@@ -698,8 +707,9 @@ async fn test_search_single_query() {
 
     // Create and populate index
     let documents = generate_documents(20, 15, dim);
+    let metadata = generate_default_metadata(20);
     fixture
-        .create_and_populate_index("search_test", documents, None, None)
+        .create_and_populate_index("search_test", documents, metadata, None)
         .await;
 
     // Search
@@ -738,8 +748,9 @@ async fn test_search_batch_queries() {
 
     // Create and populate index
     let documents = generate_documents(15, 10, dim);
+    let metadata = generate_default_metadata(15);
     fixture
-        .create_and_populate_index("batch_search_test", documents, None, None)
+        .create_and_populate_index("batch_search_test", documents, metadata, None)
         .await;
 
     // Batch search with 3 queries
@@ -776,8 +787,9 @@ async fn test_search_with_subset() {
 
     // Create and populate index
     let documents = generate_documents(20, 10, dim);
+    let metadata = generate_default_metadata(20);
     fixture
-        .create_and_populate_index("subset_search_test", documents, None, None)
+        .create_and_populate_index("subset_search_test", documents, metadata, None)
         .await;
 
     // Search within subset [0, 2, 4, 6, 8]
@@ -817,7 +829,7 @@ async fn test_filtered_search() {
         .collect();
 
     fixture
-        .create_and_populate_index("filtered_search_test", documents, Some(metadata), None)
+        .create_and_populate_index("filtered_search_test", documents, metadata, None)
         .await;
 
     // Filtered search - only category A
@@ -856,7 +868,7 @@ async fn test_metadata_check() {
         .collect();
 
     fixture
-        .create_and_populate_index("meta_check_test", documents, Some(metadata), None)
+        .create_and_populate_index("meta_check_test", documents, metadata, None)
         .await;
 
     // Check which documents have metadata
@@ -899,7 +911,7 @@ async fn test_metadata_query() {
         .collect();
 
     fixture
-        .create_and_populate_index("meta_query_test", documents, Some(metadata), None)
+        .create_and_populate_index("meta_query_test", documents, metadata, None)
         .await;
 
     // Query for even category
@@ -951,7 +963,7 @@ async fn test_get_metadata() {
         .collect();
 
     fixture
-        .create_and_populate_index("get_meta_test", documents, Some(metadata), None)
+        .create_and_populate_index("get_meta_test", documents, metadata, None)
         .await;
 
     // Get all metadata
@@ -991,22 +1003,23 @@ async fn test_add_metadata_to_existing() {
     let fixture = TestFixture::new().await;
     let dim = 32;
 
-    // Create and populate index without metadata
+    // Create and populate index with initial metadata (metadata is required)
     let documents = generate_documents(5, 10, dim);
+    let initial_metadata = generate_default_metadata(5);
     fixture
-        .create_and_populate_index("add_meta_later_test", documents, None, None)
+        .create_and_populate_index("add_meta_later_test", documents, initial_metadata, None)
         .await;
 
-    // Add metadata later
-    let metadata: Vec<Value> = (0..5)
-        .map(|i| json!({"title": format!("Title {}", i)}))
+    // Add more metadata (appends to existing metadata)
+    let additional_metadata: Vec<Value> = (5..10)
+        .map(|i| json!({"title": format!("Additional Title {}", i)}))
         .collect();
 
     let resp = fixture
         .client
         .post(fixture.url("/indices/add_meta_later_test/metadata"))
         .json(&json!({
-            "metadata": metadata
+            "metadata": additional_metadata
         }))
         .send()
         .await
@@ -1016,7 +1029,7 @@ async fn test_add_metadata_to_existing() {
     let body: AddMetadataResponse = resp.json().await.unwrap();
     assert_eq!(body.added, 5);
 
-    // Verify
+    // Verify - should have 10 total metadata entries (5 initial + 5 added)
     let resp = fixture
         .client
         .get(fixture.url("/indices/add_meta_later_test/metadata/count"))
@@ -1025,7 +1038,7 @@ async fn test_add_metadata_to_existing() {
         .unwrap();
 
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["count"], 5);
+    assert_eq!(body["count"], 10); // 5 initial + 5 additional
     assert_eq!(body["has_metadata"], true);
 }
 
@@ -1039,7 +1052,7 @@ async fn test_delete_documents() {
     let metadata: Vec<Value> = (0..10).map(|i| json!({"id": i})).collect();
 
     fixture
-        .create_and_populate_index("delete_test", documents, Some(metadata), None)
+        .create_and_populate_index("delete_test", documents, metadata, None)
         .await;
 
     // Delete documents 2, 5, 7
@@ -1077,8 +1090,9 @@ async fn test_delete_index() {
 
     // Create and populate index
     let documents = generate_documents(5, 10, dim);
+    let metadata = generate_default_metadata(5);
     fixture
-        .create_and_populate_index("delete_idx_test", documents, None, None)
+        .create_and_populate_index("delete_idx_test", documents, metadata, None)
         .await;
 
     // Verify it exists
@@ -1118,17 +1132,20 @@ async fn test_dimension_mismatch() {
 
     // Create and populate index with dimension 32
     let documents = generate_documents(5, 10, 32);
+    let metadata = generate_default_metadata(5);
     fixture
-        .create_and_populate_index("dim_mismatch_test", documents, None, None)
+        .create_and_populate_index("dim_mismatch_test", documents, metadata, None)
         .await;
 
     // Try to add documents with different dimension
     let wrong_dim_docs = generate_documents(2, 10, 64);
+    let wrong_dim_metadata = generate_default_metadata(2);
     let resp = fixture
         .client
         .post(fixture.url("/indices/dim_mismatch_test/documents"))
         .json(&json!({
-            "documents": wrong_dim_docs
+            "documents": wrong_dim_docs,
+            "metadata": wrong_dim_metadata
         }))
         .send()
         .await
@@ -1157,8 +1174,9 @@ async fn test_empty_request_validation() {
 
     // Create and populate index first
     let documents = generate_documents(5, 10, 32);
+    let metadata = generate_default_metadata(5);
     fixture
-        .create_and_populate_index("validation_test", documents, None, None)
+        .create_and_populate_index("validation_test", documents, metadata, None)
         .await;
 
     // Empty queries
@@ -1173,12 +1191,13 @@ async fn test_empty_request_validation() {
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
 
-    // Empty documents
+    // Empty documents (with empty metadata to pass schema validation)
     let resp = fixture
         .client
         .post(fixture.url("/indices/validation_test/documents"))
         .json(&json!({
-            "documents": []
+            "documents": [],
+            "metadata": []
         }))
         .send()
         .await
@@ -1204,11 +1223,13 @@ async fn test_update_without_declare_fails() {
 
     // Try to update an index that hasn't been declared
     let documents = generate_documents(5, 10, 32);
+    let metadata = generate_default_metadata(5);
     let resp = fixture
         .client
         .post(fixture.url("/indices/undeclared_index/update"))
         .json(&json!({
-            "documents": documents
+            "documents": documents,
+            "metadata": metadata
         }))
         .send()
         .await
@@ -1251,8 +1272,9 @@ async fn test_search_returns_correct_scores_order() {
         documents.push(json!({"embeddings": emb}));
     }
 
+    let metadata = generate_default_metadata(documents.len());
     fixture
-        .create_and_populate_index("score_order_test", documents, None, None)
+        .create_and_populate_index("score_order_test", documents, metadata, None)
         .await;
 
     // Query with all 1s - should rank first 10 docs higher
@@ -1302,8 +1324,9 @@ async fn test_large_batch_search() {
 
     // Create and populate larger index
     let documents = generate_documents(50, 20, dim);
+    let metadata = generate_default_metadata(50);
     fixture
-        .create_and_populate_index("large_batch_test", documents, None, None)
+        .create_and_populate_index("large_batch_test", documents, metadata, None)
         .await;
 
     // Batch search with 10 queries
@@ -1362,11 +1385,13 @@ async fn test_start_from_scratch_with_30_documents() {
 
     // Step 2: Upload 30 documents
     let documents = generate_documents(30, 15, dim);
+    let metadata = generate_default_metadata(30);
     let resp = fixture
         .client
         .post(fixture.url("/indices/start_scratch_test/update"))
         .json(&json!({
-            "documents": documents
+            "documents": documents,
+            "metadata": metadata
         }))
         .send()
         .await
@@ -1432,11 +1457,13 @@ async fn test_max_documents_eviction() {
 
     // Step 2: Add 3 documents (under limit)
     let documents = generate_documents(3, 10, dim);
+    let metadata = generate_default_metadata(3);
     let resp = fixture
         .client
         .post(fixture.url("/indices/max_docs_test/update"))
         .json(&json!({
-            "documents": documents
+            "documents": documents,
+            "metadata": metadata
         }))
         .send()
         .await
@@ -1458,11 +1485,13 @@ async fn test_max_documents_eviction() {
 
     // Step 3: Add 5 more documents (should trigger eviction of 3 oldest)
     let documents = generate_documents(5, 10, dim);
+    let metadata = generate_default_metadata(5);
     let resp = fixture
         .client
         .post(fixture.url("/indices/max_docs_test/update"))
         .json(&json!({
-            "documents": documents
+            "documents": documents,
+            "metadata": metadata
         }))
         .send()
         .await
@@ -1509,11 +1538,13 @@ async fn test_update_max_documents_config() {
 
     // Add some documents
     let documents = generate_documents(10, 10, dim);
+    let metadata = generate_default_metadata(10);
     let resp = fixture
         .client
         .post(fixture.url("/indices/config_update_test/update"))
         .json(&json!({
-            "documents": documents
+            "documents": documents,
+            "metadata": metadata
         }))
         .send()
         .await
@@ -1559,11 +1590,13 @@ async fn test_update_max_documents_config() {
 
     // Step 3: Add 1 more document to trigger eviction
     let documents = generate_documents(1, 10, dim);
+    let metadata = generate_default_metadata(1);
     let resp = fixture
         .client
         .post(fixture.url("/indices/config_update_test/update"))
         .json(&json!({
-            "documents": documents
+            "documents": documents,
+            "metadata": metadata
         }))
         .send()
         .await

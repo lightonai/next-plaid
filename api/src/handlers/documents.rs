@@ -279,15 +279,13 @@ pub async fn add_documents(
         return Err(ApiError::BadRequest("No documents provided".to_string()));
     }
 
-    // Validate metadata length if provided
-    if let Some(ref meta) = req.metadata {
-        if meta.len() != req.documents.len() {
-            return Err(ApiError::BadRequest(format!(
-                "Metadata length ({}) must match documents length ({})",
-                meta.len(),
-                req.documents.len()
-            )));
-        }
+    // Validate metadata length (metadata is required)
+    if req.metadata.len() != req.documents.len() {
+        return Err(ApiError::BadRequest(format!(
+            "Metadata length ({}) must match documents length ({})",
+            req.metadata.len(),
+            req.documents.len()
+        )));
     }
 
     // Perform CPU-intensive validation/conversion synchronously to fail fast
@@ -350,14 +348,9 @@ pub async fn add_documents(
                 .to_string();
             let mut index = Index::load(&path_str)?;
 
-            // Update
-            if let Some(meta) = metadata {
-                let update_config = UpdateConfig::default();
-                index.update_with_metadata(&embeddings, &update_config, Some(&meta))?;
-            } else {
-                let update_config = UpdateConfig::default();
-                index.update(&embeddings, &update_config)?;
-            }
+            // Update with metadata (metadata is required)
+            let update_config = UpdateConfig::default();
+            index.update_with_metadata(&embeddings, &update_config, Some(&metadata))?;
 
             // Eviction: Load config to check max_documents
             let config_path = state_clone.index_path(&name_inner).join("config.json");
@@ -548,14 +541,13 @@ pub async fn update_index(
         ));
     }
 
-    if let Some(ref meta) = req.metadata {
-        if meta.len() != embeddings.len() {
-            return Err(ApiError::BadRequest(format!(
-                "Metadata length ({}) must match documents length ({})",
-                meta.len(),
-                embeddings.len()
-            )));
-        }
+    // Validate metadata length (metadata is required)
+    if req.metadata.len() != embeddings.len() {
+        return Err(ApiError::BadRequest(format!(
+            "Metadata length ({}) must match documents length ({})",
+            req.metadata.len(),
+            embeddings.len()
+        )));
     }
 
     // Prepare data for background task
@@ -607,22 +599,20 @@ pub async fn update_index(
             };
             let update_config = UpdateConfig::default();
 
-            // Run Update
-            let mut index =
+            // Run Update - now returns document IDs for metadata sync
+            let (mut index, doc_ids) =
                 Index::update_or_create(&embeddings, &path_str, &index_config, &update_config)
                     .map_err(|e| ApiError::IndexCreationError(e.to_string()))?;
 
-            // Handle Metadata
-            if let Some(meta) = metadata {
-                if filtering::exists(&path_str) {
-                    filtering::update(&path_str, &meta).map_err(|e| {
-                        ApiError::IndexCreationError(format!("Failed to update metadata: {}", e))
-                    })?;
-                } else {
-                    filtering::create(&path_str, &meta).map_err(|e| {
-                        ApiError::IndexCreationError(format!("Failed to create metadata: {}", e))
-                    })?;
-                }
+            // Handle Metadata with explicit document IDs to ensure sync
+            if filtering::exists(&path_str) {
+                filtering::update(&path_str, &metadata, &doc_ids).map_err(|e| {
+                    ApiError::IndexCreationError(format!("Failed to update metadata: {}", e))
+                })?;
+            } else {
+                filtering::create(&path_str, &metadata, &doc_ids).map_err(|e| {
+                    ApiError::IndexCreationError(format!("Failed to create metadata: {}", e))
+                })?;
             }
 
             // Eviction: Check if over max_documents limit
@@ -651,6 +641,9 @@ pub async fn update_index(
         .await;
 
         let duration = start.elapsed();
+
+        // print document count
+        println!("Document count added: {}", doc_count);
 
         // Log result
         match result {

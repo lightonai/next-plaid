@@ -294,6 +294,8 @@ Request:
 }
 ```
 
+**Note:** The `metadata` field is **required** and must have the same length as `documents`. Each metadata entry corresponds to a document at the same index.
+
 Response:
 
 ```json
@@ -342,6 +344,8 @@ Request:
   ]
 }
 ```
+
+**Note:** The `metadata` field is **required** and must have the same length as `documents`.
 
 Response:
 
@@ -408,11 +412,18 @@ Response:
     {
       "query_id": 0,
       "document_ids": [42, 17, 89, ...],
-      "scores": [0.95, 0.87, 0.82, ...]
+      "scores": [0.95, 0.87, 0.82, ...],
+      "metadata": [
+        {"title": "Doc 42", "category": "science"},
+        {"title": "Doc 17", "category": "history"},
+        null
+      ]
     }
   ]
 }
 ```
+
+The `metadata` array contains the full metadata object for each result, in the same order as `document_ids` and `scores`. If a document has no metadata, its entry will be `null`.
 
 #### Search with Subset Filter
 
@@ -717,6 +728,8 @@ results = response.json()["results"][0]
 print(f"Found {len(results['document_ids'])} results")
 print(f"Top document IDs: {results['document_ids'][:5]}")
 print(f"Top scores: {[f'{s:.3f}' for s in results['scores'][:5]]}")
+# Metadata is also returned for each result
+print(f"Top metadata: {results['metadata'][:2]}")
 ```
 
 ### Step 5: Batch Search (Multiple Queries)
@@ -736,7 +749,7 @@ response = requests.post(f"{API_URL}/indices/papers/search", json={
 
 for result in response.json()["results"]:
     print(f"Query {result['query_id']}: top doc = {result['document_ids'][0]}, "
-          f"score = {result['scores'][0]:.3f}")
+          f"score = {result['scores'][0]:.3f}, metadata = {result['metadata'][0]}")
 ```
 
 ### Step 6: Metadata Filtering
@@ -779,14 +792,25 @@ results = response.json()["results"][0]
 print(f"Found {len(results['document_ids'])} CS papers from 2020+")
 ```
 
-### Step 8: Retrieve Metadata for Results
+### Step 8: Use Metadata from Search Results
+
+Since search results now include metadata directly, you can access it without an additional API call:
 
 ```python
-# Get metadata for the search results
-top_doc_ids = results["document_ids"][:5]
+# Metadata is included in search results
+for i, (doc_id, score, meta) in enumerate(zip(
+    results["document_ids"][:5],
+    results["scores"][:5],
+    results["metadata"][:5]
+)):
+    if meta:
+        print(f"#{i+1}: Doc {doc_id} (score={score:.3f}) - {meta.get('title', 'N/A')}")
+    else:
+        print(f"#{i+1}: Doc {doc_id} (score={score:.3f}) - No metadata")
 
+# You can still fetch metadata separately if needed:
 response = requests.post(f"{API_URL}/indices/papers/metadata/get", json={
-    "document_ids": top_doc_ids
+    "document_ids": results["document_ids"][:5]
 })
 
 for doc in response.json()["metadata"]:
@@ -795,10 +819,13 @@ for doc in response.json()["metadata"]:
 
 ### Step 9: Add New Documents
 
+**Note:** Metadata is required for all document additions.
+
 ```python
 # Add 10 new documents to the existing index
+# Both documents and metadata are required
 new_documents = []
-new_metadata = []
+new_metadata = []  # Required: must have same length as documents
 
 for i in range(10):
     num_tokens = np.random.randint(20, 60)
@@ -816,7 +843,7 @@ for i in range(10):
 
 response = requests.post(f"{API_URL}/indices/papers/documents", json={
     "documents": new_documents,
-    "metadata": new_metadata
+    "metadata": new_metadata  # Required
 })
 
 result = response.json()
@@ -913,7 +940,8 @@ def main():
         "queries": [{"embeddings": query.tolist()}],
         "params": {"top_k": 5}
     })
-    print(f"Search results: {resp.json()['results'][0]['document_ids']}")
+    result = resp.json()['results'][0]
+    print(f"Search results: doc_ids={result['document_ids']}, metadata={result['metadata'][:2]}")
 
     # Filtered search
     resp = requests.post(f"{API_URL}/indices/tutorial_index/search/filtered", json={
@@ -922,7 +950,8 @@ def main():
         "filter_parameters": ["A"],
         "params": {"top_k": 5}
     })
-    print(f"Filtered results (category A): {resp.json()['results'][0]['document_ids']}")
+    result = resp.json()['results'][0]
+    print(f"Filtered results (category A): doc_ids={result['document_ids']}, metadata={result['metadata'][:2]}")
 
     # Cleanup
     requests.delete(f"{API_URL}/indices/tutorial_index")

@@ -2,6 +2,7 @@
 //!
 //! Handles search operations on indices.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
@@ -10,7 +11,7 @@ use axum::{
 };
 use ndarray::Array2;
 
-use lategrep::SearchParameters;
+use lategrep::{filtering, SearchParameters};
 
 use crate::error::{ApiError, ApiResult};
 use crate::models::{
@@ -48,6 +49,39 @@ fn to_ndarray(query: &QueryEmbeddings) -> ApiResult<Array2<f32>> {
     let flat: Vec<f32> = query.embeddings.iter().flatten().copied().collect();
     Array2::from_shape_vec((rows, cols), flat)
         .map_err(|e| ApiError::BadRequest(format!("Failed to create query array: {}", e)))
+}
+
+/// Fetch metadata for a list of document IDs.
+/// Returns a Vec of Option<serde_json::Value> in the same order as document_ids.
+/// If metadata doesn't exist for an index or a specific document, returns None for that entry.
+fn fetch_metadata_for_docs(path_str: &str, document_ids: &[i64]) -> Vec<Option<serde_json::Value>> {
+    if !filtering::exists(path_str) {
+        // No metadata database - return None for all
+        return vec![None; document_ids.len()];
+    }
+
+    // Fetch metadata for the document IDs
+    let metadata_result = filtering::get(path_str, None, &[], Some(document_ids));
+
+    match metadata_result {
+        Ok(metadata_list) => {
+            // Build a map from _subset_ to metadata for quick lookup
+            let meta_map: HashMap<i64, serde_json::Value> = metadata_list
+                .into_iter()
+                .filter_map(|m| m.get("_subset_").and_then(|v| v.as_i64()).map(|id| (id, m)))
+                .collect();
+
+            // Map document_ids to their metadata (or None if not found)
+            document_ids
+                .iter()
+                .map(|doc_id| meta_map.get(doc_id).cloned())
+                .collect()
+        }
+        Err(e) => {
+            tracing::warn!("Failed to fetch metadata: {}", e);
+            vec![None; document_ids.len()]
+        }
+    }
 }
 
 /// Search an index with query embeddings.
@@ -105,56 +139,55 @@ pub async fn search(
         batch_size: 2000,
     };
 
+    // Get path for metadata lookup
+    let path_str = state.index_path(&name).to_string_lossy().to_string();
+
     let start = std::time::Instant::now();
 
-    // Perform search based on index type
-    let results = match &*idx {
+    // Perform search based on index type and collect raw results
+    let raw_results: Vec<(usize, Vec<i64>, Vec<f32>)> = match &*idx {
         LoadedIndex::Regular(index) => {
-            // Single query or batch
             if queries.len() == 1 {
                 let result = index.search(&queries[0], &params, req.subset.as_deref())?;
-                vec![QueryResultResponse {
-                    query_id: result.query_id,
-                    document_ids: result.passage_ids,
-                    scores: result.scores,
-                }]
+                vec![(result.query_id, result.passage_ids, result.scores)]
             } else {
                 let subsets = req.subset.as_ref().map(|s| vec![s.clone(); queries.len()]);
                 let batch_results =
                     index.search_batch(&queries, &params, false, subsets.as_deref())?;
                 batch_results
                     .into_iter()
-                    .map(|r| QueryResultResponse {
-                        query_id: r.query_id,
-                        document_ids: r.passage_ids,
-                        scores: r.scores,
-                    })
+                    .map(|r| (r.query_id, r.passage_ids, r.scores))
                     .collect()
             }
         }
         LoadedIndex::Mmap(index) => {
-            // Single query or batch
             if queries.len() == 1 {
                 let result = index.search(&queries[0], &params, req.subset.as_deref())?;
-                vec![QueryResultResponse {
-                    query_id: result.query_id,
-                    document_ids: result.passage_ids,
-                    scores: result.scores,
-                }]
+                vec![(result.query_id, result.passage_ids, result.scores)]
             } else {
                 let batch_results =
                     index.search_batch(&queries, &params, true, req.subset.as_deref())?;
                 batch_results
                     .into_iter()
-                    .map(|r| QueryResultResponse {
-                        query_id: r.query_id,
-                        document_ids: r.passage_ids,
-                        scores: r.scores,
-                    })
+                    .map(|r| (r.query_id, r.passage_ids, r.scores))
                     .collect()
             }
         }
     };
+
+    // Enrich results with metadata
+    let results: Vec<QueryResultResponse> = raw_results
+        .into_iter()
+        .map(|(query_id, document_ids, scores)| {
+            let metadata = fetch_metadata_for_docs(&path_str, &document_ids);
+            QueryResultResponse {
+                query_id,
+                document_ids,
+                scores,
+                metadata,
+            }
+        })
+        .collect();
 
     let duration = start.elapsed();
     tracing::info!(

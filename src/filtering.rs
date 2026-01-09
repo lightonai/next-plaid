@@ -138,10 +138,20 @@ pub fn exists(index_path: &str) -> bool {
 ///     json!({"name": "Alice", "age": 30}),
 ///     json!({"name": "Bob", "age": 25, "city": "NYC"}),
 /// ];
+/// let doc_ids: Vec<i64> = (0..2).collect();
 ///
-/// filtering::create("my_index", &metadata)?;
+/// filtering::create("my_index", &metadata, &doc_ids)?;
 /// ```
-pub fn create(index_path: &str, metadata: &[Value]) -> Result<usize> {
+pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<usize> {
+    // Validate doc_ids length matches metadata
+    if metadata.len() != doc_ids.len() {
+        return Err(Error::Filtering(format!(
+            "Metadata length ({}) must match doc_ids length ({})",
+            metadata.len(),
+            doc_ids.len()
+        )));
+    }
+
     // Ensure index directory exists
     let index_dir = Path::new(index_path);
     if !index_dir.exists() {
@@ -210,7 +220,7 @@ pub fn create(index_path: &str, metadata: &[Value]) -> Result<usize> {
     // Insert rows
     let mut stmt = conn.prepare(&insert_sql)?;
     for (i, item) in metadata.iter().enumerate() {
-        let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(i as i64)];
+        let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
         if let Value::Object(obj) = item {
             for col in &columns {
                 let value = obj.get(col).unwrap_or(&Value::Null);
@@ -232,12 +242,13 @@ pub fn create(index_path: &str, metadata: &[Value]) -> Result<usize> {
 /// Append new metadata rows to an existing database, adding columns if needed.
 ///
 /// New columns found in the metadata are automatically added to the table.
-/// The `_subset_` IDs are automatically assigned starting from the next available ID.
+/// The `_subset_` IDs are provided explicitly via `doc_ids` to ensure sync with index.
 ///
 /// # Arguments
 ///
 /// * `index_path` - Path to the index directory
 /// * `metadata` - Slice of JSON objects for new documents
+/// * `doc_ids` - Document IDs to use as `_subset_` values (must match metadata length)
 ///
 /// # Returns
 ///
@@ -249,9 +260,19 @@ pub fn create(index_path: &str, metadata: &[Value]) -> Result<usize> {
 /// - The database doesn't exist
 /// - Column names are invalid
 /// - Database operations fail
-pub fn update(index_path: &str, metadata: &[Value]) -> Result<usize> {
+/// - metadata length doesn't match doc_ids length
+pub fn update(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<usize> {
     if metadata.is_empty() {
         return Ok(0);
+    }
+
+    // Validate doc_ids length matches metadata
+    if metadata.len() != doc_ids.len() {
+        return Err(Error::Filtering(format!(
+            "Metadata length ({}) must match doc_ids length ({})",
+            metadata.len(),
+            doc_ids.len()
+        )));
     }
 
     let db_path = get_db_path(index_path);
@@ -307,14 +328,6 @@ pub fn update(index_path: &str, metadata: &[Value]) -> Result<usize> {
         conn.execute(&alter_sql, [])?;
     }
 
-    // Get max _subset_ ID
-    let max_id: Option<i64> = conn.query_row(
-        &format!("SELECT MAX(\"{}\") FROM METADATA", SUBSET_COLUMN),
-        [],
-        |row| row.get(0),
-    )?;
-    let start_id = max_id.map(|id| id + 1).unwrap_or(0);
-
     // Get all columns (existing + new)
     let all_columns: Vec<String> = existing_columns.into_iter().chain(new_columns).collect();
 
@@ -331,7 +344,7 @@ pub fn update(index_path: &str, metadata: &[Value]) -> Result<usize> {
     // Insert rows
     let mut stmt = conn.prepare(&insert_sql)?;
     for (i, item) in metadata.iter().enumerate() {
-        let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(start_id + i as i64)];
+        let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
         if let Value::Object(obj) = item {
             for col in &all_columns {
                 let value = obj.get(col).unwrap_or(&Value::Null);
@@ -681,7 +694,7 @@ mod tests {
         let dir = setup_test_dir();
         let path = dir.path().to_str().unwrap();
 
-        let result = create(path, &[]).unwrap();
+        let result = create(path, &[], &[]).unwrap();
         assert_eq!(result, 0);
         assert!(!exists(path));
     }
@@ -696,8 +709,9 @@ mod tests {
             json!({"name": "Bob", "age": 25, "score": 87.0}),
             json!({"name": "Charlie", "age": 35}),
         ];
+        let doc_ids: Vec<i64> = (0..3).collect();
 
-        let result = create(path, &metadata).unwrap();
+        let result = create(path, &metadata, &doc_ids).unwrap();
         assert_eq!(result, 3);
         assert!(exists(path));
 
@@ -711,8 +725,9 @@ mod tests {
         let path = dir.path().to_str().unwrap();
 
         let metadata = vec![json!({"valid_name": "Alice", "invalid name": 30})];
+        let doc_ids = vec![0];
 
-        let result = create(path, &metadata);
+        let result = create(path, &metadata, &doc_ids);
         assert!(result.is_err());
     }
 
@@ -726,8 +741,9 @@ mod tests {
             json!({"name": "Bob", "category": "B", "score": 87}),
             json!({"name": "Charlie", "category": "A", "score": 92}),
         ];
+        let doc_ids: Vec<i64> = (0..3).collect();
 
-        create(path, &metadata).unwrap();
+        create(path, &metadata, &doc_ids).unwrap();
 
         // Query by category
         let subset = where_condition(path, "category = ?", &[json!("A")]).unwrap();
@@ -748,8 +764,9 @@ mod tests {
             json!({"name": "Alice", "age": 30}),
             json!({"name": "Bob", "age": 25}),
         ];
+        let doc_ids: Vec<i64> = (0..2).collect();
 
-        create(path, &metadata).unwrap();
+        create(path, &metadata, &doc_ids).unwrap();
 
         let results = get(path, None, &[], None).unwrap();
         assert_eq!(results.len(), 2);
@@ -767,8 +784,9 @@ mod tests {
             json!({"name": "Bob"}),
             json!({"name": "Charlie"}),
         ];
+        let doc_ids: Vec<i64> = (0..3).collect();
 
-        create(path, &metadata).unwrap();
+        create(path, &metadata, &doc_ids).unwrap();
 
         // Get specific subset in order
         let results = get(path, None, &[], Some(&[2, 0])).unwrap();
@@ -783,13 +801,15 @@ mod tests {
         let path = dir.path().to_str().unwrap();
 
         let metadata1 = vec![json!({"name": "Alice"}), json!({"name": "Bob"})];
+        let doc_ids1: Vec<i64> = (0..2).collect();
 
-        create(path, &metadata1).unwrap();
+        create(path, &metadata1, &doc_ids1).unwrap();
         assert_eq!(count(path).unwrap(), 2);
 
         let metadata2 = vec![json!({"name": "Charlie"})];
+        let doc_ids2 = vec![2]; // Next ID after the first batch
 
-        update(path, &metadata2).unwrap();
+        update(path, &metadata2, &doc_ids2).unwrap();
         assert_eq!(count(path).unwrap(), 3);
 
         // Verify the new row has correct _subset_ ID
@@ -804,12 +824,14 @@ mod tests {
         let path = dir.path().to_str().unwrap();
 
         let metadata1 = vec![json!({"name": "Alice"})];
+        let doc_ids1 = vec![0];
 
-        create(path, &metadata1).unwrap();
+        create(path, &metadata1, &doc_ids1).unwrap();
 
         let metadata2 = vec![json!({"name": "Bob", "age": 25, "city": "NYC"})];
+        let doc_ids2 = vec![1];
 
-        update(path, &metadata2).unwrap();
+        update(path, &metadata2, &doc_ids2).unwrap();
 
         // Verify new columns exist
         let results = get(path, None, &[], None).unwrap();
@@ -830,8 +852,9 @@ mod tests {
             json!({"name": "Charlie"}),
             json!({"name": "Diana"}),
         ];
+        let doc_ids: Vec<i64> = (0..4).collect();
 
-        create(path, &metadata).unwrap();
+        create(path, &metadata, &doc_ids).unwrap();
 
         // Delete Bob (1) and Charlie (2)
         let deleted = delete(path, &[1, 2]).unwrap();
@@ -857,8 +880,9 @@ mod tests {
             json!({"name": "Alex"}),
             json!({"name": "Bob"}),
         ];
+        let doc_ids: Vec<i64> = (0..3).collect();
 
-        create(path, &metadata).unwrap();
+        create(path, &metadata, &doc_ids).unwrap();
 
         let subset = where_condition(path, "name LIKE ?", &[json!("Al%")]).unwrap();
         assert_eq!(subset, vec![0, 1]);
@@ -890,8 +914,9 @@ mod tests {
             "bool_val": true,
             "null_val": null
         })];
+        let doc_ids = vec![0];
 
-        create(path, &metadata).unwrap();
+        create(path, &metadata, &doc_ids).unwrap();
 
         let results = get(path, None, &[], None).unwrap();
         assert_eq!(results[0]["int_val"], 42);

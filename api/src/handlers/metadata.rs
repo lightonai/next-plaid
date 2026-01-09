@@ -260,13 +260,20 @@ pub async fn add_metadata(
     }
 
     // Create or update metadata
+    // Compute document IDs starting from current count (for standalone metadata additions)
     let added = if filtering::exists(&path_str) {
-        // Update existing database
-        filtering::update(&path_str, &req.metadata)
+        // Update existing database - IDs start after current max
+        let current_count = filtering::count(&path_str)
+            .map_err(|e| ApiError::Internal(format!("Failed to get metadata count: {}", e)))?;
+        let doc_ids: Vec<i64> = (current_count..current_count + req.metadata.len())
+            .map(|i| i as i64)
+            .collect();
+        filtering::update(&path_str, &req.metadata, &doc_ids)
             .map_err(|e| ApiError::Internal(format!("Failed to update metadata: {}", e)))?
     } else {
-        // Create new database
-        filtering::create(&path_str, &req.metadata)
+        // Create new database - IDs start from 0
+        let doc_ids: Vec<i64> = (0..req.metadata.len() as i64).collect();
+        filtering::create(&path_str, &req.metadata, &doc_ids)
             .map_err(|e| ApiError::Internal(format!("Failed to create metadata: {}", e)))?
     };
 

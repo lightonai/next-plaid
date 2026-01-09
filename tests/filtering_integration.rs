@@ -56,8 +56,9 @@ fn test_create_index_with_metadata() {
     };
     let index = Index::create_with_kmeans(&embeddings, path, &config).unwrap();
 
-    // Create metadata database
-    filtering::create(path, &metadata).unwrap();
+    // Create metadata database with explicit doc_ids
+    let doc_ids: Vec<i64> = (0..5).collect();
+    filtering::create(path, &metadata, &doc_ids).unwrap();
 
     // Verify both exist
     assert_eq!(index.metadata.num_documents, 5);
@@ -92,7 +93,8 @@ fn test_search_with_subset_filter() {
         ..Default::default()
     };
     let index = Index::create_with_kmeans(&embeddings, path, &config).unwrap();
-    filtering::create(path, &metadata).unwrap();
+    let doc_ids: Vec<i64> = (0..10).collect();
+    filtering::create(path, &metadata, &doc_ids).unwrap();
 
     // Get subset of "even" category documents
     let subset = filtering::where_condition(path, "category = ?", &[json!("even")]).unwrap();
@@ -140,7 +142,8 @@ fn test_delete_with_metadata() {
         ..Default::default()
     };
     let mut index = Index::create_with_kmeans(&embeddings, path, &config).unwrap();
-    filtering::create(path, &metadata).unwrap();
+    let doc_ids: Vec<i64> = (0..5).collect();
+    filtering::create(path, &metadata, &doc_ids).unwrap();
 
     // Delete documents 1 and 3
     let deleted = index.delete(&[1, 3]).unwrap();
@@ -193,7 +196,8 @@ fn test_complex_filter_query() {
         ..Default::default()
     };
     Index::create_with_kmeans(&embeddings, path, &config).unwrap();
-    filtering::create(path, &metadata).unwrap();
+    let doc_ids: Vec<i64> = (0..10).collect();
+    filtering::create(path, &metadata, &doc_ids).unwrap();
 
     // Complex query: category A and score >= 70
     let subset = filtering::where_condition(
@@ -247,7 +251,8 @@ fn test_get_metadata_by_subset() {
         ..Default::default()
     };
     Index::create_with_kmeans(&embeddings, path, &config).unwrap();
-    filtering::create(path, &metadata).unwrap();
+    let doc_ids: Vec<i64> = (0..5).collect();
+    filtering::create(path, &metadata, &doc_ids).unwrap();
 
     // Get metadata in specific order
     let results = filtering::get(path, None, &[], Some(&[4, 1, 3])).unwrap();
@@ -278,7 +283,8 @@ fn test_update_with_new_metadata() {
         ..Default::default()
     };
     let mut index = Index::create_with_kmeans(&embeddings, path, &config).unwrap();
-    filtering::create(path, &metadata).unwrap();
+    let doc_ids: Vec<i64> = (0..3).collect();
+    filtering::create(path, &metadata, &doc_ids).unwrap();
 
     // Add new documents with metadata
     let new_embeddings = random_embeddings(2, 8, 64);
@@ -289,8 +295,8 @@ fn test_update_with_new_metadata() {
 
     // Update index and metadata
     let update_config = lategrep::UpdateConfig::default();
-    index.update(&new_embeddings, &update_config).unwrap();
-    filtering::update(path, &new_metadata).unwrap();
+    let new_doc_ids = index.update(&new_embeddings, &update_config).unwrap();
+    filtering::update(path, &new_metadata, &new_doc_ids).unwrap();
 
     // Verify counts
     assert_eq!(index.metadata.num_documents, 5);
@@ -367,7 +373,8 @@ fn test_numeric_range_queries() {
         ..Default::default()
     };
     Index::create_with_kmeans(&embeddings, path, &config).unwrap();
-    filtering::create(path, &metadata).unwrap();
+    let doc_ids: Vec<i64> = (0..10).collect();
+    filtering::create(path, &metadata, &doc_ids).unwrap();
 
     // Range query on price
     let subset = filtering::where_condition(

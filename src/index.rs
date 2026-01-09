@@ -722,13 +722,13 @@ impl Index {
     ///
     /// # Returns
     ///
-    /// Ok(()) on success, with self reloaded to reflect changes.
+    /// Vector of document IDs assigned to the new embeddings, with self reloaded to reflect changes.
     #[cfg(feature = "npy")]
     pub fn update(
         &mut self,
         embeddings: &[Array2<f32>],
         config: &crate::update::UpdateConfig,
-    ) -> Result<()> {
+    ) -> Result<Vec<i64>> {
         use crate::update::{
             clear_buffer, clear_embeddings_npy, embeddings_npy_exists, load_buffer,
             load_buffer_info, load_cluster_threshold, load_embeddings_npy, save_buffer,
@@ -738,6 +738,7 @@ impl Index {
         // Clone path to avoid borrow issues when reassigning self
         let path_str = self.path.clone();
         let index_path = std::path::Path::new(&path_str);
+        let num_new_docs = embeddings.len();
 
         // ==================================================================
         // Start-from-scratch mode (fast-plaid update.py:312-346)
@@ -745,6 +746,8 @@ impl Index {
         if self.metadata.num_documents <= config.start_from_scratch {
             // Load existing embeddings if available
             let existing_embeddings = load_embeddings_npy(index_path)?;
+            // New documents start after existing documents
+            let start_doc_id = existing_embeddings.len() as i64;
 
             // Combine existing + new embeddings
             let combined_embeddings: Vec<Array2<f32>> = existing_embeddings
@@ -775,12 +778,17 @@ impl Index {
                 clear_embeddings_npy(index_path)?;
             }
 
-            return Ok(());
+            // Return the document IDs assigned to the new embeddings
+            return Ok((start_doc_id..start_doc_id + num_new_docs as i64).collect());
         }
 
         // Load buffer
         let buffer = load_buffer(index_path)?;
-        let total_new = embeddings.len() + buffer.len();
+        let buffer_len = buffer.len();
+        let total_new = embeddings.len() + buffer_len;
+
+        // Track the starting document ID for the new embeddings
+        let start_doc_id: i64;
 
         // Check buffer threshold
         if total_new >= config.buffer_size {
@@ -800,6 +808,9 @@ impl Index {
                 // Reload after delete to get updated metadata
                 *self = Index::load(&path_str)?;
             }
+
+            // New embeddings start after buffer is re-indexed
+            start_doc_id = (self.metadata.num_documents + buffer_len) as i64;
 
             // 3. Combine buffer + new embeddings
             let combined: Vec<Array2<f32>> = buffer
@@ -830,6 +841,9 @@ impl Index {
             )?;
         } else {
             // Small update: add to buffer and index without centroid expansion
+            // New documents start at current num_documents
+            start_doc_id = self.metadata.num_documents as i64;
+
             save_buffer(index_path, embeddings)?;
 
             // Update index without threshold update
@@ -844,7 +858,9 @@ impl Index {
 
         // Reload the index
         *self = Index::load(&path_str)?;
-        Ok(())
+
+        // Return the document IDs assigned to the new embeddings
+        Ok((start_doc_id..start_doc_id + num_new_docs as i64).collect())
     }
 
     /// Update the index with new documents and optional metadata.
@@ -861,14 +877,14 @@ impl Index {
     ///
     /// # Returns
     ///
-    /// The updated Index after reloading
+    /// Vector of document IDs assigned to the new embeddings.
     #[cfg(all(feature = "npy", feature = "filtering"))]
     pub fn update_with_metadata(
         &mut self,
         embeddings: &[Array2<f32>],
         config: &crate::update::UpdateConfig,
         metadata: Option<&[serde_json::Value]>,
-    ) -> Result<()> {
+    ) -> Result<Vec<i64>> {
         // Validate metadata length if provided
         if let Some(meta) = metadata {
             if meta.len() != embeddings.len() {
@@ -880,15 +896,15 @@ impl Index {
             }
         }
 
-        // Perform the update
-        self.update(embeddings, config)?;
+        // Perform the update and get document IDs
+        let doc_ids = self.update(embeddings, config)?;
 
-        // Add metadata if provided
+        // Add metadata if provided, using the assigned document IDs
         if let Some(meta) = metadata {
-            crate::filtering::update(&self.path, meta)?;
+            crate::filtering::update(&self.path, meta, &doc_ids)?;
         }
 
-        Ok(())
+        Ok(doc_ids)
     }
 
     /// Update an existing index or create a new one if it doesn't exist.
@@ -907,7 +923,8 @@ impl Index {
     ///
     /// # Returns
     ///
-    /// The created or updated Index.
+    /// A tuple of (Index, `Vec<i64>`) containing the created/updated Index and
+    /// the document IDs assigned to the embeddings.
     ///
     /// # Example
     ///
@@ -919,7 +936,7 @@ impl Index {
     /// let update_config = UpdateConfig::default();
     ///
     /// // Creates index if it doesn't exist, otherwise updates it
-    /// let index = Index::update_or_create(
+    /// let (index, doc_ids) = Index::update_or_create(
     ///     &embeddings,
     ///     "path/to/index",
     ///     &index_config,
@@ -932,18 +949,21 @@ impl Index {
         index_path: &str,
         index_config: &IndexConfig,
         update_config: &crate::update::UpdateConfig,
-    ) -> Result<Self> {
+    ) -> Result<(Self, Vec<i64>)> {
         let index_dir = std::path::Path::new(index_path);
         let metadata_path = index_dir.join("metadata.json");
 
         if metadata_path.exists() {
             // Index exists, load and update
             let mut index = Self::load(index_path)?;
-            index.update(embeddings, update_config)?;
-            Ok(index)
+            let doc_ids = index.update(embeddings, update_config)?;
+            Ok((index, doc_ids))
         } else {
-            // Index doesn't exist, create new
-            Self::create_with_kmeans(embeddings, index_path, index_config)
+            // Index doesn't exist, create new - document IDs are 0..num_embeddings
+            let num_docs = embeddings.len();
+            let index = Self::create_with_kmeans(embeddings, index_path, index_config)?;
+            let doc_ids: Vec<i64> = (0..num_docs as i64).collect();
+            Ok((index, doc_ids))
         }
     }
 
@@ -1573,10 +1593,12 @@ mod tests {
         let update_config = crate::update::UpdateConfig::default();
 
         // Index doesn't exist - should create new
-        let index = Index::update_or_create(&embeddings, index_path, &index_config, &update_config)
-            .expect("Failed to create index");
+        let (index, doc_ids) =
+            Index::update_or_create(&embeddings, index_path, &index_config, &update_config)
+                .expect("Failed to create index");
 
         assert_eq!(index.metadata.num_documents, 5);
+        assert_eq!(doc_ids, vec![0, 1, 2, 3, 4]);
 
         // Verify index was created
         assert!(temp_dir.path().join("metadata.json").exists());
@@ -1625,16 +1647,18 @@ mod tests {
 
         // First call - creates index with 5 documents
         let embeddings1 = create_embeddings(5, 0);
-        let index1 =
+        let (index1, doc_ids1) =
             Index::update_or_create(&embeddings1, index_path, &index_config, &update_config)
                 .expect("Failed to create index");
         assert_eq!(index1.metadata.num_documents, 5);
+        assert_eq!(doc_ids1, vec![0, 1, 2, 3, 4]);
 
         // Second call - updates existing index with 3 more documents
         let embeddings2 = create_embeddings(3, 5);
-        let index2 =
+        let (index2, doc_ids2) =
             Index::update_or_create(&embeddings2, index_path, &index_config, &update_config)
                 .expect("Failed to update index");
         assert_eq!(index2.metadata.num_documents, 8);
+        assert_eq!(doc_ids2, vec![5, 6, 7]);
     }
 }

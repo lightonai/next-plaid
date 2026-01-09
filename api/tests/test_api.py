@@ -352,7 +352,7 @@ class TestIndexManagement:
         docs = [{"embeddings": generate_normalized_embeddings(30)}]
         response = requests.post(
             f"{api_client}/indices/undeclared_test_index/update",
-            json={"documents": docs},
+            json={"documents": docs, "metadata": [{"key": "value"}]},
         )
         # Should fail because index was not declared via POST /indices
         assert response.status_code == 404

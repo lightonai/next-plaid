@@ -41,7 +41,7 @@ from tqdm import tqdm
 class BenchmarkConfig:
     """Configuration for SciFact API benchmark."""
 
-    batch_size: int = 100  # Documents per API call
+    batch_size: int = 10  # Documents per API call
     top_k: int = 100
     n_ivf_probe: int = 8
     n_full_scores: int = 8192
@@ -49,6 +49,7 @@ class BenchmarkConfig:
     seed: int = 42
     port: int = 8080
     host: str = "127.0.0.1"
+    sequential: bool = False  # Use sequential updates instead of concurrent
 
 
 # Dataset configuration
@@ -434,6 +435,12 @@ class LategrepAPIClient:
         resp = self.session.delete(f"{self.base_url}/indices/{name}")
         resp.raise_for_status()
 
+    def metadata_count(self, name: str) -> int:
+        """Get the metadata count for an index."""
+        resp = self.session.get(f"{self.base_url}/indices/{name}/metadata/count")
+        resp.raise_for_status()
+        return resp.json().get("count", 0)
+
 
 # ============================================================================
 # Benchmark Runner
@@ -492,56 +499,89 @@ def run_api_benchmark(
         batch_metadata.append(batch_meta)
     num_batches = len(batches)
 
-    print(f"    Adding {total_docs} documents in {num_batches} batches (Concurrent)...")
-    print(f"    Sending all {num_batches} update requests at the same time...")
-
     start_index = time.perf_counter()
 
-    # 2. Send all batches at the same time using ThreadPoolExecutor
-    # We use a high max_workers count to ensure we flood the server
-    # and test the queue/wait mechanism.
-    max_workers = min(num_batches, 200)
-
-    # Helper function for threading with retry on 503 (queue full) or 429 (rate limit)
-    def send_batch(batch_idx: int, max_retries: int = 100, base_delay: float = 1.0):
-        for attempt in range(max_retries):
-            try:
-                return client.update_index(
-                    index_name, batches[batch_idx], metadata=batch_metadata[batch_idx]
-                )
-            except requests.exceptions.HTTPError as e:
-                if e.response is not None and e.response.status_code in (503, 429):
-                    # Queue full or rate limited - wait and retry with exponential backoff
-                    print(e.response.status_code)
-                    time.sleep(5)
+    if config.sequential:
+        # Sequential updates: send one batch at a time and wait for completion
+        print(f"    Adding {total_docs} documents in {num_batches} batches (Sequential)...")
+        indexed = 0
+        for batch_idx in tqdm(range(num_batches), desc="    Indexing"):
+            client.update_index(index_name, batches[batch_idx], metadata=batch_metadata[batch_idx])
+            indexed += len(batches[batch_idx])
+            # Wait for this batch to complete before sending next
+            while True:
+                health = client.health()
+                for idx_info in health.get("indices", []):
+                    if idx_info["name"] == index_name:
+                        if idx_info["num_documents"] >= indexed:
+                            break
+                else:
+                    time.sleep(0.5)
                     continue
-                raise
-        # Final attempt without catching
-        return client.update_index(
-            index_name, batches[batch_idx], metadata=batch_metadata[batch_idx]
-        )
+                break
+    else:
+        # Concurrent updates: send all batches at once
+        print(f"    Adding {total_docs} documents in {num_batches} batches (Concurrent)...")
+        print(f"    Sending all {num_batches} update requests at the same time...")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks immediately
-        futures = [executor.submit(send_batch, i) for i in range(num_batches)]
+        # Send all batches at the same time using ThreadPoolExecutor
+        max_workers = min(num_batches, 200)
 
-        # Wait for all HTTP responses (202 Accepted) to complete
-        for future in tqdm(
-            concurrent.futures.as_completed(futures),
-            total=len(futures),
-            desc="    Sending",
-        ):
-            # Check for exceptions
-            future.result()
+        # Helper function for threading with retry on 503 (queue full) or 429 (rate limit)
+        def send_batch(batch_idx: int, max_retries: int = 100, base_delay: float = 1.0):
+            for attempt in range(max_retries):
+                try:
+                    return client.update_index(
+                        index_name, batches[batch_idx], metadata=batch_metadata[batch_idx]
+                    )
+                except requests.exceptions.HTTPError as e:
+                    if e.response is not None and e.response.status_code in (503, 429):
+                        # Queue full or rate limited - wait and retry with exponential backoff
+                        print(e.response.status_code)
+                        time.sleep(5)
+                        continue
+                    raise
+            # Final attempt without catching
+            return client.update_index(
+                index_name, batches[batch_idx], metadata=batch_metadata[batch_idx]
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks immediately
+            futures = [executor.submit(send_batch, i) for i in range(num_batches)]
+
+            # Wait for all HTTP responses (202 Accepted) to complete
+            for future in tqdm(
+                concurrent.futures.as_completed(futures),
+                total=len(futures),
+                desc="    Sending",
+            ):
+                # Check for exceptions
+                future.result()
 
     # 3. Wait for all async updates to complete by polling the health endpoint
     print(f"    Waiting for all {total_docs} documents to be indexed...")
-    # 5100 as there is an issue with the last few documents sometimes not being indexed
     info = client.wait_for_documents(
         index_name,
         expected_count=5100,
         timeout=600.0,
     )
+
+    # Validate all documents were indexed
+    if info["num_documents"] != total_docs:
+        print(
+            f"    WARNING: Expected {total_docs} documents but only {info['num_documents']} indexed"
+        )
+
+    # Validate metadata count matches document count
+    try:
+        meta_count = client.metadata_count(index_name)
+        if meta_count != info["num_documents"]:
+            print(
+                f"    WARNING: Metadata count ({meta_count}) doesn't match document count ({info['num_documents']})"
+            )
+    except Exception as e:
+        print(f"    WARNING: Could not verify metadata count: {e}")
 
     index_time = time.perf_counter() - start_index
 
@@ -622,12 +662,18 @@ def main():
         default="./scifact_embeddings",
         help="Directory with cached embeddings",
     )
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        help="Use sequential updates instead of concurrent (more reliable)",
+    )
     args = parser.parse_args()
 
     config = BenchmarkConfig(
         batch_size=args.batch_size,
         port=args.port,
         host=args.host,
+        sequential=args.sequential,
     )
 
     dataset_name = "scifact"
