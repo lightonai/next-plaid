@@ -50,6 +50,7 @@ pub enum ApiError {
 
     /// Index creation error
     #[error("Index creation failed: {0}")]
+    #[allow(dead_code)]
     IndexCreationError(String),
 
     /// Update error

@@ -107,7 +107,7 @@ benchmark-scifact-api:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
 	rm -rf api/indices
 	cargo build --release -p lategrep-api --features accelerate
-	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices --no-mmap & \
+	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices & \
 	API_PID=$$!; \
 	sleep 2; \
 	cd docs && uv sync --extra eval && uv run python benchmark_scifact_api.py --batch-size 100; \

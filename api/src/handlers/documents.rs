@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use axum::{
     extract::{Path, State},
@@ -12,8 +13,9 @@ use axum::{
     Json,
 };
 use ndarray::Array2;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task;
+use tokio::time::Instant;
 
 use lategrep::{filtering, Index, IndexConfig, MmapIndex, UpdateConfig};
 
@@ -31,6 +33,31 @@ use crate::state::{AppState, LoadedIndex};
 /// Maximum number of queued background tasks per index.
 /// When exceeded, new requests get 503 Service Unavailable.
 const MAX_QUEUED_TASKS_PER_INDEX: usize = 10;
+
+// --- Batch Collection ---
+
+/// Maximum number of documents to batch together before processing.
+const MAX_BATCH_DOCUMENTS: usize = 300;
+
+/// Maximum time to wait for more documents before processing a batch.
+const BATCH_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Channel buffer size for batch queue.
+const BATCH_CHANNEL_SIZE: usize = 100;
+
+/// A single item in the batch queue, representing one update request.
+struct BatchItem {
+    embeddings: Vec<Array2<f32>>,
+    metadata: Vec<serde_json::Value>,
+}
+
+/// Handle to a batch queue for an index.
+struct BatchQueue {
+    sender: mpsc::Sender<BatchItem>,
+}
+
+/// Global registry of batch queues per index.
+static BATCH_QUEUES: OnceLock<std::sync::Mutex<HashMap<String, BatchQueue>>> = OnceLock::new();
 
 /// Global registry to manage locks per index name.
 /// We use tokio::sync::Mutex to allow tasks to wait asynchronously without blocking threads.
@@ -60,6 +87,210 @@ fn get_index_semaphore(name: &str) -> Arc<Semaphore> {
     map.entry(name.to_string())
         .or_insert_with(|| Arc::new(Semaphore::new(MAX_QUEUED_TASKS_PER_INDEX)))
         .clone()
+}
+
+/// Get or create a batch queue for the given index.
+/// Spawns a batch worker if the queue doesn't exist yet.
+fn get_or_create_batch_queue(name: &str, state: Arc<AppState>) -> mpsc::Sender<BatchItem> {
+    let queues: &std::sync::Mutex<HashMap<String, BatchQueue>> =
+        BATCH_QUEUES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut map = queues.lock().unwrap();
+
+    if let Some(queue) = map.get(name) {
+        return queue.sender.clone();
+    }
+
+    // Create new channel and spawn worker
+    let (sender, receiver) = mpsc::channel(BATCH_CHANNEL_SIZE);
+    let queue = BatchQueue {
+        sender: sender.clone(),
+    };
+    map.insert(name.to_string(), queue);
+
+    // Spawn the batch worker
+    let index_name = name.to_string();
+    tokio::spawn(batch_worker(receiver, index_name, state));
+
+    sender
+}
+
+/// Background worker that collects batch items and processes them together.
+///
+/// The worker waits for items on the channel and batches them until either:
+/// - The total document count reaches MAX_BATCH_DOCUMENTS, or
+/// - BATCH_TIMEOUT has elapsed since the first item arrived
+async fn batch_worker(
+    mut receiver: mpsc::Receiver<BatchItem>,
+    index_name: String,
+    state: Arc<AppState>,
+) {
+    tracing::info!(index = %index_name, "Batch worker started");
+
+    loop {
+        // Wait for the first item (blocking)
+        let first_item = match receiver.recv().await {
+            Some(item) => item,
+            None => {
+                tracing::info!(index = %index_name, "Batch worker shutting down (channel closed)");
+                break;
+            }
+        };
+
+        // Start collecting batch
+        let mut batch_embeddings: Vec<Array2<f32>> = first_item.embeddings;
+        let mut batch_metadata: Vec<serde_json::Value> = first_item.metadata;
+        let mut doc_count = batch_embeddings.len();
+        let deadline = Instant::now() + BATCH_TIMEOUT;
+
+        // Collect more items until timeout or max batch size
+        while doc_count < MAX_BATCH_DOCUMENTS {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+
+            match tokio::time::timeout(remaining, receiver.recv()).await {
+                Ok(Some(item)) => {
+                    let item_docs = item.embeddings.len();
+                    batch_embeddings.extend(item.embeddings);
+                    batch_metadata.extend(item.metadata);
+                    doc_count += item_docs;
+                }
+                Ok(None) => {
+                    // Channel closed
+                    tracing::info!(index = %index_name, "Batch worker shutting down (channel closed during batch)");
+                    // Process remaining batch before exiting
+                    if !batch_embeddings.is_empty() {
+                        process_batch(&index_name, batch_embeddings, batch_metadata, &state).await;
+                    }
+                    return;
+                }
+                Err(_) => {
+                    // Timeout reached
+                    break;
+                }
+            }
+        }
+
+        // Process the collected batch
+        if !batch_embeddings.is_empty() {
+            process_batch(&index_name, batch_embeddings, batch_metadata, &state).await;
+        }
+    }
+}
+
+/// Process a batch of documents for the given index.
+async fn process_batch(
+    index_name: &str,
+    embeddings: Vec<Array2<f32>>,
+    metadata: Vec<serde_json::Value>,
+    state: &Arc<AppState>,
+) {
+    let doc_count = embeddings.len();
+    let start = std::time::Instant::now();
+
+    tracing::info!(
+        index = %index_name,
+        documents = doc_count,
+        "Processing batch"
+    );
+
+    // Acquire per-index lock
+    let lock = get_index_lock(index_name);
+    let _guard = lock.lock().await;
+
+    let name_inner = index_name.to_string();
+    let state_clone = state.clone();
+    let path_str = state.index_path(index_name).to_string_lossy().to_string();
+
+    // Run heavy work in blocking thread
+    let result = task::spawn_blocking(move || -> Result<(), String> {
+        // Load stored config
+        let config_path = state_clone.index_path(&name_inner).join("config.json");
+        let config_file = std::fs::File::open(&config_path)
+            .map_err(|e| format!("Failed to open config: {}", e))?;
+        let stored_config: IndexConfigStored = serde_json::from_reader(config_file)
+            .map_err(|e| format!("Failed to parse config: {}", e))?;
+
+        // Build IndexConfig
+        let index_config = IndexConfig {
+            nbits: stored_config.nbits,
+            batch_size: stored_config.batch_size,
+            seed: stored_config.seed,
+            start_from_scratch: stored_config.start_from_scratch,
+            ..Default::default()
+        };
+        let update_config = UpdateConfig::default();
+
+        // Run Update
+        let (mut index, doc_ids) =
+            Index::update_or_create(&embeddings, &path_str, &index_config, &update_config)
+                .map_err(|e| format!("Index update failed: {}", e))?;
+
+        // Handle Metadata
+        if filtering::exists(&path_str) {
+            filtering::update(&path_str, &metadata, &doc_ids)
+                .map_err(|e| format!("Failed to update metadata: {}", e))?;
+        } else {
+            filtering::create(&path_str, &metadata, &doc_ids)
+                .map_err(|e| format!("Failed to create metadata: {}", e))?;
+        }
+
+        // Eviction: Check if over max_documents limit
+        if let Some(max_docs) = stored_config.max_documents {
+            if let Err(e) = evict_oldest_documents(&mut index, max_docs) {
+                tracing::warn!(
+                    "Failed to evict documents from {}: {}. Index may exceed max_documents limit.",
+                    name_inner,
+                    e
+                );
+            }
+        }
+
+        // Reload State
+        state_clone.unload_index(&name_inner);
+        let loaded = if state_clone.config.use_mmap {
+            let mmap_idx = MmapIndex::load(&path_str)
+                .map_err(|e| format!("Failed to load mmap index: {}", e))?;
+            LoadedIndex::Mmap(mmap_idx)
+        } else {
+            let idx = Index::load(&path_str).map_err(|e| format!("Failed to load index: {}", e))?;
+            LoadedIndex::Regular(idx)
+        };
+        state_clone.register_index(&name_inner, loaded);
+
+        Ok(())
+    })
+    .await;
+
+    let duration = start.elapsed();
+
+    match result {
+        Ok(Ok(())) => {
+            tracing::info!(
+                index = %index_name,
+                documents = doc_count,
+                duration_ms = duration.as_millis() as u64,
+                "Batch processing completed successfully"
+            );
+        }
+        Ok(Err(e)) => {
+            tracing::error!(
+                index = %index_name,
+                documents = doc_count,
+                error = %e,
+                "Batch processing failed"
+            );
+        }
+        Err(e) => {
+            tracing::error!(
+                index = %index_name,
+                documents = doc_count,
+                error = %e,
+                "Batch processing task panicked"
+            );
+        }
+    }
 }
 
 // ---------------------------
@@ -495,6 +726,8 @@ pub async fn delete_index(
 /// Update an index by adding documents.
 ///
 /// Returns 202 Accepted immediately and processes in background.
+/// Multiple concurrent requests to the same index are batched together
+/// for more efficient processing (up to 300 documents per batch).
 #[utoipa::path(
     post,
     path = "/indices/{name}/update",
@@ -550,119 +783,36 @@ pub async fn update_index(
         )));
     }
 
-    // Prepare data for background task
-    let name_clone = name.clone();
-    let state_clone = state.clone();
-    let metadata = req.metadata;
-    let lock = get_index_lock(&name);
-    let path_str = index_path.to_string_lossy().to_string();
-
-    // Acquire semaphore permit to limit queued tasks
-    let semaphore = get_index_semaphore(&name);
-    let permit = semaphore.clone().try_acquire_owned().map_err(|_| {
-        ApiError::ServiceUnavailable(format!(
-            "Update queue full for index '{}'. Max {} pending updates. Retry later.",
-            name, MAX_QUEUED_TASKS_PER_INDEX
-        ))
-    })?;
-
     let doc_count = embeddings.len();
 
-    // Spawn background task
-    tokio::spawn(async move {
-        // Permit is held until this task completes (dropped at end of async block)
-        let _permit = permit;
+    // Get or create the batch queue for this index
+    let sender = get_or_create_batch_queue(&name, state.clone());
 
-        // 1. Queue logic: Wait for lock asynchronously
-        let _guard = lock.lock().await;
+    // Create batch item
+    let batch_item = BatchItem {
+        embeddings,
+        metadata: req.metadata,
+    };
 
-        // Clone name AGAIN for the inner closure
-        let name_inner = name_clone.clone();
-        let start = std::time::Instant::now();
-
-        // 2. Heavy Lifting: Move to blocking thread
-        let result = task::spawn_blocking(move || -> ApiResult<()> {
-            // Load stored config
-            let config_file =
-                std::fs::File::open(state_clone.index_path(&name_inner).join("config.json"))
-                    .map_err(|e| ApiError::Internal(format!("Failed to open config: {}", e)))?;
-            let stored_config: IndexConfigStored = serde_json::from_reader(config_file)
-                .map_err(|e| ApiError::Internal(format!("Failed to parse config: {}", e)))?;
-
-            // Build IndexConfig
-            let index_config = IndexConfig {
-                nbits: stored_config.nbits,
-                batch_size: stored_config.batch_size,
-                seed: stored_config.seed,
-                start_from_scratch: stored_config.start_from_scratch,
-                ..Default::default()
-            };
-            let update_config = UpdateConfig::default();
-
-            // Run Update - now returns document IDs for metadata sync
-            let (mut index, doc_ids) =
-                Index::update_or_create(&embeddings, &path_str, &index_config, &update_config)
-                    .map_err(|e| ApiError::IndexCreationError(e.to_string()))?;
-
-            // Handle Metadata with explicit document IDs to ensure sync
-            if filtering::exists(&path_str) {
-                filtering::update(&path_str, &metadata, &doc_ids).map_err(|e| {
-                    ApiError::IndexCreationError(format!("Failed to update metadata: {}", e))
-                })?;
-            } else {
-                filtering::create(&path_str, &metadata, &doc_ids).map_err(|e| {
-                    ApiError::IndexCreationError(format!("Failed to create metadata: {}", e))
-                })?;
-            }
-
-            // Eviction: Check if over max_documents limit
-            if let Some(max_docs) = stored_config.max_documents {
-                if let Err(e) = evict_oldest_documents(&mut index, max_docs) {
-                    tracing::warn!(
-                        "Failed to evict documents from {}: {}. Index may exceed max_documents limit.",
-                        name_inner, e
-                    );
-                }
-            }
-
-            // Reload State
-            state_clone.unload_index(&name_inner);
-            let loaded = if state_clone.config.use_mmap {
-                let mmap_idx = MmapIndex::load(&path_str)?;
-                LoadedIndex::Mmap(mmap_idx)
-            } else {
-                let idx = Index::load(&path_str)?;
-                LoadedIndex::Regular(idx)
-            };
-            state_clone.register_index(&name_inner, loaded);
-
-            Ok(())
-        })
-        .await;
-
-        let duration = start.elapsed();
-
-        // Log result
-        match result {
-            Ok(Ok(())) => {
-                tracing::info!(
-                    index = %name_clone,
-                    documents = doc_count,
-                    duration_ms = duration.as_millis() as u64,
-                    "Index update completed successfully"
-                );
-            }
-            Ok(Err(e)) => {
-                tracing::error!(index = %name_clone, error = %e, "Background error updating index");
-            }
-            Err(e) => {
-                tracing::error!(index = %name_clone, error = %e, "Background task panicked");
-            }
+    // Send to batch queue (non-blocking if channel has capacity)
+    sender.try_send(batch_item).map_err(|e| match e {
+        mpsc::error::TrySendError::Full(_) => ApiError::ServiceUnavailable(format!(
+            "Update queue full for index '{}'. Max {} pending items. Retry later.",
+            name, BATCH_CHANNEL_SIZE
+        )),
+        mpsc::error::TrySendError::Closed(_) => {
+            ApiError::Internal(format!("Batch worker for index '{}' is not running", name))
         }
-    });
+    })?;
+
+    tracing::debug!(
+        index = %name,
+        documents = doc_count,
+        "Update request queued for batching"
+    );
 
     // Immediate Response
-    Ok((StatusCode::ACCEPTED, Json("Update queued in background")))
+    Ok((StatusCode::ACCEPTED, Json("Update queued for batching")))
 }
 
 /// Update index configuration (max_documents).
