@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api ci-api test-api-integration test-api-rate-limit
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-onnx-api ci-api test-api-integration test-api-rate-limit
 
 all: fmt lint test
 
@@ -110,7 +110,21 @@ benchmark-scifact-api:
 	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices & \
 	API_PID=$$!; \
 	sleep 2; \
-	cd docs && uv sync --extra eval && uv run python benchmark_scifact_api.py --batch-size 100; \
+	cd docs && uv sync --extra eval && uv run python benchmark_scifact_api.py --batch-size 80; \
+	EXIT_CODE=$$?; \
+	kill $$API_PID 2>/dev/null || true; \
+	exit $$EXIT_CODE
+
+# Benchmark SciFact with ONNX embeddings via REST API
+# Uses ONNX (Rust) for encoding and Lategrep REST API for indexing/search
+benchmark-onnx-api:
+	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
+	rm -rf api/indices
+	cargo build --release -p lategrep-api --features accelerate
+	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices & \
+	API_PID=$$!; \
+	sleep 2; \
+	cd docs && uv sync --extra eval && uv run python onnx_benchmark.py --skip-encoding --batch-size 80; \
 	EXIT_CODE=$$?; \
 	kill $$API_PID 2>/dev/null || true; \
 	exit $$EXIT_CODE
