@@ -642,9 +642,6 @@ pub async fn update_index(
 
         let duration = start.elapsed();
 
-        // print document count
-        println!("Document count added: {}", doc_count);
-
         // Log result
         match result {
             Ok(Ok(())) => {
