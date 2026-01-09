@@ -227,6 +227,7 @@ impl OnnxColBERT {
         let session = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_intra_threads(num_threads)?
+            .with_inter_threads(num_threads.max(2))?
             .commit_from_file(onnx_path.as_ref())
             .context("Failed to load ONNX model")?;
 
@@ -299,6 +300,92 @@ impl OnnxColBERT {
         let config = ColBertConfig::from_model_dir(model_dir).ok();
 
         Self::new(onnx_path, tokenizer_path, config, num_threads)
+    }
+
+    /// Create a new OnnxColBERT model from a model directory with CoreML acceleration.
+    ///
+    /// This uses Apple's CoreML execution provider for faster inference on macOS.
+    /// Falls back to CPU if CoreML is not available or doesn't support certain operations.
+    ///
+    /// # Arguments
+    /// * `model_dir` - Path to directory containing model.onnx and tokenizer.json
+    /// * `num_threads` - Number of threads for ONNX Runtime inference
+    #[cfg(target_os = "macos")]
+    pub fn from_model_dir_with_coreml<P: AsRef<Path>>(
+        model_dir: P,
+        num_threads: usize,
+    ) -> Result<Self> {
+        use ort::execution_providers::CoreMLExecutionProvider;
+
+        let model_dir = model_dir.as_ref();
+
+        // Find ONNX model
+        let onnx_path = if model_dir.join("model.onnx").exists() {
+            model_dir.join("model.onnx")
+        } else {
+            let entries = fs::read_dir(model_dir)?;
+            let mut onnx_file = None;
+            for entry in entries {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().map_or(false, |ext| ext == "onnx") {
+                    onnx_file = Some(path);
+                    break;
+                }
+            }
+            onnx_file.ok_or_else(|| anyhow::anyhow!("No ONNX model found in {:?}", model_dir))?
+        };
+
+        let tokenizer_path = model_dir.join("tokenizer.json");
+
+        // Build session with CoreML execution provider
+        let session = Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_intra_threads(num_threads)?
+            .with_inter_threads(num_threads.max(2))?
+            .with_execution_providers([CoreMLExecutionProvider::default()
+                .with_subgraphs(true)
+                .build()])?
+            .commit_from_file(&onnx_path)
+            .context("Failed to load ONNX model with CoreML")?;
+
+        let tokenizer = Tokenizer::from_file(&tokenizer_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
+
+        // Load config
+        let mut config =
+            ColBertConfig::from_model_dir(model_dir).unwrap_or_else(|_| ColBertConfig::from_tokenizer(&tokenizer));
+
+        // Ensure mask and pad token IDs are set from tokenizer if not in config
+        if config.mask_token_id == default_mask_token_id() {
+            if let Some(mask_id) = tokenizer.token_to_id("[MASK]") {
+                config.mask_token_id = mask_id;
+            } else if let Some(mask_id) = tokenizer.token_to_id("<mask>") {
+                config.mask_token_id = mask_id;
+            }
+        }
+        if config.pad_token_id == default_pad_token_id() {
+            if let Some(pad_id) = tokenizer.token_to_id("[PAD]") {
+                config.pad_token_id = pad_id;
+            } else if let Some(pad_id) = tokenizer.token_to_id("<pad>") {
+                config.pad_token_id = pad_id;
+            }
+        }
+
+        // Build skiplist token IDs
+        let mut skiplist_ids = HashSet::new();
+        for word in &config.skiplist_words {
+            if let Some(token_id) = tokenizer.token_to_id(word) {
+                skiplist_ids.insert(token_id);
+            }
+        }
+
+        Ok(Self {
+            session,
+            tokenizer,
+            config,
+            skiplist_ids,
+        })
     }
 
     /// Get the current configuration.
@@ -447,6 +534,9 @@ impl OnnxColBERT {
     /// which is significantly faster than encoding texts one at a time.
     /// Texts are padded to the longest sequence in the batch (or max_length).
     ///
+    /// For large numbers of texts, consider using `encode_batch_chunked` which
+    /// processes texts in smaller batches to reduce padding overhead.
+    ///
     /// # Arguments
     /// * `texts` - Slice of texts to encode
     /// * `is_query` - If true, encode as queries (with expansion); if false, encode as documents
@@ -456,6 +546,42 @@ impl OnnxColBERT {
     pub fn encode_batch(&mut self, texts: &[&str], is_query: bool) -> Result<Vec<Array2<f32>>> {
         // For documents, filter skiplist by default (matches PyLate behavior)
         self.encode_batch_with_options(texts, is_query, !is_query)
+    }
+
+    /// Encode texts into ColBERT embeddings using chunked batched inference.
+    ///
+    /// This method processes texts in smaller batches (chunks) to reduce padding
+    /// overhead when encoding many documents of varying lengths. Each chunk is
+    /// processed as a batch, and results are concatenated.
+    ///
+    /// Recommended chunk_size: 16-32 for optimal performance.
+    ///
+    /// # Arguments
+    /// * `texts` - Slice of texts to encode
+    /// * `is_query` - If true, encode as queries (with expansion); if false, encode as documents
+    /// * `chunk_size` - Number of texts to process per batch
+    ///
+    /// # Returns
+    /// A vector of 2D arrays, one per input text. Each array has shape [num_tokens, embedding_dim].
+    pub fn encode_batch_chunked(
+        &mut self,
+        texts: &[&str],
+        is_query: bool,
+        chunk_size: usize,
+    ) -> Result<Vec<Array2<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let chunk_size = chunk_size.max(1);
+        let mut all_embeddings = Vec::with_capacity(texts.len());
+
+        for chunk in texts.chunks(chunk_size) {
+            let chunk_embeddings = self.encode_batch(chunk, is_query)?;
+            all_embeddings.extend(chunk_embeddings);
+        }
+
+        Ok(all_embeddings)
     }
 
     /// Encode texts into ColBERT embeddings using batched inference with options.
@@ -483,18 +609,23 @@ impl OnnxColBERT {
             (&self.config.document_prefix, self.config.document_length)
         };
 
-        // First pass: tokenize all texts and find the max length in batch
+        // Prepare texts with prefixes for batch tokenization
+        let texts_with_prefix: Vec<String> = texts
+            .iter()
+            .map(|t| format!("{}{}", prefix, t))
+            .collect();
+
+        // Use parallel batch tokenization from tokenizers crate
+        let batch_encodings = self
+            .tokenizer
+            .encode_batch(texts_with_prefix.iter().map(|s| s.as_str()).collect(), true)
+            .map_err(|e| anyhow::anyhow!("Batch tokenization error: {}", e))?;
+
+        // Process encodings and find max length
         let mut encodings: Vec<(Vec<i64>, Vec<i64>, Vec<i64>, Vec<u32>)> = Vec::with_capacity(texts.len());
         let mut batch_max_len = 0usize;
 
-        for text in texts {
-            let text_with_prefix = format!("{}{}", prefix, text);
-
-            let encoding = self
-                .tokenizer
-                .encode(text_with_prefix.as_str(), true)
-                .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
-
+        for encoding in batch_encodings {
             let token_ids: Vec<u32> = encoding.get_ids().to_vec();
             let mut input_ids: Vec<i64> = token_ids.iter().map(|&x| x as i64).collect();
             let mut attention_mask: Vec<i64> = encoding
@@ -604,7 +735,20 @@ impl OnnxColBERT {
                 let orig_len = original_lengths[i];
                 let token_ids = &all_token_ids[i];
 
-                let mut filtered_rows: Vec<Vec<f32>> = Vec::new();
+                // First pass: count valid tokens to pre-allocate exact size
+                let valid_count = (0..orig_len)
+                    .filter(|&j| {
+                        let mask = all_attention_mask[attention_offset + j];
+                        let token_id = token_ids[j];
+                        mask != 0
+                            && !(filter_skiplist && self.skiplist_ids.contains(&token_id))
+                    })
+                    .count();
+
+                // Single allocation with exact size
+                let mut flat: Vec<f32> = Vec::with_capacity(valid_count * embedding_dim);
+
+                // Second pass: copy valid embeddings directly
                 for j in 0..orig_len {
                     let mask = all_attention_mask[attention_offset + j];
                     let token_id = token_ids[j];
@@ -615,18 +759,15 @@ impl OnnxColBERT {
                     }
 
                     // Skip skiplist tokens if filtering is enabled
-                    if !is_query && filter_skiplist && self.skiplist_ids.contains(&token_id) {
+                    if filter_skiplist && self.skiplist_ids.contains(&token_id) {
                         continue;
                     }
 
                     let start = batch_offset + j * embedding_dim;
-                    let end = start + embedding_dim;
-                    filtered_rows.push(output_data[start..end].to_vec());
+                    flat.extend_from_slice(&output_data[start..start + embedding_dim]);
                 }
 
-                let num_tokens = filtered_rows.len();
-                let flat: Vec<f32> = filtered_rows.into_iter().flatten().collect();
-                let arr = Array2::from_shape_vec((num_tokens, embedding_dim), flat)?;
+                let arr = Array2::from_shape_vec((valid_count, embedding_dim), flat)?;
                 all_embeddings.push(arr);
             }
         }
