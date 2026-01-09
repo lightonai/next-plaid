@@ -1,0 +1,44 @@
+[package]
+name = "onnx_experiment"
+version = "0.1.0"
+edition = "2021"
+description = "ONNX Runtime experiment for ColBERT inference"
+
+[workspace]
+
+[lib]
+name = "onnx_experiment"
+path = "src/lib.rs"
+
+[[bin]]
+name = "onnx_experiment"
+path = "src/main.rs"
+
+[[bin]]
+name = "benchmark"
+path = "src/bin/benchmark.rs"
+
+[[bin]]
+name = "benchmark_detailed"
+path = "src/bin/benchmark_detailed.rs"
+
+[[bin]]
+name = "benchmark_dynamic"
+path = "src/bin/benchmark_dynamic.rs"
+
+[[bin]]
+name = "encode_cli"
+path = "src/bin/encode_cli.rs"
+
+[[bin]]
+name = "compare_pylate"
+path = "src/bin/compare_pylate.rs"
+
+[dependencies]
+ort = { version = "2.0.0-rc.11", features = ["ndarray", "coreml"] }
+tokenizers = { version = "0.21.1", default-features = false, features = ["onig"] }
+ndarray = "0.16"
+ndarray-npy = "0.9"
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

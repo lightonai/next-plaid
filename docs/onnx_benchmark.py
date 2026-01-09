@@ -52,7 +52,7 @@ class BenchmarkConfig:
 DATASET_CONFIG = {
     "scifact": {
         "query_length": 32,
-        "document_length": 180,
+        "document_length": 300,  # Matches config_sentence_transformers.json
         "split": "test",
     },
 }
@@ -222,8 +222,19 @@ def encode_with_onnx(
     is_query: bool,
     model_path: Path,
     tokenizer_path: Path,
+    config_path: Path = None,
 ) -> None:
-    """Encode texts using ONNX Runtime (Rust)."""
+    """Encode texts using ONNX Runtime (Rust).
+
+    Args:
+        encoder_binary: Path to the encode_cli binary
+        texts: List of texts to encode
+        output_dir: Directory to save embeddings
+        is_query: True for queries, False for documents
+        model_path: Path to ONNX model
+        tokenizer_path: Path to tokenizer.json
+        config_path: Optional path to config_sentence_transformers.json
+    """
     # Write texts to JSON
     input_file = output_dir / "input_texts.json"
     with open(input_file, "w") as f:
@@ -242,6 +253,11 @@ def encode_with_onnx(
         "--tokenizer",
         str(tokenizer_path),
     ]
+
+    # Add config path if provided
+    if config_path and config_path.exists():
+        cmd.extend(["--config", str(config_path)])
+
     if is_query:
         cmd.append("--is-query")
 
@@ -467,11 +483,12 @@ def main():
     print(f"  nbits:             {config.nbits}")
     print(f"  API endpoint:      http://{config.host}:{config.port}")
 
-    # Check for ONNX model
+    # Check for ONNX model and config
     project_root = Path(__file__).parent.parent
     onnx_dir = project_root / "onnx"
     model_path = onnx_dir / "models" / "answerai-colbert-small-v1.onnx"
     tokenizer_path = onnx_dir / "models" / "tokenizer.json"
+    config_path = onnx_dir / "models" / "config_sentence_transformers.json"
 
     if not model_path.exists():
         print(f"\nError: ONNX model not found at {model_path}")
@@ -482,6 +499,19 @@ def main():
         print(f"\nError: Tokenizer not found at {tokenizer_path}")
         print("Please run: cd onnx/python && python export_onnx.py")
         return 1
+
+    if config_path.exists():
+        print(f"  Config file:       {config_path}")
+        # Load and display config
+        import json as json_mod
+        with open(config_path) as f:
+            cfg = json_mod.load(f)
+        print(f"    query_prefix:    {cfg.get('query_prefix', 'N/A')}")
+        print(f"    document_prefix: {cfg.get('document_prefix', 'N/A')}")
+        print(f"    query_length:    {cfg.get('query_length', 'N/A')}")
+        print(f"    document_length: {cfg.get('document_length', 'N/A')}")
+    else:
+        print(f"  Config file:       Not found (using defaults)")
 
     # Load dataset
     print(f"\n[1/4] Loading {dataset_name} dataset...")
@@ -521,6 +551,7 @@ def main():
             is_query=False,
             model_path=model_path,
             tokenizer_path=tokenizer_path,
+            config_path=config_path,
         )
         doc_encode_time = time.perf_counter() - start
         print(f"    Time: {doc_encode_time:.2f}s ({len(documents) / doc_encode_time:.1f} docs/s)")
@@ -536,6 +567,7 @@ def main():
             is_query=True,
             model_path=model_path,
             tokenizer_path=tokenizer_path,
+            config_path=config_path,
         )
         query_encode_time = time.perf_counter() - start
         print(
