@@ -25,6 +25,18 @@ pub struct ColBertConfig {
     #[serde(default = "default_model_type")]
     pub model_type: String,
 
+    /// HuggingFace model name (optional, for reference)
+    #[serde(default)]
+    pub model_name: Option<String>,
+
+    /// Model class name (e.g., "BertModel", "ModernBertModel")
+    #[serde(default)]
+    pub model_class: Option<String>,
+
+    /// Whether the model uses token_type_ids (BERT does, ModernBERT doesn't)
+    #[serde(default = "default_uses_token_type_ids")]
+    pub uses_token_type_ids: bool,
+
     /// Prefix to prepend to queries (e.g., "[Q] " or "[unused0]")
     #[serde(default = "default_query_prefix")]
     pub query_prefix: String,
@@ -76,6 +88,9 @@ pub struct ColBertConfig {
 fn default_model_type() -> String {
     "ColBERT".to_string()
 }
+fn default_uses_token_type_ids() -> bool {
+    true
+}
 fn default_query_prefix() -> String {
     "[Q] ".to_string()
 }
@@ -105,6 +120,9 @@ impl Default for ColBertConfig {
     fn default() -> Self {
         Self {
             model_type: default_model_type(),
+            model_name: None,
+            model_class: None,
+            uses_token_type_ids: default_uses_token_type_ids(),
             query_prefix: default_query_prefix(),
             document_prefix: default_document_prefix(),
             query_length: default_query_length(),
@@ -358,14 +376,22 @@ impl OnnxColBERT {
             let input_ids_tensor = Tensor::from_array(([1usize, seq_len], input_ids))?;
             let attention_mask_tensor =
                 Tensor::from_array(([1usize, seq_len], attention_mask.clone()))?;
-            let token_type_ids_tensor = Tensor::from_array(([1usize, seq_len], token_type_ids))?;
 
-            // Run inference
-            let outputs = self.session.run(ort::inputs![
-                "input_ids" => input_ids_tensor,
-                "attention_mask" => attention_mask_tensor,
-                "token_type_ids" => token_type_ids_tensor,
-            ])?;
+            // Run inference (conditionally include token_type_ids based on model architecture)
+            let outputs = if self.config.uses_token_type_ids {
+                let token_type_ids_tensor =
+                    Tensor::from_array(([1usize, seq_len], token_type_ids))?;
+                self.session.run(ort::inputs![
+                    "input_ids" => input_ids_tensor,
+                    "attention_mask" => attention_mask_tensor,
+                    "token_type_ids" => token_type_ids_tensor,
+                ])?
+            } else {
+                self.session.run(ort::inputs![
+                    "input_ids" => input_ids_tensor,
+                    "attention_mask" => attention_mask_tensor,
+                ])?
+            };
 
             // Extract output [1, seq_len, embedding_dim]
             let (output_shape, output_data) = outputs["output"]
@@ -498,14 +524,22 @@ impl OnnxColBERT {
             let input_ids_tensor = Tensor::from_array(([1usize, seq_len], input_ids))?;
             let attention_mask_tensor =
                 Tensor::from_array(([1usize, seq_len], attention_mask.clone()))?;
-            let token_type_ids_tensor = Tensor::from_array(([1usize, seq_len], token_type_ids))?;
 
-            // Run inference
-            let outputs = self.session.run(ort::inputs![
-                "input_ids" => input_ids_tensor,
-                "attention_mask" => attention_mask_tensor,
-                "token_type_ids" => token_type_ids_tensor,
-            ])?;
+            // Run inference (conditionally include token_type_ids based on model architecture)
+            let outputs = if self.config.uses_token_type_ids {
+                let token_type_ids_tensor =
+                    Tensor::from_array(([1usize, seq_len], token_type_ids))?;
+                self.session.run(ort::inputs![
+                    "input_ids" => input_ids_tensor,
+                    "attention_mask" => attention_mask_tensor,
+                    "token_type_ids" => token_type_ids_tensor,
+                ])?
+            } else {
+                self.session.run(ort::inputs![
+                    "input_ids" => input_ids_tensor,
+                    "attention_mask" => attention_mask_tensor,
+                ])?
+            };
 
             let (output_shape, output_data) = outputs["output"]
                 .try_extract_tensor::<f32>()

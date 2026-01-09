@@ -2,14 +2,35 @@
 
 This script generates embeddings for test queries and documents using PyLate,
 then saves them as JSON for comparison with the Rust implementation.
+
+Supports multiple models:
+- lightonai/answerai-colbert-small-v1
+- lightonai/GTE-ModernColBERT-v1
+
+Usage:
+    # Generate reference for default model
+    python generate_reference.py
+
+    # Generate reference for specific model
+    python generate_reference.py --model lightonai/GTE-ModernColBERT-v1
+
+    # Generate reference for all supported models
+    python generate_reference.py --all
 """
 
+import argparse
 import json
+from pathlib import Path
+
 import numpy as np
 import onnxruntime as ort
 from pylate import models as pylate_models
 
-MODEL_NAME = "lightonai/answerai-colbert-small-v1"
+# Supported models
+SUPPORTED_MODELS = {
+    "lightonai/answerai-colbert-small-v1": "answerai-colbert-small-v1",
+    "lightonai/GTE-ModernColBERT-v1": "GTE-ModernColBERT-v1",
+}
 
 # Test texts - mix of queries and documents
 TEST_QUERIES = [
@@ -25,13 +46,43 @@ TEST_DOCUMENTS = [
 ]
 
 
-def main():
-    print("Loading PyLate model...")
+def get_model_short_name(model_name: str) -> str:
+    """Get the short name for a model (used for directory naming)."""
+    if model_name in SUPPORTED_MODELS:
+        return SUPPORTED_MODELS[model_name]
+    return model_name.split("/")[-1]
+
+
+def generate_reference_for_model(model_name: str, base_output_dir: Path) -> None:
+    """Generate reference embeddings for a specific model."""
+    short_name = get_model_short_name(model_name)
+    model_dir = base_output_dir / short_name
+    onnx_path = model_dir / "model.onnx"
+
+    print(f"\n{'='*60}")
+    print(f"Generating reference for: {model_name}")
+    print(f"Model directory: {model_dir}")
+    print(f"{'='*60}")
+
+    if not onnx_path.exists():
+        print(f"WARNING: ONNX model not found at {onnx_path}")
+        print("Please run export_onnx.py first to export the model.")
+        return
+
+    print(f"Loading PyLate model: {model_name}")
     pylate_model = pylate_models.ColBERT(
-        model_name_or_path=MODEL_NAME,
+        model_name_or_path=model_name,
         device="cpu",
-        do_query_expansion=False,  # Match the export config
+        do_query_expansion=False,
     )
+
+    # Load config to check if model uses token_type_ids
+    config_path = model_dir / "config_sentence_transformers.json"
+    uses_token_type_ids = True
+    if config_path.exists():
+        with open(config_path) as f:
+            config = json.load(f)
+            uses_token_type_ids = config.get("uses_token_type_ids", True)
 
     print(f"Model config:")
     print(f"  query_prefix: {pylate_model.query_prefix}")
@@ -39,12 +90,17 @@ def main():
     print(f"  query_length: {pylate_model.query_length}")
     print(f"  document_length: {pylate_model.document_length}")
     print(f"  do_query_expansion: {pylate_model.do_query_expansion}")
+    print(f"  uses_token_type_ids: {uses_token_type_ids}")
     print()
 
     # Load ONNX model for comparison
-    print("Loading ONNX model...")
-    onnx_session = ort.InferenceSession("../models/answerai-colbert-small-v1.onnx")
+    print(f"Loading ONNX model from {onnx_path}...")
+    onnx_session = ort.InferenceSession(str(onnx_path))
     tokenizer = pylate_model[0].tokenizer
+
+    # Check ONNX model inputs
+    onnx_inputs = [inp.name for inp in onnx_session.get_inputs()]
+    print(f"ONNX model inputs: {onnx_inputs}")
 
     results = []
 
@@ -85,13 +141,17 @@ def main():
                     token_type_ids.append(0)
                 inputs["token_type_ids"] = np.array([token_type_ids], dtype=np.int64)
 
-        onnx_inputs = {
+        # Prepare ONNX inputs based on model requirements
+        onnx_feed = {
             "input_ids": inputs["input_ids"].astype(np.int64),
             "attention_mask": inputs["attention_mask"].astype(np.int64),
-            "token_type_ids": inputs.get("token_type_ids", np.zeros_like(inputs["input_ids"])).astype(np.int64),
         }
+        if uses_token_type_ids and "token_type_ids" in onnx_inputs:
+            onnx_feed["token_type_ids"] = inputs.get(
+                "token_type_ids", np.zeros_like(inputs["input_ids"])
+            ).astype(np.int64)
 
-        onnx_output = onnx_session.run(None, onnx_inputs)[0][0]  # [seq_len, dim]
+        onnx_output = onnx_session.run(None, onnx_feed)[0][0]  # [seq_len, dim]
 
         # For queries, keep all tokens
         onnx_emb = onnx_output
@@ -108,19 +168,23 @@ def main():
         avg_sim = np.mean(similarities)
         max_diff = np.max(np.abs(pylate_emb[:min_len] - onnx_emb[:min_len]))
 
-        print(f"  Query {i}: shape={pylate_emb.shape}, avg_cosine_sim={avg_sim:.6f}, max_diff={max_diff:.2e}")
+        print(
+            f"  Query {i}: shape={pylate_emb.shape}, avg_cosine_sim={avg_sim:.6f}, max_diff={max_diff:.2e}"
+        )
 
-        results.append({
-            "text": query,
-            "is_query": True,
-            "pylate_embeddings": pylate_emb.tolist(),
-            "pylate_shape": list(pylate_emb.shape),
-            "onnx_embeddings": onnx_emb.tolist(),
-            "onnx_shape": list(onnx_emb.shape),
-            "avg_cosine_similarity": float(avg_sim),
-            "max_abs_difference": float(max_diff),
-            "input_ids": inputs["input_ids"][0].tolist(),
-        })
+        results.append(
+            {
+                "text": query,
+                "is_query": True,
+                "pylate_embeddings": pylate_emb.tolist(),
+                "pylate_shape": list(pylate_emb.shape),
+                "onnx_embeddings": onnx_emb.tolist(),
+                "onnx_shape": list(onnx_emb.shape),
+                "avg_cosine_similarity": float(avg_sim),
+                "max_abs_difference": float(max_diff),
+                "input_ids": inputs["input_ids"][0].tolist(),
+            }
+        )
 
     # Build skiplist token IDs
     skiplist_ids = set()
@@ -149,20 +213,26 @@ def main():
             truncation=True,
         )
 
-        onnx_inputs = {
+        # Prepare ONNX inputs based on model requirements
+        onnx_feed = {
             "input_ids": inputs["input_ids"].astype(np.int64),
             "attention_mask": inputs["attention_mask"].astype(np.int64),
-            "token_type_ids": inputs.get("token_type_ids", np.zeros_like(inputs["input_ids"])).astype(np.int64),
         }
+        if uses_token_type_ids and "token_type_ids" in onnx_inputs:
+            onnx_feed["token_type_ids"] = inputs.get(
+                "token_type_ids", np.zeros_like(inputs["input_ids"])
+            ).astype(np.int64)
 
-        onnx_output = onnx_session.run(None, onnx_inputs)[0][0]  # [seq_len, dim]
+        onnx_output = onnx_session.run(None, onnx_feed)[0][0]  # [seq_len, dim]
 
         # For documents, filter by attention mask AND skiplist
         input_ids = inputs["input_ids"][0]
         attention_mask = inputs["attention_mask"][0]
 
         # Create mask: attention=1 AND not in skiplist
-        valid_mask = (attention_mask == 1) & np.array([tid not in skiplist_ids for tid in input_ids])
+        valid_mask = (attention_mask == 1) & np.array(
+            [tid not in skiplist_ids for tid in input_ids]
+        )
         onnx_emb = onnx_output[valid_mask]
 
         # Compute similarity
@@ -177,30 +247,34 @@ def main():
         avg_sim = np.mean(similarities)
         max_diff = np.max(np.abs(pylate_emb[:min_len] - onnx_emb[:min_len]))
 
-        print(f"  Doc {i}: shape={pylate_emb.shape}, avg_cosine_sim={avg_sim:.6f}, max_diff={max_diff:.2e}")
+        print(
+            f"  Doc {i}: shape={pylate_emb.shape}, avg_cosine_sim={avg_sim:.6f}, max_diff={max_diff:.2e}"
+        )
 
-        results.append({
-            "text": doc,
-            "is_query": False,
-            "pylate_embeddings": pylate_emb.tolist(),
-            "pylate_shape": list(pylate_emb.shape),
-            "onnx_embeddings": onnx_emb.tolist(),
-            "onnx_shape": list(onnx_emb.shape),
-            "avg_cosine_similarity": float(avg_sim),
-            "max_abs_difference": float(max_diff),
-            "input_ids": inputs["input_ids"][0].tolist(),
-        })
+        results.append(
+            {
+                "text": doc,
+                "is_query": False,
+                "pylate_embeddings": pylate_emb.tolist(),
+                "pylate_shape": list(pylate_emb.shape),
+                "onnx_embeddings": onnx_emb.tolist(),
+                "onnx_shape": list(onnx_emb.shape),
+                "avg_cosine_similarity": float(avg_sim),
+                "max_abs_difference": float(max_diff),
+                "input_ids": inputs["input_ids"][0].tolist(),
+            }
+        )
 
     # Save results
-    output_path = "../models/reference_embeddings.json"
+    output_path = model_dir / "reference_embeddings.json"
     with open(output_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nSaved reference embeddings to {output_path}")
 
     # Summary
-    print("\n" + "=" * 60)
+    print("\n" + "-" * 40)
     print("SUMMARY")
-    print("=" * 60)
+    print("-" * 40)
     all_sims = [r["avg_cosine_similarity"] for r in results]
     all_diffs = [r["max_abs_difference"] for r in results]
     print(f"Average cosine similarity (PyLate vs ONNX): {np.mean(all_sims):.6f}")
@@ -212,6 +286,52 @@ def main():
         print("\nGOOD: PyLate and Python ONNX produce very similar embeddings.")
     else:
         print("\nWARNING: Significant differences detected.")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate reference embeddings for PyLate comparison"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="HuggingFace model name to generate reference for",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Generate reference for all supported models",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="../models",
+        help="Base output directory for models",
+    )
+    args = parser.parse_args()
+
+    # Determine which models to process
+    if args.all:
+        models_to_process = list(SUPPORTED_MODELS.keys())
+    elif args.model:
+        models_to_process = [args.model]
+    else:
+        # Default to answerai-colbert-small-v1 for backward compatibility
+        models_to_process = ["lightonai/answerai-colbert-small-v1"]
+
+    base_output_dir = Path(args.output_dir)
+
+    print(f"Will generate reference for {len(models_to_process)} model(s):")
+    for model in models_to_process:
+        print(f"  - {model}")
+
+    for model_name in models_to_process:
+        generate_reference_for_model(model_name, base_output_dir)
+
+    print(f"\n{'='*60}")
+    print("COMPLETE")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":

@@ -12,8 +12,14 @@ Usage:
     # Start the API server first (or use make benchmark-onnx-api):
     cargo run --release -p lategrep-api -- -h 127.0.0.1 -p 8080 -d ./indices
 
-    # Then run the benchmark:
+    # Then run the benchmark with default model (answerai-colbert-small-v1):
     python onnx_benchmark.py [--skip-encoding] [--embeddings-dir <path>]
+
+    # Run with GTE-ModernColBERT-v1:
+    python onnx_benchmark.py --model gte-moderncolbert-v1
+
+    # Run with answerai-colbert-small-v1:
+    python onnx_benchmark.py --model answerai-colbert-small-v1
 
 Requirements:
     pip install beir ranx numpy requests tqdm
@@ -57,7 +63,22 @@ DATASET_CONFIG = {
     },
 }
 
-MODEL_NAME = "lightonai/answerai-colbert-small-v1"
+# Supported models with their configurations
+SUPPORTED_MODELS = {
+    "answerai-colbert-small-v1": {
+        "hf_name": "lightonai/answerai-colbert-small-v1",
+        "dir_name": "answerai-colbert-small-v1",
+        "embedding_dim": 96,
+    },
+    "gte-moderncolbert-v1": {
+        "hf_name": "lightonai/GTE-ModernColBERT-v1",
+        "dir_name": "GTE-ModernColBERT-v1",
+        "embedding_dim": 128,
+    },
+}
+
+# Default model
+DEFAULT_MODEL = "answerai-colbert-small-v1"
 
 
 def load_beir_dataset(dataset_name: str, split: str = "test"):
@@ -452,15 +473,27 @@ def main():
     parser.add_argument(
         "--embeddings-dir",
         type=str,
-        default="./scifact_onnx_embeddings",
-        help="Directory for ONNX embeddings",
+        default=None,
+        help="Directory for ONNX embeddings (default: ./scifact_onnx_embeddings_<model>)",
     )
     parser.add_argument("--port", type=int, default=8080, help="API server port")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="API server host")
     parser.add_argument(
         "--batch-size", type=int, default=100, help="Documents per API call (default: 100)"
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=DEFAULT_MODEL,
+        choices=list(SUPPORTED_MODELS.keys()),
+        help=f"Model to use for encoding (default: {DEFAULT_MODEL})",
+    )
     args = parser.parse_args()
+
+    # Get model configuration
+    model_config = SUPPORTED_MODELS[args.model]
+    model_name = model_config["hf_name"]
+    model_dir_name = model_config["dir_name"]
 
     config = BenchmarkConfig(
         port=args.port,
@@ -469,7 +502,12 @@ def main():
     )
     dataset_name = "scifact"
     ds_config = DATASET_CONFIG[dataset_name]
-    embeddings_dir = Path(args.embeddings_dir)
+
+    # Set embeddings directory (model-specific if not provided)
+    if args.embeddings_dir:
+        embeddings_dir = Path(args.embeddings_dir)
+    else:
+        embeddings_dir = Path(f"./scifact_onnx_embeddings_{args.model}")
     doc_embeddings_dir = embeddings_dir / "documents"
     query_embeddings_dir = embeddings_dir / "queries"
 
@@ -477,6 +515,8 @@ def main():
     print("  SciFact Benchmark: ONNX (Rust) + Lategrep REST API")
     print("=" * 70)
     print("\nConfiguration:")
+    print(f"  Model:             {args.model}")
+    print(f"  HuggingFace name:  {model_name}")
     print(f"  Top-k:             {config.top_k}")
     print(f"  n_ivf_probe:       {config.n_ivf_probe}")
     print(f"  n_full_scores:     {config.n_full_scores}")
@@ -486,24 +526,26 @@ def main():
     # Check for ONNX model and config
     project_root = Path(__file__).parent.parent
     onnx_dir = project_root / "onnx"
-    model_path = onnx_dir / "models" / "answerai-colbert-small-v1.onnx"
-    tokenizer_path = onnx_dir / "models" / "tokenizer.json"
-    config_path = onnx_dir / "models" / "config_sentence_transformers.json"
+    model_subdir = onnx_dir / "models" / model_dir_name
+    model_path = model_subdir / "model.onnx"
+    tokenizer_path = model_subdir / "tokenizer.json"
+    config_path = model_subdir / "config_sentence_transformers.json"
 
     if not model_path.exists():
         print(f"\nError: ONNX model not found at {model_path}")
-        print("Please run: cd onnx/python && python export_onnx.py")
+        print(f"Please run: cd onnx/python && python export_onnx.py --models {model_name}")
         return 1
 
     if not tokenizer_path.exists():
         print(f"\nError: Tokenizer not found at {tokenizer_path}")
-        print("Please run: cd onnx/python && python export_onnx.py")
+        print(f"Please run: cd onnx/python && python export_onnx.py --models {model_name}")
         return 1
 
     if config_path.exists():
         print(f"  Config file:       {config_path}")
         # Load and display config
         import json as json_mod
+
         with open(config_path) as f:
             cfg = json_mod.load(f)
         print(f"    query_prefix:    {cfg.get('query_prefix', 'N/A')}")
@@ -511,7 +553,7 @@ def main():
         print(f"    query_length:    {cfg.get('query_length', 'N/A')}")
         print(f"    document_length: {cfg.get('document_length', 'N/A')}")
     else:
-        print(f"  Config file:       Not found (using defaults)")
+        print("  Config file:       Not found (using defaults)")
 
     # Load dataset
     print(f"\n[1/4] Loading {dataset_name} dataset...")
@@ -622,7 +664,8 @@ def main():
     # Save results
     output = {
         "dataset": dataset_name,
-        "model": MODEL_NAME,
+        "model": model_name,
+        "model_short": args.model,
         "config": {
             "top_k": config.top_k,
             "n_ivf_probe": config.n_ivf_probe,
@@ -636,7 +679,7 @@ def main():
         "metrics": {k: round(v, 4) for k, v in metrics.items()},
     }
 
-    output_path = Path("scifact_onnx_benchmark.json")
+    output_path = Path(f"scifact_onnx_benchmark_{args.model}.json")
     with open(output_path, "w") as f:
         json.dump(output, f, indent=2)
     print(f"\n  Results saved to {output_path}")
