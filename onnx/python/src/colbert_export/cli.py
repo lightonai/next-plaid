@@ -22,6 +22,12 @@ Examples:
   # Export to a specific directory
   colbert-export lightonai/answerai-colbert-small-v1 -o ./my-models
 
+  # Export and push to HuggingFace Hub
+  colbert-export lightonai/GTE-ModernColBERT-v1 --push-to-hub myorg/my-onnx-model
+
+  # Export with quantization and push to Hub
+  colbert-export lightonai/GTE-ModernColBERT-v1 -q --push-to-hub myorg/my-onnx-model
+
 Supported models:
   - lightonai/answerai-colbert-small-v1 (96-dim, BERT-based)
   - lightonai/GTE-ModernColBERT-v1 (128-dim, ModernBERT-based)
@@ -58,6 +64,20 @@ Supported models:
     )
 
     parser.add_argument(
+        "--push-to-hub",
+        type=str,
+        default=None,
+        metavar="REPO_ID",
+        help="Push exported model to HuggingFace Hub (e.g., 'myorg/my-onnx-model')",
+    )
+
+    parser.add_argument(
+        "--private",
+        action="store_true",
+        help="Make the Hub repository private (only with --push-to-hub)",
+    )
+
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Suppress progress messages",
@@ -73,16 +93,26 @@ Supported models:
 
     # Import here to avoid slow startup for --help
     from colbert_export.export import export_model
+    from colbert_export.hub import push_to_hub
 
     try:
         output_dir = Path(args.output_dir) if args.output_dir else None
-        export_model(
+        result_dir = export_model(
             model_name=args.model,
             output_dir=output_dir,
             quantize=args.quantize,
             verbose=not args.quiet,
             force=args.force,
         )
+
+        # Push to Hub if requested
+        if args.push_to_hub:
+            push_to_hub(
+                model_dir=result_dir,
+                repo_id=args.push_to_hub,
+                private=args.private,
+                verbose=not args.quiet,
+            )
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
