@@ -88,6 +88,46 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
       - run: cargo bench --no-run --features "npy,filtering,openblas"
 
+  onnx-test:
+    name: ONNX Crate Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run ONNX crate tests
+        working-directory: onnx
+        run: cargo test
+
+  onnx-clippy:
+    name: ONNX Crate Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (ONNX crate)
+        working-directory: onnx
+        run: cargo clippy --all-targets -- -D warnings
+
+  python-cli-test:
+    name: Python CLI Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        working-directory: onnx/python
+        run: |
+          pip install -e ".[dev]"
+      - name: Run Python CLI tests
+        working-directory: onnx/python
+        run: pytest tests/test_cli.py -v
+
   api-integration:
     name: API Integration Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
