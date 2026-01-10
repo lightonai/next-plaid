@@ -12,8 +12,8 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use ndarray::Array2;
 use colbert_onnx::Colbert;
+use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -125,7 +125,10 @@ fn verify_correctness(
     let mut max_diff: f64 = 0.0;
 
     println!("\nVerifying correctness against PyLate embeddings...");
-    println!("{:<8} {:<12} {:<12} {:<15} {:<15}", "Doc", "Rust Shape", "PyLate Shape", "Avg Cosine Sim", "Max Diff");
+    println!(
+        "{:<8} {:<12} {:<12} {:<15} {:<15}",
+        "Doc", "Rust Shape", "PyLate Shape", "Avg Cosine Sim", "Max Diff"
+    );
     println!("{}", "-".repeat(65));
 
     for pylate_emb in &pylate_embeddings {
@@ -146,6 +149,7 @@ fn verify_correctness(
         let mut doc_similarities: Vec<f64> = Vec::new();
         let mut doc_max_diff: f64 = 0.0;
 
+        #[allow(clippy::needless_range_loop)]
         for i in 0..min_tokens {
             let rust_row: Vec<f32> = rust_emb.row(i).to_vec();
             let pylate_row = &pylate_rows[i];
@@ -171,8 +175,10 @@ fn verify_correctness(
         println!(
             "{:<8} {:>4}x{:<6} {:>4}x{:<6} {:<15.6} {:<15.2e}",
             doc_idx,
-            rust_shape.0, rust_shape.1,
-            pylate_shape.0, pylate_shape.1,
+            rust_shape.0,
+            rust_shape.1,
+            pylate_shape.0,
+            pylate_shape.1,
             avg_sim,
             doc_max_diff
         );
@@ -189,7 +195,10 @@ fn verify_correctness(
     if passed {
         println!("\nCORRECTNESS CHECK PASSED: Rust ONNX matches PyLate embeddings!");
     } else {
-        println!("\nWARNING: Embeddings differ from PyLate (avg sim: {:.6})", overall_avg_sim);
+        println!(
+            "\nWARNING: Embeddings differ from PyLate (avg sim: {:.6})",
+            overall_avg_sim
+        );
     }
 
     Ok((passed, overall_avg_sim, max_diff))
@@ -216,7 +225,10 @@ fn main() -> Result<()> {
         serde_json::from_str(&content).context("Failed to parse benchmark documents")?;
 
     let num_docs = bench_docs.documents.len();
-    println!("Loaded {} documents (target: {} tokens each)", num_docs, bench_docs.target_tokens);
+    println!(
+        "Loaded {} documents (target: {} tokens each)",
+        num_docs, bench_docs.target_tokens
+    );
 
     // Load Python benchmark results if available
     let results_path = args.model_dir.join("benchmark_results.json");
@@ -229,15 +241,24 @@ fn main() -> Result<()> {
 
     if let Some(ref results) = python_results {
         println!("\nPython benchmark results loaded:");
-        println!("  PyLate:      {:.1} docs/sec ({:.3} ms/doc)", results.pylate.docs_per_sec, results.pylate.ms_per_doc);
-        println!("  ONNX-Python: {:.1} docs/sec ({:.3} ms/doc)", results.onnx_python.docs_per_sec, results.onnx_python.ms_per_doc);
+        println!(
+            "  PyLate:      {:.1} docs/sec ({:.3} ms/doc)",
+            results.pylate.docs_per_sec, results.pylate.ms_per_doc
+        );
+        println!(
+            "  ONNX-Python: {:.1} docs/sec ({:.3} ms/doc)",
+            results.onnx_python.docs_per_sec, results.onnx_python.ms_per_doc
+        );
     }
 
     // Load Rust ONNX model
     println!("\nLoading ONNX model...");
     let mut model = Colbert::from_pretrained_with_threads(&args.model_dir, args.threads)?;
     let config = model.config();
-    println!("Config: document_length={}, embedding_dim={}", config.document_length, config.embedding_dim);
+    println!(
+        "Config: document_length={}, embedding_dim={}",
+        config.document_length, config.embedding_dim
+    );
 
     // Convert to &str for encoding
     let docs_refs: Vec<&str> = bench_docs.documents.iter().map(|s| s.as_str()).collect();
@@ -257,7 +278,10 @@ fn main() -> Result<()> {
     let sequential_docs_per_sec = num_docs as f64 / sequential_time;
     println!("  Total time: {:.3}s", sequential_time);
     println!("  Documents/sec: {:.1}", sequential_docs_per_sec);
-    println!("  Avg per document: {:.3}ms", 1000.0 * sequential_time / num_docs as f64);
+    println!(
+        "  Avg per document: {:.3}ms",
+        1000.0 * sequential_time / num_docs as f64
+    );
 
     // ============ BATCHED BENCHMARK ============
     println!("\n--- Batched encoding (optimized) ---");
@@ -269,7 +293,10 @@ fn main() -> Result<()> {
 
     println!("  Total time: {:.3}s", batched_time);
     println!("  Documents/sec: {:.1}", batched_docs_per_sec);
-    println!("  Avg per document: {:.3}ms", 1000.0 * batched_time / num_docs as f64);
+    println!(
+        "  Avg per document: {:.3}ms",
+        1000.0 * batched_time / num_docs as f64
+    );
 
     // ============ CORRECTNESS VERIFICATION ============
     let (correctness_passed, avg_similarity, max_diff) = if !args.skip_verification {
@@ -284,26 +311,41 @@ fn main() -> Result<()> {
     println!("\n{}", "=".repeat(70));
     println!("BENCHMARK SUMMARY");
     println!("{}", "=".repeat(70));
-    println!("{:<25} {:<12} {:<12} {:<12}", "Method", "Time (s)", "Docs/sec", "ms/doc");
+    println!(
+        "{:<25} {:<12} {:<12} {:<12}",
+        "Method", "Time (s)", "Docs/sec", "ms/doc"
+    );
     println!("{}", "-".repeat(70));
 
     if let Some(ref results) = python_results {
         println!(
             "{:<25} {:<12.3} {:<12.1} {:<12.3}",
-            "PyLate", results.pylate.total_time_s, results.pylate.docs_per_sec, results.pylate.ms_per_doc
+            "PyLate",
+            results.pylate.total_time_s,
+            results.pylate.docs_per_sec,
+            results.pylate.ms_per_doc
         );
         println!(
             "{:<25} {:<12.3} {:<12.1} {:<12.3}",
-            "ONNX-Python", results.onnx_python.total_time_s, results.onnx_python.docs_per_sec, results.onnx_python.ms_per_doc
+            "ONNX-Python",
+            results.onnx_python.total_time_s,
+            results.onnx_python.docs_per_sec,
+            results.onnx_python.ms_per_doc
         );
     }
     println!(
         "{:<25} {:<12.3} {:<12.1} {:<12.3}",
-        "ONNX-Rust (sequential)", sequential_time, sequential_docs_per_sec, 1000.0 * sequential_time / num_docs as f64
+        "ONNX-Rust (sequential)",
+        sequential_time,
+        sequential_docs_per_sec,
+        1000.0 * sequential_time / num_docs as f64
     );
     println!(
         "{:<25} {:<12.3} {:<12.1} {:<12.3}",
-        "ONNX-Rust (batched)", batched_time, batched_docs_per_sec, 1000.0 * batched_time / num_docs as f64
+        "ONNX-Rust (batched)",
+        batched_time,
+        batched_docs_per_sec,
+        1000.0 * batched_time / num_docs as f64
     );
     println!("{}", "-".repeat(70));
 
@@ -316,15 +358,27 @@ fn main() -> Result<()> {
         let speedup_over_python_onnx = results.onnx_python.total_time_s / batched_time;
 
         if speedup_over_pylate > 1.0 {
-            println!("ONNX-Rust (batched) is {:.2}x faster than PyLate", speedup_over_pylate);
+            println!(
+                "ONNX-Rust (batched) is {:.2}x faster than PyLate",
+                speedup_over_pylate
+            );
         } else {
-            println!("PyLate is {:.2}x faster than ONNX-Rust (batched)", 1.0 / speedup_over_pylate);
+            println!(
+                "PyLate is {:.2}x faster than ONNX-Rust (batched)",
+                1.0 / speedup_over_pylate
+            );
         }
 
         if speedup_over_python_onnx > 1.0 {
-            println!("ONNX-Rust (batched) is {:.2}x faster than ONNX-Python", speedup_over_python_onnx);
+            println!(
+                "ONNX-Rust (batched) is {:.2}x faster than ONNX-Python",
+                speedup_over_python_onnx
+            );
         } else {
-            println!("ONNX-Python is {:.2}x faster than ONNX-Rust (batched)", 1.0 / speedup_over_python_onnx);
+            println!(
+                "ONNX-Python is {:.2}x faster than ONNX-Rust (batched)",
+                1.0 / speedup_over_python_onnx
+            );
         }
 
         // Save combined results
@@ -360,7 +414,10 @@ fn main() -> Result<()> {
     }
 
     if correctness_passed {
-        println!("\nCORRECTNESS: VERIFIED (avg cosine similarity: {:.6})", avg_similarity);
+        println!(
+            "\nCORRECTNESS: VERIFIED (avg cosine similarity: {:.6})",
+            avg_similarity
+        );
     } else {
         println!("\nWARNING: Correctness verification failed!");
     }

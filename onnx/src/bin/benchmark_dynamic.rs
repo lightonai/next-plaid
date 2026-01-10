@@ -32,11 +32,9 @@ impl OnnxColBERT {
             .with_inter_threads(1)?;
 
         if use_coreml {
-            builder = builder.with_execution_providers([
-                CoreMLExecutionProvider::default()
-                    .with_subgraphs(true)
-                    .build()
-            ])?;
+            builder = builder.with_execution_providers([CoreMLExecutionProvider::default()
+                .with_subgraphs(true)
+                .build()])?;
         }
 
         let session = builder
@@ -66,6 +64,7 @@ impl OnnxColBERT {
     }
 
     /// Encode with dynamic sequence lengths (no padding for documents).
+    #[allow(dead_code)]
     fn encode_dynamic(&mut self, texts: &[&str], is_query: bool) -> Result<Vec<Array2<f32>>> {
         let prefix = if is_query {
             &self.query_prefix
@@ -89,8 +88,11 @@ impl OnnxColBERT {
                 .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
 
             let mut input_ids: Vec<i64> = encoding.get_ids().iter().map(|&x| x as i64).collect();
-            let mut attention_mask: Vec<i64> =
-                encoding.get_attention_mask().iter().map(|&x| x as i64).collect();
+            let mut attention_mask: Vec<i64> = encoding
+                .get_attention_mask()
+                .iter()
+                .map(|&x| x as i64)
+                .collect();
             let mut token_type_ids: Vec<i64> =
                 encoding.get_type_ids().iter().map(|&x| x as i64).collect();
 
@@ -170,8 +172,11 @@ impl OnnxColBERT {
                 .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
 
             let mut input_ids: Vec<i64> = encoding.get_ids().iter().map(|&x| x as i64).collect();
-            let mut attention_mask: Vec<i64> =
-                encoding.get_attention_mask().iter().map(|&x| x as i64).collect();
+            let mut attention_mask: Vec<i64> = encoding
+                .get_attention_mask()
+                .iter()
+                .map(|&x| x as i64)
+                .collect();
             let mut token_type_ids: Vec<i64> =
                 encoding.get_type_ids().iter().map(|&x| x as i64).collect();
 
@@ -219,8 +224,7 @@ impl OnnxColBERT {
         }
 
         // Create batch tensors
-        let input_ids_tensor =
-            Tensor::from_array(([batch_size, batch_max_len], all_input_ids))?;
+        let input_ids_tensor = Tensor::from_array(([batch_size, batch_max_len], all_input_ids))?;
         let attention_mask_tensor =
             Tensor::from_array(([batch_size, batch_max_len], all_attention_mask.clone()))?;
         let token_type_ids_tensor =
@@ -241,6 +245,7 @@ impl OnnxColBERT {
 
         // Split batch output into individual embeddings
         let mut all_embeddings = Vec::with_capacity(batch_size);
+        #[allow(clippy::needless_range_loop)]
         for i in 0..batch_size {
             let start = i * batch_max_len * embedding_dim;
 
@@ -340,13 +345,20 @@ fn main() -> Result<()> {
     }
     println!("  ...\n");
 
-    let (cpu_doc, cpu_query) = benchmark_model(&mut cpu_model, &documents, &queries, num_iterations, "CPU")?;
+    let (cpu_doc, cpu_query) =
+        benchmark_model(&mut cpu_model, &documents, &queries, num_iterations, "CPU")?;
 
     // ============ CoreML BENCHMARK ============
     println!("\nLoading CoreML model...");
     let mut coreml_model = OnnxColBERT::new(ONNX_MODEL_PATH, TOKENIZER_PATH, true)?;
 
-    let (coreml_doc, coreml_query) = benchmark_model(&mut coreml_model, &documents, &queries, num_iterations, "CoreML")?;
+    let (coreml_doc, coreml_query) = benchmark_model(
+        &mut coreml_model,
+        &documents,
+        &queries,
+        num_iterations,
+        "CoreML",
+    )?;
 
     // Summary
     println!("\n{}", "=".repeat(70));
@@ -363,7 +375,10 @@ fn main() -> Result<()> {
     );
     println!(
         "{:<20} {:>12.1} {:>14.1} {:>11.2}x",
-        "CoreML", coreml_doc, coreml_query, coreml_doc / cpu_doc
+        "CoreML",
+        coreml_doc,
+        coreml_query,
+        coreml_doc / cpu_doc
     );
 
     Ok(())

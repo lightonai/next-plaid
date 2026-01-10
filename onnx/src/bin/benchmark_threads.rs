@@ -47,7 +47,10 @@ fn main() -> Result<()> {
         let rate = num_docs as f64 / time;
         let ms_per_doc = 1000.0 / rate;
 
-        println!("{:<15} {:>10.1}/s {:>12.2}ms", num_threads, rate, ms_per_doc);
+        println!(
+            "{:<15} {:>10.1}/s {:>12.2}ms",
+            num_threads, rate, ms_per_doc
+        );
 
         if rate > best_rate {
             best_rate = rate;
@@ -56,7 +59,10 @@ fn main() -> Result<()> {
     }
 
     println!("{}", "-".repeat(45));
-    println!("\nBest: {} threads ({:.1} docs/sec)", best_threads, best_rate);
+    println!(
+        "\nBest: {} threads ({:.1} docs/sec)",
+        best_threads, best_rate
+    );
 
     Ok(())
 }

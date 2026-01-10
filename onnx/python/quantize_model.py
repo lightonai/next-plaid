@@ -9,9 +9,8 @@ Usage:
 
 import argparse
 from pathlib import Path
-import onnx
-from onnxruntime.quantization import quantize_dynamic, QuantType
 
+from onnxruntime.quantization import QuantType, quantize_dynamic
 
 SUPPORTED_MODELS = [
     "answerai-colbert-small-v1",
@@ -60,9 +59,9 @@ def benchmark_quantized(model_dir: Path, num_docs: int = 100) -> None:
     """
     import json
     import time
+
     import numpy as np
     import onnxruntime as ort
-    from transformers import AutoTokenizer
 
     original_path = model_dir / "model.onnx"
     quantized_path = model_dir / "model_int8.onnx"

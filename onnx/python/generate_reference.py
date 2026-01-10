@@ -92,7 +92,7 @@ def generate_reference_for_model(model_name: str, base_output_dir: Path) -> None
             config = json.load(f)
             uses_token_type_ids = config.get("uses_token_type_ids", True)
 
-    print(f"Model config:")
+    print("Model config:")
     print(f"  query_prefix: {pylate_model.query_prefix}")
     print(f"  document_prefix: {pylate_model.document_prefix}")
     print(f"  query_length: {pylate_model.query_length}")
@@ -403,7 +403,7 @@ def run_benchmark(
     onnx_path = model_dir / "model.onnx"
 
     print(f"\n{'='*70}")
-    print(f"ENCODING SPEED BENCHMARK")
+    print("ENCODING SPEED BENCHMARK")
     print(f"{'='*70}")
     print(f"Model: {model_name}")
     print(f"Documents: {num_docs}")

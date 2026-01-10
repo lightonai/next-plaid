@@ -34,7 +34,10 @@ fn main() -> Result<()> {
     println!("\nLoading model from {}...", MODEL_DIR);
     let mut model = Colbert::from_pretrained(MODEL_DIR)?;
     let config = model.config();
-    println!("Config: query_length={}, document_length={}", config.query_length, config.document_length);
+    println!(
+        "Config: query_length={}, document_length={}",
+        config.query_length, config.document_length
+    );
 
     // Warmup
     println!("\nWarming up...");

@@ -19,7 +19,10 @@ fn main() -> Result<()> {
     println!("{}", "=".repeat(70));
 
     // Try to load benchmark documents, fall back to simple test docs
-    let documents: Vec<String> = match fs::read_to_string(format!("{}/benchmark_documents.json", MODEL_DIR)) {
+    let documents: Vec<String> = match fs::read_to_string(format!(
+        "{}/benchmark_documents.json",
+        MODEL_DIR
+    )) {
         Ok(content) => {
             let data: BenchmarkDocuments = serde_json::from_str(&content)?;
             println!("Loaded {} benchmark documents", data.documents.len());
@@ -47,9 +50,11 @@ fn main() -> Result<()> {
     // ============ CPU BENCHMARK ============
     println!("\nLoading model...");
     let mut model = Colbert::from_pretrained(MODEL_DIR)?;
-    println!("Config: document_length={}, embedding_dim={}",
-             model.config().document_length,
-             model.embedding_dim());
+    println!(
+        "Config: document_length={}, embedding_dim={}",
+        model.config().document_length,
+        model.embedding_dim()
+    );
 
     // Warmup
     let _ = model.encode_documents(&doc_refs[..2])?;
@@ -64,7 +69,11 @@ fn main() -> Result<()> {
     }
     let seq_time = start.elapsed().as_secs_f64();
     let seq_rate = (doc_refs.len() * num_iterations) as f64 / seq_time;
-    println!("  {:.1} docs/sec ({:.2}ms/doc)", seq_rate, 1000.0 / seq_rate);
+    println!(
+        "  {:.1} docs/sec ({:.2}ms/doc)",
+        seq_rate,
+        1000.0 / seq_rate
+    );
 
     // Benchmark batched (using the optimized encode_documents)
     println!("\n--- Batched (optimized) ---");
@@ -74,7 +83,11 @@ fn main() -> Result<()> {
     }
     let batch_time = start.elapsed().as_secs_f64();
     let batch_rate = (num_docs * num_iterations) as f64 / batch_time;
-    println!("  {:.1} docs/sec ({:.2}ms/doc)", batch_rate, 1000.0 / batch_rate);
+    println!(
+        "  {:.1} docs/sec ({:.2}ms/doc)",
+        batch_rate,
+        1000.0 / batch_rate
+    );
     println!("  Speedup: {:.2}x", batch_rate / seq_rate);
 
     // ============ SUMMARY ============
@@ -83,8 +96,16 @@ fn main() -> Result<()> {
     println!("{}", "=".repeat(70));
     println!("\n{:<20} {:>12} {:>14}", "Method", "Docs/sec", "Speedup");
     println!("{}", "-".repeat(50));
-    println!("{:<20} {:>10.1}/s {:>12}", "Sequential", seq_rate, "baseline");
-    println!("{:<20} {:>10.1}/s {:>11.2}x", "Batched", batch_rate, batch_rate / seq_rate);
+    println!(
+        "{:<20} {:>10.1}/s {:>12}",
+        "Sequential", seq_rate, "baseline"
+    );
+    println!(
+        "{:<20} {:>10.1}/s {:>11.2}x",
+        "Batched",
+        batch_rate,
+        batch_rate / seq_rate
+    );
 
     Ok(())
 }

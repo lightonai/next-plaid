@@ -77,7 +77,10 @@ fn main() -> Result<()> {
 
     // Check files exist
     if !std::path::Path::new(REFERENCE_PATH).exists() {
-        eprintln!("Error: Reference embeddings not found at '{}'", REFERENCE_PATH);
+        eprintln!(
+            "Error: Reference embeddings not found at '{}'",
+            REFERENCE_PATH
+        );
         eprintln!("Please run: cd python && python generate_reference.py");
         return Ok(());
     }
@@ -154,8 +157,8 @@ fn main() -> Result<()> {
 
     let avg_rust_vs_pylate: f32 =
         all_rust_vs_pylate_sims.iter().sum::<f32>() / all_rust_vs_pylate_sims.len() as f32;
-    let avg_rust_vs_python_onnx: f32 =
-        all_rust_vs_python_onnx_sims.iter().sum::<f32>() / all_rust_vs_python_onnx_sims.len() as f32;
+    let avg_rust_vs_python_onnx: f32 = all_rust_vs_python_onnx_sims.iter().sum::<f32>()
+        / all_rust_vs_python_onnx_sims.len() as f32;
     let max_diff: f32 = all_max_diffs.iter().cloned().fold(0.0f32, f32::max);
 
     println!("Average cosine similarities:");

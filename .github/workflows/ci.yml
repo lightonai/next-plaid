@@ -112,22 +112,6 @@ jobs:
         working-directory: onnx
         run: cargo clippy --all-targets -- -D warnings
 
-  python-cli-test:
-    name: Python CLI Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install dependencies
-        working-directory: onnx/python
-        run: |
-          pip install -e ".[dev]"
-      - name: Run Python CLI tests
-        working-directory: onnx/python
-        run: pytest tests/test_cli.py -v
-
   api-integration:
     name: API Integration Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

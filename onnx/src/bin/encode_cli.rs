@@ -150,10 +150,7 @@ fn run_encode(args: &[String]) -> Result<()> {
     } else {
         // Use standard Colbert
         let mut model = Colbert::from_pretrained(&model_dir)?;
-        eprintln!(
-            "Colbert loaded: embedding_dim={}",
-            model.embedding_dim()
-        );
+        eprintln!("Colbert loaded: embedding_dim={}", model.embedding_dim());
 
         if is_query {
             model.encode_queries(&texts)?

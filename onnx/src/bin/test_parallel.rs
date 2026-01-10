@@ -58,7 +58,10 @@ fn main() -> Result<()> {
 
     println!("\nPerformance:");
     println!("  Time: {:?}", elapsed);
-    println!("  Docs/sec: {:.1}", documents.len() as f64 / elapsed.as_secs_f64());
+    println!(
+        "  Docs/sec: {:.1}",
+        documents.len() as f64 / elapsed.as_secs_f64()
+    );
 
     // Test with real benchmark documents (300 tokens each)
     println!("\n--- Benchmark with 100 real documents (~300 tokens each) ---");
@@ -68,7 +71,11 @@ fn main() -> Result<()> {
         let bench_docs: BenchmarkDocuments = serde_json::from_str(&content)?;
         let docs_refs: Vec<&str> = bench_docs.documents.iter().map(|s| s.as_str()).collect();
 
-        println!("Loaded {} documents (target: {} tokens each)", docs_refs.len(), bench_docs.target_tokens);
+        println!(
+            "Loaded {} documents (target: {} tokens each)",
+            docs_refs.len(),
+            bench_docs.target_tokens
+        );
 
         // Warmup
         let _ = model.encode_documents(&docs_refs[..10])?;
@@ -81,8 +88,12 @@ fn main() -> Result<()> {
             let elapsed = start.elapsed();
 
             let docs_per_sec = docs_refs.len() as f64 / elapsed.as_secs_f64();
-            println!("  Iteration {}: {:.1} docs/sec ({:.1} ms/doc)",
-                     iter + 1, docs_per_sec, elapsed.as_secs_f64() * 1000.0 / docs_refs.len() as f64);
+            println!(
+                "  Iteration {}: {:.1} docs/sec ({:.1} ms/doc)",
+                iter + 1,
+                docs_per_sec,
+                elapsed.as_secs_f64() * 1000.0 / docs_refs.len() as f64
+            );
 
             if docs_per_sec > best_rate {
                 best_rate = docs_per_sec;

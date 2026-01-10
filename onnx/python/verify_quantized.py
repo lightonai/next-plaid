@@ -12,6 +12,7 @@ Usage:
 import argparse
 import json
 from pathlib import Path
+
 import numpy as np
 import onnxruntime as ort
 from pylate import models as pylate_models

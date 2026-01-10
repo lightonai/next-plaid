@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-onnx-api benchmark-onnx-api-answerai benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-onnx-api benchmark-onnx-api-answerai benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt
 
 all: fmt lint test
 
@@ -62,7 +62,7 @@ example:
 	cargo run --example basic --release
 
 # Run all CI checks locally
-ci: fmt-check clippy test doc bench-check ci-api test-api-integration
+ci: fmt-check clippy test doc bench-check ci-api test-api-integration ci-onnx
 	@echo "All CI checks passed!"
 
 # Run CI checks for api crate
@@ -70,6 +70,14 @@ ci-api:
 	cd api && cargo fmt --all -- --check
 	cd api && cargo clippy --all-targets --all-features -- -D warnings
 	cd api && cargo test
+
+# Run CI checks for onnx crate
+ci-onnx:
+	cd onnx && cargo fmt --all -- --check
+	cd onnx && cargo clippy --all-targets --all-features -- -D warnings
+	cd onnx && cargo test
+	cd onnx/python && uv run --extra dev ruff check .
+	cd onnx/python && uv run --extra dev pytest tests/
 
 # Run API integration tests (starts server, runs Python tests, cleans up)
 test-api-integration:

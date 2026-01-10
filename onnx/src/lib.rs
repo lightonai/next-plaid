@@ -50,6 +50,9 @@ use tokenizers::Tokenizer;
 /// Default batch size for chunked encoding (optimal for most hardware).
 const DEFAULT_BATCH_SIZE: usize = 16;
 
+/// Type alias for batch encoding data: (input_ids, attention_mask, token_type_ids, token_ids)
+type BatchEncoding = (Vec<i64>, Vec<i64>, Vec<i64>, Vec<u32>);
+
 /// ColBERT model for encoding documents and queries into multi-vector embeddings.
 ///
 /// This struct provides a simple interface for ColBERT inference using ONNX Runtime.
@@ -402,23 +405,17 @@ impl Colbert {
         };
 
         // Prepare texts with prefixes for batch tokenization
-        let texts_with_prefix: Vec<String> = texts
-            .iter()
-            .map(|t| format!("{}{}", prefix, t))
-            .collect();
+        let texts_with_prefix: Vec<String> =
+            texts.iter().map(|t| format!("{}{}", prefix, t)).collect();
 
         // Use parallel batch tokenization
         let batch_encodings = self
             .tokenizer
-            .encode_batch(
-                texts_with_prefix.iter().map(|s| s.as_str()).collect(),
-                true,
-            )
+            .encode_batch(texts_with_prefix.iter().map(|s| s.as_str()).collect(), true)
             .map_err(|e| anyhow::anyhow!("Batch tokenization error: {}", e))?;
 
         // Process encodings and find max length
-        let mut encodings: Vec<(Vec<i64>, Vec<i64>, Vec<i64>, Vec<u32>)> =
-            Vec::with_capacity(texts.len());
+        let mut encodings: Vec<BatchEncoding> = Vec::with_capacity(texts.len());
         let mut batch_max_len = 0usize;
 
         for encoding in batch_encodings {
@@ -580,7 +577,7 @@ fn find_onnx_file<P: AsRef<Path>>(model_dir: P) -> Result<std::path::PathBuf> {
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map_or(false, |ext| ext == "onnx") {
+        if path.extension().is_some_and(|ext| ext == "onnx") {
             return Ok(path);
         }
     }
@@ -948,21 +945,14 @@ fn encode_batch_with_session(
     };
 
     // Tokenize
-    let texts_with_prefix: Vec<String> = texts
-        .iter()
-        .map(|t| format!("{}{}", prefix, t))
-        .collect();
+    let texts_with_prefix: Vec<String> = texts.iter().map(|t| format!("{}{}", prefix, t)).collect();
 
     let batch_encodings = tokenizer
-        .encode_batch(
-            texts_with_prefix.iter().map(|s| s.as_str()).collect(),
-            true,
-        )
+        .encode_batch(texts_with_prefix.iter().map(|s| s.as_str()).collect(), true)
         .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
 
     // Process encodings
-    let mut encodings: Vec<(Vec<i64>, Vec<i64>, Vec<i64>, Vec<u32>)> =
-        Vec::with_capacity(texts.len());
+    let mut encodings: Vec<BatchEncoding> = Vec::with_capacity(texts.len());
     let mut batch_max_len = 0usize;
 
     for encoding in batch_encodings {

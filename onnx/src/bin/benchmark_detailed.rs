@@ -68,8 +68,11 @@ impl OnnxColBERT {
             .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
 
         let mut input_ids: Vec<i64> = encoding.get_ids().iter().map(|&x| x as i64).collect();
-        let mut attention_mask: Vec<i64> =
-            encoding.get_attention_mask().iter().map(|&x| x as i64).collect();
+        let mut attention_mask: Vec<i64> = encoding
+            .get_attention_mask()
+            .iter()
+            .map(|&x| x as i64)
+            .collect();
         let mut token_type_ids: Vec<i64> =
             encoding.get_type_ids().iter().map(|&x| x as i64).collect();
 
@@ -104,7 +107,8 @@ impl OnnxColBERT {
         let seq_len = input_ids.len();
 
         let input_ids_tensor = Tensor::from_array(([1usize, seq_len], input_ids))?;
-        let attention_mask_tensor = Tensor::from_array(([1usize, seq_len], attention_mask.clone()))?;
+        let attention_mask_tensor =
+            Tensor::from_array(([1usize, seq_len], attention_mask.clone()))?;
         let token_type_ids_tensor = Tensor::from_array(([1usize, seq_len], token_type_ids))?;
 
         let outputs = self.session.run(ort::inputs![
@@ -136,7 +140,10 @@ impl OnnxColBERT {
 
             let num_tokens = filtered_rows.len();
             let filtered_flat: Vec<f32> = filtered_rows.into_iter().flatten().collect();
-            Ok(Array2::from_shape_vec((num_tokens, embedding_dim), filtered_flat)?)
+            Ok(Array2::from_shape_vec(
+                (num_tokens, embedding_dim),
+                filtered_flat,
+            )?)
         } else {
             let flat: Vec<f32> = data[..seq_len_out * embedding_dim].to_vec();
             Ok(Array2::from_shape_vec((seq_len_out, embedding_dim), flat)?)
@@ -180,7 +187,10 @@ fn main() -> Result<()> {
     let num_iterations = 100;
 
     // ============ DOCUMENT BENCHMARK ============
-    println!("\n--- Document Encoding (8 docs x {} iterations) ---", num_iterations);
+    println!(
+        "\n--- Document Encoding (8 docs x {} iterations) ---",
+        num_iterations
+    );
 
     // Tokenization only
     let start = Instant::now();
@@ -220,7 +230,10 @@ fn main() -> Result<()> {
     );
 
     // ============ QUERY BENCHMARK ============
-    println!("\n--- Query Encoding (4 queries x {} iterations) ---", num_iterations);
+    println!(
+        "\n--- Query Encoding (4 queries x {} iterations) ---",
+        num_iterations
+    );
 
     // Tokenization only
     let start = Instant::now();

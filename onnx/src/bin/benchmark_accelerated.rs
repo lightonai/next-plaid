@@ -20,7 +20,7 @@ use ort::value::Tensor;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokenizers::Tokenizer;
@@ -87,15 +87,33 @@ struct ColbertConfig {
     skiplist_words: Vec<String>,
 }
 
-fn default_query_prefix() -> String { "[Q] ".to_string() }
-fn default_document_prefix() -> String { "[D] ".to_string() }
-fn default_query_length() -> usize { 32 }
-fn default_document_length() -> usize { 180 }
-fn default_do_query_expansion() -> bool { true }
-fn default_embedding_dim() -> usize { 128 }
-fn default_uses_token_type_ids() -> bool { true }
-fn default_mask_token_id() -> u32 { 103 }
-fn default_pad_token_id() -> u32 { 0 }
+fn default_query_prefix() -> String {
+    "[Q] ".to_string()
+}
+fn default_document_prefix() -> String {
+    "[D] ".to_string()
+}
+fn default_query_length() -> usize {
+    32
+}
+fn default_document_length() -> usize {
+    180
+}
+fn default_do_query_expansion() -> bool {
+    true
+}
+fn default_embedding_dim() -> usize {
+    128
+}
+fn default_uses_token_type_ids() -> bool {
+    true
+}
+fn default_mask_token_id() -> u32 {
+    103
+}
+fn default_pad_token_id() -> u32 {
+    0
+}
 
 impl Default for ColbertConfig {
     fn default() -> Self {
@@ -124,7 +142,7 @@ struct AcceleratedEncoder {
 
 impl AcceleratedEncoder {
     /// Create encoder with CPU execution
-    fn new_cpu(model_dir: &PathBuf, num_threads: usize, quantized: bool) -> Result<Self> {
+    fn new_cpu(model_dir: &Path, num_threads: usize, quantized: bool) -> Result<Self> {
         let onnx_path = if quantized {
             let q_path = model_dir.join("model_int8.onnx");
             if q_path.exists() {
@@ -166,7 +184,7 @@ impl AcceleratedEncoder {
     }
 
     /// Create encoder with CoreML execution provider (macOS only)
-    fn new_coreml(model_dir: &PathBuf) -> Result<Self> {
+    fn new_coreml(model_dir: &Path) -> Result<Self> {
         let onnx_path = model_dir.join("model.onnx");
         let tokenizer_path = model_dir.join("tokenizer.json");
         let config_path = model_dir.join("config_sentence_transformers.json");
@@ -215,14 +233,12 @@ impl AcceleratedEncoder {
 
         let batch_encodings = self
             .tokenizer
-            .encode_batch(
-                texts_with_prefix.iter().map(|s| s.as_str()).collect(),
-                true,
-            )
+            .encode_batch(texts_with_prefix.iter().map(|s| s.as_str()).collect(), true)
             .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
 
         // Process encodings
-        let mut encodings: Vec<(Vec<i64>, Vec<i64>, Vec<u32>)> = Vec::with_capacity(documents.len());
+        let mut encodings: Vec<(Vec<i64>, Vec<i64>, Vec<u32>)> =
+            Vec::with_capacity(documents.len());
         let mut batch_max_len = 0usize;
 
         for encoding in batch_encodings {
@@ -352,7 +368,12 @@ struct ParallelEncoder {
 }
 
 impl ParallelEncoder {
-    fn new(model_dir: &PathBuf, num_sessions: usize, threads_per_session: usize, quantized: bool) -> Result<Self> {
+    fn new(
+        model_dir: &Path,
+        num_sessions: usize,
+        threads_per_session: usize,
+        quantized: bool,
+    ) -> Result<Self> {
         let onnx_path = if quantized {
             let q_path = model_dir.join("model_int8.onnx");
             if q_path.exists() {
@@ -378,7 +399,10 @@ impl ParallelEncoder {
 
         let skiplist_ids = build_skiplist(&config, &tokenizer);
 
-        println!("Creating {} ONNX sessions with {} threads each...", num_sessions, threads_per_session);
+        println!(
+            "Creating {} ONNX sessions with {} threads each...",
+            num_sessions, threads_per_session
+        );
         let mut sessions = Vec::with_capacity(num_sessions);
         for i in 0..num_sessions {
             let session = Session::builder()?
@@ -465,10 +489,7 @@ fn encode_with_session(
         .collect();
 
     let batch_encodings = tokenizer
-        .encode_batch(
-            texts_with_prefix.iter().map(|s| s.as_str()).collect(),
-            true,
-        )
+        .encode_batch(texts_with_prefix.iter().map(|s| s.as_str()).collect(), true)
         .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
 
     let mut encodings: Vec<(Vec<i64>, Vec<i64>, Vec<u32>)> = Vec::with_capacity(documents.len());
@@ -621,7 +642,10 @@ fn main() -> Result<()> {
     let content = fs::read_to_string(&docs_path)?;
     let bench_docs: BenchmarkDocuments = serde_json::from_str(&content)?;
     let num_docs = bench_docs.documents.len();
-    println!("Loaded {} documents (target: {} tokens each)", num_docs, bench_docs.target_tokens);
+    println!(
+        "Loaded {} documents (target: {} tokens each)",
+        num_docs, bench_docs.target_tokens
+    );
 
     let docs_refs: Vec<&str> = bench_docs.documents.iter().map(|s| s.as_str()).collect();
     let mut results: Vec<MethodResult> = Vec::new();
@@ -635,8 +659,11 @@ fn main() -> Result<()> {
         match AcceleratedEncoder::new_coreml(&args.model_dir) {
             Ok(mut encoder) => {
                 println!("CoreML encoder created successfully");
-                println!("Config: document_length={}, embedding_dim={}",
-                         encoder.config().document_length, encoder.config().embedding_dim);
+                println!(
+                    "Config: document_length={}, embedding_dim={}",
+                    encoder.config().document_length,
+                    encoder.config().embedding_dim
+                );
 
                 // Warmup
                 println!("Warming up...");
@@ -677,24 +704,32 @@ fn main() -> Result<()> {
 
         // Test different configurations
         let configs = [
-            (16, 1, 4),   // 16 sessions, 1 thread each, batch 4
-            (16, 1, 2),   // 16 sessions, 1 thread each, batch 2
-            (20, 1, 2),   // 20 sessions, 1 thread each, batch 2
-            (20, 1, 4),   // 20 sessions, 1 thread each, batch 4
-            (25, 1, 2),   // 25 sessions, 1 thread each, batch 2
-            (25, 1, 4),   // 25 sessions, 1 thread each, batch 4
-            (32, 1, 2),   // 32 sessions, 1 thread each, batch 2
+            (16, 1, 4), // 16 sessions, 1 thread each, batch 4
+            (16, 1, 2), // 16 sessions, 1 thread each, batch 2
+            (20, 1, 2), // 20 sessions, 1 thread each, batch 2
+            (20, 1, 4), // 20 sessions, 1 thread each, batch 4
+            (25, 1, 2), // 25 sessions, 1 thread each, batch 2
+            (25, 1, 4), // 25 sessions, 1 thread each, batch 4
+            (32, 1, 2), // 32 sessions, 1 thread each, batch 2
         ];
 
         for (num_sessions, threads_per_session, batch_size) in configs {
-            println!("\n  Config: {} sessions x {} threads, batch_size={}",
-                     num_sessions, threads_per_session, batch_size);
+            println!(
+                "\n  Config: {} sessions x {} threads, batch_size={}",
+                num_sessions, threads_per_session, batch_size
+            );
 
-            match ParallelEncoder::new(&args.model_dir, num_sessions, threads_per_session, args.quantized) {
+            match ParallelEncoder::new(
+                &args.model_dir,
+                num_sessions,
+                threads_per_session,
+                args.quantized,
+            ) {
                 Ok(encoder) => {
                     // Warmup
                     for _ in 0..args.warmup {
-                        let _ = encoder.encode_parallel(&docs_refs[..5.min(num_docs)], batch_size)?;
+                        let _ =
+                            encoder.encode_parallel(&docs_refs[..5.min(num_docs)], batch_size)?;
                     }
 
                     // Benchmark
@@ -716,8 +751,10 @@ fn main() -> Result<()> {
                         total_time_s: elapsed,
                         docs_per_sec,
                         ms_per_doc: 1000.0 * elapsed / num_docs as f64,
-                        config: format!("sessions={}, threads={}, batch={}",
-                                       num_sessions, threads_per_session, batch_size),
+                        config: format!(
+                            "sessions={}, threads={}, batch={}",
+                            num_sessions, threads_per_session, batch_size
+                        ),
                     });
                 }
                 Err(e) => {
@@ -765,14 +802,21 @@ fn main() -> Result<()> {
     println!("\n{}", "=".repeat(70));
     println!("BENCHMARK SUMMARY");
     println!("{}", "=".repeat(70));
-    println!("{:<25} {:>12} {:>12} {:>12}", "Method", "Time (s)", "Docs/sec", "ms/doc");
+    println!(
+        "{:<25} {:>12} {:>12} {:>12}",
+        "Method", "Time (s)", "Docs/sec", "ms/doc"
+    );
     println!("{}", "-".repeat(70));
 
     let mut best_method = String::new();
     let mut best_docs_per_sec = 0.0;
 
     for result in &results {
-        let marker = if result.docs_per_sec >= target_docs_per_sec { " ***" } else { "" };
+        let marker = if result.docs_per_sec >= target_docs_per_sec {
+            " ***"
+        } else {
+            ""
+        };
         println!(
             "{:<25} {:>12.3} {:>12.1} {:>12.3}{}",
             result.method, result.total_time_s, result.docs_per_sec, result.ms_per_doc, marker
@@ -784,14 +828,23 @@ fn main() -> Result<()> {
     }
 
     println!("{}", "-".repeat(70));
-    println!("\nBest method: {} ({:.1} docs/sec)", best_method, best_docs_per_sec);
+    println!(
+        "\nBest method: {} ({:.1} docs/sec)",
+        best_method, best_docs_per_sec
+    );
 
     let target_achieved = best_docs_per_sec >= target_docs_per_sec;
     if target_achieved {
         println!("TARGET OF {:.0} DOCS/SEC ACHIEVED!", target_docs_per_sec);
     } else {
-        println!("Target of {:.0} docs/sec NOT achieved (best: {:.1})", target_docs_per_sec, best_docs_per_sec);
-        println!("Gap: {:.1}x improvement needed", target_docs_per_sec / best_docs_per_sec);
+        println!(
+            "Target of {:.0} docs/sec NOT achieved (best: {:.1})",
+            target_docs_per_sec, best_docs_per_sec
+        );
+        println!(
+            "Gap: {:.1}x improvement needed",
+            target_docs_per_sec / best_docs_per_sec
+        );
     }
 
     // Save results
