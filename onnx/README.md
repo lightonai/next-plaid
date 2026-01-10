@@ -72,14 +72,38 @@ fn main() -> anyhow::Result<()> {
 
 ## Model Setup
 
+### Install the Export Tool
+
+Install the `colbert-export` CLI tool directly from GitHub:
+
+```bash
+pip install "colbert-export @ git+https://github.com/lightonai/lategrep.git#subdirectory=onnx/python"
+```
+
 ### Export from HuggingFace
+
+```bash
+# Export a ColBERT model to ONNX format
+colbert-export lightonai/GTE-ModernColBERT-v1
+
+# Export with INT8 quantization for 2x speedup
+colbert-export lightonai/GTE-ModernColBERT-v1 --quantize
+
+# Export to a custom directory
+colbert-export lightonai/answerai-colbert-small-v1 -o ./my-models
+
+# Quantize an existing model
+colbert-quantize ./models/GTE-ModernColBERT-v1
+```
+
+#### Alternative: Using uv (development)
 
 ```bash
 # Setup Python environment
 cd onnx/python && uv sync
 
 # Export model to ONNX
-uv run python export_onnx.py --model lightonai/GTE-ModernColBERT-v1
+uv run python export_onnx.py --models lightonai/GTE-ModernColBERT-v1
 
 # (Optional) Quantize to INT8 for 2x speedup
 uv run python quantize_model.py --model-dir ../models/GTE-ModernColBERT-v1
