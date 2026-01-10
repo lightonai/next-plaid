@@ -31,6 +31,18 @@ cargo test --package lategrep-api
 echo "Building documentation..."
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
+# ONNX crate checks
+echo "Checking ONNX crate formatting..."
+cd onnx && cargo fmt --all -- --check
+
+echo "Running ONNX crate clippy..."
+cargo clippy --all-targets -- -D warnings
+
+echo "Running ONNX crate tests..."
+cargo test
+
+cd "$REPO_ROOT"
+
 # Lint Python code
 echo "Linting Python code..."
 cd docs && uv run --extra dev ruff check . && uv run --extra dev ruff format --check .
