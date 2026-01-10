@@ -15,6 +15,25 @@
 //! // Encode queries
 //! let query_embeddings = model.encode_queries(&["What is the capital of France?"])?;
 //! ```
+//!
+//! ## High-Performance Parallel Encoding
+//!
+//! For maximum throughput (20+ docs/sec on large models like GTE-ModernColBERT),
+//! use [`ParallelColbert`] with INT8 quantization:
+//!
+//! ```rust,ignore
+//! use colbert_onnx::ParallelColbert;
+//!
+//! // Load with INT8 quantization and 25 parallel sessions
+//! let model = ParallelColbert::builder("models/GTE-ModernColBERT-v1")
+//!     .with_quantized(true)      // Use model_int8.onnx
+//!     .with_num_sessions(25)     // 25 parallel ONNX sessions
+//!     .with_batch_size(2)        // Process 2 docs per session
+//!     .build()?;
+//!
+//! // Encode documents in parallel
+//! let embeddings = model.encode_documents(&documents)?;
+//! ```
 
 use anyhow::{Context, Result};
 use ndarray::Array2;
@@ -25,6 +44,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tokenizers::Tokenizer;
 
 /// Default batch size for chunked encoding (optimal for most hardware).
@@ -605,6 +625,477 @@ pub type OnnxColBERT = Colbert;
 /// Alias for backwards compatibility.
 pub type ColBertConfig = ColbertConfig;
 
+// =============================================================================
+// ParallelColbert - High-performance parallel encoder
+// =============================================================================
+
+/// High-performance parallel ColBERT encoder using multiple ONNX sessions.
+///
+/// This encoder achieves 20+ docs/sec on large models like GTE-ModernColBERT
+/// by combining INT8 quantization with parallel session execution.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use colbert_onnx::ParallelColbert;
+///
+/// // Create with optimal settings for GTE-ModernColBERT
+/// let model = ParallelColbert::builder("models/GTE-ModernColBERT-v1")
+///     .with_quantized(true)
+///     .with_num_sessions(25)
+///     .with_batch_size(2)
+///     .build()?;
+///
+/// let embeddings = model.encode_documents(&["doc1", "doc2", "doc3"])?;
+/// ```
+pub struct ParallelColbert {
+    sessions: Vec<Mutex<Session>>,
+    tokenizer: Arc<Tokenizer>,
+    config: ColbertConfig,
+    skiplist_ids: HashSet<u32>,
+    batch_size: usize,
+}
+
+/// Builder for configuring [`ParallelColbert`].
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let model = ParallelColbert::builder("models/GTE-ModernColBERT-v1")
+///     .with_quantized(true)      // Use INT8 quantized model
+///     .with_num_sessions(25)     // Number of parallel sessions
+///     .with_threads_per_session(1)  // Threads per session
+///     .with_batch_size(2)        // Documents per batch per session
+///     .build()?;
+/// ```
+pub struct ParallelColbertBuilder {
+    model_dir: std::path::PathBuf,
+    quantized: bool,
+    num_sessions: usize,
+    threads_per_session: usize,
+    batch_size: usize,
+}
+
+impl ParallelColbertBuilder {
+    /// Create a new builder with default settings.
+    ///
+    /// Default configuration:
+    /// - quantized: false
+    /// - num_sessions: 25 (optimal for large models)
+    /// - threads_per_session: 1
+    /// - batch_size: 2
+    pub fn new<P: AsRef<Path>>(model_dir: P) -> Self {
+        Self {
+            model_dir: model_dir.as_ref().to_path_buf(),
+            quantized: false,
+            num_sessions: 25,
+            threads_per_session: 1,
+            batch_size: 2,
+        }
+    }
+
+    /// Use INT8 quantized model (`model_int8.onnx`) for faster inference.
+    ///
+    /// Quantization provides ~2x speedup with minimal quality loss
+    /// (>99% cosine similarity with original).
+    pub fn with_quantized(mut self, quantized: bool) -> Self {
+        self.quantized = quantized;
+        self
+    }
+
+    /// Set the number of parallel ONNX sessions.
+    ///
+    /// More sessions = more parallelism, but also more memory usage.
+    /// Recommended: 25 for large models, 8 for small models.
+    pub fn with_num_sessions(mut self, num_sessions: usize) -> Self {
+        self.num_sessions = num_sessions;
+        self
+    }
+
+    /// Set the number of threads per ONNX session.
+    ///
+    /// With many parallel sessions, 1 thread per session is usually optimal.
+    pub fn with_threads_per_session(mut self, threads: usize) -> Self {
+        self.threads_per_session = threads;
+        self
+    }
+
+    /// Set the batch size (documents processed per session per round).
+    ///
+    /// Smaller batches (1-4) often work better with many parallel sessions.
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+
+    /// Build the [`ParallelColbert`] encoder.
+    pub fn build(self) -> Result<ParallelColbert> {
+        ParallelColbert::new(
+            &self.model_dir,
+            self.num_sessions,
+            self.threads_per_session,
+            self.quantized,
+            self.batch_size,
+        )
+    }
+}
+
+impl ParallelColbert {
+    /// Create a builder for configuring the parallel encoder.
+    pub fn builder<P: AsRef<Path>>(model_dir: P) -> ParallelColbertBuilder {
+        ParallelColbertBuilder::new(model_dir)
+    }
+
+    /// Create a new parallel encoder with explicit configuration.
+    ///
+    /// For a simpler API, use [`ParallelColbert::builder`] instead.
+    pub fn new<P: AsRef<Path>>(
+        model_dir: P,
+        num_sessions: usize,
+        threads_per_session: usize,
+        quantized: bool,
+        batch_size: usize,
+    ) -> Result<Self> {
+        let model_dir = model_dir.as_ref();
+
+        // Select model file
+        let onnx_path = if quantized {
+            let q_path = model_dir.join("model_int8.onnx");
+            if q_path.exists() {
+                q_path
+            } else {
+                anyhow::bail!(
+                    "Quantized model not found at {:?}. Run quantize_model.py first.",
+                    q_path
+                );
+            }
+        } else {
+            find_onnx_file(model_dir)?
+        };
+
+        let tokenizer_path = model_dir.join("tokenizer.json");
+
+        // Load tokenizer and config
+        let tokenizer = Tokenizer::from_file(&tokenizer_path)
+            .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
+
+        let mut config = ColbertConfig::from_model_dir(model_dir)
+            .unwrap_or_else(|_| ColbertConfig::from_tokenizer(&tokenizer));
+
+        update_token_ids(&mut config, &tokenizer);
+        let skiplist_ids = build_skiplist(&config, &tokenizer);
+
+        // Create multiple sessions
+        let mut sessions = Vec::with_capacity(num_sessions);
+        for _ in 0..num_sessions {
+            let session = Session::builder()?
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(threads_per_session)?
+                .with_inter_threads(1)?
+                .commit_from_file(&onnx_path)
+                .context("Failed to load ONNX model")?;
+            sessions.push(Mutex::new(session));
+        }
+
+        Ok(Self {
+            sessions,
+            tokenizer: Arc::new(tokenizer),
+            config,
+            skiplist_ids,
+            batch_size,
+        })
+    }
+
+    /// Encode documents into ColBERT embeddings using parallel sessions.
+    ///
+    /// Documents are distributed across sessions for parallel processing.
+    pub fn encode_documents(&self, documents: &[&str]) -> Result<Vec<Array2<f32>>> {
+        if documents.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let num_sessions = self.sessions.len();
+
+        // Split documents into chunks
+        let chunks: Vec<Vec<&str>> = documents
+            .chunks(self.batch_size.max(1))
+            .map(|c| c.to_vec())
+            .collect();
+
+        // Process chunks in parallel using scoped threads
+        let results: Vec<Result<Vec<Array2<f32>>>> = std::thread::scope(|s| {
+            let handles: Vec<_> = chunks
+                .iter()
+                .enumerate()
+                .map(|(i, chunk)| {
+                    let session_idx = i % num_sessions;
+                    let session_mutex = &self.sessions[session_idx];
+                    let tokenizer = &self.tokenizer;
+                    let config = &self.config;
+                    let skiplist_ids = &self.skiplist_ids;
+
+                    s.spawn(move || {
+                        let mut session = session_mutex.lock().unwrap();
+                        encode_batch_with_session(
+                            &mut session,
+                            tokenizer,
+                            config,
+                            skiplist_ids,
+                            chunk,
+                            false, // is_query
+                            true,  // filter_skiplist
+                        )
+                    })
+                })
+                .collect();
+
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        // Collect results in order
+        let mut all_embeddings = Vec::with_capacity(documents.len());
+        for result in results {
+            all_embeddings.extend(result?);
+        }
+
+        Ok(all_embeddings)
+    }
+
+    /// Encode queries into ColBERT embeddings using parallel sessions.
+    pub fn encode_queries(&self, queries: &[&str]) -> Result<Vec<Array2<f32>>> {
+        if queries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let num_sessions = self.sessions.len();
+
+        let chunks: Vec<Vec<&str>> = queries
+            .chunks(self.batch_size.max(1))
+            .map(|c| c.to_vec())
+            .collect();
+
+        let results: Vec<Result<Vec<Array2<f32>>>> = std::thread::scope(|s| {
+            let handles: Vec<_> = chunks
+                .iter()
+                .enumerate()
+                .map(|(i, chunk)| {
+                    let session_idx = i % num_sessions;
+                    let session_mutex = &self.sessions[session_idx];
+                    let tokenizer = &self.tokenizer;
+                    let config = &self.config;
+                    let skiplist_ids = &self.skiplist_ids;
+
+                    s.spawn(move || {
+                        let mut session = session_mutex.lock().unwrap();
+                        encode_batch_with_session(
+                            &mut session,
+                            tokenizer,
+                            config,
+                            skiplist_ids,
+                            chunk,
+                            true,  // is_query
+                            false, // filter_skiplist
+                        )
+                    })
+                })
+                .collect();
+
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        let mut all_embeddings = Vec::with_capacity(queries.len());
+        for result in results {
+            all_embeddings.extend(result?);
+        }
+
+        Ok(all_embeddings)
+    }
+
+    /// Get the model configuration.
+    pub fn config(&self) -> &ColbertConfig {
+        &self.config
+    }
+
+    /// Get the embedding dimension.
+    pub fn embedding_dim(&self) -> usize {
+        self.config.embedding_dim
+    }
+
+    /// Get the number of parallel sessions.
+    pub fn num_sessions(&self) -> usize {
+        self.sessions.len()
+    }
+}
+
+/// Internal function to encode a batch using a specific session.
+fn encode_batch_with_session(
+    session: &mut Session,
+    tokenizer: &Tokenizer,
+    config: &ColbertConfig,
+    skiplist_ids: &HashSet<u32>,
+    texts: &[&str],
+    is_query: bool,
+    filter_skiplist: bool,
+) -> Result<Vec<Array2<f32>>> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let (prefix, max_length) = if is_query {
+        (&config.query_prefix, config.query_length)
+    } else {
+        (&config.document_prefix, config.document_length)
+    };
+
+    // Tokenize
+    let texts_with_prefix: Vec<String> = texts
+        .iter()
+        .map(|t| format!("{}{}", prefix, t))
+        .collect();
+
+    let batch_encodings = tokenizer
+        .encode_batch(
+            texts_with_prefix.iter().map(|s| s.as_str()).collect(),
+            true,
+        )
+        .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
+
+    // Process encodings
+    let mut encodings: Vec<(Vec<i64>, Vec<i64>, Vec<i64>, Vec<u32>)> =
+        Vec::with_capacity(texts.len());
+    let mut batch_max_len = 0usize;
+
+    for encoding in batch_encodings {
+        let token_ids: Vec<u32> = encoding.get_ids().to_vec();
+        let mut input_ids: Vec<i64> = token_ids.iter().map(|&x| x as i64).collect();
+        let mut attention_mask: Vec<i64> = encoding
+            .get_attention_mask()
+            .iter()
+            .map(|&x| x as i64)
+            .collect();
+        let mut token_type_ids: Vec<i64> =
+            encoding.get_type_ids().iter().map(|&x| x as i64).collect();
+        let mut token_ids_vec = token_ids;
+
+        if input_ids.len() > max_length {
+            input_ids.truncate(max_length);
+            attention_mask.truncate(max_length);
+            token_type_ids.truncate(max_length);
+            token_ids_vec.truncate(max_length);
+        }
+
+        batch_max_len = batch_max_len.max(input_ids.len());
+        encodings.push((input_ids, attention_mask, token_type_ids, token_ids_vec));
+    }
+
+    if is_query && config.do_query_expansion {
+        batch_max_len = max_length;
+    }
+
+    // Pad and flatten
+    let batch_size = texts.len();
+    let mut all_input_ids: Vec<i64> = Vec::with_capacity(batch_size * batch_max_len);
+    let mut all_attention_mask: Vec<i64> = Vec::with_capacity(batch_size * batch_max_len);
+    let mut all_token_type_ids: Vec<i64> = Vec::with_capacity(batch_size * batch_max_len);
+    let mut all_token_ids: Vec<Vec<u32>> = Vec::with_capacity(batch_size);
+    let mut original_lengths: Vec<usize> = Vec::with_capacity(batch_size);
+
+    for (mut input_ids, mut attention_mask, mut token_type_ids, mut token_ids) in encodings {
+        original_lengths.push(input_ids.len());
+
+        while input_ids.len() < batch_max_len {
+            if is_query && config.do_query_expansion {
+                input_ids.push(config.mask_token_id as i64);
+                attention_mask.push(1);
+                token_ids.push(config.mask_token_id);
+            } else {
+                input_ids.push(config.pad_token_id as i64);
+                attention_mask.push(0);
+                token_ids.push(config.pad_token_id);
+            }
+            token_type_ids.push(0);
+        }
+
+        all_input_ids.extend(input_ids);
+        all_attention_mask.extend(attention_mask);
+        all_token_type_ids.extend(token_type_ids);
+        all_token_ids.push(token_ids);
+    }
+
+    // Create tensors and run inference
+    let input_ids_tensor = Tensor::from_array(([batch_size, batch_max_len], all_input_ids))?;
+    let attention_mask_tensor =
+        Tensor::from_array(([batch_size, batch_max_len], all_attention_mask.clone()))?;
+
+    let outputs = if config.uses_token_type_ids {
+        let token_type_ids_tensor =
+            Tensor::from_array(([batch_size, batch_max_len], all_token_type_ids))?;
+        session.run(ort::inputs![
+            "input_ids" => input_ids_tensor,
+            "attention_mask" => attention_mask_tensor,
+            "token_type_ids" => token_type_ids_tensor,
+        ])?
+    } else {
+        session.run(ort::inputs![
+            "input_ids" => input_ids_tensor,
+            "attention_mask" => attention_mask_tensor,
+        ])?
+    };
+
+    // Extract embeddings
+    let (output_shape, output_data) = outputs["output"]
+        .try_extract_tensor::<f32>()
+        .context("Failed to extract output tensor")?;
+
+    let shape_slice: Vec<i64> = output_shape.iter().copied().collect();
+    let embedding_dim = shape_slice[2] as usize;
+
+    let mut all_embeddings = Vec::with_capacity(batch_size);
+    for i in 0..batch_size {
+        let batch_offset = i * batch_max_len * embedding_dim;
+        let attention_offset = i * batch_max_len;
+
+        if is_query && config.do_query_expansion {
+            let end = batch_offset + batch_max_len * embedding_dim;
+            let flat: Vec<f32> = output_data[batch_offset..end].to_vec();
+            let arr = Array2::from_shape_vec((batch_max_len, embedding_dim), flat)?;
+            all_embeddings.push(arr);
+        } else {
+            let orig_len = original_lengths[i];
+            let token_ids = &all_token_ids[i];
+
+            let valid_count = (0..orig_len)
+                .filter(|&j| {
+                    let mask = all_attention_mask[attention_offset + j];
+                    let token_id = token_ids[j];
+                    mask != 0 && !(filter_skiplist && skiplist_ids.contains(&token_id))
+                })
+                .count();
+
+            let mut flat: Vec<f32> = Vec::with_capacity(valid_count * embedding_dim);
+            for j in 0..orig_len {
+                let mask = all_attention_mask[attention_offset + j];
+                let token_id = token_ids[j];
+
+                if mask == 0 {
+                    continue;
+                }
+                if filter_skiplist && skiplist_ids.contains(&token_id) {
+                    continue;
+                }
+
+                let start = batch_offset + j * embedding_dim;
+                flat.extend_from_slice(&output_data[start..start + embedding_dim]);
+            }
+
+            let arr = Array2::from_shape_vec((valid_count, embedding_dim), flat)?;
+            all_embeddings.push(arr);
+        }
+    }
+
+    Ok(all_embeddings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,5 +1114,14 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let parsed: ColbertConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.query_length, config.query_length);
+    }
+
+    #[test]
+    fn test_parallel_builder_defaults() {
+        let builder = ParallelColbertBuilder::new("test_model");
+        assert_eq!(builder.num_sessions, 25);
+        assert_eq!(builder.threads_per_session, 1);
+        assert_eq!(builder.batch_size, 2);
+        assert!(!builder.quantized);
     }
 }

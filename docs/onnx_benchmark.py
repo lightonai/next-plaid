@@ -242,6 +242,8 @@ def encode_with_onnx(
     output_dir: Path,
     is_query: bool,
     model_dir: Path,
+    quantized: bool = False,
+    parallel: bool = False,
 ) -> None:
     """Encode texts using ONNX Runtime (Rust).
 
@@ -251,6 +253,8 @@ def encode_with_onnx(
         output_dir: Directory to save embeddings
         is_query: True for queries, False for documents
         model_dir: Path to model directory containing model.onnx, tokenizer.json, etc.
+        quantized: Use INT8 quantized model for faster inference
+        parallel: Use parallel encoding with multiple ONNX sessions
     """
     # Write texts to JSON
     input_file = output_dir / "input_texts.json"
@@ -271,6 +275,12 @@ def encode_with_onnx(
 
     if is_query:
         cmd.append("--is-query")
+
+    if quantized:
+        cmd.append("--quantized")
+
+    if parallel:
+        cmd.append("--parallel")
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -478,6 +488,16 @@ def main():
         choices=list(SUPPORTED_MODELS.keys()),
         help=f"Model to use for encoding (default: {DEFAULT_MODEL})",
     )
+    parser.add_argument(
+        "--quantized",
+        action="store_true",
+        help="Use INT8 quantized model (model_int8.onnx) for faster inference",
+    )
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Use parallel encoding with multiple ONNX sessions",
+    )
     args = parser.parse_args()
 
     # Get model configuration
@@ -507,6 +527,8 @@ def main():
     print("\nConfiguration:")
     print(f"  Model:             {args.model}")
     print(f"  HuggingFace name:  {model_name}")
+    print(f"  Quantized (INT8):  {args.quantized}")
+    print(f"  Parallel:          {args.parallel}")
     print(f"  Top-k:             {config.top_k}")
     print(f"  n_ivf_probe:       {config.n_ivf_probe}")
     print(f"  n_full_scores:     {config.n_full_scores}")
@@ -573,7 +595,12 @@ def main():
         query_embeddings_dir.mkdir(parents=True, exist_ok=True)
 
         # Encode documents
-        print(f"  Encoding {len(documents)} documents...")
+        mode_str = ""
+        if args.quantized:
+            mode_str += " [INT8]"
+        if args.parallel:
+            mode_str += " [parallel]"
+        print(f"  Encoding {len(documents)} documents{mode_str}...")
         doc_texts = [doc["text"] for doc in documents]
         start = time.perf_counter()
         encode_with_onnx(
@@ -582,12 +609,14 @@ def main():
             doc_embeddings_dir,
             is_query=False,
             model_dir=model_subdir,
+            quantized=args.quantized,
+            parallel=args.parallel,
         )
         doc_encode_time = time.perf_counter() - start
         print(f"    Time: {doc_encode_time:.2f}s ({len(documents) / doc_encode_time:.1f} docs/s)")
 
         # Encode queries
-        print(f"  Encoding {len(queries)} queries...")
+        print(f"  Encoding {len(queries)} queries{mode_str}...")
         query_texts = list(queries.values())
         start = time.perf_counter()
         encode_with_onnx(
@@ -596,6 +625,8 @@ def main():
             query_embeddings_dir,
             is_query=True,
             model_dir=model_subdir,
+            quantized=args.quantized,
+            parallel=args.parallel,
         )
         query_encode_time = time.perf_counter() - start
         print(

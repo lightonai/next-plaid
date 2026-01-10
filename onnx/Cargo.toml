@@ -43,6 +43,14 @@ path = "src/bin/benchmark_coreml.rs"
 name = "benchmark_threads"
 path = "src/bin/benchmark_threads.rs"
 
+[[bin]]
+name = "benchmark_accelerated"
+path = "src/bin/benchmark_accelerated.rs"
+
+[[bin]]
+name = "test_parallel"
+path = "src/bin/test_parallel.rs"
+
 [dependencies]
 ort = { version = "2.0.0-rc.11", features = ["ndarray", "coreml"] }
 tokenizers = { version = "0.21.1", default-features = false, features = ["onig"] }

@@ -5,14 +5,18 @@
 //!
 //! Usage:
 //!     encode_cli encode --input <path> --output-dir <path> --model-dir <path> --is-query
+//!
+//! High-performance mode (20+ docs/sec with GTE-ModernColBERT):
+//!     encode_cli encode --input <path> --output-dir <path> --model-dir <path> --quantized --parallel
 
 use anyhow::{Context, Result};
-use colbert_onnx::Colbert;
+use colbert_onnx::{Colbert, ParallelColbert};
 use ndarray_npy::WriteNpyExt;
 use serde::Deserialize;
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::PathBuf;
+use std::time::Instant;
 
 /// Input format for texts to encode.
 #[derive(Deserialize)]
@@ -32,10 +36,21 @@ Options:
     --output-dir <path>  Directory to write .npy embeddings
     --model-dir <path>   Path to model directory (default: models/answerai-colbert-small-v1)
     --is-query           Encode as queries (default: encode as documents)
+    --quantized          Use INT8 quantized model (model_int8.onnx) for 2x speedup
+    --parallel           Use parallel encoding with multiple ONNX sessions
+    --num-sessions <n>   Number of parallel sessions (default: 25)
+    --batch-size <n>     Batch size per session (default: 2)
 
 Output:
     For documents: doc_000000.npy, doc_000001.npy, ...
     For queries:   query_000000.npy, query_000001.npy, ...
+
+Examples:
+    # Standard encoding
+    encode_cli encode --input texts.json --output-dir ./embeddings --model-dir models/answerai-colbert-small-v1
+
+    # High-performance encoding with INT8 + parallel (20+ docs/sec)
+    encode_cli encode --input texts.json --output-dir ./embeddings --model-dir models/GTE-ModernColBERT-v1 --quantized --parallel
 "#
     );
 }
@@ -45,6 +60,10 @@ fn run_encode(args: &[String]) -> Result<()> {
     let mut output_dir: Option<PathBuf> = None;
     let mut model_dir = "models/answerai-colbert-small-v1".to_string();
     let mut is_query = false;
+    let mut quantized = false;
+    let mut parallel = false;
+    let mut num_sessions = 25usize;
+    let mut batch_size = 2usize;
 
     let mut i = 0;
     while i < args.len() {
@@ -63,6 +82,20 @@ fn run_encode(args: &[String]) -> Result<()> {
             }
             "--is-query" => {
                 is_query = true;
+            }
+            "--quantized" => {
+                quantized = true;
+            }
+            "--parallel" => {
+                parallel = true;
+            }
+            "--num-sessions" => {
+                i += 1;
+                num_sessions = args[i].parse()?;
+            }
+            "--batch-size" => {
+                i += 1;
+                batch_size = args[i].parse()?;
             }
             _ => {
                 return Err(anyhow::anyhow!("Unknown option: {}", args[i]));
@@ -85,24 +118,52 @@ fn run_encode(args: &[String]) -> Result<()> {
 
     eprintln!("Loaded {} texts from {:?}", texts.len(), input_path);
     eprintln!(
-        "Encoding as {}...",
-        if is_query { "queries" } else { "documents" }
+        "Encoding as {} (quantized={}, parallel={})...",
+        if is_query { "queries" } else { "documents" },
+        quantized,
+        parallel
     );
 
-    // Load model
-    let mut model = Colbert::from_pretrained(&model_dir)?;
-    eprintln!(
-        "Model loaded: embedding_dim={}",
-        model.embedding_dim()
-    );
-
-    // Encode
+    let start = Instant::now();
     let prefix = if is_query { "query" } else { "doc" };
-    let embeddings = if is_query {
-        model.encode_queries(&texts)?
+
+    let embeddings = if parallel {
+        // Use ParallelColbert for high-performance encoding
+        let model = ParallelColbert::builder(&model_dir)
+            .with_quantized(quantized)
+            .with_num_sessions(num_sessions)
+            .with_batch_size(batch_size)
+            .build()?;
+
+        eprintln!(
+            "ParallelColbert loaded: embedding_dim={}, sessions={}, quantized={}",
+            model.embedding_dim(),
+            model.num_sessions(),
+            quantized
+        );
+
+        if is_query {
+            model.encode_queries(&texts)?
+        } else {
+            model.encode_documents(&texts)?
+        }
     } else {
-        model.encode_documents(&texts)?
+        // Use standard Colbert
+        let mut model = Colbert::from_pretrained(&model_dir)?;
+        eprintln!(
+            "Colbert loaded: embedding_dim={}",
+            model.embedding_dim()
+        );
+
+        if is_query {
+            model.encode_queries(&texts)?
+        } else {
+            model.encode_documents(&texts)?
+        }
     };
+
+    let encode_time = start.elapsed();
+    let docs_per_sec = texts.len() as f64 / encode_time.as_secs_f64();
 
     // Save embeddings
     for (i, emb) in embeddings.iter().enumerate() {
@@ -118,6 +179,12 @@ fn run_encode(args: &[String]) -> Result<()> {
         "Done! Saved {} embeddings to {:?}",
         embeddings.len(),
         output_dir
+    );
+    eprintln!(
+        "Time: {:.2}s ({:.1} {}/s)",
+        encode_time.as_secs_f64(),
+        docs_per_sec,
+        if is_query { "queries" } else { "docs" }
     );
 
     Ok(())

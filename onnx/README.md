@@ -5,9 +5,9 @@ Fast ColBERT multi-vector encoding in Rust using ONNX Runtime.
 ## Features
 
 - **Simple API** - Just two methods: `encode_documents()` and `encode_queries()`
-- **Fast** - Optimized batching, parallel tokenization, multi-threaded inference
+- **High Performance** - 20+ docs/sec with INT8 quantization and parallel sessions
 - **Cross-platform** - Works on Linux, macOS, and Windows
-- **PyLate compatible** - Produces identical embeddings (>0.999 cosine similarity)
+- **PyLate compatible** - Produces identical embeddings (>0.99 cosine similarity)
 
 ## Installation
 
@@ -19,6 +19,8 @@ colbert-onnx = { path = "path/to/onnx" }
 ```
 
 ## Quick Start
+
+### Basic Usage
 
 ```rust
 use colbert_onnx::Colbert;
@@ -46,6 +48,28 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
+### High-Performance Parallel Encoding
+
+For maximum throughput on large models like GTE-ModernColBERT, use `ParallelColbert` with INT8 quantization:
+
+```rust
+use colbert_onnx::ParallelColbert;
+
+fn main() -> anyhow::Result<()> {
+    // Load with INT8 quantization and 25 parallel sessions
+    let model = ParallelColbert::builder("models/GTE-ModernColBERT-v1")
+        .with_quantized(true)      // Use model_int8.onnx (2x speedup)
+        .with_num_sessions(25)     // 25 parallel ONNX sessions
+        .with_batch_size(2)        // Process 2 docs per session
+        .build()?;
+
+    // Encode documents in parallel (thread-safe)
+    let embeddings = model.encode_documents(&documents)?;
+
+    Ok(())
+}
+```
+
 ## Model Setup
 
 ### Export from HuggingFace
@@ -54,107 +78,131 @@ fn main() -> anyhow::Result<()> {
 # Setup Python environment
 cd onnx/python && uv sync
 
-# Export model
-uv run python export_onnx.py
+# Export model to ONNX
+uv run python export_onnx.py --model lightonai/GTE-ModernColBERT-v1
+
+# (Optional) Quantize to INT8 for 2x speedup
+uv run python quantize_model.py --model-dir ../models/GTE-ModernColBERT-v1
 ```
 
 This creates:
 ```
-models/answerai-colbert-small-v1/
-├── model.onnx
+models/GTE-ModernColBERT-v1/
+├── model.onnx                      # FP32 model (569 MB)
+├── model_int8.onnx                 # INT8 quantized (150 MB)
 ├── tokenizer.json
 └── config_sentence_transformers.json
 ```
 
 ### Supported Models
 
-| Model | Embedding Dim | Size |
-|-------|---------------|------|
-| `answerai-colbert-small-v1` | 96 | 127 MB |
-| `GTE-ModernColBERT-v1` | 128 | 569 MB |
+| Model | Embedding Dim | FP32 Size | INT8 Size |
+|-------|---------------|-----------|-----------|
+| `answerai-colbert-small-v1` | 96 | 127 MB | 34 MB |
+| `GTE-ModernColBERT-v1` | 128 | 569 MB | 150 MB |
 
 ## API Reference
 
-### `Colbert::from_pretrained(path)`
+### `Colbert` - Standard Encoder
 
-Load a model from a directory containing `model.onnx` and `tokenizer.json`.
-
-```rust
-let model = Colbert::from_pretrained("models/answerai-colbert-small-v1")?;
-```
-
-Automatically uses all available CPU cores for optimal performance.
-
-### `Colbert::from_pretrained_with_threads(path, threads)`
-
-Load with a specific number of threads.
+Single-session encoder, good for small models or when memory is constrained.
 
 ```rust
-let model = Colbert::from_pretrained_with_threads("models/answerai-colbert-small-v1", 8)?;
+// Load with default settings (auto-detect threads)
+let mut model = Colbert::from_pretrained("models/answerai-colbert-small-v1")?;
+
+// Load with specific thread count
+let mut model = Colbert::from_pretrained_with_threads("models/answerai-colbert-small-v1", 8)?;
+
+// Encode
+let doc_embeddings = model.encode_documents(&["Document 1", "Document 2"])?;
+let query_embeddings = model.encode_queries(&["Query 1"])?;
 ```
 
-### `model.encode_documents(texts)`
+### `ParallelColbert` - High-Performance Encoder
 
-Encode documents into ColBERT embeddings.
+Multi-session parallel encoder for maximum throughput.
 
 ```rust
-let docs = model.encode_documents(&["Document 1", "Document 2"])?;
-// docs[0].shape() = (num_tokens, embedding_dim)
+let model = ParallelColbert::builder("models/GTE-ModernColBERT-v1")
+    .with_quantized(true)         // Use INT8 model (default: false)
+    .with_num_sessions(25)        // Parallel sessions (default: 25)
+    .with_threads_per_session(1)  // Threads per session (default: 1)
+    .with_batch_size(2)           // Docs per batch (default: 2)
+    .build()?;
+
+// Thread-safe parallel encoding
+let embeddings = model.encode_documents(&documents)?;
+let query_embeddings = model.encode_queries(&queries)?;
 ```
 
-- Returns one embedding matrix per document
-- Filters out punctuation tokens (skiplist)
-- Variable number of tokens per document
-
-### `model.encode_queries(texts)`
-
-Encode queries into ColBERT embeddings.
-
-```rust
-let queries = model.encode_queries(&["Query 1", "Query 2"])?;
-// queries[0].shape() = (32, embedding_dim)
-```
-
-- Returns one embedding matrix per query
-- Fixed size (32 tokens) with MASK token expansion
-- All tokens retained for query expansion
-
-### `model.config()`
-
-Access model configuration.
+### Configuration Access
 
 ```rust
 let config = model.config();
 println!("Embedding dim: {}", config.embedding_dim);
+println!("Document length: {}", config.document_length);
 println!("Query length: {}", config.query_length);
 ```
 
-## Benchmarks
+## Performance
 
-Run benchmarks:
+### Benchmarks (GTE-ModernColBERT-v1, 100 documents, ~300 tokens each)
+
+| Method | Docs/sec | Speedup |
+|--------|----------|---------|
+| PyLate (Python baseline) | 10.9 | 1.0x |
+| `Colbert` (single session) | 6.2 | 0.6x |
+| `Colbert` + INT8 | 13.3 | 1.2x |
+| **`ParallelColbert` + INT8** | **20.6** | **1.9x** |
+
+### Optimal Configuration by Model
+
+| Model | Recommended API | Sessions | Quantized |
+|-------|-----------------|----------|-----------|
+| answerai-colbert-small-v1 | `Colbert` | 1 | No |
+| GTE-ModernColBERT-v1 | `ParallelColbert` | 25 | Yes |
+
+### Run Benchmarks
 
 ```bash
-cargo run --release --bin benchmark_encoding
+# Generate benchmark documents
+cd python && uv run python generate_reference.py --benchmark --model lightonai/GTE-ModernColBERT-v1
+
+# Run Rust benchmark
+cd .. && cargo run --release --bin benchmark_accelerated -- \
+    --model-dir models/GTE-ModernColBERT-v1 \
+    --parallel-only \
+    --quantized
+
+# Quick test
+cargo run --release --bin test_parallel
 ```
 
-### Results (100 documents, ~300 tokens each)
+## Embedding Quality
 
-| Method | Docs/sec |
-|--------|----------|
-| Sequential | 22 |
-| Batched (optimized) | 31 |
+INT8 quantization maintains high embedding quality:
+
+| Comparison | Cosine Similarity |
+|------------|-------------------|
+| PyLate vs ONNX FP32 | 0.9998 |
+| PyLate vs ONNX INT8 | 0.9935 |
 
 ## Project Structure
 
 ```
 onnx/
 ├── src/
-│   ├── lib.rs              # Main library
+│   ├── lib.rs              # Colbert, ParallelColbert
 │   └── bin/
-│       ├── encode_cli.rs   # CLI for batch encoding
-│       └── benchmark_*.rs  # Benchmark tools
+│       ├── encode_cli.rs           # CLI for batch encoding
+│       ├── test_parallel.rs        # ParallelColbert test
+│       ├── benchmark_encoding.rs   # Encoding benchmark
+│       └── benchmark_accelerated.rs # Parallel benchmark
 ├── python/
 │   ├── export_onnx.py      # Model export script
+│   ├── quantize_model.py   # INT8 quantization
+│   ├── verify_quantized.py # Embedding verification
 │   └── pyproject.toml      # Python dependencies
 └── models/                 # Exported models (gitignored)
 ```

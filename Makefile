@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-onnx-api benchmark-onnx-api-answerai benchmark-onnx-api-gte ci-api test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-onnx-api benchmark-onnx-api-answerai benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt
 
 all: fmt lint test
 
@@ -151,6 +151,20 @@ benchmark-onnx-api-gte:
 	API_PID=$$!; \
 	sleep 2; \
 	cd docs && uv sync --extra eval && uv run python onnx_benchmark.py --model gte-moderncolbert-v1 --batch-size 80; \
+	EXIT_CODE=$$?; \
+	kill $$API_PID 2>/dev/null || true; \
+	exit $$EXIT_CODE
+
+# GTE-ModernColBERT with INT8 quantization + parallel encoding (20+ docs/sec)
+benchmark-onnx-api-gte-int8:
+	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
+	rm -rf api/indices
+	cargo build --release -p lategrep-api --features accelerate
+	cd onnx && cargo build --release --bin encode_cli
+	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices & \
+	API_PID=$$!; \
+	sleep 2; \
+	cd docs && uv sync --extra eval && uv run python onnx_benchmark.py --model gte-moderncolbert-v1 --batch-size 80 --quantized --parallel; \
 	EXIT_CODE=$$?; \
 	kill $$API_PID 2>/dev/null || true; \
 	exit $$EXIT_CODE
