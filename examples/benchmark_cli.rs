@@ -243,6 +243,7 @@ fn run_search(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         n_full_scores,
         top_k,
         n_ivf_probe,
+        ..Default::default()
     };
 
     // Run search with either regular or mmap index

@@ -137,6 +137,7 @@ pub async fn search(
         n_ivf_probe: req.params.n_ivf_probe.unwrap_or(8),
         n_full_scores: req.params.n_full_scores.unwrap_or(4096),
         batch_size: 2000,
+        ..Default::default()
     };
 
     // Get path for metadata lookup

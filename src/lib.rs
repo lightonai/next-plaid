@@ -24,7 +24,7 @@ pub mod strided_tensor;
 pub mod update;
 pub mod utils;
 
-pub use codec::ResidualCodec;
+pub use codec::{CentroidStore, ResidualCodec};
 #[cfg(feature = "npy")]
 pub use delete::delete_from_index;
 pub use error::{Error, Result};

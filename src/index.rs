@@ -246,7 +246,7 @@ impl Index {
             use ndarray_npy::WriteNpyExt;
 
             let centroids_path = index_dir.join("centroids.npy");
-            codec.centroids.write_npy(File::create(&centroids_path)?)?;
+            codec.centroids_view().to_owned().write_npy(File::create(&centroids_path)?)?;
 
             let cutoffs_path = index_dir.join("bucket_cutoffs.npy");
             bucket_cutoffs.write_npy(File::create(&cutoffs_path)?)?;
@@ -536,7 +536,7 @@ impl Index {
                 .map_err(|e| Error::IndexLoad(format!("Failed to open metadata: {}", e)))?,
         ))?;
 
-        // Load codec
+        // Load codec (with owned centroids for in-memory Index)
         let codec = ResidualCodec::load_from_dir(index_dir)?;
 
         // Load IVF
@@ -1270,8 +1270,9 @@ impl MmapIndex {
                 .map_err(|e| Error::IndexLoad(format!("Failed to open metadata: {}", e)))?,
         ))?;
 
-        // Load codec (small tensors)
-        let codec = ResidualCodec::load_from_dir(index_dir)?;
+        // Load codec with memory-mapped centroids for reduced RAM usage.
+        // Other small tensors (bucket weights, etc.) are still loaded into memory.
+        let codec = ResidualCodec::load_mmap_from_dir(index_dir)?;
 
         // Load IVF (small tensor)
         let ivf_path = index_dir.join("ivf.npy");

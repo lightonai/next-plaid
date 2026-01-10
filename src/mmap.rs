@@ -528,6 +528,122 @@ impl MmapNpyArray1I64 {
     }
 }
 
+/// Memory-mapped NPY array for f32 values (used for centroids).
+///
+/// This struct provides zero-copy access to 2D f32 arrays stored in NPY format.
+/// Unlike loading into an owned `Array2<f32>`, this approach lets the OS manage
+/// paging, reducing resident memory usage for large centroid matrices.
+pub struct MmapNpyArray2F32 {
+    _mmap: Mmap,
+    shape: (usize, usize),
+    data_offset: usize,
+}
+
+impl MmapNpyArray2F32 {
+    /// Load a 2D f32 array from an NPY file.
+    pub fn from_npy_file(path: &Path) -> Result<Self> {
+        let file = File::open(path)
+            .map_err(|e| Error::IndexLoad(format!("Failed to open NPY file {:?}: {}", path, e)))?;
+
+        let mmap = unsafe {
+            Mmap::map(&file).map_err(|e| {
+                Error::IndexLoad(format!("Failed to mmap NPY file {:?}: {}", path, e))
+            })?
+        };
+
+        let (shape_vec, data_offset, _fortran_order) = parse_npy_header(&mmap)?;
+
+        if shape_vec.len() != 2 {
+            return Err(Error::IndexLoad(format!(
+                "Expected 2D array, got {}D",
+                shape_vec.len()
+            )));
+        }
+
+        let shape = (shape_vec[0], shape_vec[1]);
+
+        // Verify file size (f32 = 4 bytes)
+        let expected_size = data_offset + shape.0 * shape.1 * 4;
+        if mmap.len() < expected_size {
+            return Err(Error::IndexLoad(format!(
+                "NPY file size {} too small for shape {:?}",
+                mmap.len(),
+                shape
+            )));
+        }
+
+        Ok(Self {
+            _mmap: mmap,
+            shape,
+            data_offset,
+        })
+    }
+
+    /// Get the shape of the array.
+    pub fn shape(&self) -> (usize, usize) {
+        self.shape
+    }
+
+    /// Get the number of rows.
+    pub fn nrows(&self) -> usize {
+        self.shape.0
+    }
+
+    /// Get the number of columns.
+    pub fn ncols(&self) -> usize {
+        self.shape.1
+    }
+
+    /// Get a view of the entire array as ArrayView2.
+    ///
+    /// This provides zero-copy access to the memory-mapped data.
+    pub fn view(&self) -> ArrayView2<'_, f32> {
+        let byte_start = self.data_offset;
+        let byte_end = self.data_offset + self.shape.0 * self.shape.1 * 4;
+        let bytes = &self._mmap[byte_start..byte_end];
+
+        // Safety: We've verified bounds and f32 is 4-byte aligned in NPY format
+        let data = unsafe {
+            std::slice::from_raw_parts(bytes.as_ptr() as *const f32, self.shape.0 * self.shape.1)
+        };
+
+        ArrayView2::from_shape(self.shape, data).unwrap()
+    }
+
+    /// Get a view of a single row.
+    pub fn row(&self, idx: usize) -> ArrayView1<'_, f32> {
+        let byte_start = self.data_offset + idx * self.shape.1 * 4;
+        let bytes = &self._mmap[byte_start..byte_start + self.shape.1 * 4];
+
+        // Safety: We've verified bounds and alignment
+        let data =
+            unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f32, self.shape.1) };
+
+        ArrayView1::from_shape(self.shape.1, data).unwrap()
+    }
+
+    /// Get a view of rows [start..end] as ArrayView2.
+    pub fn slice_rows(&self, start: usize, end: usize) -> ArrayView2<'_, f32> {
+        let nrows = end - start;
+        let byte_start = self.data_offset + start * self.shape.1 * 4;
+        let byte_end = self.data_offset + end * self.shape.1 * 4;
+        let bytes = &self._mmap[byte_start..byte_end];
+
+        // Safety: We've verified bounds
+        let data =
+            unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f32, nrows * self.shape.1) };
+
+        ArrayView2::from_shape((nrows, self.shape.1), data).unwrap()
+    }
+
+    /// Convert to an owned Array2 (loads all data into memory).
+    ///
+    /// Use this only when you need an owned copy; prefer `view()` for read-only access.
+    pub fn to_owned(&self) -> Array2<f32> {
+        self.view().to_owned()
+    }
+}
+
 /// Memory-mapped NPY array for u8 values (used for residuals).
 ///
 /// This struct provides zero-copy access to 2D u8 arrays stored in NPY format.

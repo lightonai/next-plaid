@@ -1,8 +1,84 @@
 //! Residual codec for quantization and decompression
 
-use ndarray::{Array1, Array2, ArrayView1, Axis};
+use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2, Axis};
 
 use crate::error::{Error, Result};
+
+/// Storage backend for centroids, supporting both owned arrays and memory-mapped files.
+///
+/// This enum enables `ResidualCodec` to work with centroids stored either:
+/// - In memory as an owned `Array2<f32>` (default, for `Index` and `LoadedIndex`)
+/// - Memory-mapped from disk (for `MmapIndex`, reducing RAM usage)
+pub enum CentroidStore {
+    /// Centroids stored as an owned ndarray (loaded into RAM)
+    Owned(Array2<f32>),
+    /// Centroids stored as a memory-mapped NPY file (OS-managed paging)
+    #[cfg(feature = "npy")]
+    Mmap(crate::mmap::MmapNpyArray2F32),
+}
+
+impl CentroidStore {
+    /// Get a view of the centroids as ArrayView2.
+    ///
+    /// This is zero-copy for both owned and mmap variants.
+    pub fn view(&self) -> ArrayView2<'_, f32> {
+        match self {
+            CentroidStore::Owned(arr) => arr.view(),
+            #[cfg(feature = "npy")]
+            CentroidStore::Mmap(mmap) => mmap.view(),
+        }
+    }
+
+    /// Get the number of centroids (rows).
+    pub fn nrows(&self) -> usize {
+        match self {
+            CentroidStore::Owned(arr) => arr.nrows(),
+            #[cfg(feature = "npy")]
+            CentroidStore::Mmap(mmap) => mmap.nrows(),
+        }
+    }
+
+    /// Get the embedding dimension (columns).
+    pub fn ncols(&self) -> usize {
+        match self {
+            CentroidStore::Owned(arr) => arr.ncols(),
+            #[cfg(feature = "npy")]
+            CentroidStore::Mmap(mmap) => mmap.ncols(),
+        }
+    }
+
+    /// Get a view of a single centroid row.
+    pub fn row(&self, idx: usize) -> ArrayView1<'_, f32> {
+        match self {
+            CentroidStore::Owned(arr) => arr.row(idx),
+            #[cfg(feature = "npy")]
+            CentroidStore::Mmap(mmap) => mmap.row(idx),
+        }
+    }
+
+    /// Get a view of rows [start..end] as ArrayView2.
+    ///
+    /// This is zero-copy for both owned and mmap variants.
+    pub fn slice_rows(&self, start: usize, end: usize) -> ArrayView2<'_, f32> {
+        match self {
+            CentroidStore::Owned(arr) => arr.slice(s![start..end, ..]),
+            #[cfg(feature = "npy")]
+            CentroidStore::Mmap(mmap) => mmap.slice_rows(start, end),
+        }
+    }
+}
+
+impl Clone for CentroidStore {
+    fn clone(&self) -> Self {
+        match self {
+            // For owned, just clone the array
+            CentroidStore::Owned(arr) => CentroidStore::Owned(arr.clone()),
+            // For mmap, we need to convert to owned since Mmap isn't Clone
+            #[cfg(feature = "npy")]
+            CentroidStore::Mmap(mmap) => CentroidStore::Owned(mmap.to_owned()),
+        }
+    }
+}
 
 /// A codec that manages quantization parameters and lookup tables for the index.
 ///
@@ -13,8 +89,9 @@ use crate::error::{Error, Result};
 pub struct ResidualCodec {
     /// Number of bits used to represent each residual bucket (e.g., 2 or 4)
     pub nbits: usize,
-    /// Coarse centroids (codebook) of shape `[num_centroids, dim]`
-    pub centroids: Array2<f32>,
+    /// Coarse centroids (codebook) of shape `[num_centroids, dim]`.
+    /// Can be either owned (in-memory) or memory-mapped for reduced RAM usage.
+    pub centroids: CentroidStore,
     /// Average residual vector, used to reduce reconstruction error
     pub avg_residual: Array1<f32>,
     /// Boundaries defining which bucket a residual value falls into
@@ -40,6 +117,25 @@ impl ResidualCodec {
     pub fn new(
         nbits: usize,
         centroids: Array2<f32>,
+        avg_residual: Array1<f32>,
+        bucket_cutoffs: Option<Array1<f32>>,
+        bucket_weights: Option<Array1<f32>>,
+    ) -> Result<Self> {
+        Self::new_with_store(
+            nbits,
+            CentroidStore::Owned(centroids),
+            avg_residual,
+            bucket_cutoffs,
+            bucket_weights,
+        )
+    }
+
+    /// Creates a new ResidualCodec with a specified centroid storage backend.
+    ///
+    /// This is the internal constructor that supports both owned and mmap centroids.
+    pub fn new_with_store(
+        nbits: usize,
+        centroids: CentroidStore,
         avg_residual: Array1<f32>,
         bucket_cutoffs: Option<Array1<f32>>,
         bucket_weights: Option<Array1<f32>>,
@@ -120,6 +216,13 @@ impl ResidualCodec {
         self.centroids.nrows()
     }
 
+    /// Returns a view of the centroids.
+    ///
+    /// This is zero-copy for both owned and mmap centroids.
+    pub fn centroids_view(&self) -> ArrayView2<'_, f32> {
+        self.centroids.view()
+    }
+
     /// Compress embeddings into centroid codes using nearest neighbor search.
     ///
     /// Uses batch matrix multiplication for efficiency:
@@ -141,6 +244,9 @@ impl ResidualCodec {
             return Array1::zeros(0);
         }
 
+        // Get centroids view once (zero-copy for both owned and mmap)
+        let centroids = self.centroids_view();
+
         // Process in batches to avoid memory issues with large matrices
         const BATCH_SIZE: usize = 2048;
 
@@ -151,7 +257,7 @@ impl ResidualCodec {
             let batch = embeddings.slice(ndarray::s![start..end, ..]);
 
             // Batch matrix multiplication: [batch, dim] @ [dim, K] -> [batch, K]
-            let scores = batch.dot(&self.centroids.t());
+            let scores = batch.dot(&centroids.t());
 
             // Parallel argmax over each row
             let batch_codes: Vec<usize> = scores
@@ -271,7 +377,7 @@ impl ResidualCodec {
         let mut output = Array2::<f32>::zeros((n, dim));
 
         for i in 0..n {
-            // Get centroid for this embedding
+            // Get centroid for this embedding (zero-copy via CentroidStore)
             let centroid = self.centroids.row(codes[i]);
 
             // Unpack residuals
@@ -363,6 +469,80 @@ impl ResidualCodec {
         Self::new(
             nbits,
             centroids,
+            avg_residual,
+            bucket_cutoffs,
+            bucket_weights,
+        )
+    }
+
+    /// Load codec from index directory with memory-mapped centroids.
+    ///
+    /// This is similar to `load_from_dir` but uses memory-mapped I/O for the
+    /// centroids file, reducing RAM usage. The other small tensors (bucket weights,
+    /// etc.) are still loaded into memory as they are negligible in size.
+    ///
+    /// Use this when loading for `MmapIndex` to minimize memory footprint.
+    #[cfg(feature = "npy")]
+    pub fn load_mmap_from_dir(index_path: &std::path::Path) -> Result<Self> {
+        use ndarray_npy::ReadNpyExt;
+        use std::fs::File;
+
+        // Memory-map centroids instead of loading into RAM
+        let centroids_path = index_path.join("centroids.npy");
+        let mmap_centroids = crate::mmap::MmapNpyArray2F32::from_npy_file(&centroids_path)?;
+
+        // Load small tensors into memory (negligible size)
+        let avg_residual_path = index_path.join("avg_residual.npy");
+        let avg_residual: Array1<f32> =
+            Array1::read_npy(File::open(&avg_residual_path).map_err(|e| {
+                Error::IndexLoad(format!("Failed to open avg_residual.npy: {}", e))
+            })?)
+            .map_err(|e| Error::IndexLoad(format!("Failed to read avg_residual.npy: {}", e)))?;
+
+        let bucket_cutoffs_path = index_path.join("bucket_cutoffs.npy");
+        let bucket_cutoffs: Option<Array1<f32>> = if bucket_cutoffs_path.exists() {
+            Some(
+                Array1::read_npy(File::open(&bucket_cutoffs_path).map_err(|e| {
+                    Error::IndexLoad(format!("Failed to open bucket_cutoffs.npy: {}", e))
+                })?)
+                .map_err(|e| {
+                    Error::IndexLoad(format!("Failed to read bucket_cutoffs.npy: {}", e))
+                })?,
+            )
+        } else {
+            None
+        };
+
+        let bucket_weights_path = index_path.join("bucket_weights.npy");
+        let bucket_weights: Option<Array1<f32>> = if bucket_weights_path.exists() {
+            Some(
+                Array1::read_npy(File::open(&bucket_weights_path).map_err(|e| {
+                    Error::IndexLoad(format!("Failed to open bucket_weights.npy: {}", e))
+                })?)
+                .map_err(|e| {
+                    Error::IndexLoad(format!("Failed to read bucket_weights.npy: {}", e))
+                })?,
+            )
+        } else {
+            None
+        };
+
+        // Read nbits from metadata
+        let metadata_path = index_path.join("metadata.json");
+        let metadata: serde_json::Value = serde_json::from_reader(
+            File::open(&metadata_path)
+                .map_err(|e| Error::IndexLoad(format!("Failed to open metadata.json: {}", e)))?,
+        )
+        .map_err(|e| Error::IndexLoad(format!("Failed to parse metadata.json: {}", e)))?;
+
+        let nbits = metadata["nbits"]
+            .as_u64()
+            .ok_or_else(|| Error::IndexLoad("nbits not found in metadata".into()))?
+            as usize;
+
+        Self::new_with_store(
+            nbits,
+            CentroidStore::Mmap(mmap_centroids),
             avg_residual,
             bucket_cutoffs,
             bucket_weights,
