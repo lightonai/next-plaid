@@ -7,6 +7,7 @@
 //! ```rust,ignore
 //! use colbert_onnx::Colbert;
 //!
+//! // Automatically uses the best available hardware (CUDA, CoreML, etc.)
 //! let model = Colbert::from_pretrained("models/answerai-colbert-small-v1")?;
 //!
 //! // Encode documents
@@ -14,6 +15,33 @@
 //!
 //! // Encode queries
 //! let query_embeddings = model.encode_queries(&["What is the capital of France?"])?;
+//! ```
+//!
+//! ## Hardware Acceleration
+//!
+//! Hardware acceleration is automatic - the library tries providers in order:
+//! **TensorRT > CUDA > CoreML > DirectML > CPU**
+//!
+//! Enable features in `Cargo.toml` to unlock GPU acceleration:
+//!
+//! ```toml
+//! [dependencies]
+//! colbert-onnx = { version = "0.1", features = ["cuda"] }  # NVIDIA GPUs
+//! # Or: features = ["tensorrt"]  # NVIDIA TensorRT (best performance)
+//! # Or: features = ["coreml"]    # Apple Silicon
+//! # Or: features = ["directml"]  # Windows GPUs
+//! ```
+//!
+//! To force a specific provider:
+//!
+//! ```rust,ignore
+//! use colbert_onnx::{Colbert, ExecutionProvider};
+//!
+//! let model = Colbert::from_pretrained_with_options(
+//!     "models/answerai-colbert-small-v1",
+//!     4,  // threads
+//!     ExecutionProvider::Cuda,  // Force CUDA
+//! )?;
 //! ```
 //!
 //! ## High-Performance Parallel Encoding
@@ -24,7 +52,7 @@
 //! ```rust,ignore
 //! use colbert_onnx::ParallelColbert;
 //!
-//! // Load with INT8 quantization and 25 parallel sessions
+//! // Auto-detects best hardware, uses INT8 quantization and 25 parallel sessions
 //! let model = ParallelColbert::builder("models/GTE-ModernColBERT-v1")
 //!     .with_quantized(true)      // Use model_int8.onnx
 //!     .with_num_sessions(25)     // 25 parallel ONNX sessions
@@ -46,6 +74,133 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokenizers::Tokenizer;
+
+// Conditional imports for execution providers
+#[cfg(feature = "cuda")]
+use ort::execution_providers::CUDAExecutionProvider;
+#[cfg(feature = "tensorrt")]
+use ort::execution_providers::TensorRTExecutionProvider;
+#[cfg(feature = "coreml")]
+use ort::execution_providers::CoreMLExecutionProvider;
+#[cfg(feature = "directml")]
+use ort::execution_providers::DirectMLExecutionProvider;
+
+use ort::session::builder::SessionBuilder;
+
+/// Configure a session builder with the specified execution provider.
+/// For `Auto`, tries providers in order: TensorRT > CUDA > CoreML > DirectML > CPU
+fn configure_execution_provider(
+    builder: SessionBuilder,
+    provider: ExecutionProvider,
+) -> Result<SessionBuilder> {
+    match provider {
+        ExecutionProvider::Auto => configure_auto_provider(builder),
+        ExecutionProvider::Cpu => Ok(builder),
+        ExecutionProvider::Cuda => configure_cuda(builder),
+        ExecutionProvider::TensorRT => configure_tensorrt(builder),
+        ExecutionProvider::CoreML => configure_coreml(builder),
+        ExecutionProvider::DirectML => configure_directml(builder),
+    }
+}
+
+/// Try to configure the best available hardware acceleration automatically.
+/// Tries in order: TensorRT > CUDA > CoreML > DirectML, falls back to CPU.
+fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
+    // Try TensorRT first (best NVIDIA performance)
+    #[cfg(feature = "tensorrt")]
+    {
+        if let Ok(b) = builder
+            .clone()
+            .with_execution_providers([TensorRTExecutionProvider::default().build()])
+        {
+            return Ok(b);
+        }
+    }
+
+    // Try CUDA (good NVIDIA performance)
+    #[cfg(feature = "cuda")]
+    {
+        if let Ok(b) = builder
+            .clone()
+            .with_execution_providers([CUDAExecutionProvider::default().build()])
+        {
+            return Ok(b);
+        }
+    }
+
+    // Try CoreML (Apple Silicon)
+    #[cfg(feature = "coreml")]
+    {
+        if let Ok(b) = builder
+            .clone()
+            .with_execution_providers([CoreMLExecutionProvider::default().build()])
+        {
+            return Ok(b);
+        }
+    }
+
+    // Try DirectML (Windows GPUs)
+    #[cfg(feature = "directml")]
+    {
+        if let Ok(b) = builder
+            .clone()
+            .with_execution_providers([DirectMLExecutionProvider::default().build()])
+        {
+            return Ok(b);
+        }
+    }
+
+    // Fall back to CPU
+    Ok(builder)
+}
+
+#[cfg(feature = "cuda")]
+fn configure_cuda(builder: SessionBuilder) -> Result<SessionBuilder> {
+    builder
+        .with_execution_providers([CUDAExecutionProvider::default().build()])
+        .context("Failed to configure CUDA execution provider")
+}
+
+#[cfg(not(feature = "cuda"))]
+fn configure_cuda(_builder: SessionBuilder) -> Result<SessionBuilder> {
+    anyhow::bail!("CUDA support not compiled. Enable the 'cuda' feature.")
+}
+
+#[cfg(feature = "tensorrt")]
+fn configure_tensorrt(builder: SessionBuilder) -> Result<SessionBuilder> {
+    builder
+        .with_execution_providers([TensorRTExecutionProvider::default().build()])
+        .context("Failed to configure TensorRT execution provider")
+}
+
+#[cfg(not(feature = "tensorrt"))]
+fn configure_tensorrt(_builder: SessionBuilder) -> Result<SessionBuilder> {
+    anyhow::bail!("TensorRT support not compiled. Enable the 'tensorrt' feature.")
+}
+
+#[cfg(feature = "coreml")]
+fn configure_coreml(builder: SessionBuilder) -> Result<SessionBuilder> {
+    builder
+        .with_execution_providers([CoreMLExecutionProvider::default().build()])
+        .context("Failed to configure CoreML execution provider")
+}
+
+#[cfg(not(feature = "coreml"))]
+fn configure_coreml(_builder: SessionBuilder) -> Result<SessionBuilder> {
+    anyhow::bail!("CoreML support not compiled. Enable the 'coreml' feature.")
+}
+
+#[cfg(feature = "directml")]
+fn configure_directml(builder: SessionBuilder) -> Result<SessionBuilder> {
+    builder
+        .with_execution_providers([DirectMLExecutionProvider::default().build()])
+        .context("Failed to configure DirectML execution provider")
+}
+
+#[cfg(not(feature = "directml"))]
+fn configure_directml(_builder: SessionBuilder) -> Result<SessionBuilder> {
+    anyhow::bail!("DirectML support not compiled. Enable the 'directml' feature.")
+}
 
 /// Default batch size for chunked encoding (optimal for most hardware).
 const DEFAULT_BATCH_SIZE: usize = 16;
@@ -256,6 +411,7 @@ impl Colbert {
     /// This constructor automatically:
     /// - Detects the number of CPU cores and uses optimal threading
     /// - Applies maximum ONNX graph optimizations
+    /// - Uses the best available hardware acceleration (TensorRT > CUDA > CoreML > DirectML > CPU)
     ///
     /// # Example
     ///
@@ -266,7 +422,7 @@ impl Colbert {
         let num_threads = std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(4);
-        Self::from_pretrained_with_threads(model_dir, num_threads)
+        Self::from_pretrained_with_options(model_dir, num_threads, ExecutionProvider::Auto)
     }
 
     /// Load a ColBERT model with a specific number of threads.
@@ -277,6 +433,38 @@ impl Colbert {
     pub fn from_pretrained_with_threads<P: AsRef<Path>>(
         model_dir: P,
         num_threads: usize,
+    ) -> Result<Self> {
+        Self::from_pretrained_with_options(model_dir, num_threads, ExecutionProvider::Auto)
+    }
+
+    /// Load a ColBERT model with full configuration options.
+    ///
+    /// # Arguments
+    /// * `model_dir` - Path to the model directory
+    /// * `num_threads` - Number of threads for ONNX Runtime inference
+    /// * `execution_provider` - Hardware acceleration provider to use
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Force CPU execution
+    /// let model = Colbert::from_pretrained_with_options(
+    ///     "models/answerai-colbert-small-v1",
+    ///     4,
+    ///     ExecutionProvider::Cpu,
+    /// )?;
+    ///
+    /// // Use CUDA if available
+    /// let model = Colbert::from_pretrained_with_options(
+    ///     "models/answerai-colbert-small-v1",
+    ///     4,
+    ///     ExecutionProvider::Cuda,
+    /// )?;
+    /// ```
+    pub fn from_pretrained_with_options<P: AsRef<Path>>(
+        model_dir: P,
+        num_threads: usize,
+        execution_provider: ExecutionProvider,
     ) -> Result<Self> {
         let model_dir = model_dir.as_ref();
 
@@ -297,11 +485,15 @@ impl Colbert {
         // Build skiplist
         let skiplist_ids = build_skiplist(&config, &tokenizer);
 
-        // Create ONNX session with optimal settings
-        let session = Session::builder()?
+        // Create ONNX session with optimal settings and hardware acceleration
+        let builder = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_intra_threads(num_threads)?
-            .with_inter_threads(num_threads.max(2))?
+            .with_inter_threads(num_threads.max(2))?;
+
+        let builder = configure_execution_provider(builder, execution_provider)?;
+
+        let session = builder
             .commit_from_file(&onnx_path)
             .context("Failed to load ONNX model")?;
 
@@ -653,6 +845,25 @@ pub struct ParallelColbert {
     batch_size: usize,
 }
 
+/// Hardware acceleration provider for ONNX Runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionProvider {
+    /// Automatically detect and use the best available hardware.
+    /// Tries in order: TensorRT > CUDA > CoreML > DirectML > CPU
+    #[default]
+    Auto,
+    /// CPU execution only
+    Cpu,
+    /// CUDA execution (NVIDIA GPUs, requires `cuda` feature)
+    Cuda,
+    /// TensorRT execution (NVIDIA GPUs with TensorRT, requires `tensorrt` feature)
+    TensorRT,
+    /// CoreML execution (Apple Silicon, requires `coreml` feature)
+    CoreML,
+    /// DirectML execution (Windows GPUs, requires `directml` feature)
+    DirectML,
+}
+
 /// Builder for configuring [`ParallelColbert`].
 ///
 /// # Example
@@ -663,6 +874,7 @@ pub struct ParallelColbert {
 ///     .with_num_sessions(25)     // Number of parallel sessions
 ///     .with_threads_per_session(1)  // Threads per session
 ///     .with_batch_size(2)        // Documents per batch per session
+///     .with_execution_provider(ExecutionProvider::Cuda)  // Use CUDA
 ///     .build()?;
 /// ```
 pub struct ParallelColbertBuilder {
@@ -671,6 +883,7 @@ pub struct ParallelColbertBuilder {
     num_sessions: usize,
     threads_per_session: usize,
     batch_size: usize,
+    execution_provider: ExecutionProvider,
 }
 
 impl ParallelColbertBuilder {
@@ -681,6 +894,7 @@ impl ParallelColbertBuilder {
     /// - num_sessions: 25 (optimal for large models)
     /// - threads_per_session: 1
     /// - batch_size: 2
+    /// - execution_provider: Auto (best available hardware)
     pub fn new<P: AsRef<Path>>(model_dir: P) -> Self {
         Self {
             model_dir: model_dir.as_ref().to_path_buf(),
@@ -688,6 +902,7 @@ impl ParallelColbertBuilder {
             num_sessions: 25,
             threads_per_session: 1,
             batch_size: 2,
+            execution_provider: ExecutionProvider::Auto,
         }
     }
 
@@ -725,14 +940,38 @@ impl ParallelColbertBuilder {
         self
     }
 
+    /// Set the execution provider for hardware acceleration.
+    ///
+    /// Available providers (require corresponding Cargo features):
+    /// - `ExecutionProvider::Cpu` - Default CPU execution
+    /// - `ExecutionProvider::Cuda` - NVIDIA CUDA (requires `cuda` feature)
+    /// - `ExecutionProvider::TensorRT` - NVIDIA TensorRT (requires `tensorrt` feature)
+    /// - `ExecutionProvider::CoreML` - Apple CoreML (requires `coreml` feature)
+    /// - `ExecutionProvider::DirectML` - Windows DirectML (requires `directml` feature)
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Build with CUDA acceleration
+    /// let model = ParallelColbert::builder("models/GTE-ModernColBERT-v1")
+    ///     .with_execution_provider(ExecutionProvider::Cuda)
+    ///     .with_num_sessions(4)  // Fewer sessions needed with GPU
+    ///     .build()?;
+    /// ```
+    pub fn with_execution_provider(mut self, provider: ExecutionProvider) -> Self {
+        self.execution_provider = provider;
+        self
+    }
+
     /// Build the [`ParallelColbert`] encoder.
     pub fn build(self) -> Result<ParallelColbert> {
-        ParallelColbert::new(
+        ParallelColbert::new_with_provider(
             &self.model_dir,
             self.num_sessions,
             self.threads_per_session,
             self.quantized,
             self.batch_size,
+            self.execution_provider,
         )
     }
 }
@@ -745,6 +984,7 @@ impl ParallelColbert {
 
     /// Create a new parallel encoder with explicit configuration.
     ///
+    /// Uses automatic hardware detection (best available: TensorRT > CUDA > CoreML > DirectML > CPU).
     /// For a simpler API, use [`ParallelColbert::builder`] instead.
     pub fn new<P: AsRef<Path>>(
         model_dir: P,
@@ -752,6 +992,27 @@ impl ParallelColbert {
         threads_per_session: usize,
         quantized: bool,
         batch_size: usize,
+    ) -> Result<Self> {
+        Self::new_with_provider(
+            model_dir,
+            num_sessions,
+            threads_per_session,
+            quantized,
+            batch_size,
+            ExecutionProvider::Auto,
+        )
+    }
+
+    /// Create a new parallel encoder with explicit configuration and execution provider.
+    ///
+    /// For a simpler API, use [`ParallelColbert::builder`] instead.
+    pub fn new_with_provider<P: AsRef<Path>>(
+        model_dir: P,
+        num_sessions: usize,
+        threads_per_session: usize,
+        quantized: bool,
+        batch_size: usize,
+        execution_provider: ExecutionProvider,
     ) -> Result<Self> {
         let model_dir = model_dir.as_ref();
 
@@ -782,13 +1043,17 @@ impl ParallelColbert {
         update_token_ids(&mut config, &tokenizer);
         let skiplist_ids = build_skiplist(&config, &tokenizer);
 
-        // Create multiple sessions
+        // Create multiple sessions with the specified execution provider
         let mut sessions = Vec::with_capacity(num_sessions);
         for _ in 0..num_sessions {
-            let session = Session::builder()?
+            let builder = Session::builder()?
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
                 .with_intra_threads(threads_per_session)?
-                .with_inter_threads(1)?
+                .with_inter_threads(1)?;
+
+            let builder = configure_execution_provider(builder, execution_provider)?;
+
+            let session = builder
                 .commit_from_file(&onnx_path)
                 .context("Failed to load ONNX model")?;
             sessions.push(Mutex::new(session));

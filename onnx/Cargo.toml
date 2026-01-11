@@ -51,8 +51,15 @@ path = "src/bin/benchmark_accelerated.rs"
 name = "test_parallel"
 path = "src/bin/test_parallel.rs"
 
+[features]
+default = []
+cuda = ["ort/cuda"]
+tensorrt = ["ort/tensorrt"]
+coreml = ["ort/coreml"]
+directml = ["ort/directml"]
+
 [dependencies]
-ort = { version = "2.0.0-rc.11", features = ["ndarray", "coreml"] }
+ort = { version = "2.0.0-rc.11", features = ["ndarray"] }
 tokenizers = { version = "0.21.1", default-features = false, features = ["onig"] }
 ndarray = "0.16"
 ndarray-npy = "0.9"
@@ -60,3 +67,6 @@ anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.5", features = ["derive"] }
+
+[build-dependencies]
+cc = "1.0"
