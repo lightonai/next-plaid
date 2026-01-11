@@ -97,33 +97,55 @@ RUST_LOG=debug ./target/release/lategrep-api
 
 ### Docker
 
-Build and run with Docker:
+The API provides three Docker build variants to match your deployment needs.
+
+#### Prerequisites
+
+- Docker 20.10+ installed
+- For CUDA variant: [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+- For model variants: A ColBERT ONNX model (e.g., `answerai-colbert-small-v1`)
+
+#### Build Variants
+
+| Variant | Target | Use Case | Base Image |
+|---------|--------|----------|------------|
+| **CPU Only** | `runtime-cpu` (default) | Search API with pre-computed embeddings | debian:bookworm-slim |
+| **Model (CPU)** | `runtime-model` | Text encoding on CPU | debian:bookworm-slim |
+| **Model (CUDA)** | `runtime-cuda` | GPU-accelerated encoding (~1,700 docs/sec) | nvidia/cuda:12.4.1 |
+
+#### Option 1: Using Make (Recommended)
+
+The simplest way to build and run with Docker:
 
 ```bash
-# From the repository root - CPU only (default, smallest image)
-docker build -t lategrep-api -f api/Dockerfile .
-docker run -p 8080:8080 -v lategrep-data:/data/indices lategrep-api
+# CPU only (default)
+make docker-build
+make docker-up
 
 # With model support (CPU encoding)
-docker build -t lategrep-api:model -f api/Dockerfile --target runtime-model .
-docker run -p 8080:8080 \
-  -v lategrep-data:/data/indices \
-  -v /path/to/models:/models \
-  lategrep-api:model --model /models/colbert
+make docker-up-model
 
-# With CUDA support (GPU encoding) - requires NVIDIA Container Toolkit
-docker build -t lategrep-api:cuda -f api/Dockerfile --target runtime-cuda .
-docker run -p 8080:8080 --gpus all \
-  -v lategrep-data:/data/indices \
-  -v /path/to/models:/models \
-  lategrep-api:cuda --model /models/colbert --cuda
+# With CUDA support (GPU encoding)
+make docker-up-cuda
+
+# View logs
+make docker-logs
+
+# Stop
+make docker-down
 ```
 
-Or use Docker Compose:
+#### Option 2: Using Docker Compose
 
 ```bash
-# From the repository root
+# CPU only (default)
 docker compose up -d
+
+# With model support (CPU encoding)
+docker compose -f docker-compose.yml -f docker-compose.model.yml up -d
+
+# With CUDA support (GPU encoding)
+docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d
 
 # View logs
 docker compose logs -f
@@ -132,21 +154,78 @@ docker compose logs -f
 docker compose down
 ```
 
-The Docker image supports three build variants using `--target`:
+#### Option 3: Using Docker Directly
 
-| Target | Command | Features | Base Image |
-|--------|---------|----------|------------|
-| **runtime-cpu** (default) | `docker build -t api .` | Search API with OpenBLAS | debian:bookworm-slim |
-| **runtime-model** | `docker build --target runtime-model .` | + Text encoding on CPU | debian:bookworm-slim |
-| **runtime-cuda** | `docker build --target runtime-cuda .` | + GPU-accelerated encoding | nvidia/cuda:12.4.1 |
+**Build the image:**
 
-All variants:
-- Expose port 8080
-- Store indices in `/data/indices` (mount a volume to persist)
-- Run as non-root user
-- Include health check endpoint
+```bash
+# From the repository root
 
-**Note:** The CUDA variant requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) and `--gpus all` flag when running.
+# CPU only (default)
+docker build -t lategrep-api -f api/Dockerfile .
+
+# With model support (CPU)
+docker build -t lategrep-api:model -f api/Dockerfile --target runtime-model .
+
+# With CUDA support
+docker build -t lategrep-api:cuda -f api/Dockerfile --target runtime-cuda .
+```
+
+**Run the container:**
+
+```bash
+# CPU only - search API with pre-computed embeddings
+docker run -d \
+  --name lategrep-api \
+  -p 8080:8080 \
+  -v lategrep-indices:/data/indices \
+  lategrep-api
+
+# With model (CPU) - enables text encoding endpoints
+docker run -d \
+  --name lategrep-api \
+  -p 8080:8080 \
+  -v lategrep-indices:/data/indices \
+  -v /path/to/models:/models:ro \
+  lategrep-api:model \
+  --model /models/answerai-colbert-small-v1
+
+# With CUDA - GPU-accelerated encoding
+docker run -d \
+  --name lategrep-api \
+  -p 8080:8080 \
+  --gpus all \
+  -v lategrep-indices:/data/indices \
+  -v /path/to/models:/models:ro \
+  lategrep-api:cuda \
+  --model /models/answerai-colbert-small-v1 --cuda
+```
+
+#### Volume Mounts
+
+| Mount Point | Purpose | Required |
+|-------------|---------|----------|
+| `/data/indices` | Persistent index storage | Yes |
+| `/models` | ONNX model directory | Only for model/cuda variants |
+
+#### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUST_LOG` | `info` | Log level (debug, info, warn, error) |
+| `INDEX_DIR` | `/data/indices` | Index storage directory |
+
+#### Verify the API is Running
+
+```bash
+# Check health
+curl http://localhost:8080/health
+
+# Test encoding (model variants only)
+curl -X POST http://localhost:8080/encode \
+  -H "Content-Type: application/json" \
+  -d '{"texts": ["Hello world"], "input_type": "query"}'
+```
 
 ## API Endpoints
 
