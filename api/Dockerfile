@@ -17,14 +17,16 @@
 #   docker run -p 8080:8080 --gpus all -v data:/data/indices -v models:/models lategrep-api:cuda --model /models/colbert --cuda
 #
 # Auto-download model from HuggingFace Hub:
-#   docker run -p 8080:8080 -e HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1-onnx \
-#     -v data:/data/indices -v models:/models \
-#     lategrep-api:cuda --model /models/GTE-ModernColBERT-v1-onnx --cuda
+#   docker run -p 8080:8080 -v models:/models \
+#     lategrep-api:cuda --model lightonai/GTE-ModernColBERT-v1-onnx --cuda
 #
-# Environment variables for model variants:
-#   HF_MODEL_ID: HuggingFace repo to download (e.g., "lightonai/GTE-ModernColBERT-v1-onnx")
-#   HF_TOKEN: Optional token for private models
-#   MODEL_QUANTIZED: Set to "true" to download INT8 quantized model
+#   # With INT8 quantization (faster):
+#   docker run -p 8080:8080 -v models:/models \
+#     lategrep-api:cuda --model lightonai/GTE-ModernColBERT-v1-onnx --int8 --cuda
+#
+# Environment variables (optional):
+#   HF_TOKEN: Token for private HuggingFace models
+#   MODELS_DIR: Directory to store downloaded models (default: /models)
 # =============================================================================
 
 # =============================================================================
