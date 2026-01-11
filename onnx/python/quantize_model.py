@@ -13,7 +13,6 @@ from pathlib import Path
 from onnxruntime.quantization import QuantType, quantize_dynamic
 
 SUPPORTED_MODELS = [
-    "answerai-colbert-small-v1",
     "GTE-ModernColBERT-v1",
 ]
 
@@ -89,6 +88,7 @@ def benchmark_quantized(model_dir: Path, num_docs: int = 100) -> None:
     tokenizer_path = model_dir / "tokenizer.json"
     # Use a generic bert tokenizer that works with the tokenizer.json
     from tokenizers import Tokenizer
+
     tokenizer = Tokenizer.from_file(str(tokenizer_path))
 
     print(f"\nBenchmarking with {len(documents)} documents...")
@@ -160,9 +160,9 @@ def benchmark_quantized(model_dir: Path, num_docs: int = 100) -> None:
     quantized_rate = run_benchmark(quantized_session, "Quantized (INT8)")
 
     # Summary
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("SUMMARY")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     speedup = quantized_rate / original_rate
     print(f"Speedup from quantization: {speedup:.2f}x")
     if quantized_rate >= 20:
@@ -210,9 +210,9 @@ def main():
             print(f"Skipping {model_dir} (not found)")
             continue
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"Processing: {model_dir.name}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         try:
             quantize_model(model_dir)

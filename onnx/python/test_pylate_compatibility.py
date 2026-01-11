@@ -22,7 +22,6 @@ from pylate import models as pylate_models
 
 # Models to test
 MODELS = {
-    "answerai-colbert-small-v1": "lightonai/answerai-colbert-small-v1",
     "GTE-ModernColBERT-v1": "lightonai/GTE-ModernColBERT-v1",
 }
 
@@ -67,29 +66,6 @@ class TestPyLateCompatibility:
     """Test suite for PyLate compatibility."""
 
     @pytest.fixture(scope="class")
-    def answerai_model(self):
-        """Load answerai-colbert-small-v1 model."""
-        model_dir = get_model_dir("answerai-colbert-small-v1")
-        onnx_path = model_dir / "model.onnx"
-        if not onnx_path.exists():
-            pytest.skip(f"ONNX model not found at {onnx_path}")
-
-        pylate_model = pylate_models.ColBERT(
-            model_name_or_path=MODELS["answerai-colbert-small-v1"],
-            device="cpu",
-            do_query_expansion=False,
-        )
-        onnx_session = ort.InferenceSession(str(onnx_path))
-        config = load_config(model_dir)
-
-        return {
-            "pylate": pylate_model,
-            "onnx": onnx_session,
-            "config": config,
-            "name": "answerai-colbert-small-v1",
-        }
-
-    @pytest.fixture(scope="class")
     def gte_model(self):
         """Load GTE-ModernColBERT-v1 model."""
         model_dir = get_model_dir("GTE-ModernColBERT-v1")
@@ -112,9 +88,7 @@ class TestPyLateCompatibility:
             "name": "GTE-ModernColBERT-v1",
         }
 
-    def _encode_with_onnx(
-        self, text: str, model_data: dict, is_query: bool
-    ) -> np.ndarray:
+    def _encode_with_onnx(self, text: str, model_data: dict, is_query: bool) -> np.ndarray:
         """Encode a single text with ONNX."""
         pylate_model = model_data["pylate"]
         onnx_session = model_data["onnx"]
@@ -194,52 +168,6 @@ class TestPyLateCompatibility:
         return avg_sim, max_diff
 
     # =========================================================================
-    # answerai-colbert-small-v1 tests
-    # =========================================================================
-
-    def test_answerai_query_embeddings(self, answerai_model):
-        """Test that answerai query embeddings match PyLate exactly."""
-        pylate_embs = answerai_model["pylate"].encode(TEST_QUERIES, is_query=True)
-
-        for i, query in enumerate(TEST_QUERIES):
-            onnx_emb = self._encode_with_onnx(query, answerai_model, is_query=True)
-            pylate_emb = pylate_embs[i]
-
-            avg_sim, max_diff = self._compare_embeddings(
-                pylate_emb, onnx_emb, f"Query {i}"
-            )
-
-            assert avg_sim >= MIN_COSINE_SIMILARITY, (
-                f"Query '{query[:30]}...': cosine similarity {avg_sim:.6f} "
-                f"< {MIN_COSINE_SIMILARITY}"
-            )
-            assert max_diff <= MAX_ABS_DIFFERENCE, (
-                f"Query '{query[:30]}...': max abs diff {max_diff:.2e} "
-                f"> {MAX_ABS_DIFFERENCE}"
-            )
-
-    def test_answerai_document_embeddings(self, answerai_model):
-        """Test that answerai document embeddings match PyLate exactly."""
-        pylate_embs = answerai_model["pylate"].encode(TEST_DOCUMENTS, is_query=False)
-
-        for i, doc in enumerate(TEST_DOCUMENTS):
-            onnx_emb = self._encode_with_onnx(doc, answerai_model, is_query=False)
-            pylate_emb = pylate_embs[i]
-
-            avg_sim, max_diff = self._compare_embeddings(
-                pylate_emb, onnx_emb, f"Document {i}"
-            )
-
-            assert avg_sim >= MIN_COSINE_SIMILARITY, (
-                f"Document '{doc[:30]}...': cosine similarity {avg_sim:.6f} "
-                f"< {MIN_COSINE_SIMILARITY}"
-            )
-            assert max_diff <= MAX_ABS_DIFFERENCE, (
-                f"Document '{doc[:30]}...': max abs diff {max_diff:.2e} "
-                f"> {MAX_ABS_DIFFERENCE}"
-            )
-
-    # =========================================================================
     # GTE-ModernColBERT-v1 tests
     # =========================================================================
 
@@ -251,17 +179,14 @@ class TestPyLateCompatibility:
             onnx_emb = self._encode_with_onnx(query, gte_model, is_query=True)
             pylate_emb = pylate_embs[i]
 
-            avg_sim, max_diff = self._compare_embeddings(
-                pylate_emb, onnx_emb, f"Query {i}"
-            )
+            avg_sim, max_diff = self._compare_embeddings(pylate_emb, onnx_emb, f"Query {i}")
 
             assert avg_sim >= MIN_COSINE_SIMILARITY, (
                 f"GTE Query '{query[:30]}...': cosine similarity {avg_sim:.6f} "
                 f"< {MIN_COSINE_SIMILARITY}"
             )
             assert max_diff <= MAX_ABS_DIFFERENCE, (
-                f"GTE Query '{query[:30]}...': max abs diff {max_diff:.2e} "
-                f"> {MAX_ABS_DIFFERENCE}"
+                f"GTE Query '{query[:30]}...': max abs diff {max_diff:.2e} > {MAX_ABS_DIFFERENCE}"
             )
 
     def test_gte_document_embeddings(self, gte_model):
@@ -272,17 +197,14 @@ class TestPyLateCompatibility:
             onnx_emb = self._encode_with_onnx(doc, gte_model, is_query=False)
             pylate_emb = pylate_embs[i]
 
-            avg_sim, max_diff = self._compare_embeddings(
-                pylate_emb, onnx_emb, f"Document {i}"
-            )
+            avg_sim, max_diff = self._compare_embeddings(pylate_emb, onnx_emb, f"Document {i}")
 
             assert avg_sim >= MIN_COSINE_SIMILARITY, (
                 f"GTE Document '{doc[:30]}...': cosine similarity {avg_sim:.6f} "
                 f"< {MIN_COSINE_SIMILARITY}"
             )
             assert max_diff <= MAX_ABS_DIFFERENCE, (
-                f"GTE Document '{doc[:30]}...': max abs diff {max_diff:.2e} "
-                f"> {MAX_ABS_DIFFERENCE}"
+                f"GTE Document '{doc[:30]}...': max abs diff {max_diff:.2e} > {MAX_ABS_DIFFERENCE}"
             )
 
     def test_gte_uses_modernbert(self, gte_model):
@@ -370,14 +292,12 @@ class TestPyLateCompatibilityAllModels:
 
             min_len = min(len(pylate_emb), len(onnx_emb))
             similarities = [
-                compute_cosine_similarity(pylate_emb[j], onnx_emb[j])
-                for j in range(min_len)
+                compute_cosine_similarity(pylate_emb[j], onnx_emb[j]) for j in range(min_len)
             ]
             avg_sim = np.mean(similarities)
 
             assert avg_sim >= MIN_COSINE_SIMILARITY, (
-                f"{name}: Query {i} cosine similarity {avg_sim:.6f} "
-                f"< {MIN_COSINE_SIMILARITY}"
+                f"{name}: Query {i} cosine similarity {avg_sim:.6f} < {MIN_COSINE_SIMILARITY}"
             )
 
         # Test documents
@@ -420,14 +340,12 @@ class TestPyLateCompatibilityAllModels:
 
             min_len = min(len(pylate_emb), len(onnx_emb))
             similarities = [
-                compute_cosine_similarity(pylate_emb[j], onnx_emb[j])
-                for j in range(min_len)
+                compute_cosine_similarity(pylate_emb[j], onnx_emb[j]) for j in range(min_len)
             ]
             avg_sim = np.mean(similarities)
 
             assert avg_sim >= MIN_COSINE_SIMILARITY, (
-                f"{name}: Document {i} cosine similarity {avg_sim:.6f} "
-                f"< {MIN_COSINE_SIMILARITY}"
+                f"{name}: Document {i} cosine similarity {avg_sim:.6f} < {MIN_COSINE_SIMILARITY}"
             )
 
 

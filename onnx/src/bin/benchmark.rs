@@ -8,7 +8,7 @@ use anyhow::Result;
 use colbert_onnx::{Colbert, ExecutionProvider};
 use std::time::Instant;
 
-const MODEL_DIR: &str = "models/answerai-colbert-small-v1";
+const MODEL_DIR: &str = "models/GTE-ModernColBERT-v1";
 
 fn run_benchmark(
     model: &mut Colbert,

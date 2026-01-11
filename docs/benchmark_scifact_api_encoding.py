@@ -14,7 +14,7 @@ This script tests the new encoding endpoints that let the API handle text encodi
 Usage:
     # First, start the API server with a model:
     cargo build --release -p lategrep-api --features model
-    ./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./indices --model ./onnx/models/answerai-colbert-small-v1
+    ./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./indices --model ./onnx/models/GTE-ModernColBERT-v1
 
     # Then run the benchmark:
     python benchmark_scifact_api_encoding.py [--batch-size 10] [--port 8080]
@@ -306,7 +306,9 @@ def run_api_benchmark(
     print("    Testing encode endpoint...")
     try:
         test_encode = client.encode(["test"], "document")
-        print(f"    Encode endpoint working (embedding dim: {len(test_encode['embeddings'][0][0])})")
+        print(
+            f"    Encode endpoint working (embedding dim: {len(test_encode['embeddings'][0][0])})"
+        )
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 400:
             error_body = e.response.json()

@@ -20,7 +20,7 @@ Examples:
   colbert-export lightonai/GTE-ModernColBERT-v1 --quantize
 
   # Export to a specific directory
-  colbert-export lightonai/answerai-colbert-small-v1 -o ./my-models
+  colbert-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
 
   # Export and push to HuggingFace Hub
   colbert-export lightonai/GTE-ModernColBERT-v1 --push-to-hub myorg/my-onnx-model
@@ -29,7 +29,7 @@ Examples:
   colbert-export lightonai/GTE-ModernColBERT-v1 -q --push-to-hub myorg/my-onnx-model
 
 Supported models:
-  - lightonai/answerai-colbert-small-v1 (96-dim, BERT-based)
+  - lightonai/GTE-ModernColBERT-v1 (96-dim, BERT-based)
   - lightonai/GTE-ModernColBERT-v1 (128-dim, ModernBERT-based)
   - Any PyLate-compatible ColBERT model from HuggingFace
 """,

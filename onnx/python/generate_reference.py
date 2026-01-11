@@ -4,7 +4,6 @@ This script generates embeddings for test queries and documents using PyLate,
 then saves them as JSON for comparison with the Rust implementation.
 
 Supports multiple models:
-- lightonai/answerai-colbert-small-v1
 - lightonai/GTE-ModernColBERT-v1
 
 Usage:
@@ -36,7 +35,6 @@ from pylate import models as pylate_models
 
 # Supported models
 SUPPORTED_MODELS = {
-    "lightonai/answerai-colbert-small-v1": "answerai-colbert-small-v1",
     "lightonai/GTE-ModernColBERT-v1": "GTE-ModernColBERT-v1",
 }
 
@@ -67,10 +65,10 @@ def generate_reference_for_model(model_name: str, base_output_dir: Path) -> None
     model_dir = base_output_dir / short_name
     onnx_path = model_dir / "model.onnx"
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Generating reference for: {model_name}")
     print(f"Model directory: {model_dir}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     if not onnx_path.exists():
         print(f"WARNING: ONNX model not found at {onnx_path}")
@@ -298,31 +296,202 @@ def generate_reference_for_model(model_name: str, base_output_dir: Path) -> None
 
 # Vocabulary for generating synthetic long documents
 BENCHMARK_VOCABULARY = [
-    "the", "be", "to", "of", "and", "a", "in", "that", "have", "I",
-    "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
-    "this", "but", "his", "by", "from", "they", "we", "say", "her", "she",
-    "or", "an", "will", "my", "one", "all", "would", "there", "their", "what",
-    "so", "up", "out", "if", "about", "who", "get", "which", "go", "me",
-    "when", "make", "can", "like", "time", "no", "just", "him", "know", "take",
-    "people", "into", "year", "your", "good", "some", "could", "them", "see", "other",
-    "than", "then", "now", "look", "only", "come", "its", "over", "think", "also",
-    "back", "after", "use", "two", "how", "our", "work", "first", "well", "way",
-    "even", "new", "want", "because", "any", "these", "give", "day", "most", "us",
-    "machine", "learning", "artificial", "intelligence", "neural", "network", "deep",
-    "algorithm", "model", "data", "training", "inference", "optimization", "gradient",
-    "descent", "backpropagation", "activation", "function", "layer", "hidden", "input",
-    "output", "weight", "bias", "parameter", "hyperparameter", "loss", "accuracy",
-    "precision", "recall", "classification", "regression", "clustering", "embedding",
-    "representation", "feature", "extraction", "transformation", "normalization",
-    "regularization", "dropout", "batch", "epoch", "iteration", "convergence",
-    "overfitting", "underfitting", "generalization", "validation", "testing", "evaluation",
-    "benchmark", "performance", "efficiency", "scalability", "distributed", "parallel",
-    "computing", "processor", "memory", "storage", "latency", "throughput", "bandwidth",
-    "natural", "language", "processing", "tokenization", "vocabulary", "sequence",
-    "attention", "transformer", "encoder", "decoder", "retrieval", "search", "ranking",
-    "similarity", "distance", "metric", "vector", "matrix", "tensor", "dimension",
-    "technology", "computer", "science", "engineering", "research", "development",
-    "innovation", "experiment", "analysis", "methodology", "framework", "architecture",
+    "the",
+    "be",
+    "to",
+    "of",
+    "and",
+    "a",
+    "in",
+    "that",
+    "have",
+    "I",
+    "it",
+    "for",
+    "not",
+    "on",
+    "with",
+    "he",
+    "as",
+    "you",
+    "do",
+    "at",
+    "this",
+    "but",
+    "his",
+    "by",
+    "from",
+    "they",
+    "we",
+    "say",
+    "her",
+    "she",
+    "or",
+    "an",
+    "will",
+    "my",
+    "one",
+    "all",
+    "would",
+    "there",
+    "their",
+    "what",
+    "so",
+    "up",
+    "out",
+    "if",
+    "about",
+    "who",
+    "get",
+    "which",
+    "go",
+    "me",
+    "when",
+    "make",
+    "can",
+    "like",
+    "time",
+    "no",
+    "just",
+    "him",
+    "know",
+    "take",
+    "people",
+    "into",
+    "year",
+    "your",
+    "good",
+    "some",
+    "could",
+    "them",
+    "see",
+    "other",
+    "than",
+    "then",
+    "now",
+    "look",
+    "only",
+    "come",
+    "its",
+    "over",
+    "think",
+    "also",
+    "back",
+    "after",
+    "use",
+    "two",
+    "how",
+    "our",
+    "work",
+    "first",
+    "well",
+    "way",
+    "even",
+    "new",
+    "want",
+    "because",
+    "any",
+    "these",
+    "give",
+    "day",
+    "most",
+    "us",
+    "machine",
+    "learning",
+    "artificial",
+    "intelligence",
+    "neural",
+    "network",
+    "deep",
+    "algorithm",
+    "model",
+    "data",
+    "training",
+    "inference",
+    "optimization",
+    "gradient",
+    "descent",
+    "backpropagation",
+    "activation",
+    "function",
+    "layer",
+    "hidden",
+    "input",
+    "output",
+    "weight",
+    "bias",
+    "parameter",
+    "hyperparameter",
+    "loss",
+    "accuracy",
+    "precision",
+    "recall",
+    "classification",
+    "regression",
+    "clustering",
+    "embedding",
+    "representation",
+    "feature",
+    "extraction",
+    "transformation",
+    "normalization",
+    "regularization",
+    "dropout",
+    "batch",
+    "epoch",
+    "iteration",
+    "convergence",
+    "overfitting",
+    "underfitting",
+    "generalization",
+    "validation",
+    "testing",
+    "evaluation",
+    "benchmark",
+    "performance",
+    "efficiency",
+    "scalability",
+    "distributed",
+    "parallel",
+    "computing",
+    "processor",
+    "memory",
+    "storage",
+    "latency",
+    "throughput",
+    "bandwidth",
+    "natural",
+    "language",
+    "processing",
+    "tokenization",
+    "vocabulary",
+    "sequence",
+    "attention",
+    "transformer",
+    "encoder",
+    "decoder",
+    "retrieval",
+    "search",
+    "ranking",
+    "similarity",
+    "distance",
+    "metric",
+    "vector",
+    "matrix",
+    "tensor",
+    "dimension",
+    "technology",
+    "computer",
+    "science",
+    "engineering",
+    "research",
+    "development",
+    "innovation",
+    "experiment",
+    "analysis",
+    "methodology",
+    "framework",
+    "architecture",
 ]
 
 
@@ -374,8 +543,7 @@ def generate_benchmark_documents(
         List of synthetic document strings.
     """
     return [
-        generate_long_document(target_tokens=target_tokens, seed=seed + i)
-        for i in range(num_docs)
+        generate_long_document(target_tokens=target_tokens, seed=seed + i) for i in range(num_docs)
     ]
 
 
@@ -402,13 +570,13 @@ def run_benchmark(
     model_dir = base_output_dir / short_name
     onnx_path = model_dir / "model.onnx"
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("ENCODING SPEED BENCHMARK")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     print(f"Model: {model_name}")
     print(f"Documents: {num_docs}")
     print(f"Target tokens per document: {target_tokens}")
-    print(f"{'='*70}\n")
+    print(f"{'=' * 70}\n")
 
     # Generate benchmark documents
     print("Generating benchmark documents...")
@@ -540,20 +708,24 @@ def run_benchmark(
     print(f"  Avg per document: {1000 * onnx_time / num_docs:.3f}ms")
 
     # Summary
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("BENCHMARK SUMMARY")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     print(f"{'Method':<20} {'Time (s)':<12} {'Docs/sec':<12} {'ms/doc':<12}")
-    print(f"{'-'*70}")
-    print(f"{'PyLate':<20} {pylate_time:<12.3f} {pylate_docs_per_sec:<12.1f} {1000*pylate_time/num_docs:<12.3f}")
-    print(f"{'ONNX-Python':<20} {onnx_time:<12.3f} {onnx_docs_per_sec:<12.1f} {1000*onnx_time/num_docs:<12.3f}")
-    print(f"{'-'*70}")
+    print(f"{'-' * 70}")
+    print(
+        f"{'PyLate':<20} {pylate_time:<12.3f} {pylate_docs_per_sec:<12.1f} {1000 * pylate_time / num_docs:<12.3f}"
+    )
+    print(
+        f"{'ONNX-Python':<20} {onnx_time:<12.3f} {onnx_docs_per_sec:<12.1f} {1000 * onnx_time / num_docs:<12.3f}"
+    )
+    print(f"{'-' * 70}")
 
     speedup = pylate_time / onnx_time
     if speedup > 1:
         print(f"ONNX-Python is {speedup:.2f}x faster than PyLate")
     else:
-        print(f"PyLate is {1/speedup:.2f}x faster than ONNX-Python")
+        print(f"PyLate is {1 / speedup:.2f}x faster than ONNX-Python")
 
     # Save benchmark results for Rust comparison
     results = {
@@ -591,11 +763,13 @@ def run_benchmark(
     verification_embeddings = []
     for i in range(min(10, num_docs)):
         emb = pylate_embeddings[i]
-        verification_embeddings.append({
-            "doc_index": i,
-            "shape": list(emb.shape),
-            "embeddings": emb.tolist(),
-        })
+        verification_embeddings.append(
+            {
+                "doc_index": i,
+                "shape": list(emb.shape),
+                "embeddings": emb.tolist(),
+            }
+        )
 
     verification_path = model_dir / "pylate_verification_embeddings.json"
     with open(verification_path, "w") as f:
@@ -653,8 +827,8 @@ def main():
     elif args.model:
         models_to_process = [args.model]
     else:
-        # Default to answerai-colbert-small-v1 for backward compatibility
-        models_to_process = ["lightonai/answerai-colbert-small-v1"]
+        # Default to GTE-ModernColBERT-v1
+        models_to_process = ["lightonai/GTE-ModernColBERT-v1"]
 
     # Run benchmark if requested
     if args.benchmark:
@@ -670,9 +844,9 @@ def main():
                 target_tokens=args.target_tokens,
             )
 
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print("BENCHMARK COMPLETE")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         return
 
     # Generate reference embeddings
@@ -683,9 +857,9 @@ def main():
     for model_name in models_to_process:
         generate_reference_for_model(model_name, base_output_dir)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("COMPLETE")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":

@@ -552,7 +552,9 @@ Examples:
     let addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
     tracing::info!("Listening on http://{}", addr);
     tracing::info!("Swagger UI available at http://{}/swagger-ui", addr);
-    tracing::info!("Rate limiting: 50 req/sec sustained, 100 burst (health, update, encode exempt)");
+    tracing::info!(
+        "Rate limiting: 50 req/sec sustained, 100 burst (health, update, encode exempt)"
+    );
     tracing::info!("Concurrency limit: 100 in-flight requests");
     tracing::info!("Update queue limit: 10 pending tasks per index");
     tracing::info!("Encode batching: max 64 texts, 10ms timeout");

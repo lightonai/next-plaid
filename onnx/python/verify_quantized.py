@@ -51,11 +51,11 @@ def main():
     docs_path = model_dir / "benchmark_documents.json"
     with open(docs_path) as f:
         data = json.load(f)
-    documents = data["documents"][:args.num_docs]
+    documents = data["documents"][: args.num_docs]
 
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     print("QUANTIZED MODEL VERIFICATION")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     print(f"Model: {model_name}")
     print(f"Documents: {len(documents)}")
     print()
@@ -126,7 +126,9 @@ def main():
         return output[valid_indices]
 
     # Compare embeddings
-    print(f"\n{'Doc':<5} {'PyLate':<12} {'FP32':<12} {'INT8':<12} {'PyL vs FP32':<12} {'PyL vs INT8':<12} {'FP32 vs INT8':<12}")
+    print(
+        f"\n{'Doc':<5} {'PyLate':<12} {'FP32':<12} {'INT8':<12} {'PyL vs FP32':<12} {'PyL vs INT8':<12} {'FP32 vs INT8':<12}"
+    )
     print("-" * 85)
 
     all_pyl_fp32 = []
@@ -153,16 +155,20 @@ def main():
         all_pyl_int8.append(avg_pyl_int8)
         all_fp32_int8.append(avg_fp32_int8)
 
-        print(f"{i:<5} {pyl_emb.shape[0]:<12} {fp32_emb.shape[0]:<12} {int8_emb.shape[0]:<12} "
-              f"{avg_pyl_fp32:<12.6f} {avg_pyl_int8:<12.6f} {avg_fp32_int8:<12.6f}")
+        print(
+            f"{i:<5} {pyl_emb.shape[0]:<12} {fp32_emb.shape[0]:<12} {int8_emb.shape[0]:<12} "
+            f"{avg_pyl_fp32:<12.6f} {avg_pyl_int8:<12.6f} {avg_fp32_int8:<12.6f}"
+        )
 
     print("-" * 85)
-    print(f"{'AVG':<5} {'':<12} {'':<12} {'':<12} "
-          f"{np.mean(all_pyl_fp32):<12.6f} {np.mean(all_pyl_int8):<12.6f} {np.mean(all_fp32_int8):<12.6f}")
+    print(
+        f"{'AVG':<5} {'':<12} {'':<12} {'':<12} "
+        f"{np.mean(all_pyl_fp32):<12.6f} {np.mean(all_pyl_int8):<12.6f} {np.mean(all_fp32_int8):<12.6f}"
+    )
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("SUMMARY")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     print(f"PyLate vs ONNX FP32:  avg cosine sim = {np.mean(all_pyl_fp32):.6f}")
     print(f"PyLate vs ONNX INT8:  avg cosine sim = {np.mean(all_pyl_int8):.6f}")
     print(f"ONNX FP32 vs INT8:    avg cosine sim = {np.mean(all_fp32_int8):.6f}")

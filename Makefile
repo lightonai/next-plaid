@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-answerai benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-model docker-build-cuda docker-up docker-up-model docker-up-cuda docker-down docker-logs
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-model docker-build-cuda docker-up docker-up-model docker-up-cuda docker-down docker-logs
 
 all: fmt lint test
 
@@ -129,7 +129,7 @@ benchmark-api-encoding:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
 	rm -rf api/indices
 	cargo build --release -p lategrep-api --features model,cuda
-	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices --model ./onnx/models/answerai-colbert-small-v1 & \
+	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices --model ./onnx/models/GTE-ModernColBERT-v1 & \
 	API_PID=$$!; \
 	sleep 3; \
 	cd docs && uv sync --extra eval && uv run python benchmark_scifact_api_encoding.py --batch-size 100; \
@@ -150,7 +150,7 @@ launch-api-debug:
 onnx-setup:
 	cd onnx/python && uv sync
 
-# Export default model (answerai-colbert-small-v1) to ONNX
+# Export default model (GTE-ModernColBERT-v1) to ONNX
 onnx-export:
 	cd onnx/python && uv run python export_onnx.py
 
@@ -164,7 +164,7 @@ onnx-benchmark:
 
 # Run Rust ONNX benchmark (compares against PyLate)
 onnx-benchmark-rust: onnx-benchmark
-	cd onnx && cargo run --release --bin benchmark_encoding -- --model-dir models/answerai-colbert-small-v1
+	cd onnx && cargo run --release --bin benchmark_encoding -- --model-dir models/GTE-ModernColBERT-v1
 
 # Compare Rust ONNX embeddings against PyLate reference
 onnx-compare:

@@ -1735,7 +1735,7 @@ struct ModelTestFixture {
 #[cfg(feature = "model")]
 impl ModelTestFixture {
     /// Path to the ONNX model directory (relative to workspace root).
-    const MODEL_DIR: &'static str = "onnx/models/answerai-colbert-small-v1";
+    const MODEL_DIR: &'static str = "onnx/models/GTE-ModernColBERT-v1";
 
     /// Create a new model test fixture.
     /// This will export the model to ONNX if it doesn't exist.
@@ -2018,7 +2018,7 @@ async fn test_update_with_encoding() {
     );
     assert!(body.has_metadata);
     assert_eq!(body.metadata_count, Some(5));
-    // answerai-colbert-small-v1 has 96-dim embeddings
+    // GTE-ModernColBERT-v1 has 96-dim embeddings
     assert_eq!(body.dimension, 96, "Expected 96-dim embeddings");
 }
 

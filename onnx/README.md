@@ -47,7 +47,7 @@ use colbert_onnx::Colbert;
 
 fn main() -> anyhow::Result<()> {
     // Load the model
-    let mut model = Colbert::from_pretrained("models/answerai-colbert-small-v1")?;
+    let mut model = Colbert::from_pretrained("models/GTE-ModernColBERT-v1")?;
 
     // Encode documents
     let documents = &[
@@ -110,7 +110,7 @@ colbert-export lightonai/GTE-ModernColBERT-v1
 colbert-export lightonai/GTE-ModernColBERT-v1 --quantize
 
 # Export to a custom directory
-colbert-export lightonai/answerai-colbert-small-v1 -o ./my-models
+colbert-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
 
 # Quantize an existing model
 colbert-quantize ./models/GTE-ModernColBERT-v1
@@ -150,7 +150,7 @@ Any PyLate-compatible ColBERT model from HuggingFace can be exported. Tested mod
 
 | Model | Embedding Dim | FP32 Size | INT8 Size |
 |-------|---------------|-----------|-----------|
-| `lightonai/answerai-colbert-small-v1` | 96 | 127 MB | 34 MB |
+| `lightonai/GTE-ModernColBERT-v1` | 96 | 127 MB | 34 MB |
 | `lightonai/GTE-ModernColBERT-v1` | 128 | 569 MB | 150 MB |
 
 ## API Reference
@@ -161,10 +161,10 @@ Single-session encoder, good for small models or when memory is constrained.
 
 ```rust
 // Load with default settings (auto-detect threads)
-let mut model = Colbert::from_pretrained("models/answerai-colbert-small-v1")?;
+let mut model = Colbert::from_pretrained("models/GTE-ModernColBERT-v1")?;
 
 // Load with specific thread count
-let mut model = Colbert::from_pretrained_with_threads("models/answerai-colbert-small-v1", 8)?;
+let mut model = Colbert::from_pretrained_with_threads("models/GTE-ModernColBERT-v1", 8)?;
 
 // Encode
 let doc_embeddings = model.encode_documents(&["Document 1", "Document 2"])?;

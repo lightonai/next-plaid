@@ -6,7 +6,6 @@ This module creates a unified ONNX model that combines:
 - L2 normalization
 
 Supports multiple models including:
-- lightonai/answerai-colbert-small-v1 (BERT-based)
 - lightonai/GTE-ModernColBERT-v1 (ModernBERT-based)
 
 IMPORTANT: Uses pylate's tokenizer which adds [Q] and [D] as special tokens.

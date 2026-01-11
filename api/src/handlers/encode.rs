@@ -233,7 +233,9 @@ async fn process_encode_batch(items: Vec<EncodeBatchItem>, state: &Arc<AppState>
 
     // Send results back to clients
     for (idx, item) in items.into_iter().enumerate() {
-        let result = results.remove(&idx).unwrap_or_else(|| Err("Missing result".to_string()));
+        let result = results
+            .remove(&idx)
+            .unwrap_or_else(|| Err("Missing result".to_string()));
         // Ignore send errors (client may have disconnected)
         let _ = item.response_tx.send(result);
     }

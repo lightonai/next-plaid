@@ -6,7 +6,6 @@ This script creates a unified ONNX model that combines:
 - L2 normalization
 
 Supports multiple models including:
-- lightonai/answerai-colbert-small-v1 (BERT-based)
 - lightonai/GTE-ModernColBERT-v1 (ModernBERT-based)
 
 IMPORTANT: Uses pylate's tokenizer which adds [Q] and [D] as special tokens.
@@ -16,14 +15,14 @@ Also exports config_sentence_transformers.json with model configuration for
 proper inference (query/document prefixes, lengths, skiplist, etc).
 
 Usage:
-    # Export a single model (default: answerai-colbert-small-v1)
+    # Export a single model (default: GTE-ModernColBERT-v1)
     python export_onnx.py
 
     # Export specific model
     python export_onnx.py --models lightonai/GTE-ModernColBERT-v1
 
     # Export multiple models
-    python export_onnx.py --models lightonai/answerai-colbert-small-v1 lightonai/GTE-ModernColBERT-v1
+    python export_onnx.py --models lightonai/GTE-ModernColBERT-v1
 
     # Export all supported models
     python export_onnx.py --all
@@ -39,7 +38,6 @@ from pylate import models as pylate_models
 
 # Supported models with their short names for output directories
 SUPPORTED_MODELS = {
-    "lightonai/answerai-colbert-small-v1": "answerai-colbert-small-v1",
     "lightonai/GTE-ModernColBERT-v1": "GTE-ModernColBERT-v1",
 }
 
@@ -133,10 +131,10 @@ def export_to_onnx(model_name: str, output_dir: Path) -> None:
     Uses pylate to load the model, which adds [Q] and [D] special tokens
     and extends the embedding matrix accordingly.
     """
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Exporting model: {model_name}")
     print(f"Output directory: {output_dir}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     print(f"Loading pylate model: {model_name}")
     pylate_model = pylate_models.ColBERT(
@@ -287,8 +285,8 @@ def main():
     elif args.models:
         models_to_export = args.models
     else:
-        # Default to answerai-colbert-small-v1 for backward compatibility
-        models_to_export = ["lightonai/answerai-colbert-small-v1"]
+        # Default to GTE-ModernColBERT-v1
+        models_to_export = ["lightonai/GTE-ModernColBERT-v1"]
 
     base_output_dir = Path(args.output_dir)
 
@@ -305,9 +303,9 @@ def main():
         configs[model_name] = config
 
     # Print summary
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("EXPORT SUMMARY")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     for model_name, config in configs.items():
         short_name = get_model_short_name(model_name)
         print(f"\n{model_name}:")

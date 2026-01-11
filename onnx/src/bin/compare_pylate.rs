@@ -9,8 +9,8 @@ use ndarray::{Array1, Array2};
 use serde::Deserialize;
 use std::fs;
 
-const MODEL_DIR: &str = "models/answerai-colbert-small-v1";
-const REFERENCE_PATH: &str = "models/answerai-colbert-small-v1/reference_embeddings.json";
+const MODEL_DIR: &str = "models/GTE-ModernColBERT-v1";
+const REFERENCE_PATH: &str = "models/GTE-ModernColBERT-v1/reference_embeddings.json";
 
 #[derive(Deserialize, Debug)]
 #[allow(dead_code)]

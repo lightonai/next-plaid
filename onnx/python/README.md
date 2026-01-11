@@ -20,7 +20,7 @@ colbert-export lightonai/GTE-ModernColBERT-v1
 colbert-export lightonai/GTE-ModernColBERT-v1 --quantize
 
 # Export to a custom directory
-colbert-export lightonai/answerai-colbert-small-v1 -o ./my-models
+colbert-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
 ```
 
 ### Quantize an Existing Model
@@ -43,7 +43,6 @@ models/<model-name>/
 
 ## Supported Models
 
-- `lightonai/answerai-colbert-small-v1` (96-dim, BERT-based)
 - `lightonai/GTE-ModernColBERT-v1` (128-dim, ModernBERT-based)
 - Any PyLate-compatible ColBERT model from HuggingFace
 

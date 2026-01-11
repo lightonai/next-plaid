@@ -8,7 +8,7 @@
 //! use colbert_onnx::Colbert;
 //!
 //! // Works out of the box - CPU by default
-//! let model = Colbert::from_pretrained("models/answerai-colbert-small-v1")?;
+//! let model = Colbert::from_pretrained("models/GTE-ModernColBERT-v1")?;
 //!
 //! // Encode documents
 //! let doc_embeddings = model.encode_documents(&["Paris is the capital of France."])?;
@@ -58,7 +58,7 @@
 //!
 //! // Force a specific provider
 //! let model = Colbert::from_pretrained_with_options(
-//!     "models/answerai-colbert-small-v1",
+//!     "models/GTE-ModernColBERT-v1",
 //!     4,  // threads
 //!     ExecutionProvider::Cuda,
 //! )?;
@@ -338,7 +338,7 @@ type BatchEncoding = (Vec<i64>, Vec<i64>, Vec<i64>, Vec<u32>);
 /// ```rust,ignore
 /// use colbert_onnx::Colbert;
 ///
-/// let model = Colbert::from_pretrained("models/answerai-colbert-small-v1")?;
+/// let model = Colbert::from_pretrained("models/GTE-ModernColBERT-v1")?;
 ///
 /// let docs = model.encode_documents(&["Hello world", "Rust is great"])?;
 /// let queries = model.encode_queries(&["greeting", "programming language"])?;
@@ -537,7 +537,7 @@ impl Colbert {
     /// # Example
     ///
     /// ```rust,ignore
-    /// let model = Colbert::from_pretrained("models/answerai-colbert-small-v1")?;
+    /// let model = Colbert::from_pretrained("models/GTE-ModernColBERT-v1")?;
     /// ```
     pub fn from_pretrained<P: AsRef<Path>>(model_dir: P) -> Result<Self> {
         let num_threads = std::thread::available_parallelism()
@@ -570,14 +570,14 @@ impl Colbert {
     /// ```rust,ignore
     /// // Force CPU execution
     /// let model = Colbert::from_pretrained_with_options(
-    ///     "models/answerai-colbert-small-v1",
+    ///     "models/GTE-ModernColBERT-v1",
     ///     4,
     ///     ExecutionProvider::Cpu,
     /// )?;
     ///
     /// // Use CUDA if available
     /// let model = Colbert::from_pretrained_with_options(
-    ///     "models/answerai-colbert-small-v1",
+    ///     "models/GTE-ModernColBERT-v1",
     ///     4,
     ///     ExecutionProvider::Cuda,
     /// )?;
@@ -653,7 +653,7 @@ impl Colbert {
     ///     "Rust is a systems programming language.",
     /// ])?;
     ///
-    /// // embeddings[0].shape() -> (num_tokens, 96) for answerai-colbert-small-v1
+    /// // embeddings[0].shape() -> (num_tokens, 128) for GTE-ModernColBERT-v1
     /// ```
     pub fn encode_documents(&mut self, documents: &[&str]) -> Result<Vec<Array2<f32>>> {
         if documents.is_empty() {
@@ -675,7 +675,7 @@ impl Colbert {
     ///     "Best programming language for systems?",
     /// ])?;
     ///
-    /// // embeddings[0].shape() -> (32, 96) for answerai-colbert-small-v1
+    /// // embeddings[0].shape() -> (32, 128) for GTE-ModernColBERT-v1
     /// ```
     pub fn encode_queries(&mut self, queries: &[&str]) -> Result<Vec<Array2<f32>>> {
         if queries.is_empty() {
