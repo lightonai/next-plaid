@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-answerai benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-answerai benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-model docker-build-cuda docker-up docker-up-model docker-up-cuda docker-down docker-logs
 
 all: fmt lint test
 
@@ -178,3 +178,41 @@ onnx-lint:
 # Format ONNX Python code
 onnx-fmt:
 	cd onnx/python && uv run --extra dev ruff format .
+
+# =============================================================================
+# Docker targets
+# =============================================================================
+
+# Build Docker image (CPU only, default)
+docker-build:
+	docker build -t lategrep-api -f api/Dockerfile .
+
+# Build Docker image with model support (CPU encoding)
+docker-build-model:
+	docker build -t lategrep-api:model -f api/Dockerfile --target runtime-model .
+
+# Build Docker image with CUDA support (GPU encoding)
+docker-build-cuda:
+	docker build -t lategrep-api:cuda -f api/Dockerfile --target runtime-cuda .
+
+# Start Docker Compose (CPU only)
+docker-up:
+	docker compose up -d
+
+# Start Docker Compose with model support (CPU encoding)
+# Requires models to be present in ./onnx/models/
+docker-up-model: docker-build-model
+	docker compose -f docker-compose.yml -f docker-compose.model.yml up -d
+
+# Start Docker Compose with CUDA support (GPU encoding)
+# Requires: NVIDIA Container Toolkit and models in ./onnx/models/
+docker-up-cuda: docker-build-cuda
+	docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d
+
+# Stop Docker Compose
+docker-down:
+	docker compose down
+
+# View Docker Compose logs
+docker-logs:
+	docker compose logs -f

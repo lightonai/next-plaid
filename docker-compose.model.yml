@@ -1,0 +1,24 @@
+# =============================================================================
+# Docker Compose override for model support (CPU encoding)
+# Usage: docker compose -f docker-compose.yml -f docker-compose.model.yml up -d
+# Or: make docker-up-model
+# =============================================================================
+
+services:
+  lategrep-api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+      target: runtime-model
+    volumes:
+      - lategrep-indices:/data/indices
+      - ./onnx/models:/models:ro
+    command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "/models/answerai-colbert-small-v1"]
+    healthcheck:
+      start_period: 30s  # Longer start period for model loading
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+        reservations:
+          memory: 4G

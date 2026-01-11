@@ -1,15 +1,25 @@
+# =============================================================================
+# Lategrep API Docker Compose
+# =============================================================================
+# Default configuration runs the CPU-only variant.
+# See commented examples below for model and CUDA variants.
+# =============================================================================
+
 services:
+  # ---------------------------------------------------------------------------
+  # CPU-only variant (default) - smallest image, no encoding support
+  # ---------------------------------------------------------------------------
   lategrep-api:
     build:
       context: .
       dockerfile: api/Dockerfile
+      # target: runtime-cpu  # Default target, can be omitted
     ports:
       - "8080:8080"
     volumes:
       - lategrep-indices:/data/indices
     environment:
       - RUST_LOG=info
-    # Aggressive health check for faster freeze detection (~30s)
     healthcheck:
       test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
       interval: 15s
@@ -17,13 +27,78 @@ services:
       retries: 2
       start_period: 10s
     restart: unless-stopped
-    # Resource limits to prevent memory exhaustion hangs
     deploy:
       resources:
         limits:
           memory: 8G
         reservations:
           memory: 1G
+
+  # ---------------------------------------------------------------------------
+  # Model variant (CPU encoding) - uncomment to use
+  # ---------------------------------------------------------------------------
+  # lategrep-api-model:
+  #   build:
+  #     context: .
+  #     dockerfile: api/Dockerfile
+  #     target: runtime-model
+  #   ports:
+  #     - "8080:8080"
+  #   volumes:
+  #     - lategrep-indices:/data/indices
+  #     - ./models:/models:ro  # Mount your ONNX models here
+  #   environment:
+  #     - RUST_LOG=info
+  #   command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "/models/colbert"]
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
+  #     interval: 15s
+  #     timeout: 5s
+  #     retries: 2
+  #     start_period: 30s  # Longer start period for model loading
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 16G
+  #       reservations:
+  #         memory: 4G
+
+  # ---------------------------------------------------------------------------
+  # CUDA variant (GPU encoding) - uncomment to use
+  # Requires: NVIDIA Container Toolkit (nvidia-docker2)
+  # ---------------------------------------------------------------------------
+  # lategrep-api-cuda:
+  #   build:
+  #     context: .
+  #     dockerfile: api/Dockerfile
+  #     target: runtime-cuda
+  #   ports:
+  #     - "8080:8080"
+  #   volumes:
+  #     - lategrep-indices:/data/indices
+  #     - ./models:/models:ro  # Mount your ONNX models here
+  #   environment:
+  #     - RUST_LOG=info
+  #     - NVIDIA_VISIBLE_DEVICES=all
+  #   command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "/models/colbert", "--cuda"]
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
+  #     interval: 15s
+  #     timeout: 5s
+  #     retries: 2
+  #     start_period: 60s  # Longer start period for CUDA initialization
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 16G
+  #       reservations:
+  #         memory: 4G
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
 
 volumes:
   lategrep-indices:

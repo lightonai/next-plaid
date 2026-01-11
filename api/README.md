@@ -8,6 +8,8 @@ A REST API for deploying and querying lategrep multi-vector search indices.
 - **Two-Phase Creation**: Declare index configuration first, then add documents via update
 - **Document Upload**: Add documents with embeddings and metadata
 - **Search**: Single and batch query search with optional metadata filtering
+- **Text Encoding**: Optional built-in ColBERT model for encoding text to embeddings (requires `--model`)
+- **CUDA Support**: GPU acceleration for encoding (requires `--model --cuda`)
 - **Metadata**: SQLite-based metadata storage with SQL query support
 - **Memory Monitoring**: Health endpoint reports API process memory usage
 - **Rate Limiting**: Built-in protection against overload (50 req/sec sustained, 100 burst)
@@ -69,7 +71,28 @@ RUST_LOG=debug ./target/release/lategrep-api
 -p, --port <PORT>        Port to bind to (default: 8080)
 -d, --index-dir <DIR>    Directory for storing indices (default: ./indices)
 --no-mmap                Disable memory-mapped indices (use more RAM)
+-m, --model <PATH>       Path to ONNX model directory for encoding (optional)
+--cuda                   Use CUDA for model inference (requires --model)
 --help                   Show help message
+```
+
+### Examples
+
+```bash
+# Basic usage
+./target/release/lategrep-api
+
+# Custom port and directory
+./target/release/lategrep-api -p 3000 -d /data/indices
+
+# Enable text encoding with a ColBERT model
+./target/release/lategrep-api --model ./models/colbert
+
+# Enable encoding with CUDA acceleration
+./target/release/lategrep-api --model ./models/colbert --cuda
+
+# Debug logging
+RUST_LOG=debug ./target/release/lategrep-api
 ```
 
 ### Docker
@@ -77,9 +100,23 @@ RUST_LOG=debug ./target/release/lategrep-api
 Build and run with Docker:
 
 ```bash
-# From the repository root
+# From the repository root - CPU only (default, smallest image)
 docker build -t lategrep-api -f api/Dockerfile .
 docker run -p 8080:8080 -v lategrep-data:/data/indices lategrep-api
+
+# With model support (CPU encoding)
+docker build -t lategrep-api:model -f api/Dockerfile --target runtime-model .
+docker run -p 8080:8080 \
+  -v lategrep-data:/data/indices \
+  -v /path/to/models:/models \
+  lategrep-api:model --model /models/colbert
+
+# With CUDA support (GPU encoding) - requires NVIDIA Container Toolkit
+docker build -t lategrep-api:cuda -f api/Dockerfile --target runtime-cuda .
+docker run -p 8080:8080 --gpus all \
+  -v lategrep-data:/data/indices \
+  -v /path/to/models:/models \
+  lategrep-api:cuda --model /models/colbert --cuda
 ```
 
 Or use Docker Compose:
@@ -95,13 +132,21 @@ docker compose logs -f
 docker compose down
 ```
 
-The Docker image:
+The Docker image supports three build variants using `--target`:
 
-- **Includes OpenBLAS** for optimized matrix operations
-- Exposes port 8080
-- Stores indices in `/data/indices` (mount a volume to persist)
-- Runs as non-root user
-- Includes health check endpoint
+| Target | Command | Features | Base Image |
+|--------|---------|----------|------------|
+| **runtime-cpu** (default) | `docker build -t api .` | Search API with OpenBLAS | debian:bookworm-slim |
+| **runtime-model** | `docker build --target runtime-model .` | + Text encoding on CPU | debian:bookworm-slim |
+| **runtime-cuda** | `docker build --target runtime-cuda .` | + GPU-accelerated encoding | nvidia/cuda:12.4.1 |
+
+All variants:
+- Expose port 8080
+- Store indices in `/data/indices` (mount a volume to persist)
+- Run as non-root user
+- Include health check endpoint
+
+**Note:** The CUDA variant requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) and `--gpus all` flag when running.
 
 ## API Endpoints
 
@@ -455,6 +500,115 @@ Request:
   "filter_parameters": ["science", 2020],
   "params": {"top_k": 10}
 }
+```
+
+### Encoding (requires `--model`)
+
+These endpoints require the server to be started with `--model <path>` to load a ColBERT ONNX model. Add `--cuda` for GPU acceleration.
+
+#### Encode Text
+
+Encode text strings into ColBERT embeddings.
+
+```
+POST /encode
+```
+
+Request:
+
+```json
+{
+  "texts": ["Paris is the capital of France.", "What is machine learning?"],
+  "input_type": "document"
+}
+```
+
+The `input_type` can be:
+- `"document"` - For document texts (filters padding tokens)
+- `"query"` - For query texts (uses query expansion with MASK tokens)
+
+Response:
+
+```json
+{
+  "embeddings": [
+    [[0.1, 0.2, ...], [0.3, 0.4, ...]],
+    [[0.5, 0.6, ...]]
+  ],
+  "num_texts": 2
+}
+```
+
+#### Search with Text Queries
+
+Search using text queries instead of pre-computed embeddings.
+
+```
+POST /indices/{name}/search_with_encoding
+```
+
+Request:
+
+```json
+{
+  "queries": ["What is the capital of France?", "How does machine learning work?"],
+  "params": {
+    "top_k": 10,
+    "n_ivf_probe": 8
+  },
+  "subset": [0, 5, 10]
+}
+```
+
+Response: Same as regular search endpoint.
+
+#### Filtered Search with Text Queries
+
+```
+POST /indices/{name}/search/filtered_with_encoding
+```
+
+Request:
+
+```json
+{
+  "queries": ["What is quantum computing?"],
+  "filter_condition": "category = ? AND year >= ?",
+  "filter_parameters": ["science", 2020],
+  "params": {"top_k": 10}
+}
+```
+
+Response: Same as regular filtered search endpoint.
+
+#### Update Index with Text Documents
+
+Add documents using text strings instead of pre-computed embeddings.
+
+```
+POST /indices/{name}/update_with_encoding
+```
+
+Request:
+
+```json
+{
+  "documents": [
+    "Paris is the capital of France.",
+    "Machine learning is a type of artificial intelligence."
+  ],
+  "metadata": [
+    {"title": "Geography", "category": "education"},
+    {"title": "AI Basics", "category": "technology"}
+  ]
+}
+```
+
+Response:
+
+```
+202 Accepted
+"Update queued for batching"
 ```
 
 ### Metadata
@@ -997,9 +1151,19 @@ api/
 │       ├── mod.rs
 │       ├── documents.rs   # Index/document handlers
 │       ├── search.rs      # Search handlers
-│       └── metadata.rs    # Metadata handlers
+│       ├── metadata.rs    # Metadata handlers
+│       └── encode.rs      # Text encoding handlers (requires "model" feature)
 └── Cargo.toml
 ```
+
+### Feature Flags
+
+| Feature | Description |
+|---------|-------------|
+| `openblas` | Enable OpenBLAS for faster matrix operations (Linux) |
+| `accelerate` | Enable Apple Accelerate framework (macOS) |
+| `model` | Enable text encoding with ColBERT ONNX model |
+| `cuda` | Enable CUDA support for GPU-accelerated encoding (includes `model`) |
 
 ## Configuration
 

@@ -1,5 +1,26 @@
-# Build stage
-FROM rust:1.83-bookworm AS builder
+# =============================================================================
+# Lategrep API Dockerfile
+# =============================================================================
+# Supports three build variants using --target:
+#   1. runtime-cpu (default): Search API with OpenBLAS, no model
+#   2. runtime-model: + Text encoding on CPU
+#   3. runtime-cuda: + GPU-accelerated encoding
+#
+# Build examples:
+#   docker build -t lategrep-api -f api/Dockerfile .
+#   docker build -t lategrep-api:model -f api/Dockerfile --target runtime-model .
+#   docker build -t lategrep-api:cuda -f api/Dockerfile --target runtime-cuda .
+#
+# Run examples:
+#   docker run -p 8080:8080 -v data:/data/indices lategrep-api
+#   docker run -p 8080:8080 -v data:/data/indices -v models:/models lategrep-api:model --model /models/colbert
+#   docker run -p 8080:8080 --gpus all -v data:/data/indices -v models:/models lategrep-api:cuda --model /models/colbert --cuda
+# =============================================================================
+
+# =============================================================================
+# Builder stage - CPU only (no model support)
+# =============================================================================
+FROM rust:1.83-bookworm AS builder-cpu
 
 WORKDIR /app
 
@@ -19,15 +40,88 @@ COPY examples ./examples
 # Create empty tests directory to satisfy Cargo.toml references
 RUN mkdir -p tests
 
-# Build the API in release mode with OpenBLAS for 3.6x faster indexing
+# Build the API in release mode with OpenBLAS
 RUN cargo build --release --package lategrep-api --features openblas
 
-# Runtime stage
-FROM debian:bookworm-slim
+# =============================================================================
+# Builder stage - CPU with model support
+# =============================================================================
+FROM rust:1.83-bookworm AS builder-model
 
 WORKDIR /app
 
-# Install runtime dependencies (including OpenBLAS runtime for BLAS acceleration)
+# Install dependencies for building
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    libopenblas-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the workspace files
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY api ./api
+COPY onnx ./onnx
+COPY benches ./benches
+COPY examples ./examples
+RUN mkdir -p tests
+
+# Build with model support (CPU)
+RUN cargo build --release --package lategrep-api --features "openblas,model"
+
+# =============================================================================
+# Builder stage - CUDA with model support
+# =============================================================================
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 AS builder-cuda
+
+WORKDIR /app
+
+# Install Rust and build dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    libopenblas-dev \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Download ONNX Runtime GPU (version must match ort crate - requires >= 1.23.x)
+ARG ORT_VERSION=1.23.0
+RUN mkdir -p /opt/ort_gpu && \
+    wget -q https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz && \
+    tar -xzf onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz && \
+    cp -r onnxruntime-linux-x64-gpu-${ORT_VERSION}/lib/* /opt/ort_gpu/ && \
+    rm -rf onnxruntime-linux-x64-gpu-${ORT_VERSION} onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz
+
+# Copy the workspace files
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY api ./api
+COPY onnx ./onnx
+COPY benches ./benches
+COPY examples ./examples
+RUN mkdir -p tests
+
+# Set environment for CUDA build
+ENV ORT_DYLIB_PATH=/opt/ort_gpu/libonnxruntime.so.${ORT_VERSION}
+ENV LD_LIBRARY_PATH=/opt/ort_gpu:${LD_LIBRARY_PATH}
+
+# Build with CUDA support
+RUN cargo build --release --package lategrep-api --features "openblas,cuda"
+
+# =============================================================================
+# Runtime stage - CPU only (default, smallest image)
+# =============================================================================
+FROM debian:bookworm-slim AS runtime-cpu
+
+WORKDIR /app
+
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
@@ -43,7 +137,7 @@ RUN useradd -m -u 1000 -s /bin/bash lategrep
 RUN mkdir -p /data/indices && chown -R lategrep:lategrep /data
 
 # Copy binary from builder
-COPY --from=builder /app/target/release/lategrep-api /usr/local/bin/lategrep-api
+COPY --from=builder-cpu /app/target/release/lategrep-api /usr/local/bin/lategrep-api
 
 # Switch to non-root user
 USER lategrep
@@ -56,7 +150,100 @@ ENV RUST_LOG=info
 ENV INDEX_DIR=/data/indices
 
 # Health check - aggressive settings for faster freeze detection
-# Detection time: ~30s (15s interval × 2 retries)
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=2 \
+    CMD curl -f --max-time 5 http://localhost:8080/health || exit 1
+
+# Run the API
+ENTRYPOINT ["lategrep-api"]
+CMD ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices"]
+
+# =============================================================================
+# Runtime stage - CPU with model support
+# =============================================================================
+FROM debian:bookworm-slim AS runtime-model
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    libsqlite3-0 \
+    libopenblas0 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -u 1000 -s /bin/bash lategrep
+
+# Create directories for indices and models
+RUN mkdir -p /data/indices /models && chown -R lategrep:lategrep /data /models
+
+# Copy binary from builder
+COPY --from=builder-model /app/target/release/lategrep-api /usr/local/bin/lategrep-api
+
+# Switch to non-root user
+USER lategrep
+
+# Expose API port
+EXPOSE 8080
+
+# Default environment variables
+ENV RUST_LOG=info
+ENV INDEX_DIR=/data/indices
+
+# Health check
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=2 \
+    CMD curl -f --max-time 5 http://localhost:8080/health || exit 1
+
+# Run the API
+ENTRYPOINT ["lategrep-api"]
+CMD ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices"]
+
+# =============================================================================
+# Runtime stage - CUDA with model support
+# =============================================================================
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 AS runtime-cuda
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    libsqlite3-0 \
+    libopenblas0 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -u 1000 -s /bin/bash lategrep
+
+# Create directories for indices, models, and ONNX Runtime
+RUN mkdir -p /data/indices /models /opt/ort_gpu && chown -R lategrep:lategrep /data /models
+
+# Copy ONNX Runtime GPU libraries from builder
+COPY --from=builder-cuda /opt/ort_gpu /opt/ort_gpu
+
+# Copy binary from builder
+COPY --from=builder-cuda /app/target/release/lategrep-api /usr/local/bin/lategrep-api
+
+# Set library paths for CUDA and ONNX Runtime
+ARG ORT_VERSION=1.23.0
+ENV ORT_DYLIB_PATH=/opt/ort_gpu/libonnxruntime.so.${ORT_VERSION}
+ENV LD_LIBRARY_PATH=/opt/ort_gpu:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+
+# Switch to non-root user
+USER lategrep
+
+# Expose API port
+EXPOSE 8080
+
+# Default environment variables
+ENV RUST_LOG=info
+ENV INDEX_DIR=/data/indices
+
+# Health check
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=2 \
     CMD curl -f --max-time 5 http://localhost:8080/health || exit 1
 
