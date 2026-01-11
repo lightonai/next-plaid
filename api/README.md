@@ -9,6 +9,7 @@ A REST API for deploying and querying lategrep multi-vector search indices.
 - **Document Upload**: Add documents with embeddings and metadata
 - **Search**: Single and batch query search with optional metadata filtering
 - **Text Encoding**: Optional built-in ColBERT model for encoding text to embeddings (requires `--model`)
+- **Auto-Download Models**: Automatically download models from HuggingFace Hub (e.g., `--model lightonai/GTE-ModernColBERT-v1-onnx`)
 - **Automatic Batching**: Encode endpoint batches concurrent requests for optimal throughput
 - **CUDA Support**: GPU acceleration for encoding (requires `--model --cuda`)
 - **Metadata**: SQLite-based metadata storage with SQL query support
@@ -104,7 +105,7 @@ The API provides three Docker build variants to match your deployment needs.
 
 - Docker 20.10+ installed
 - For CUDA variant: [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-- For model variants: A ColBERT ONNX model (e.g., `answerai-colbert-small-v1`)
+- Models are automatically downloaded from HuggingFace Hub (no manual setup required)
 
 #### Build Variants
 
@@ -182,25 +183,31 @@ docker run -d \
   -v lategrep-indices:/data/indices \
   lategrep-api
 
-# With model (CPU) - enables text encoding endpoints
+# With model (CPU) - auto-downloads from HuggingFace
 docker run -d \
   --name lategrep-api \
   -p 8080:8080 \
   -v lategrep-indices:/data/indices \
-  -v /path/to/models:/models:ro \
+  -v lategrep-models:/models \
   lategrep-api:model \
-  --model /models/answerai-colbert-small-v1
+  --model lightonai/GTE-ModernColBERT-v1-onnx
 
-# With CUDA - GPU-accelerated encoding
+# With CUDA - GPU-accelerated encoding (auto-downloads INT8 model)
 docker run -d \
   --name lategrep-api \
   -p 8080:8080 \
   --gpus all \
   -v lategrep-indices:/data/indices \
-  -v /path/to/models:/models:ro \
+  -v lategrep-models:/models \
   lategrep-api:cuda \
-  --model /models/answerai-colbert-small-v1 --cuda
+  --model lightonai/GTE-ModernColBERT-v1-onnx --int8 --cuda
 ```
+
+The `--model` argument accepts either:
+- A **local path**: `/models/my-model` (uses existing model directory)
+- A **HuggingFace model ID**: `lightonai/GTE-ModernColBERT-v1-onnx` (auto-downloads if not cached)
+
+Add `--int8` to download the INT8 quantized model for better performance.
 
 #### Volume Mounts
 
@@ -215,6 +222,18 @@ docker run -d \
 |----------|---------|-------------|
 | `RUST_LOG` | `info` | Log level (debug, info, warn, error) |
 | `INDEX_DIR` | `/data/indices` | Index storage directory |
+| `HF_TOKEN` | - | HuggingFace token for private models |
+| `MODELS_DIR` | `/models` | Directory for downloaded models |
+
+#### Available Models
+
+The following ONNX models are available on HuggingFace Hub:
+
+| Model | HuggingFace ID | Embedding Dim | Description |
+|-------|----------------|---------------|-------------|
+| GTE-ModernColBERT | `lightonai/GTE-ModernColBERT-v1-onnx` | 128 | High-quality ColBERT model (recommended) |
+
+Models are cached in the `/models` volume after first download.
 
 #### Verify the API is Running
 
