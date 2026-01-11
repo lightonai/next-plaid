@@ -14,9 +14,10 @@ use ndarray::Array2;
 use lategrep::{filtering, SearchParameters};
 
 use crate::error::{ApiError, ApiResult};
+use crate::handlers::encode::encode_queries_internal;
 use crate::models::{
-    ErrorResponse, FilteredSearchRequest, QueryEmbeddings, QueryResultResponse, SearchRequest,
-    SearchResponse,
+    ErrorResponse, FilteredSearchRequest, FilteredSearchWithEncodingRequest, QueryEmbeddings,
+    QueryResultResponse, SearchRequest, SearchResponse, SearchWithEncodingRequest,
 };
 use crate::state::{AppState, LoadedIndex};
 
@@ -261,4 +262,103 @@ pub async fn search_filtered(
 
     // Delegate to normal search
     search(State(state), Path(name), Json(search_req)).await
+}
+
+/// Search an index using text queries (requires model to be loaded).
+///
+/// This endpoint encodes the text queries using the loaded model and then performs a search.
+/// Requires the server to be started with `--model <path>`.
+#[utoipa::path(
+    post,
+    path = "/indices/{name}/search_with_encoding",
+    tag = "search",
+    params(
+        ("name" = String, Path, description = "Index name")
+    ),
+    request_body = SearchWithEncodingRequest,
+    responses(
+        (status = 200, description = "Search results", body = SearchResponse),
+        (status = 400, description = "Invalid request or model not loaded", body = ErrorResponse),
+        (status = 404, description = "Index not found", body = ErrorResponse)
+    )
+)]
+pub async fn search_with_encoding(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(req): Json<SearchWithEncodingRequest>,
+) -> ApiResult<Json<SearchResponse>> {
+    if req.queries.is_empty() {
+        return Err(ApiError::BadRequest("No queries provided".to_string()));
+    }
+
+    // Encode the text queries
+    let query_embeddings = encode_queries_internal(&state, &req.queries)?;
+
+    // Convert to QueryEmbeddings format
+    let queries: Vec<QueryEmbeddings> = query_embeddings
+        .into_iter()
+        .map(|arr| QueryEmbeddings {
+            embeddings: arr.rows().into_iter().map(|r| r.to_vec()).collect(),
+        })
+        .collect();
+
+    // Create a standard SearchRequest
+    let search_req = SearchRequest {
+        queries,
+        params: req.params,
+        subset: req.subset,
+    };
+
+    // Delegate to the standard search
+    search(State(state), Path(name), Json(search_req)).await
+}
+
+/// Search with text queries and a metadata filter (requires model to be loaded).
+///
+/// This endpoint encodes the text queries using the loaded model and performs a filtered search.
+/// Requires the server to be started with `--model <path>`.
+#[utoipa::path(
+    post,
+    path = "/indices/{name}/search/filtered_with_encoding",
+    tag = "search",
+    params(
+        ("name" = String, Path, description = "Index name")
+    ),
+    request_body = FilteredSearchWithEncodingRequest,
+    responses(
+        (status = 200, description = "Filtered search results", body = SearchResponse),
+        (status = 400, description = "Invalid request, model not loaded, or filter condition", body = ErrorResponse),
+        (status = 404, description = "Index or metadata not found", body = ErrorResponse)
+    )
+)]
+pub async fn search_filtered_with_encoding(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(req): Json<FilteredSearchWithEncodingRequest>,
+) -> ApiResult<Json<SearchResponse>> {
+    if req.queries.is_empty() {
+        return Err(ApiError::BadRequest("No queries provided".to_string()));
+    }
+
+    // Encode the text queries
+    let query_embeddings = encode_queries_internal(&state, &req.queries)?;
+
+    // Convert to QueryEmbeddings format
+    let queries: Vec<QueryEmbeddings> = query_embeddings
+        .into_iter()
+        .map(|arr| QueryEmbeddings {
+            embeddings: arr.rows().into_iter().map(|r| r.to_vec()).collect(),
+        })
+        .collect();
+
+    // Create a FilteredSearchRequest
+    let filtered_req = FilteredSearchRequest {
+        queries,
+        params: req.params,
+        filter_condition: req.filter_condition,
+        filter_parameters: req.filter_parameters,
+    };
+
+    // Delegate to the filtered search
+    search_filtered(State(state), Path(name), Json(filtered_req)).await
 }

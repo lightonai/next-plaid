@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "api"]
+members = [".", "api", "onnx"]
 
 [package]
 name = "lategrep"

@@ -26,6 +26,10 @@ use lategrep_api::{
     state::{ApiConfig, AppState},
 };
 
+// Import colbert_onnx when model feature is enabled
+#[cfg(feature = "model")]
+use colbert_onnx;
+
 /// Test fixture that sets up a temporary API server.
 struct TestFixture {
     client: reqwest::Client,
@@ -42,8 +46,13 @@ impl TestFixture {
             index_dir: temp_dir.path().to_path_buf(),
             use_mmap: false, // Use regular indices for testing
             default_top_k: 10,
+            model_path: None,
+            use_cuda: false,
         };
 
+        #[cfg(feature = "model")]
+        let state = Arc::new(AppState::with_model(config, None));
+        #[cfg(not(feature = "model"))]
         let state = Arc::new(AppState::new(config));
 
         // Build router
@@ -358,8 +367,13 @@ impl RateLimitedTestFixture {
             index_dir: temp_dir.path().to_path_buf(),
             use_mmap: false,
             default_top_k: 10,
+            model_path: None,
+            use_cuda: false,
         };
 
+        #[cfg(feature = "model")]
+        let state = Arc::new(AppState::with_model(config, None));
+        #[cfg(not(feature = "model"))]
         let state = Arc::new(AppState::new(config));
 
         // Build router with rate limiting
@@ -1703,6 +1717,695 @@ async fn test_rate_limiting() {
 
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "healthy", "Expected healthy status");
+}
+
+// =============================================================================
+// Model/Encoding Tests (requires "model" feature)
+// =============================================================================
+
+/// Test fixture for model-based tests that require ONNX encoding.
+/// Automatically exports the model to ONNX if it doesn't exist.
+#[cfg(feature = "model")]
+struct ModelTestFixture {
+    client: reqwest::Client,
+    base_url: String,
+    _temp_dir: TempDir,
+}
+
+#[cfg(feature = "model")]
+impl ModelTestFixture {
+    /// Path to the ONNX model directory (relative to workspace root).
+    const MODEL_DIR: &'static str = "onnx/models/answerai-colbert-small-v1";
+
+    /// Create a new model test fixture.
+    /// This will export the model to ONNX if it doesn't exist.
+    async fn new() -> Self {
+        // Get the workspace root (parent of api directory)
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Failed to get workspace root");
+        let model_path = workspace_root.join(Self::MODEL_DIR);
+
+        // Export model if it doesn't exist
+        if !model_path.join("model.onnx").exists() {
+            Self::export_model(&workspace_root).expect("Failed to export ONNX model");
+        }
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        let config = ApiConfig {
+            index_dir: temp_dir.path().to_path_buf(),
+            use_mmap: false,
+            default_top_k: 10,
+            model_path: Some(model_path.clone()),
+            use_cuda: false,
+        };
+
+        // Load the model
+        let model =
+            colbert_onnx::Colbert::from_pretrained(&model_path).expect("Failed to load ONNX model");
+
+        let state = Arc::new(AppState::with_model(config, Some(model)));
+
+        // Build router with encoding routes
+        let app = build_model_test_router(state);
+
+        // Find available port
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{}", addr);
+
+        // Spawn server
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // Wait for server to start
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .unwrap();
+
+        Self {
+            client,
+            base_url,
+            _temp_dir: temp_dir,
+        }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.base_url, path)
+    }
+
+    /// Export the ONNX model by running the Python export script.
+    fn export_model(workspace_root: &std::path::Path) -> Result<(), String> {
+        let onnx_python_dir = workspace_root.join("onnx/python");
+
+        // Run uv run python export_onnx.py
+        let output = std::process::Command::new("uv")
+            .args(["run", "python", "export_onnx.py"])
+            .current_dir(&onnx_python_dir)
+            .output()
+            .map_err(|e| format!("Failed to run export script: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            return Err(format!(
+                "Export script failed:\nstdout: {}\nstderr: {}",
+                stdout, stderr
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Wait for an index to be populated by polling the index info endpoint.
+    async fn wait_for_index(&self, name: &str, expected_docs: usize, max_wait_ms: u64) {
+        let start = std::time::Instant::now();
+        loop {
+            let resp = self
+                .client
+                .get(self.url(&format!("/indices/{}", name)))
+                .send()
+                .await;
+
+            if let Ok(resp) = resp {
+                if resp.status().is_success() {
+                    if let Ok(info) = resp.json::<IndexInfoResponse>().await {
+                        if info.num_documents >= expected_docs {
+                            return;
+                        }
+                    }
+                }
+            }
+
+            if start.elapsed().as_millis() as u64 > max_wait_ms {
+                panic!(
+                    "Timeout waiting for index '{}' to have {} documents",
+                    name, expected_docs
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+/// Build a test router with model-based encoding routes.
+#[cfg(feature = "model")]
+fn build_model_test_router(state: Arc<AppState>) -> Router {
+    // Index management routes
+    let index_routes = Router::new()
+        .route(
+            "/",
+            get(handlers::list_indices).post(handlers::create_index),
+        )
+        .route(
+            "/{name}",
+            get(handlers::get_index_info).delete(handlers::delete_index),
+        );
+
+    // Document routes (including update_with_encoding)
+    let document_routes = Router::new()
+        .route(
+            "/{name}/documents",
+            post(handlers::add_documents).delete(handlers::delete_documents),
+        )
+        .route("/{name}/update", post(handlers::update_index))
+        .route(
+            "/{name}/update_with_encoding",
+            post(handlers::update_index_with_encoding),
+        )
+        .route("/{name}/config", put(handlers::update_index_config));
+
+    // Search routes (including search_with_encoding)
+    let search_routes = Router::new()
+        .route("/{name}/search", post(handlers::search))
+        .route("/{name}/search/filtered", post(handlers::search_filtered))
+        .route(
+            "/{name}/search_with_encoding",
+            post(handlers::search_with_encoding),
+        )
+        .route(
+            "/{name}/search/filtered_with_encoding",
+            post(handlers::search_filtered_with_encoding),
+        );
+
+    // Metadata routes
+    let metadata_routes = Router::new()
+        .route(
+            "/{name}/metadata",
+            get(handlers::get_all_metadata).post(handlers::add_metadata),
+        )
+        .route("/{name}/metadata/count", get(handlers::get_metadata_count))
+        .route("/{name}/metadata/check", post(handlers::check_metadata))
+        .route("/{name}/metadata/query", post(handlers::query_metadata))
+        .route("/{name}/metadata/get", post(handlers::get_metadata));
+
+    // Encode route
+    let encode_route = Router::new().route("/encode", post(handlers::encode));
+
+    // Combine all routes under /indices
+    let indices_router = Router::new()
+        .merge(index_routes)
+        .merge(document_routes)
+        .merge(search_routes)
+        .merge(metadata_routes);
+
+    // Health check
+    let health_handler = |state: axum::extract::State<Arc<AppState>>| async move {
+        Json(json!({
+            "status": "healthy",
+            "loaded_indices": state.loaded_count()
+        }))
+    };
+
+    Router::new()
+        .route("/health", get(health_handler))
+        .nest("/indices", indices_router)
+        .merge(encode_route)
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
+        .with_state(state)
+}
+
+/// Test update_with_encoding: create an index and add documents using text encoding.
+#[cfg(feature = "model")]
+#[tokio::test]
+async fn test_update_with_encoding() {
+    let fixture = ModelTestFixture::new().await;
+
+    // Step 1: Declare the index
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices"))
+        .json(&json!({
+            "name": "encoding_test",
+            "config": {
+                "nbits": 4,
+                "start_from_scratch": 50
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success(), "Status: {}", resp.status());
+
+    // Step 2: Update with document texts (using encoding)
+    let documents = vec![
+        "Paris is the capital of France and is known for the Eiffel Tower.",
+        "Berlin is the capital of Germany and has rich history.",
+        "Tokyo is the capital of Japan and is a modern metropolis.",
+        "London is the capital of the United Kingdom.",
+        "Rome is the capital of Italy and was the center of the Roman Empire.",
+    ];
+
+    let metadata: Vec<Value> = documents
+        .iter()
+        .enumerate()
+        .map(|(i, doc)| {
+            json!({
+                "doc_id": i,
+                "text": doc,
+                "category": "capitals"
+            })
+        })
+        .collect();
+
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/encoding_test/update_with_encoding"))
+        .json(&json!({
+            "documents": documents,
+            "metadata": metadata
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::ACCEPTED,
+        "Expected 202 Accepted, got: {}",
+        resp.status()
+    );
+
+    // Step 3: Wait for background task to complete
+    fixture.wait_for_index("encoding_test", 5, 30000).await;
+
+    // Step 4: Verify the index has 5 documents
+    let resp = fixture
+        .client
+        .get(fixture.url("/indices/encoding_test"))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success());
+    let body: IndexInfoResponse = resp.json().await.unwrap();
+    assert_eq!(body.name, "encoding_test");
+    assert_eq!(
+        body.num_documents, 5,
+        "Expected 5 documents, got {}",
+        body.num_documents
+    );
+    assert!(body.has_metadata);
+    assert_eq!(body.metadata_count, Some(5));
+    // answerai-colbert-small-v1 has 96-dim embeddings
+    assert_eq!(body.dimension, 96, "Expected 96-dim embeddings");
+}
+
+/// Test search_with_encoding: search an index using text queries.
+#[cfg(feature = "model")]
+#[tokio::test]
+async fn test_search_with_encoding() {
+    let fixture = ModelTestFixture::new().await;
+
+    // Step 1: Declare the index
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices"))
+        .json(&json!({
+            "name": "search_encoding_test",
+            "config": {
+                "nbits": 4,
+                "start_from_scratch": 50
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success(), "Status: {}", resp.status());
+
+    // Step 2: Add documents with encoding
+    let documents = vec![
+        "Paris is the capital of France and is known for the Eiffel Tower.",
+        "Berlin is the capital of Germany and has rich history.",
+        "Tokyo is the capital of Japan and is a modern metropolis.",
+        "London is the capital of the United Kingdom.",
+        "Rome is the capital of Italy and was the center of the Roman Empire.",
+        "Machine learning is a subset of artificial intelligence.",
+        "Deep learning uses neural networks with many layers.",
+        "Natural language processing helps computers understand human language.",
+        "Computer vision enables machines to interpret visual information.",
+        "Reinforcement learning trains agents through rewards and penalties.",
+    ];
+
+    let metadata: Vec<Value> = documents
+        .iter()
+        .enumerate()
+        .map(|(i, doc)| {
+            let category = if i < 5 { "capitals" } else { "ai" };
+            json!({
+                "doc_id": i,
+                "text": doc,
+                "category": category
+            })
+        })
+        .collect();
+
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/search_encoding_test/update_with_encoding"))
+        .json(&json!({
+            "documents": documents,
+            "metadata": metadata
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::ACCEPTED,
+        "Expected 202 Accepted"
+    );
+
+    // Wait for indexing
+    fixture
+        .wait_for_index("search_encoding_test", 10, 30000)
+        .await;
+
+    // Step 3: Search with text query
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/search_encoding_test/search_with_encoding"))
+        .json(&json!({
+            "queries": ["What is the capital of France?"],
+            "params": {"top_k": 5}
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(
+        resp.status().is_success(),
+        "Search failed: {}",
+        resp.status()
+    );
+    let body: SearchResponse = resp.json().await.unwrap();
+
+    assert_eq!(body.num_queries, 1);
+    assert_eq!(body.results.len(), 1);
+    assert!(!body.results[0].document_ids.is_empty());
+
+    // The top result should be about Paris (doc_id 0)
+    // Note: With ColBERT, the most semantically similar document should rank first
+    let top_doc_id = body.results[0].document_ids[0];
+    assert!(
+        top_doc_id == 0 || body.results[0].document_ids.contains(&0),
+        "Expected Paris document (id 0) to be in top results, got {:?}",
+        body.results[0].document_ids
+    );
+
+    // Verify scores are in descending order
+    for i in 1..body.results[0].scores.len() {
+        assert!(
+            body.results[0].scores[i - 1] >= body.results[0].scores[i],
+            "Scores not in descending order"
+        );
+    }
+
+    // Step 4: Test batch search with multiple queries
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/search_encoding_test/search_with_encoding"))
+        .json(&json!({
+            "queries": [
+                "What is machine learning?",
+                "European capital cities",
+                "Neural network architectures"
+            ],
+            "params": {"top_k": 3}
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success());
+    let body: SearchResponse = resp.json().await.unwrap();
+
+    assert_eq!(body.num_queries, 3);
+    assert_eq!(body.results.len(), 3);
+
+    // Each query should have up to 3 results
+    for (i, result) in body.results.iter().enumerate() {
+        assert_eq!(result.query_id, i);
+        assert!(result.document_ids.len() <= 3);
+        assert_eq!(result.document_ids.len(), result.scores.len());
+    }
+
+    // The "machine learning" query should return AI-related documents (ids 5-9)
+    let ml_result = &body.results[0];
+    let ai_docs_in_top: usize = ml_result
+        .document_ids
+        .iter()
+        .filter(|&&id| id >= 5 && id <= 9)
+        .count();
+    assert!(
+        ai_docs_in_top >= 1,
+        "Expected at least 1 AI document in ML query results, got {} from {:?}",
+        ai_docs_in_top,
+        ml_result.document_ids
+    );
+}
+
+/// Test search_with_encoding with subset filtering.
+#[cfg(feature = "model")]
+#[tokio::test]
+async fn test_search_with_encoding_and_subset() {
+    let fixture = ModelTestFixture::new().await;
+
+    // Declare and populate index
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices"))
+        .json(&json!({
+            "name": "subset_encoding_test",
+            "config": {"nbits": 4, "start_from_scratch": 50}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    let documents = vec![
+        "Paris is the capital of France.",
+        "Berlin is the capital of Germany.",
+        "Tokyo is the capital of Japan.",
+        "London is the capital of the UK.",
+        "Rome is the capital of Italy.",
+    ];
+
+    let metadata: Vec<Value> = documents
+        .iter()
+        .enumerate()
+        .map(|(i, _)| json!({"doc_id": i}))
+        .collect();
+
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/subset_encoding_test/update_with_encoding"))
+        .json(&json!({
+            "documents": documents,
+            "metadata": metadata
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+
+    fixture
+        .wait_for_index("subset_encoding_test", 5, 30000)
+        .await;
+
+    // Search with subset - only search in documents 0, 2, 4 (Paris, Tokyo, Rome)
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/subset_encoding_test/search_with_encoding"))
+        .json(&json!({
+            "queries": ["What is the capital of Germany?"],
+            "params": {"top_k": 5},
+            "subset": [0, 2, 4]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success());
+    let body: SearchResponse = resp.json().await.unwrap();
+
+    // Results should only contain documents from the subset
+    for doc_id in &body.results[0].document_ids {
+        assert!(
+            [0, 2, 4].contains(doc_id),
+            "Document {} not in subset [0, 2, 4]",
+            doc_id
+        );
+    }
+
+    // Berlin (doc_id 1) should NOT be in results even though it's the best match
+    assert!(
+        !body.results[0].document_ids.contains(&1),
+        "Berlin (id 1) should not be in results when filtering by subset"
+    );
+}
+
+/// Test filtered_search_with_encoding: search with both text encoding and metadata filter.
+#[cfg(feature = "model")]
+#[tokio::test]
+async fn test_filtered_search_with_encoding() {
+    let fixture = ModelTestFixture::new().await;
+
+    // Declare and populate index
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices"))
+        .json(&json!({
+            "name": "filtered_encoding_test",
+            "config": {"nbits": 4, "start_from_scratch": 50}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
+    let documents = vec![
+        "Paris is the capital of France.",
+        "Berlin is the capital of Germany.",
+        "Tokyo is the capital of Japan.",
+        "Machine learning is transforming industries.",
+        "Deep learning powers modern AI systems.",
+    ];
+
+    let metadata: Vec<Value> = vec![
+        json!({"doc_id": 0, "category": "geography"}),
+        json!({"doc_id": 1, "category": "geography"}),
+        json!({"doc_id": 2, "category": "geography"}),
+        json!({"doc_id": 3, "category": "technology"}),
+        json!({"doc_id": 4, "category": "technology"}),
+    ];
+
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/filtered_encoding_test/update_with_encoding"))
+        .json(&json!({
+            "documents": documents,
+            "metadata": metadata
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+
+    fixture
+        .wait_for_index("filtered_encoding_test", 5, 30000)
+        .await;
+
+    // Search for AI topics but filter to only geography documents
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/filtered_encoding_test/search/filtered_with_encoding"))
+        .json(&json!({
+            "queries": ["artificial intelligence and machine learning"],
+            "filter_condition": "category = ?",
+            "filter_parameters": ["geography"],
+            "params": {"top_k": 5}
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success());
+    let body: SearchResponse = resp.json().await.unwrap();
+
+    // Results should only contain geography documents (ids 0, 1, 2)
+    for doc_id in &body.results[0].document_ids {
+        assert!(
+            *doc_id <= 2,
+            "Document {} is not a geography document (expected 0, 1, or 2)",
+            doc_id
+        );
+    }
+
+    // Technology documents (3, 4) should NOT be in results
+    assert!(
+        !body.results[0].document_ids.contains(&3) && !body.results[0].document_ids.contains(&4),
+        "Technology documents should not be in filtered results"
+    );
+}
+
+/// Test the /encode endpoint directly.
+#[cfg(feature = "model")]
+#[tokio::test]
+async fn test_encode_endpoint() {
+    let fixture = ModelTestFixture::new().await;
+
+    // Test document encoding
+    let resp = fixture
+        .client
+        .post(fixture.url("/encode"))
+        .json(&json!({
+            "texts": ["Paris is the capital of France.", "Machine learning is great."],
+            "input_type": "document"
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(
+        resp.status().is_success(),
+        "Encode failed: {}",
+        resp.status()
+    );
+    let body: Value = resp.json().await.unwrap();
+
+    assert_eq!(body["num_texts"], 2);
+    let embeddings = body["embeddings"].as_array().unwrap();
+    assert_eq!(embeddings.len(), 2);
+
+    // Each embedding should be a 2D array [num_tokens, 96]
+    for emb in embeddings {
+        let tokens = emb.as_array().unwrap();
+        assert!(!tokens.is_empty(), "Embedding should have tokens");
+        let first_token = tokens[0].as_array().unwrap();
+        assert_eq!(first_token.len(), 96, "Embedding dimension should be 96");
+    }
+
+    // Test query encoding
+    let resp = fixture
+        .client
+        .post(fixture.url("/encode"))
+        .json(&json!({
+            "texts": ["What is the capital of France?"],
+            "input_type": "query"
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success());
+    let body: Value = resp.json().await.unwrap();
+
+    assert_eq!(body["num_texts"], 1);
+    let embeddings = body["embeddings"].as_array().unwrap();
+    assert_eq!(embeddings.len(), 1);
+
+    // Query embeddings should have fixed length (32 tokens with expansion)
+    let query_emb = embeddings[0].as_array().unwrap();
+    assert_eq!(
+        query_emb.len(),
+        32,
+        "Query embedding should have 32 tokens (with MASK expansion)"
+    );
 }
 
 /// Test rate limiting recovery with multiple requests.

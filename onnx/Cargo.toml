@@ -5,8 +5,6 @@ edition = "2021"
 description = "Fast ColBERT multi-vector encoding using ONNX Runtime"
 license = "MIT"
 
-[workspace]
-
 [lib]
 name = "colbert_onnx"
 path = "src/lib.rs"

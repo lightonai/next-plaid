@@ -147,14 +147,26 @@ pub fn find_onnxruntime_library() -> Option<String> {
     // Common locations for ONNX Runtime library
     let search_patterns = vec![
         // Python virtual environments (various Python versions)
-        format!("{}/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*", home),
-        format!("{}/venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*", home),
+        format!(
+            "{}/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*",
+            home
+        ),
+        format!(
+            "{}/venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*",
+            home
+        ),
         "python/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*".to_string(),
         ".venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*".to_string(),
         // User site-packages
-        format!("{}/.local/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*", home),
+        format!(
+            "{}/.local/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*",
+            home
+        ),
         // UV cache (common with uv package manager)
-        format!("{}/.cache/uv/archive-v*/*/onnxruntime/capi/libonnxruntime.so*", home),
+        format!(
+            "{}/.cache/uv/archive-v*/*/onnxruntime/capi/libonnxruntime.so*",
+            home
+        ),
         // Conda environments
         format!("{}/anaconda3/lib/libonnxruntime.so*", home),
         format!("{}/miniconda3/lib/libonnxruntime.so*", home),
@@ -612,8 +624,11 @@ impl Colbert {
         // Use larger batch size for GPU execution providers
         let batch_size = match execution_provider {
             ExecutionProvider::Cpu => DEFAULT_CPU_BATCH_SIZE,
-            ExecutionProvider::Auto | ExecutionProvider::Cuda | ExecutionProvider::TensorRT
-            | ExecutionProvider::CoreML | ExecutionProvider::DirectML => DEFAULT_GPU_BATCH_SIZE,
+            ExecutionProvider::Auto
+            | ExecutionProvider::Cuda
+            | ExecutionProvider::TensorRT
+            | ExecutionProvider::CoreML
+            | ExecutionProvider::DirectML => DEFAULT_GPU_BATCH_SIZE,
         };
 
         Ok(Self {

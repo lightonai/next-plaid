@@ -20,11 +20,12 @@ use tokio::time::Instant;
 use lategrep::{filtering, Index, IndexConfig, MmapIndex, UpdateConfig};
 
 use crate::error::{ApiError, ApiResult};
+use crate::handlers::encode::encode_documents_internal;
 use crate::models::{
     AddDocumentsRequest, CreateIndexRequest, CreateIndexResponse, DeleteDocumentsRequest,
     DeleteDocumentsResponse, DeleteIndexResponse, DocumentEmbeddings, ErrorResponse,
     IndexConfigStored, IndexInfoResponse, UpdateIndexConfigRequest, UpdateIndexConfigResponse,
-    UpdateIndexRequest,
+    UpdateIndexRequest, UpdateWithEncodingRequest,
 };
 use crate::state::{AppState, LoadedIndex};
 
@@ -882,4 +883,94 @@ pub async fn update_index_config(
         config: stored_config,
         message,
     }))
+}
+
+/// Update an index with document texts (requires model to be loaded).
+///
+/// This endpoint encodes the document texts using the loaded model and then
+/// adds them to the index. Requires the server to be started with `--model <path>`.
+///
+/// Returns 202 Accepted immediately and processes in background.
+#[utoipa::path(
+    post,
+    path = "/indices/{name}/update_with_encoding",
+    tag = "indices",
+    params(
+        ("name" = String, Path, description = "Index name")
+    ),
+    request_body = UpdateWithEncodingRequest,
+    responses(
+        (status = 202, description = "Request accepted for background processing", body = String),
+        (status = 400, description = "Invalid request or model not loaded", body = ErrorResponse),
+        (status = 404, description = "Index not declared", body = ErrorResponse)
+    )
+)]
+pub async fn update_index_with_encoding(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(req): Json<UpdateWithEncodingRequest>,
+) -> ApiResult<impl IntoResponse> {
+    // Validate name
+    if name.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Index name cannot be empty".to_string(),
+        ));
+    }
+
+    // Check index is declared
+    let index_path = state.index_path(&name);
+    let config_path = index_path.join("config.json");
+    if !config_path.exists() {
+        return Err(ApiError::IndexNotDeclared(name));
+    }
+
+    // Validate input
+    if req.documents.is_empty() {
+        return Err(ApiError::BadRequest(
+            "At least one document is required".to_string(),
+        ));
+    }
+
+    // Validate metadata length
+    if req.metadata.len() != req.documents.len() {
+        return Err(ApiError::BadRequest(format!(
+            "Metadata length ({}) must match documents length ({})",
+            req.metadata.len(),
+            req.documents.len()
+        )));
+    }
+
+    // Encode documents using the model
+    let embeddings = encode_documents_internal(&state, &req.documents)?;
+
+    let doc_count = embeddings.len();
+
+    // Get or create the batch queue for this index
+    let sender = get_or_create_batch_queue(&name, state.clone());
+
+    // Create batch item
+    let batch_item = BatchItem {
+        embeddings,
+        metadata: req.metadata,
+    };
+
+    // Send to batch queue
+    sender.try_send(batch_item).map_err(|e| match e {
+        mpsc::error::TrySendError::Full(_) => ApiError::ServiceUnavailable(format!(
+            "Update queue full for index '{}'. Max {} pending items. Retry later.",
+            name, BATCH_CHANNEL_SIZE
+        )),
+        mpsc::error::TrySendError::Closed(_) => {
+            ApiError::Internal(format!("Batch worker for index '{}' is not running", name))
+        }
+    })?;
+
+    tracing::debug!(
+        index = %name,
+        documents = doc_count,
+        "Update with encoding request queued for batching"
+    );
+
+    // Immediate Response
+    Ok((StatusCode::ACCEPTED, Json("Update queued for batching")))
 }

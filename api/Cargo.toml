@@ -38,6 +38,9 @@ parking_lot = "0.12"
 base64 = "0.22"
 sysinfo = "0.33"
 
+# Model support (optional)
+colbert-onnx = { path = "../onnx", optional = true }
+
 # Rate limiting
 tower_governor = "0.8"
 
@@ -49,6 +52,8 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 default = []
 openblas = ["lategrep/openblas"]
 accelerate = ["lategrep/accelerate"]
+model = ["dep:colbert-onnx"]
+cuda = ["model", "colbert-onnx/cuda"]
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json"] }

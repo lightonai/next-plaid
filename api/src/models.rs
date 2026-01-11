@@ -514,6 +514,87 @@ pub struct UpdateIndexConfigResponse {
 }
 
 // =============================================================================
+// Encoding (requires "model" feature)
+// =============================================================================
+
+/// Type of text input for encoding.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum InputType {
+    /// Query text (uses query expansion with MASK tokens)
+    Query,
+    /// Document text (filters padding and skiplist tokens)
+    Document,
+}
+
+/// Request to encode texts into embeddings.
+#[derive(Debug, Deserialize, ToSchema)]
+#[allow(dead_code)]
+pub struct EncodeRequest {
+    /// List of texts to encode (only used with "model" feature)
+    #[schema(example = json!(["Paris is the capital of France.", "What is machine learning?"]))]
+    pub texts: Vec<String>,
+    /// Type of input (query or document, only used with "model" feature)
+    #[schema(example = "document")]
+    pub input_type: InputType,
+}
+
+/// Response containing embeddings for encoded texts.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EncodeResponse {
+    /// Embeddings for each text: [num_texts][num_tokens][embedding_dim]
+    #[schema(example = json!([[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]]))]
+    pub embeddings: Vec<Vec<Vec<f32>>>,
+    /// Number of texts encoded
+    #[schema(example = 2)]
+    pub num_texts: usize,
+}
+
+/// Request to search using text queries (requires model to be loaded).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SearchWithEncodingRequest {
+    /// Text queries to search with
+    #[schema(example = json!(["What is the capital of France?"]))]
+    pub queries: Vec<String>,
+    /// Search parameters
+    #[serde(default)]
+    pub params: SearchParamsRequest,
+    /// Optional subset of document IDs to search within
+    #[serde(default)]
+    #[schema(example = json!([0, 5, 10, 15]))]
+    pub subset: Option<Vec<i64>>,
+}
+
+/// Request for filtered search using text queries.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct FilteredSearchWithEncodingRequest {
+    /// Text queries to search with
+    #[schema(example = json!(["What is machine learning?"]))]
+    pub queries: Vec<String>,
+    /// Search parameters
+    #[serde(default)]
+    pub params: SearchParamsRequest,
+    /// SQL WHERE condition for filtering
+    #[schema(example = "category = ? AND score > ?")]
+    pub filter_condition: String,
+    /// Parameters for the filter condition
+    #[serde(default)]
+    #[schema(example = json!(["science", 90]))]
+    pub filter_parameters: Vec<serde_json::Value>,
+}
+
+/// Request to update index with document texts (requires model to be loaded).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateWithEncodingRequest {
+    /// Document texts to add
+    #[schema(example = json!(["Paris is the capital of France.", "Machine learning is a type of AI."]))]
+    pub documents: Vec<String>,
+    /// Metadata for each document (must match documents length)
+    #[schema(example = json!([{"title": "Geography"}, {"title": "Computer Science"}]))]
+    pub metadata: Vec<serde_json::Value>,
+}
+
+// =============================================================================
 // Error
 // =============================================================================
 

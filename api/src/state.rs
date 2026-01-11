@@ -5,6 +5,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(feature = "model")]
+use std::sync::Mutex;
 
 use lategrep::{Index, MmapIndex};
 use parking_lot::RwLock;
@@ -20,6 +22,12 @@ pub struct ApiConfig {
     pub use_mmap: bool,
     /// Default number of results to return
     pub default_top_k: usize,
+    /// Path to ONNX model directory (optional, only used with "model" feature)
+    #[allow(dead_code)]
+    pub model_path: Option<PathBuf>,
+    /// Whether to use CUDA execution provider for model inference (only used with "model" feature)
+    #[allow(dead_code)]
+    pub use_cuda: bool,
 }
 
 impl Default for ApiConfig {
@@ -28,6 +36,8 @@ impl Default for ApiConfig {
             index_dir: PathBuf::from("./indices"),
             use_mmap: true,
             default_top_k: 10,
+            model_path: None,
+            use_cuda: false,
         }
     }
 }
@@ -96,10 +106,14 @@ pub struct AppState {
     pub config: ApiConfig,
     /// Loaded indices by name
     indices: RwLock<HashMap<String, Arc<RwLock<LoadedIndex>>>>,
+    /// Optional ONNX model for encoding texts
+    #[cfg(feature = "model")]
+    pub model: Option<Mutex<colbert_onnx::Colbert>>,
 }
 
 impl AppState {
-    /// Create a new application state.
+    /// Create a new application state (without model feature).
+    #[cfg(not(feature = "model"))]
     pub fn new(config: ApiConfig) -> Self {
         // Ensure index directory exists
         if !config.index_dir.exists() {
@@ -109,6 +123,21 @@ impl AppState {
         Self {
             config,
             indices: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Create a new application state with an optional model.
+    #[cfg(feature = "model")]
+    pub fn with_model(config: ApiConfig, model: Option<colbert_onnx::Colbert>) -> Self {
+        // Ensure index directory exists
+        if !config.index_dir.exists() {
+            std::fs::create_dir_all(&config.index_dir).ok();
+        }
+
+        Self {
+            config,
+            indices: RwLock::new(HashMap::new()),
+            model: model.map(Mutex::new),
         }
     }
 

@@ -95,12 +95,7 @@ fn main() -> Result<()> {
     ];
 
     // Expand to 64 documents for GPU batch size optimization
-    let documents: Vec<&str> = base_documents
-        .iter()
-        .cycle()
-        .take(64)
-        .copied()
-        .collect();
+    let documents: Vec<&str> = base_documents.iter().cycle().take(64).copied().collect();
 
     let queries: Vec<&str> = vec![
         "What is the capital of France?",
@@ -122,7 +117,9 @@ fn main() -> Result<()> {
     let config = cpu_model.config();
     println!(
         "Config: query_length={}, document_length={}, batch_size={}",
-        config.query_length, config.document_length, cpu_model.batch_size()
+        config.query_length,
+        config.document_length,
+        cpu_model.batch_size()
     );
 
     let (cpu_doc_per_sec, cpu_query_per_sec) =
@@ -135,7 +132,10 @@ fn main() -> Result<()> {
         println!("Loading model (GPU/CUDA) from {}...", MODEL_DIR);
         match Colbert::from_pretrained_with_options(MODEL_DIR, 4, ExecutionProvider::Cuda) {
             Ok(mut gpu_model) => {
-                println!("CUDA model loaded successfully (batch_size={})", gpu_model.batch_size());
+                println!(
+                    "CUDA model loaded successfully (batch_size={})",
+                    gpu_model.batch_size()
+                );
                 match run_benchmark(&mut gpu_model, &documents, &queries, num_iterations, "GPU") {
                     Ok((doc_per_sec, query_per_sec)) => Some((doc_per_sec, query_per_sec)),
                     Err(e) => {
@@ -164,12 +164,21 @@ fn main() -> Result<()> {
     println!("\n{}", "=".repeat(60));
     println!("SUMMARY");
     println!("{}", "=".repeat(60));
-    println!("\n{:<12} {:>15} {:>15}", "Backend", "Documents/sec", "Queries/sec");
+    println!(
+        "\n{:<12} {:>15} {:>15}",
+        "Backend", "Documents/sec", "Queries/sec"
+    );
     println!("{}", "-".repeat(45));
-    println!("{:<12} {:>15.1} {:>15.1}", "CPU", cpu_doc_per_sec, cpu_query_per_sec);
+    println!(
+        "{:<12} {:>15.1} {:>15.1}",
+        "CPU", cpu_doc_per_sec, cpu_query_per_sec
+    );
 
     if let Some((gpu_doc_per_sec, gpu_query_per_sec)) = gpu_result {
-        println!("{:<12} {:>15.1} {:>15.1}", "GPU", gpu_doc_per_sec, gpu_query_per_sec);
+        println!(
+            "{:<12} {:>15.1} {:>15.1}",
+            "GPU", gpu_doc_per_sec, gpu_query_per_sec
+        );
         println!("{}", "-".repeat(45));
         println!(
             "GPU speedup: {:.2}x (docs), {:.2}x (queries)",

@@ -66,6 +66,15 @@ pub enum ApiError {
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
 
+    /// Model not loaded (encoding endpoints require --model flag)
+    #[error("Model not loaded. Start the server with --model <path> to enable encoding.")]
+    ModelNotLoaded,
+
+    /// Model encoding error (only used with "model" feature)
+    #[error("Model error: {0}")]
+    #[allow(dead_code)]
+    ModelError(String),
+
     /// Lategrep library error
     #[error("Lategrep error: {0}")]
     Lategrep(#[from] lategrep::Error),
@@ -133,6 +142,17 @@ impl IntoResponse for ApiError {
             ApiError::ServiceUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "SERVICE_UNAVAILABLE",
+                msg.clone(),
+            ),
+            ApiError::ModelNotLoaded => (
+                StatusCode::BAD_REQUEST,
+                "MODEL_NOT_LOADED",
+                "No model loaded. Start the server with --model <path> to enable encoding."
+                    .to_string(),
+            ),
+            ApiError::ModelError(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "MODEL_ERROR",
                 msg.clone(),
             ),
             ApiError::Lategrep(e) => (

@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-onnx-api benchmark-onnx-api-answerai benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-answerai benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt
 
 all: fmt lint test
 
@@ -21,9 +21,9 @@ test-release:
 # Run linting (clippy + format check)
 lint: fmt-check clippy
 
-# Run clippy
+# Run clippy (using cross-platform features only)
 clippy:
-	cargo clippy --all-targets --all-features -- -D warnings
+	cargo clippy --all-targets --features npy,filtering -- -D warnings
 
 # Check formatting
 fmt-check:
@@ -45,13 +45,13 @@ bench:
 bench-check:
 	cargo bench --no-run
 
-# Build documentation
+# Build documentation (using cross-platform features only)
 doc:
-	cargo doc --no-deps --all-features
+	cargo doc --no-deps --features npy,filtering
 
 # Open documentation in browser
 doc-open:
-	cargo doc --no-deps --all-features --open
+	cargo doc --no-deps --features npy,filtering --open
 
 # Clean build artifacts
 clean:
@@ -65,16 +65,16 @@ example:
 ci: fmt-check clippy test doc bench-check ci-api test-api-integration ci-onnx
 	@echo "All CI checks passed!"
 
-# Run CI checks for api crate
+# Run CI checks for api crate (using cross-platform features only)
 ci-api:
 	cd api && cargo fmt --all -- --check
-	cd api && cargo clippy --all-targets --all-features -- -D warnings
+	cd api && cargo clippy --all-targets -- -D warnings
 	cd api && cargo test
 
-# Run CI checks for onnx crate
+# Run CI checks for onnx crate (using cross-platform features only)
 ci-onnx:
 	cd onnx && cargo fmt --all -- --check
-	cd onnx && cargo clippy --all-targets --all-features -- -D warnings
+	cd onnx && cargo clippy --all-targets -- -D warnings
 	cd onnx && cargo test
 	cd onnx/python && uv run --extra dev ruff check .
 	cd onnx/python && uv run --extra dev pytest tests/
@@ -114,7 +114,7 @@ benchmark-scifact-update:
 benchmark-scifact-api:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
 	rm -rf api/indices
-	cargo build --release -p lategrep-api --features accelerate
+	cargo build --release -p lategrep-api 
 	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices & \
 	API_PID=$$!; \
 	sleep 2; \
@@ -123,56 +123,16 @@ benchmark-scifact-api:
 	kill $$API_PID 2>/dev/null || true; \
 	exit $$EXIT_CODE
 
-# Benchmark SciFact with ONNX embeddings via REST API (default: answerai-colbert-small-v1)
-# Uses ONNX (Rust) for encoding and Lategrep REST API for indexing/search
-benchmark-onnx-api:
+# Benchmark SciFact with server-side encoding (API encodes text internally)
+# Requires model feature and a downloaded ONNX model
+benchmark-api-encoding:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
 	rm -rf api/indices
-	cargo build --release -p lategrep-api --features accelerate
-	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices & \
+	cargo build --release -p lategrep-api --features model,cuda
+	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices --model ./onnx/models/answerai-colbert-small-v1 & \
 	API_PID=$$!; \
-	sleep 2; \
-	cd docs && uv sync --extra eval && uv run python onnx_benchmark.py --skip-encoding --batch-size 80; \
-	EXIT_CODE=$$?; \
-	kill $$API_PID 2>/dev/null || true; \
-	exit $$EXIT_CODE
-
-# Benchmark SciFact with answerai-colbert-small-v1 ONNX model
-benchmark-onnx-api-answerai:
-	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
-	rm -rf api/indices
-	cargo build --release -p lategrep-api --features accelerate
-	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices & \
-	API_PID=$$!; \
-	sleep 2; \
-	cd docs && uv sync --extra eval && uv run python onnx_benchmark.py --model answerai-colbert-small-v1 --batch-size 80; \
-	EXIT_CODE=$$?; \
-	kill $$API_PID 2>/dev/null || true; \
-	exit $$EXIT_CODE
-
-# Benchmark SciFact with GTE-ModernColBERT-v1 ONNX model
-benchmark-onnx-api-gte:
-	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
-	rm -rf api/indices
-	cargo build --release -p lategrep-api --features accelerate
-	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices & \
-	API_PID=$$!; \
-	sleep 2; \
-	cd docs && uv sync --extra eval && uv run python onnx_benchmark.py --model gte-moderncolbert-v1 --batch-size 80; \
-	EXIT_CODE=$$?; \
-	kill $$API_PID 2>/dev/null || true; \
-	exit $$EXIT_CODE
-
-# GTE-ModernColBERT with INT8 quantization + parallel encoding (20+ docs/sec)
-benchmark-onnx-api-gte-int8:
-	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
-	rm -rf api/indices
-	cargo build --release -p lategrep-api --features accelerate
-	cd onnx && cargo build --release --bin encode_cli
-	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices & \
-	API_PID=$$!; \
-	sleep 2; \
-	cd docs && uv sync --extra eval && uv run python onnx_benchmark.py --model gte-moderncolbert-v1 --batch-size 80 --quantized --parallel; \
+	sleep 3; \
+	cd docs && uv sync --extra eval && uv run python benchmark_scifact_api_encoding.py --batch-size 100; \
 	EXIT_CODE=$$?; \
 	kill $$API_PID 2>/dev/null || true; \
 	exit $$EXIT_CODE

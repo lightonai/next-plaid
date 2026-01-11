@@ -77,7 +77,8 @@ use state::{ApiConfig, AppState};
         (name = "indices", description = "Index management operations"),
         (name = "documents", description = "Document upload and deletion"),
         (name = "search", description = "Search operations"),
-        (name = "metadata", description = "Metadata management and filtering")
+        (name = "metadata", description = "Metadata management and filtering"),
+        (name = "encoding", description = "Text encoding operations (requires --model)")
     ),
     paths(
         health,
@@ -89,8 +90,12 @@ use state::{ApiConfig, AppState};
         handlers::documents::delete_documents,
         handlers::documents::update_index,
         handlers::documents::update_index_config,
+        handlers::documents::update_index_with_encoding,
         handlers::search::search,
         handlers::search::search_filtered,
+        handlers::search::search_with_encoding,
+        handlers::search::search_filtered_with_encoding,
+        handlers::encode::encode,
         handlers::metadata::get_all_metadata,
         handlers::metadata::add_metadata,
         handlers::metadata::get_metadata_count,
@@ -132,6 +137,12 @@ use state::{ApiConfig, AppState};
         models::MetadataCountResponse,
         models::UpdateIndexConfigRequest,
         models::UpdateIndexConfigResponse,
+        models::InputType,
+        models::EncodeRequest,
+        models::EncodeResponse,
+        models::SearchWithEncodingRequest,
+        models::FilteredSearchWithEncodingRequest,
+        models::UpdateWithEncodingRequest,
     ))
 )]
 struct ApiDoc;
@@ -247,6 +258,10 @@ fn build_router(state: Arc<AppState>) -> Router {
     let update_router = Router::new()
         .without_v07_checks()
         .route("/indices/{name}/update", post(handlers::update_index))
+        .route(
+            "/indices/{name}/update_with_encoding",
+            post(handlers::update_index_with_encoding),
+        )
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -285,6 +300,15 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/indices/{name}/search/filtered",
             post(handlers::search_filtered),
         )
+        .route(
+            "/indices/{name}/search_with_encoding",
+            post(handlers::search_with_encoding),
+        )
+        .route(
+            "/indices/{name}/search/filtered_with_encoding",
+            post(handlers::search_filtered_with_encoding),
+        )
+        .route("/encode", post(handlers::encode))
         .route(
             "/indices/{name}/metadata",
             get(handlers::get_all_metadata).post(handlers::add_metadata),
@@ -346,6 +370,8 @@ async fn main() {
     let mut port: u16 = 8080;
     let mut index_dir = PathBuf::from("./indices");
     let mut use_mmap = true;
+    let mut model_path: Option<PathBuf> = None;
+    let mut use_cuda = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -384,6 +410,19 @@ async fn main() {
                 use_mmap = false;
                 i += 1;
             }
+            "--model" | "-m" => {
+                if i + 1 < args.len() {
+                    model_path = Some(PathBuf::from(&args[i + 1]));
+                    i += 2;
+                } else {
+                    eprintln!("Error: --model requires a value");
+                    std::process::exit(1);
+                }
+            }
+            "--cuda" => {
+                use_cuda = true;
+                i += 1;
+            }
             "--help" => {
                 println!(
                     r#"Lategrep API Server
@@ -395,6 +434,8 @@ Options:
   -p, --port <PORT>        Port to bind to (default: 8080)
   -d, --index-dir <DIR>    Directory for storing indices (default: ./indices)
   --no-mmap                Disable memory-mapped indices (use more RAM)
+  -m, --model <PATH>       Path to ONNX model directory for encoding (optional)
+  --cuda                   Use CUDA for model inference (requires --model)
   --help                   Show this help message
 
 Environment Variables:
@@ -404,9 +445,11 @@ Swagger UI:
   http://<host>:<port>/swagger-ui
 
 Examples:
-  lategrep-api                              # Start on port 8080
-  lategrep-api -p 3000 -d /data/indices     # Custom port and directory
-  RUST_LOG=debug lategrep-api               # Debug logging
+  lategrep-api                                          # Start on port 8080
+  lategrep-api -p 3000 -d /data/indices                 # Custom port and directory
+  lategrep-api --model ./models/colbert                 # Enable text encoding
+  lategrep-api --model ./models/colbert --cuda          # Enable encoding with CUDA
+  RUST_LOG=debug lategrep-api                           # Debug logging
 "#
                 );
                 std::process::exit(0);
@@ -424,14 +467,65 @@ Examples:
         index_dir,
         use_mmap,
         default_top_k: 10,
+        model_path: model_path.clone(),
+        use_cuda,
     };
 
     tracing::info!("Starting Lategrep API server");
     tracing::info!("Index directory: {:?}", config.index_dir);
     tracing::info!("Memory-mapped indices: {}", config.use_mmap);
 
+    // Load model if specified
+    #[cfg(feature = "model")]
+    let model = if let Some(ref model_path) = model_path {
+        tracing::info!("Loading ONNX model from: {:?}", model_path);
+        let execution_provider = if use_cuda {
+            tracing::info!("Using CUDA execution provider");
+            colbert_onnx::ExecutionProvider::Cuda
+        } else {
+            tracing::info!("Using CPU execution provider");
+            colbert_onnx::ExecutionProvider::Cpu
+        };
+
+        let num_threads = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4);
+
+        match colbert_onnx::Colbert::from_pretrained_with_options(
+            model_path,
+            num_threads,
+            execution_provider,
+        ) {
+            Ok(model) => {
+                tracing::info!(
+                    "Model loaded successfully (embedding_dim: {}, batch_size: {})",
+                    model.embedding_dim(),
+                    model.batch_size()
+                );
+                Some(model)
+            }
+            Err(e) => {
+                tracing::error!("Failed to load model: {}", e);
+                eprintln!("Error: Failed to load model from {:?}: {}", model_path, e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        tracing::info!("No model specified, encoding endpoints will be disabled");
+        None
+    };
+
     // Create state
-    let state = Arc::new(AppState::new(config));
+    #[cfg(feature = "model")]
+    let state = Arc::new(AppState::with_model(config, model));
+
+    #[cfg(not(feature = "model"))]
+    let state = {
+        if model_path.is_some() {
+            tracing::warn!("Model path specified but 'model' feature is not enabled. Encoding will be disabled.");
+        }
+        Arc::new(AppState::new(config))
+    };
 
     // Build router
     let app = build_router(state);
