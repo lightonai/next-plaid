@@ -246,7 +246,10 @@ impl Index {
             use ndarray_npy::WriteNpyExt;
 
             let centroids_path = index_dir.join("centroids.npy");
-            codec.centroids_view().to_owned().write_npy(File::create(&centroids_path)?)?;
+            codec
+                .centroids_view()
+                .to_owned()
+                .write_npy(File::create(&centroids_path)?)?;
 
             let cutoffs_path = index_dir.join("bucket_cutoffs.npy");
             bucket_cutoffs.write_npy(File::create(&cutoffs_path)?)?;

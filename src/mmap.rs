@@ -630,8 +630,9 @@ impl MmapNpyArray2F32 {
         let bytes = &self._mmap[byte_start..byte_end];
 
         // Safety: We've verified bounds
-        let data =
-            unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f32, nrows * self.shape.1) };
+        let data = unsafe {
+            std::slice::from_raw_parts(bytes.as_ptr() as *const f32, nrows * self.shape.1)
+        };
 
         ArrayView2::from_shape((nrows, self.shape.1), data).unwrap()
     }
