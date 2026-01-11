@@ -16,7 +16,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-colbert-onnx = { path = "path/to/onnx" }
+colbert-onnx = { git = "https://github.com/lightonai/lategrep.git", subdirectory = "onnx" }
 ```
 
 ### Hardware Acceleration (Optional)
@@ -26,16 +26,16 @@ Enable GPU acceleration by adding the appropriate feature:
 ```toml
 [dependencies]
 # NVIDIA CUDA (Linux/Windows)
-colbert-onnx = { path = "path/to/onnx", features = ["cuda"] }
+colbert-onnx = { git = "https://github.com/lightonai/lategrep.git", subdirectory = "onnx", features = ["cuda"] }
 
 # NVIDIA TensorRT (Linux/Windows) - Recommended for NVIDIA GPUs
-colbert-onnx = { path = "path/to/onnx", features = ["tensorrt"] }
+colbert-onnx = { git = "https://github.com/lightonai/lategrep.git", subdirectory = "onnx", features = ["tensorrt"] }
 
 # Apple CoreML (macOS)
-colbert-onnx = { path = "path/to/onnx", features = ["coreml"] }
+colbert-onnx = { git = "https://github.com/lightonai/lategrep.git", subdirectory = "onnx", features = ["coreml"] }
 
 # DirectML (Windows)
-colbert-onnx = { path = "path/to/onnx", features = ["directml"] }
+colbert-onnx = { git = "https://github.com/lightonai/lategrep.git", subdirectory = "onnx", features = ["directml"] }
 ```
 
 ## Quick Start
@@ -114,9 +114,15 @@ colbert-export lightonai/answerai-colbert-small-v1 -o ./my-models
 
 # Quantize an existing model
 colbert-quantize ./models/GTE-ModernColBERT-v1
+
+# Export and push to HuggingFace Hub
+colbert-export lightonai/GTE-ModernColBERT-v1 --quantize --push-to-hub myorg/my-onnx-model
+
+# Push as a private repository
+colbert-export lightonai/GTE-ModernColBERT-v1 -q --push-to-hub myorg/my-onnx-model --private
 ```
 
-#### Alternative: Using uv (development)
+#### Alternative: Using uv (for development)
 
 ```bash
 # Setup Python environment
@@ -132,18 +138,20 @@ uv run python quantize_model.py --model-dir ../models/GTE-ModernColBERT-v1
 This creates:
 ```
 models/GTE-ModernColBERT-v1/
-├── model.onnx                      # FP32 model (569 MB)
-├── model_int8.onnx                 # INT8 quantized (150 MB)
+├── model.onnx                      # FP32 model
+├── model_int8.onnx                 # INT8 quantized (only with --quantize)
 ├── tokenizer.json
 └── config_sentence_transformers.json
 ```
 
 ### Supported Models
 
+Any PyLate-compatible ColBERT model from HuggingFace can be exported. Tested models:
+
 | Model | Embedding Dim | FP32 Size | INT8 Size |
 |-------|---------------|-----------|-----------|
-| `answerai-colbert-small-v1` | 96 | 127 MB | 34 MB |
-| `GTE-ModernColBERT-v1` | 128 | 569 MB | 150 MB |
+| `lightonai/answerai-colbert-small-v1` | 96 | 127 MB | 34 MB |
+| `lightonai/GTE-ModernColBERT-v1` | 128 | 569 MB | 150 MB |
 
 ## API Reference
 
@@ -346,18 +354,31 @@ INT8 quantization maintains high embedding quality:
 ```
 onnx/
 ├── src/
-│   ├── lib.rs              # Colbert, ParallelColbert
+│   ├── lib.rs                      # Colbert, ParallelColbert, ExecutionProvider
 │   └── bin/
-│       ├── encode_cli.rs           # CLI for batch encoding
-│       ├── test_parallel.rs        # ParallelColbert test
+│       ├── encode_cli.rs           # CLI for batch encoding to .npy files
+│       ├── test_parallel.rs        # ParallelColbert test with hardware detection
+│       ├── benchmark.rs            # Basic benchmark
+│       ├── benchmark_accelerated.rs # Hardware-accelerated benchmark
 │       ├── benchmark_encoding.rs   # Encoding benchmark
-│       └── benchmark_accelerated.rs # Parallel benchmark
+│       ├── benchmark_detailed.rs   # Detailed performance analysis
+│       ├── benchmark_dynamic.rs    # Dynamic batching benchmark
+│       ├── benchmark_threads.rs    # Thread scaling benchmark
+│       ├── benchmark_coreml.rs     # CoreML-specific benchmark
+│       └── compare_pylate.rs       # Compare with PyLate reference embeddings
 ├── python/
-│   ├── export_onnx.py      # Model export script
-│   ├── quantize_model.py   # INT8 quantization
-│   ├── verify_quantized.py # Embedding verification
-│   └── pyproject.toml      # Python dependencies
-└── models/                 # Exported models (gitignored)
+│   ├── src/colbert_export/         # Python package
+│   │   ├── cli.py                  # colbert-export & colbert-quantize CLI
+│   │   ├── export.py               # ONNX export logic
+│   │   ├── quantize.py             # INT8 quantization
+│   │   └── hub.py                  # HuggingFace Hub integration
+│   ├── export_onnx.py              # Standalone export script
+│   ├── quantize_model.py           # Standalone quantization script
+│   ├── generate_reference.py       # Generate reference embeddings for testing
+│   ├── verify_quantized.py         # Verify quantized model quality
+│   ├── test_pylate_compatibility.py # PyLate compatibility tests
+│   └── pyproject.toml              # Python package configuration
+└── models/                         # Exported models (gitignored)
 ```
 
 ## License
