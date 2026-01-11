@@ -277,6 +277,24 @@ fn build_router(state: Arc<AppState>) -> Router {
         .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
         .with_state(state.clone());
 
+    // Encode endpoint - exempt from rate limiting (has internal batching with backpressure)
+    let encode_router = Router::new()
+        .route("/encode", post(handlers::encode))
+        .layer(TraceLayer::new_for_http())
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(300),
+        ))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
+        .layer(ConcurrencyLimitLayer::new(100))
+        .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
+        .with_state(state.clone());
+
     // API router with rate limiting - use without_v07_checks to allow :param syntax
     let api_router = Router::new()
         .without_v07_checks()
@@ -308,7 +326,6 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/indices/{name}/search/filtered_with_encoding",
             post(handlers::search_filtered_with_encoding),
         )
-        .route("/encode", post(handlers::encode))
         .route(
             "/indices/{name}/metadata",
             get(handlers::get_all_metadata).post(handlers::add_metadata),
@@ -345,10 +362,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
         .with_state(state);
 
-    // Merge routers: health first (takes precedence), then update (no rate limit), then API
+    // Merge routers: health first (takes precedence), then update/encode (no rate limit), then API
     Router::new()
         .merge(health_router)
         .merge(update_router)
+        .merge(encode_router)
         .merge(api_router)
 }
 
@@ -534,9 +552,10 @@ Examples:
     let addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
     tracing::info!("Listening on http://{}", addr);
     tracing::info!("Swagger UI available at http://{}/swagger-ui", addr);
-    tracing::info!("Rate limiting: 50 req/sec sustained, 100 burst (health & update exempt)");
+    tracing::info!("Rate limiting: 50 req/sec sustained, 100 burst (health, update, encode exempt)");
     tracing::info!("Concurrency limit: 100 in-flight requests");
     tracing::info!("Update queue limit: 10 pending tasks per index");
+    tracing::info!("Encode batching: max 64 texts, 10ms timeout");
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(

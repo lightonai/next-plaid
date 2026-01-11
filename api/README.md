@@ -9,6 +9,7 @@ A REST API for deploying and querying lategrep multi-vector search indices.
 - **Document Upload**: Add documents with embeddings and metadata
 - **Search**: Single and batch query search with optional metadata filtering
 - **Text Encoding**: Optional built-in ColBERT model for encoding text to embeddings (requires `--model`)
+- **Automatic Batching**: Encode endpoint batches concurrent requests for optimal throughput
 - **CUDA Support**: GPU acceleration for encoding (requires `--model --cuda`)
 - **Metadata**: SQLite-based metadata storage with SQL query support
 - **Memory Monitoring**: Health endpoint reports API process memory usage
@@ -111,7 +112,7 @@ The API provides three Docker build variants to match your deployment needs.
 |---------|--------|----------|------------|
 | **CPU Only** | `runtime-cpu` (default) | Search API with pre-computed embeddings | debian:bookworm-slim |
 | **Model (CPU)** | `runtime-model` | Text encoding on CPU | debian:bookworm-slim |
-| **Model (CUDA)** | `runtime-cuda` | GPU-accelerated encoding (~1,700 docs/sec) | nvidia/cuda:12.4.1 |
+| **Model (CUDA)** | `runtime-cuda` | GPU-accelerated encoding | nvidia/cuda:12.4.1 |
 
 #### Option 1: Using Make (Recommended)
 
@@ -1266,6 +1267,7 @@ The API includes built-in rate limiting to protect against accidental overload:
 
 - **Sustained rate**: 50 requests per second
 - **Burst allowance**: Up to 100 requests in a short burst
+- **Exempt endpoints**: `/encode` (has internal batching with backpressure)
 
 When the rate limit is exceeded, the API returns HTTP 429 with a JSON response:
 
@@ -1278,6 +1280,8 @@ When the rate limit is exceeded, the API returns HTTP 429 with a JSON response:
 ```
 
 The response also includes a `retry-after: 2` header indicating how long to wait before retrying.
+
+**Note**: The `/encode` endpoint is exempt from rate limiting because it implements internal request batching. Instead of rate limiting, it uses backpressure via a bounded queue (256 pending requests). If the queue is full, it returns HTTP 503 Service Unavailable.
 
 ### Graceful Shutdown
 
@@ -1305,14 +1309,7 @@ kubectl delete pod lategrep-api-xxxxx
 
 ### SciFact Benchmark (5,183 documents, 1.2M tokens)
 
-Benchmark results using the REST API with batch uploads of 100 documents per request (with BLAS acceleration):
-
-| Metric                        | Value  |
-| ----------------------------- | ------ |
-| **Index time**                | 198.3s |
-| **Search time** (300 queries) | 19.6s  |
-| **Total time**                | 217.9s |
-| **API calls**                 | 52     |
+Benchmark results using the REST API with batch uploads of 100 documents per request (with BLAS acceleration).
 
 #### Memory Usage
 
@@ -1330,13 +1327,6 @@ Benchmark results using the REST API with batch uploads of 100 documents per req
 | NDCG@100   | 0.7633 |
 | Recall@10  | 84.9%  |
 | Recall@100 | 95.9%  |
-
-#### Throughput
-
-| Metric   | Value          |
-| -------- | -------------- |
-| Indexing | 26.1 docs/s    |
-| Search   | 15.3 queries/s |
 
 ### Indexing Performance Notes
 
@@ -1359,7 +1349,30 @@ Lategrep uses a three-phase update strategy that explains the varying indexing s
    - Buffered documents are re-indexed with the improved centroids
    - Ensures retrieval quality stays high as the index grows
 
-In the benchmark above, the first ~10 batches (1,000 documents) are slower because the index is rebuilt from scratch on each update until crossing the 999-document threshold. After that, updates switch to buffer/expansion mode and each batch of 100 documents completes in ~2.5-3 seconds.
+In the benchmark above, the first ~10 batches (1,000 documents) are slower because the index is rebuilt from scratch on each update until crossing the 999-document threshold. After that, updates switch to buffer/expansion mode which is significantly faster.
+
+### Encode Batching
+
+The `/encode` endpoint automatically batches concurrent requests from multiple clients for improved GPU utilization:
+
+**Batching Parameters:**
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `MAX_BATCH_TEXTS` | 64 | Maximum texts per batch before processing |
+| `QUEUE_SIZE` | 256 | Bounded queue for backpressure |
+
+**How it works:**
+
+1. Incoming requests are queued in a channel
+2. A background worker collects requests until either:
+   - 64 texts are accumulated, or
+   - A short timeout has elapsed since the first request
+3. Requests are grouped by `input_type` (query vs document)
+4. Each group is encoded in a single batch for GPU efficiency
+5. Results are distributed back to waiting clients
+
+The batching improves throughput significantly when handling concurrent requests compared to sequential processing.
 
 Run the benchmark yourself:
 
