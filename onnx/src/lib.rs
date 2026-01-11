@@ -65,7 +65,6 @@
 
 use anyhow::{Context, Result};
 use ndarray::Array2;
-use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Tensor;
@@ -76,88 +75,15 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokenizers::Tokenizer;
 
-/// Global initialization state for ONNX Runtime
-static ORT_INIT: OnceCell<()> = OnceCell::new();
-
-/// Initialize ONNX Runtime with the bundled library.
-/// This is called automatically when loading a model.
-fn ensure_ort_initialized() -> Result<()> {
-    ORT_INIT.get_or_try_init(|| {
-        // Try environment variable first
-        if let Ok(path) = std::env::var("ORT_DYLIB_PATH") {
-            if std::path::Path::new(&path).exists() {
-                ort::init_from(&path)
-                    .context("Failed to initialize ONNX Runtime from ORT_DYLIB_PATH")?
-                    .commit();
-                return Ok(());
-            }
-        }
-
-        // Try locations relative to the executable
-        if let Ok(exe_path) = std::env::current_exe() {
-            let exe_dir = exe_path.parent().unwrap_or(std::path::Path::new("."));
-
-            // Check for lib next to executable
-            let lib_next_to_exe = exe_dir.join("libonnxruntime.so");
-            if lib_next_to_exe.exists() {
-                ort::init_from(&lib_next_to_exe)
-                    .context("Failed to initialize ONNX Runtime from executable directory")?
-                    .commit();
-                return Ok(());
-            }
-
-            // Check in ../lib relative to executable
-            let lib_in_lib_dir = exe_dir.join("../lib/libonnxruntime.so");
-            if lib_in_lib_dir.exists() {
-                ort::init_from(&lib_in_lib_dir)
-                    .context("Failed to initialize ONNX Runtime from lib directory")?
-                    .commit();
-                return Ok(());
-            }
-        }
-
-        // Try the build-time downloaded path (embedded at compile time)
-        let build_time_path = include_str!(concat!(env!("OUT_DIR"), "/ort_lib_path.txt"));
-        if std::path::Path::new(build_time_path).exists() {
-            ort::init_from(build_time_path)
-                .context("Failed to initialize ONNX Runtime from bundled library")?
-                .commit();
-            return Ok(());
-        }
-
-        // Try common system locations
-        let system_paths = [
-            "/usr/lib/libonnxruntime.so",
-            "/usr/local/lib/libonnxruntime.so",
-            "/opt/onnxruntime/lib/libonnxruntime.so",
-        ];
-
-        for path in &system_paths {
-            if std::path::Path::new(path).exists() {
-                ort::init_from(path)
-                    .context("Failed to initialize ONNX Runtime from system path")?
-                    .commit();
-                return Ok(());
-            }
-        }
-
-        Err(anyhow::anyhow!(
-            "ONNX Runtime library not found. Please set ORT_DYLIB_PATH environment variable \
-             to point to libonnxruntime.so, or install ONNX Runtime system-wide."
-        ))
-    })?;
-    Ok(())
-}
-
 // Conditional imports for execution providers
 #[cfg(feature = "cuda")]
 use ort::execution_providers::CUDAExecutionProvider;
-#[cfg(feature = "tensorrt")]
-use ort::execution_providers::TensorRTExecutionProvider;
 #[cfg(feature = "coreml")]
 use ort::execution_providers::CoreMLExecutionProvider;
 #[cfg(feature = "directml")]
 use ort::execution_providers::DirectMLExecutionProvider;
+#[cfg(feature = "tensorrt")]
+use ort::execution_providers::TensorRTExecutionProvider;
 
 use ort::session::builder::SessionBuilder;
 
@@ -540,9 +466,6 @@ impl Colbert {
         num_threads: usize,
         execution_provider: ExecutionProvider,
     ) -> Result<Self> {
-        // Initialize ONNX Runtime with bundled library
-        ensure_ort_initialized()?;
-
         let model_dir = model_dir.as_ref();
 
         // Find ONNX model
@@ -1091,9 +1014,6 @@ impl ParallelColbert {
         batch_size: usize,
         execution_provider: ExecutionProvider,
     ) -> Result<Self> {
-        // Initialize ONNX Runtime with bundled library
-        ensure_ort_initialized()?;
-
         let model_dir = model_dir.as_ref();
 
         // Select model file

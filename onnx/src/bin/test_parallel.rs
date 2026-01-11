@@ -79,14 +79,16 @@ fn main() -> Result<()> {
     };
 
     // Default sessions based on provider (fewer for GPU)
-    let num_sessions = args.sessions.unwrap_or(if provider == ExecutionProvider::Cpu {
-        25
-    } else if provider == ExecutionProvider::Auto {
-        // For Auto, we don't know if GPU will be used, so use moderate default
-        8
-    } else {
-        4
-    });
+    let num_sessions = args
+        .sessions
+        .unwrap_or(if provider == ExecutionProvider::Cpu {
+            25
+        } else if provider == ExecutionProvider::Auto {
+            // For Auto, we don't know if GPU will be used, so use moderate default
+            8
+        } else {
+            4
+        });
 
     let precision = if args.fp32 { "FP32" } else { "INT8" };
     println!(
