@@ -16,55 +16,26 @@ name = "benchmark"
 path = "src/bin/benchmark.rs"
 
 [[bin]]
-name = "benchmark_detailed"
-path = "src/bin/benchmark_detailed.rs"
-
-[[bin]]
-name = "benchmark_dynamic"
-path = "src/bin/benchmark_dynamic.rs"
-
-[[bin]]
-name = "encode_cli"
-path = "src/bin/encode_cli.rs"
-
-[[bin]]
 name = "compare_pylate"
 path = "src/bin/compare_pylate.rs"
 
-[[bin]]
-name = "benchmark_encoding"
-path = "src/bin/benchmark_encoding.rs"
-
-[[bin]]
-name = "benchmark_coreml"
-path = "src/bin/benchmark_coreml.rs"
-
-[[bin]]
-name = "benchmark_threads"
-path = "src/bin/benchmark_threads.rs"
-
-[[bin]]
-name = "benchmark_accelerated"
-path = "src/bin/benchmark_accelerated.rs"
-
-[[bin]]
-name = "test_parallel"
-path = "src/bin/test_parallel.rs"
-
 [features]
-default = []
+default = []  # CPU by default - works everywhere out of the box
 cuda = ["ort/cuda"]
 tensorrt = ["ort/tensorrt"]
 coreml = ["ort/coreml"]
 directml = ["ort/directml"]
 
 [dependencies]
-ort = { version = "2.0.0-rc.11", features = ["ndarray"] }
+# ort with download-binaries handles everything automatically:
+# - Downloads correct ONNX Runtime for your platform
+# - CPU works out of the box
+# - Enable cuda/tensorrt/coreml/directml features for GPU acceleration
+# Using load-dynamic for better compatibility across systems
+ort = { version = "2.0.0-rc.11", features = ["ndarray", "load-dynamic"] }
 tokenizers = { version = "0.21.1", default-features = false, features = ["onig"] }
 ndarray = "0.16"
-ndarray-npy = "0.9"
 anyhow = "1.0"
+glob = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-clap = { version = "4.5", features = ["derive"] }
-

@@ -7,7 +7,7 @@
 //! ```rust,ignore
 //! use colbert_onnx::Colbert;
 //!
-//! // Automatically uses the best available hardware (CUDA, CoreML, etc.)
+//! // Works out of the box - CPU by default
 //! let model = Colbert::from_pretrained("models/answerai-colbert-small-v1")?;
 //!
 //! // Encode documents
@@ -17,49 +17,66 @@
 //! let query_embeddings = model.encode_queries(&["What is the capital of France?"])?;
 //! ```
 //!
-//! ## Hardware Acceleration
+//! ## Installation
 //!
-//! Hardware acceleration is automatic - the library tries providers in order:
-//! **TensorRT > CUDA > CoreML > DirectML > CPU**
+//! **Step 1:** Install ONNX Runtime via pip (easiest method):
 //!
-//! Enable features in `Cargo.toml` to unlock GPU acceleration:
+//! ```bash
+//! # CPU only
+//! pip install onnxruntime
+//!
+//! # With CUDA support for NVIDIA GPUs
+//! pip install onnxruntime-gpu
+//! ```
+//!
+//! **Step 2:** Add the crate to your project:
 //!
 //! ```toml
 //! [dependencies]
-//! colbert-onnx = { version = "0.1", features = ["cuda"] }  # NVIDIA GPUs
-//! # Or: features = ["tensorrt"]  # NVIDIA TensorRT (best performance)
-//! # Or: features = ["coreml"]    # Apple Silicon
-//! # Or: features = ["directml"]  # Windows GPUs
+//! colbert-onnx = "0.1"
+//!
+//! # Or with CUDA feature enabled
+//! colbert-onnx = { version = "0.1", features = ["cuda"] }
 //! ```
 //!
-//! To force a specific provider:
+//! The library automatically finds the ONNX Runtime library from your Python installation.
+//!
+//! ## Hardware Acceleration
+//!
+//! Enable GPU acceleration by adding the appropriate feature:
+//!
+//! - `cuda` - NVIDIA CUDA (Linux/Windows)
+//! - `tensorrt` - NVIDIA TensorRT (optimized CUDA)
+//! - `coreml` - Apple Silicon (macOS)
+//! - `directml` - Windows GPUs (DirectX 12)
+//!
+//! When GPU features are enabled, the library automatically uses GPU if available
+//! and falls back to CPU if not.
 //!
 //! ```rust,ignore
 //! use colbert_onnx::{Colbert, ExecutionProvider};
 //!
+//! // Force a specific provider
 //! let model = Colbert::from_pretrained_with_options(
 //!     "models/answerai-colbert-small-v1",
 //!     4,  // threads
-//!     ExecutionProvider::Cuda,  // Force CUDA
+//!     ExecutionProvider::Cuda,
 //! )?;
 //! ```
 //!
 //! ## High-Performance Parallel Encoding
 //!
-//! For maximum throughput (20+ docs/sec on large models like GTE-ModernColBERT),
-//! use [`ParallelColbert`] with INT8 quantization:
+//! For maximum throughput, use [`ParallelColbert`] with multiple sessions:
 //!
 //! ```rust,ignore
 //! use colbert_onnx::ParallelColbert;
 //!
-//! // Auto-detects best hardware, uses INT8 quantization and 25 parallel sessions
 //! let model = ParallelColbert::builder("models/GTE-ModernColBERT-v1")
-//!     .with_quantized(true)      // Use model_int8.onnx
+//!     .with_quantized(true)      // Use model_int8.onnx for faster inference
 //!     .with_num_sessions(25)     // 25 parallel ONNX sessions
 //!     .with_batch_size(2)        // Process 2 docs per session
 //!     .build()?;
 //!
-//! // Encode documents in parallel
 //! let embeddings = model.encode_documents(&documents)?;
 //! ```
 
@@ -72,12 +89,97 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use std::sync::Once;
 use std::sync::{Arc, Mutex};
 use tokenizers::Tokenizer;
 
 // Conditional imports for execution providers
 #[cfg(feature = "cuda")]
 use ort::execution_providers::CUDAExecutionProvider;
+
+// =============================================================================
+// ONNX Runtime initialization
+// =============================================================================
+
+static ORT_INIT: Once = Once::new();
+
+/// Initialize ONNX Runtime by finding and loading the dynamic library.
+///
+/// This is called automatically when creating a model. It searches for the
+/// ONNX Runtime library in common installation locations.
+///
+/// ## Library Search Order
+///
+/// 1. `ORT_DYLIB_PATH` environment variable (if set)
+/// 2. Python onnxruntime package (pip install onnxruntime or onnxruntime-gpu)
+/// 3. System library paths
+///
+/// ## Installation
+///
+/// The easiest way to get ONNX Runtime is via pip:
+/// ```bash
+/// # CPU only
+/// pip install onnxruntime
+///
+/// # With CUDA support
+/// pip install onnxruntime-gpu
+/// ```
+pub fn init_ort_runtime() {
+    ORT_INIT.call_once(|| {
+        // If ORT_DYLIB_PATH is already set, ort will use it
+        if std::env::var("ORT_DYLIB_PATH").is_ok() {
+            return;
+        }
+
+        // Try to find ONNX Runtime in common locations
+        if let Some(lib_path) = find_onnxruntime_library() {
+            std::env::set_var("ORT_DYLIB_PATH", &lib_path);
+        }
+    });
+}
+
+/// Find the ONNX Runtime library in common installation locations.
+///
+/// Returns the path to the library if found, or None otherwise.
+pub fn find_onnxruntime_library() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+
+    // Common locations for ONNX Runtime library
+    let search_patterns = vec![
+        // Python virtual environments (various Python versions)
+        format!("{}/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*", home),
+        format!("{}/venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*", home),
+        "python/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*".to_string(),
+        ".venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*".to_string(),
+        // User site-packages
+        format!("{}/.local/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*", home),
+        // UV cache (common with uv package manager)
+        format!("{}/.cache/uv/archive-v*/*/onnxruntime/capi/libonnxruntime.so*", home),
+        // Conda environments
+        format!("{}/anaconda3/lib/libonnxruntime.so*", home),
+        format!("{}/miniconda3/lib/libonnxruntime.so*", home),
+        // System locations
+        "/usr/local/lib/libonnxruntime.so*".to_string(),
+        "/usr/lib/libonnxruntime.so*".to_string(),
+        "/usr/lib/x86_64-linux-gnu/libonnxruntime.so*".to_string(),
+    ];
+
+    for pattern in search_patterns {
+        if let Ok(paths) = glob::glob(&pattern) {
+            for path in paths.flatten() {
+                if path.exists() && path.is_file() {
+                    // Prefer versioned .so files (e.g., libonnxruntime.so.1.23.0)
+                    let path_str = path.to_string_lossy();
+                    if path_str.contains(".so.") || path_str.ends_with(".so") {
+                        return Some(path.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
 #[cfg(feature = "coreml")]
 use ort::execution_providers::CoreMLExecutionProvider;
 #[cfg(feature = "directml")]
@@ -88,7 +190,7 @@ use ort::execution_providers::TensorRTExecutionProvider;
 use ort::session::builder::SessionBuilder;
 
 /// Configure a session builder with the specified execution provider.
-/// For `Auto`, tries providers in order: TensorRT > CUDA > CoreML > DirectML > CPU
+/// For `Auto`, tries providers in order: CUDA > TensorRT > CoreML > DirectML > CPU
 fn configure_execution_provider(
     builder: SessionBuilder,
     provider: ExecutionProvider,
@@ -104,25 +206,28 @@ fn configure_execution_provider(
 }
 
 /// Try to configure the best available hardware acceleration automatically.
-/// Tries in order: TensorRT > CUDA > CoreML > DirectML, falls back to CPU.
+/// Tries in order: CUDA > TensorRT > CoreML > DirectML, falls back to CPU.
+/// The registration may succeed even if the GPU is not available - ort handles
+/// the fallback to CPU at runtime if the GPU provider fails to execute.
 fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
-    // Try TensorRT first (best NVIDIA performance)
-    #[cfg(feature = "tensorrt")]
+    // Try CUDA first (most common GPU acceleration)
+    #[cfg(feature = "cuda")]
     {
+        // Register CUDA provider - ort will fall back to CPU if GPU is not available
         if let Ok(b) = builder
             .clone()
-            .with_execution_providers([TensorRTExecutionProvider::default().build()])
+            .with_execution_providers([CUDAExecutionProvider::default().build()])
         {
             return Ok(b);
         }
     }
 
-    // Try CUDA (good NVIDIA performance)
-    #[cfg(feature = "cuda")]
+    // Try TensorRT (optimized NVIDIA performance)
+    #[cfg(feature = "tensorrt")]
     {
         if let Ok(b) = builder
             .clone()
-            .with_execution_providers([CUDAExecutionProvider::default().build()])
+            .with_execution_providers([TensorRTExecutionProvider::default().build()])
         {
             return Ok(b);
         }
@@ -150,7 +255,7 @@ fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
         }
     }
 
-    // Fall back to CPU
+    // Fall back to CPU - this always works
     Ok(builder)
 }
 
@@ -202,8 +307,11 @@ fn configure_directml(_builder: SessionBuilder) -> Result<SessionBuilder> {
     anyhow::bail!("DirectML support not compiled. Enable the 'directml' feature.")
 }
 
-/// Default batch size for chunked encoding (optimal for most hardware).
-const DEFAULT_BATCH_SIZE: usize = 16;
+/// Default batch size for CPU encoding.
+const DEFAULT_CPU_BATCH_SIZE: usize = 16;
+
+/// Default batch size for GPU encoding (larger batches better utilize GPU parallelism).
+const DEFAULT_GPU_BATCH_SIZE: usize = 64;
 
 /// Type alias for batch encoding data: (input_ids, attention_mask, token_type_ids, token_ids)
 type BatchEncoding = (Vec<i64>, Vec<i64>, Vec<i64>, Vec<u32>);
@@ -228,6 +336,7 @@ pub struct Colbert {
     tokenizer: Tokenizer,
     config: ColbertConfig,
     skiplist_ids: HashSet<u32>,
+    batch_size: usize,
 }
 
 /// Configuration for ColBERT model behavior.
@@ -466,6 +575,9 @@ impl Colbert {
         num_threads: usize,
         execution_provider: ExecutionProvider,
     ) -> Result<Self> {
+        // Initialize ORT runtime FIRST (sets up GPU library paths)
+        init_ort_runtime();
+
         let model_dir = model_dir.as_ref();
 
         // Find ONNX model
@@ -497,11 +609,19 @@ impl Colbert {
             .commit_from_file(&onnx_path)
             .context("Failed to load ONNX model")?;
 
+        // Use larger batch size for GPU execution providers
+        let batch_size = match execution_provider {
+            ExecutionProvider::Cpu => DEFAULT_CPU_BATCH_SIZE,
+            ExecutionProvider::Auto | ExecutionProvider::Cuda | ExecutionProvider::TensorRT
+            | ExecutionProvider::CoreML | ExecutionProvider::DirectML => DEFAULT_GPU_BATCH_SIZE,
+        };
+
         Ok(Self {
             session,
             tokenizer,
             config,
             skiplist_ids,
+            batch_size,
         })
     }
 
@@ -524,7 +644,7 @@ impl Colbert {
         if documents.is_empty() {
             return Ok(Vec::new());
         }
-        self.encode_batched_internal(documents, false, true, DEFAULT_BATCH_SIZE)
+        self.encode_batched_internal(documents, false, true, self.batch_size)
     }
 
     /// Encode queries into ColBERT embeddings.
@@ -546,7 +666,7 @@ impl Colbert {
         if queries.is_empty() {
             return Ok(Vec::new());
         }
-        self.encode_batched_internal(queries, true, false, DEFAULT_BATCH_SIZE)
+        self.encode_batched_internal(queries, true, false, self.batch_size)
     }
 
     /// Get the model configuration.
@@ -557,6 +677,11 @@ impl Colbert {
     /// Get the embedding dimension.
     pub fn embedding_dim(&self) -> usize {
         self.config.embedding_dim
+    }
+
+    /// Get the batch size used for encoding.
+    pub fn batch_size(&self) -> usize {
+        self.batch_size
     }
 
     // =========================================================================
@@ -1014,6 +1139,9 @@ impl ParallelColbert {
         batch_size: usize,
         execution_provider: ExecutionProvider,
     ) -> Result<Self> {
+        // Initialize ORT runtime FIRST (sets up GPU library paths)
+        init_ort_runtime();
+
         let model_dir = model_dir.as_ref();
 
         // Select model file

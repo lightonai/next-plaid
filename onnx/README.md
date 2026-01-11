@@ -238,10 +238,119 @@ let model = ParallelColbert::builder("models/GTE-ModernColBERT-v1")
 | Provider | Feature Flag | Platform | Requirements |
 |----------|--------------|----------|--------------|
 | `Cpu` | (default) | All | None |
-| `Cuda` | `cuda` | Linux/Windows | NVIDIA GPU, CUDA 11.6+ |
-| `TensorRT` | `tensorrt` | Linux/Windows | NVIDIA GPU, CUDA 11.6+, TensorRT 8.4+ |
+| `Cuda` | `cuda` | Linux/Windows | NVIDIA GPU, CUDA 12.x, cuDNN 9.x |
+| `TensorRT` | `tensorrt` | Linux/Windows | NVIDIA GPU, CUDA 12.x, cuDNN 9.x, TensorRT 10.x |
 | `CoreML` | `coreml` | macOS | Apple Silicon or Intel Mac |
 | `DirectML` | `directml` | Windows | DirectX 12 compatible GPU |
+
+## GPU Setup Guide (Linux)
+
+This section provides step-by-step instructions for setting up CUDA acceleration on Linux.
+
+### Prerequisites
+
+- NVIDIA GPU with CUDA support
+- CUDA 12.x installed (`/usr/local/cuda`)
+- Rust toolchain
+
+### Step 1: Download ONNX Runtime GPU
+
+Download the ONNX Runtime GPU package (must match the `ort` crate version - currently 1.23.0):
+
+```bash
+cd onnx
+mkdir -p ort_gpu
+wget https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-linux-x64-gpu-1.23.0.tgz
+tar -xzf onnxruntime-linux-x64-gpu-1.23.0.tgz
+cp -r onnxruntime-linux-x64-gpu-1.23.0/lib/* ort_gpu/
+rm -rf onnxruntime-linux-x64-gpu-1.23.0 onnxruntime-linux-x64-gpu-1.23.0.tgz
+```
+
+### Step 2: Install cuDNN 9
+
+The CUDA execution provider requires cuDNN 9.x. You can get it from:
+
+**Option A: From pip (easiest)**
+```bash
+pip install nvidia-cudnn-cu12
+# Find and copy the libraries
+CUDNN_PATH=$(python -c "import nvidia.cudnn; import os; print(os.path.dirname(nvidia.cudnn.__file__))")/lib
+cp $CUDNN_PATH/libcudnn*.so* ort_gpu/
+```
+
+**Option B: From NVIDIA website**
+Download cuDNN 9.x from https://developer.nvidia.com/cudnn and copy libraries to `ort_gpu/`.
+
+### Step 3: Build with CUDA Feature
+
+```bash
+cargo build --release --features cuda
+```
+
+### Step 4: Run with GPU
+
+Set the required environment variables and run:
+
+```bash
+# Using the helper script
+./run_cuda.sh ./target/release/benchmark
+
+# Or manually
+export ORT_DYLIB_PATH="$(pwd)/ort_gpu/libonnxruntime.so.1.23.0"
+export LD_LIBRARY_PATH="$(pwd)/ort_gpu:$LD_LIBRARY_PATH"
+./target/release/benchmark
+```
+
+To select a specific GPU:
+```bash
+CUDA_VISIBLE_DEVICES=0 ./run_cuda.sh ./target/release/benchmark
+```
+
+### Verifying GPU Usage
+
+Check that the GPU is being used:
+
+```bash
+# In one terminal, run your application
+CUDA_VISIBLE_DEVICES=0 ./run_cuda.sh ./target/release/benchmark
+
+# In another terminal, monitor GPU
+nvidia-smi -l 1
+```
+
+You should see:
+- GPU memory usage increase when the model loads
+- GPU utilization > 0% during inference
+
+### Troubleshooting
+
+**"Failed to load shared library" or CUDA EP not working:**
+- Ensure all cuDNN 9.x libraries are in `ort_gpu/`
+- Check with: `ldd ort_gpu/libonnxruntime_providers_cuda.so | grep "not found"`
+
+**Low GPU utilization:**
+- Use larger batch sizes (100-400 documents) for maximum throughput
+- The default batch size of 16 is optimized for CPU, not GPU
+
+**Version mismatch errors:**
+- Ensure ONNX Runtime version (1.23.0) matches the `ort` crate version in Cargo.toml
+
+### GPU Performance Tips
+
+For maximum GPU throughput:
+
+1. **Use large batches**: Process 100-400 documents at once instead of small batches
+2. **Single session is fine**: Unlike CPU, GPU doesn't benefit much from multiple parallel sessions
+3. **INT8 quantization**: Provides ~2x speedup with minimal quality loss
+
+**GPU Performance (H100, 400 documents per batch):**
+
+| Configuration | Documents/sec |
+|---------------|---------------|
+| CPU (batch=16) | ~100 |
+| CUDA (batch=16) | ~2,500 |
+| CUDA (batch=400) | ~32,000 |
+| Python ONNX Runtime (batch=400) | ~34,000 |
 
 ### GPU Tuning Guidelines
 
@@ -353,6 +462,8 @@ INT8 quantization maintains high embedding quality:
 
 ```
 onnx/
+├── run_cuda.sh                     # Helper script for running with GPU
+├── ort_gpu/                        # ONNX Runtime GPU libraries (not in git)
 ├── src/
 │   ├── lib.rs                      # Colbert, ParallelColbert, ExecutionProvider
 │   └── bin/
