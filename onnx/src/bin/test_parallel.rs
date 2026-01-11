@@ -1,13 +1,58 @@
 //! Quick test for ParallelColbert
 //!
 //! Usage:
-//!     cargo run --release --bin test_parallel
+//!     cargo run --release --bin test_parallel                   # Auto-detect best hardware
+//!     cargo run --release --bin test_parallel -- --cpu          # Force CPU only
+//!     cargo run --release --bin test_parallel --features cuda   # Enable CUDA (auto-detected)
+//!     cargo run --release --bin test_parallel --features cuda -- --cuda  # Force CUDA
 
 use anyhow::Result;
-use colbert_onnx::ParallelColbert;
+use clap::Parser;
+use colbert_onnx::{ExecutionProvider, ParallelColbert};
 use serde::Deserialize;
 use std::fs;
 use std::time::Instant;
+
+#[derive(Parser)]
+#[command(name = "test_parallel")]
+#[command(about = "Test ParallelColbert with GTE-ModernColBERT-v1")]
+struct Args {
+    /// Force CPU execution (disables auto-detection)
+    #[arg(long)]
+    cpu: bool,
+
+    /// Force CUDA acceleration (requires --features cuda)
+    #[arg(long)]
+    cuda: bool,
+
+    /// Force TensorRT acceleration (requires --features tensorrt)
+    #[arg(long)]
+    tensorrt: bool,
+
+    /// Force CoreML acceleration (requires --features coreml)
+    #[arg(long)]
+    coreml: bool,
+
+    /// Force DirectML acceleration (requires --features directml)
+    #[arg(long)]
+    directml: bool,
+
+    /// Number of parallel sessions (default: 25 for CPU, 4 for GPU)
+    #[arg(long)]
+    sessions: Option<usize>,
+
+    /// Batch size per session (default: 2)
+    #[arg(long, default_value = "2")]
+    batch_size: usize,
+
+    /// Use FP32 model instead of INT8 quantized
+    #[arg(long)]
+    fp32: bool,
+
+    /// Path to model directory
+    #[arg(long, default_value = "models/GTE-ModernColBERT-v1")]
+    model_dir: String,
+}
 
 #[derive(Deserialize)]
 struct BenchmarkDocuments {
@@ -16,16 +61,50 @@ struct BenchmarkDocuments {
 }
 
 fn main() -> Result<()> {
-    println!("Testing ParallelColbert with GTE-ModernColBERT-v1 (INT8)...\n");
+    let args = Args::parse();
 
-    let model_dir = "models/GTE-ModernColBERT-v1";
+    // Determine execution provider (Auto by default)
+    let (provider, provider_name) = if args.cpu {
+        (ExecutionProvider::Cpu, "CPU")
+    } else if args.cuda {
+        (ExecutionProvider::Cuda, "CUDA")
+    } else if args.tensorrt {
+        (ExecutionProvider::TensorRT, "TensorRT")
+    } else if args.coreml {
+        (ExecutionProvider::CoreML, "CoreML")
+    } else if args.directml {
+        (ExecutionProvider::DirectML, "DirectML")
+    } else {
+        (ExecutionProvider::Auto, "Auto (best available)")
+    };
+
+    // Default sessions based on provider (fewer for GPU)
+    let num_sessions = args.sessions.unwrap_or(if provider == ExecutionProvider::Cpu {
+        25
+    } else if provider == ExecutionProvider::Auto {
+        // For Auto, we don't know if GPU will be used, so use moderate default
+        8
+    } else {
+        4
+    });
+
+    let precision = if args.fp32 { "FP32" } else { "INT8" };
+    println!(
+        "Testing ParallelColbert with GTE-ModernColBERT-v1 ({}, {})...\n",
+        precision, provider_name
+    );
+
+    let model_dir = &args.model_dir;
 
     // Build with optimal settings
     let model = ParallelColbert::builder(model_dir)
-        .with_quantized(true)
-        .with_num_sessions(25)
-        .with_batch_size(2)
+        .with_quantized(!args.fp32)
+        .with_num_sessions(num_sessions)
+        .with_batch_size(args.batch_size)
+        .with_execution_provider(provider)
         .build()?;
+
+    println!("  Batch size: {}", args.batch_size);
 
     println!("Model loaded successfully!");
     println!("  Embedding dim: {}", model.embedding_dim());

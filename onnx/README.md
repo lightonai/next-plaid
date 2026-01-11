@@ -6,6 +6,7 @@ Fast ColBERT multi-vector encoding in Rust using ONNX Runtime.
 
 - **Simple API** - Just two methods: `encode_documents()` and `encode_queries()`
 - **High Performance** - 20+ docs/sec with INT8 quantization and parallel sessions
+- **Hardware Acceleration** - CUDA, TensorRT, CoreML, and DirectML support
 - **Cross-platform** - Works on Linux, macOS, and Windows
 - **PyLate compatible** - Produces identical embeddings (>0.99 cosine similarity)
 
@@ -16,6 +17,25 @@ Add to your `Cargo.toml`:
 ```toml
 [dependencies]
 colbert-onnx = { path = "path/to/onnx" }
+```
+
+### Hardware Acceleration (Optional)
+
+Enable GPU acceleration by adding the appropriate feature:
+
+```toml
+[dependencies]
+# NVIDIA CUDA (Linux/Windows)
+colbert-onnx = { path = "path/to/onnx", features = ["cuda"] }
+
+# NVIDIA TensorRT (Linux/Windows) - Recommended for NVIDIA GPUs
+colbert-onnx = { path = "path/to/onnx", features = ["tensorrt"] }
+
+# Apple CoreML (macOS)
+colbert-onnx = { path = "path/to/onnx", features = ["coreml"] }
+
+# DirectML (Windows)
+colbert-onnx = { path = "path/to/onnx", features = ["directml"] }
 ```
 
 ## Quick Start
@@ -169,23 +189,132 @@ println!("Document length: {}", config.document_length);
 println!("Query length: {}", config.query_length);
 ```
 
+## Hardware Acceleration
+
+### Using GPU Execution Providers
+
+Enable hardware acceleration with the `ExecutionProvider` enum:
+
+```rust
+use colbert_onnx::{ParallelColbert, ExecutionProvider};
+
+// CUDA (NVIDIA GPUs)
+let model = ParallelColbert::builder("models/GTE-ModernColBERT-v1")
+    .with_quantized(true)
+    .with_num_sessions(25)      // More sessions = better GPU utilization
+    .with_batch_size(2)
+    .with_execution_provider(ExecutionProvider::Cuda)
+    .build()?;
+
+// TensorRT (NVIDIA GPUs - recommended)
+let model = ParallelColbert::builder("models/GTE-ModernColBERT-v1")
+    .with_quantized(true)
+    .with_num_sessions(25)
+    .with_batch_size(2)
+    .with_execution_provider(ExecutionProvider::TensorRT)
+    .build()?;
+
+// CoreML (Apple Silicon)
+let model = ParallelColbert::builder("models/GTE-ModernColBERT-v1")
+    .with_execution_provider(ExecutionProvider::CoreML)
+    .build()?;
+
+// DirectML (Windows GPUs)
+let model = ParallelColbert::builder("models/GTE-ModernColBERT-v1")
+    .with_execution_provider(ExecutionProvider::DirectML)
+    .build()?;
+```
+
+### Available Execution Providers
+
+| Provider | Feature Flag | Platform | Requirements |
+|----------|--------------|----------|--------------|
+| `Cpu` | (default) | All | None |
+| `Cuda` | `cuda` | Linux/Windows | NVIDIA GPU, CUDA 11.6+ |
+| `TensorRT` | `tensorrt` | Linux/Windows | NVIDIA GPU, CUDA 11.6+, TensorRT 8.4+ |
+| `CoreML` | `coreml` | macOS | Apple Silicon or Intel Mac |
+| `DirectML` | `directml` | Windows | DirectX 12 compatible GPU |
+
+### GPU Tuning Guidelines
+
+**Number of Sessions:**
+- GPU performance scales with parallel sessions
+- Start with 4 sessions, increase up to 25 for maximum throughput
+- More sessions = more GPU memory usage
+
+**Batch Size:**
+- Smaller batch sizes (2-4) work best with parallel sessions
+- Larger batches can hurt performance due to memory overhead
+
+**Model Precision:**
+- INT8 quantization provides ~2x speedup over FP32
+- INT8 maintains >99% embedding quality (cosine similarity)
+
+### CLI Usage
+
+```bash
+# Build with CUDA support
+cargo build --release --features cuda
+
+# Run with CUDA
+cargo run --release --features cuda --bin test_parallel -- --cuda
+
+# Run with TensorRT
+cargo run --release --features tensorrt --bin test_parallel -- --tensorrt
+
+# Configure sessions and batch size
+cargo run --release --features tensorrt --bin test_parallel -- \
+    --tensorrt --sessions 25 --batch-size 2
+
+# Use FP32 instead of INT8
+cargo run --release --features cuda --bin test_parallel -- --cuda --fp32
+```
+
 ## Performance
 
-### Benchmarks (GTE-ModernColBERT-v1, 100 documents, ~300 tokens each)
+### CPU vs GPU Benchmarks (GTE-ModernColBERT-v1, 100 documents, ~180 tokens each)
+
+#### INT8 Quantized Model (150 MB)
+
+| Provider | Sessions | Docs/sec | vs CPU |
+|----------|----------|----------|--------|
+| CPU | 25 | 106.6 | 1.00x |
+| CUDA | 4 | 23.3 | 0.22x |
+| CUDA | 25 | 100.7 | 0.94x |
+| TensorRT | 4 | 25.4 | 0.24x |
+| **TensorRT** | **25** | **112.1** | **1.05x** |
+
+#### FP32 Model (597 MB)
+
+| Provider | Sessions | Docs/sec | vs CPU |
+|----------|----------|----------|--------|
+| CPU | 25 | 51.8 | 1.00x |
+| CUDA | 25 | 51.3 | 0.99x |
+| TensorRT | 25 | 50.0 | 0.97x |
+
+### Key Findings
+
+- **TensorRT INT8 with 25 sessions is fastest** at 112 docs/sec
+- **INT8 is ~2x faster than FP32** across all providers
+- **GPU needs many parallel sessions** to match/beat CPU on small models
+- **With 4 sessions, GPU is ~4x slower** than CPU with 25 sessions
+
+### Recommendations
+
+| Model Size | Best Provider | Sessions | Notes |
+|------------|---------------|----------|-------|
+| Small (<200 MB) | CPU | 25 | GPU overhead not worth it |
+| Medium (200-500 MB) | TensorRT | 16-25 | GPU starts to shine |
+| Large (>500 MB) | TensorRT | 8-16 | GPU clearly wins |
+
+### Legacy Benchmarks
 
 | Method | Docs/sec | Speedup |
 |--------|----------|---------|
 | PyLate (Python baseline) | 10.9 | 1.0x |
 | `Colbert` (single session) | 6.2 | 0.6x |
 | `Colbert` + INT8 | 13.3 | 1.2x |
-| **`ParallelColbert` + INT8** | **20.6** | **1.9x** |
-
-### Optimal Configuration by Model
-
-| Model | Recommended API | Sessions | Quantized |
-|-------|-----------------|----------|-----------|
-| answerai-colbert-small-v1 | `Colbert` | 1 | No |
-| GTE-ModernColBERT-v1 | `ParallelColbert` | 25 | Yes |
+| `ParallelColbert` + INT8 | 20.6 | 1.9x |
 
 ### Run Benchmarks
 
