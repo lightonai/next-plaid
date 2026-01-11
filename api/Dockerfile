@@ -15,6 +15,16 @@
 #   docker run -p 8080:8080 -v data:/data/indices lategrep-api
 #   docker run -p 8080:8080 -v data:/data/indices -v models:/models lategrep-api:model --model /models/colbert
 #   docker run -p 8080:8080 --gpus all -v data:/data/indices -v models:/models lategrep-api:cuda --model /models/colbert --cuda
+#
+# Auto-download model from HuggingFace Hub:
+#   docker run -p 8080:8080 -e HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1-onnx \
+#     -v data:/data/indices -v models:/models \
+#     lategrep-api:cuda --model /models/GTE-ModernColBERT-v1-onnx --cuda
+#
+# Environment variables for model variants:
+#   HF_MODEL_ID: HuggingFace repo to download (e.g., "lightonai/GTE-ModernColBERT-v1-onnx")
+#   HF_TOKEN: Optional token for private models
+#   MODEL_QUANTIZED: Set to "true" to download INT8 quantized model
 # =============================================================================
 
 # =============================================================================
@@ -182,6 +192,9 @@ RUN mkdir -p /data/indices /models && chown -R lategrep:lategrep /data /models
 # Copy binary from builder
 COPY --from=builder-model /app/target/release/lategrep-api /usr/local/bin/lategrep-api
 
+# Copy entrypoint script
+COPY --chmod=755 api/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
 # Switch to non-root user
 USER lategrep
 
@@ -191,13 +204,16 @@ EXPOSE 8080
 # Default environment variables
 ENV RUST_LOG=info
 ENV INDEX_DIR=/data/indices
+# Set HF_MODEL_ID to auto-download model from HuggingFace Hub
+# Example: ENV HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1-onnx
+# Set MODEL_QUANTIZED=true to use INT8 quantized model
 
 # Health check
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=2 \
     CMD curl -f --max-time 5 http://localhost:8080/health || exit 1
 
-# Run the API
-ENTRYPOINT ["lategrep-api"]
+# Run the API via entrypoint script (handles model download)
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices"]
 
 # =============================================================================
@@ -228,6 +244,9 @@ COPY --from=builder-cuda /opt/ort_gpu /opt/ort_gpu
 # Copy binary from builder
 COPY --from=builder-cuda /app/target/release/lategrep-api /usr/local/bin/lategrep-api
 
+# Copy entrypoint script
+COPY --chmod=755 api/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
 # Set library paths for CUDA and ONNX Runtime
 ARG ORT_VERSION=1.23.0
 ENV ORT_DYLIB_PATH=/opt/ort_gpu/libonnxruntime.so.${ORT_VERSION}
@@ -242,11 +261,14 @@ EXPOSE 8080
 # Default environment variables
 ENV RUST_LOG=info
 ENV INDEX_DIR=/data/indices
+# Set HF_MODEL_ID to auto-download model from HuggingFace Hub
+# Example: ENV HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1-onnx
+# Set MODEL_QUANTIZED=true to use INT8 quantized model
 
 # Health check
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=2 \
     CMD curl -f --max-time 5 http://localhost:8080/health || exit 1
 
-# Run the API
-ENTRYPOINT ["lategrep-api"]
+# Run the API via entrypoint script (handles model download)
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices"]

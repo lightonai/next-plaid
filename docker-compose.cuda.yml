@@ -12,13 +12,17 @@ services:
       target: runtime-cuda
     volumes:
       - lategrep-indices:/data/indices
-      - ./onnx/models:/models:ro
+      - lategrep-models:/models
     environment:
       - RUST_LOG=info
       - NVIDIA_VISIBLE_DEVICES=all
-    command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "/models/answerai-colbert-small-v1", "--cuda"]
+      # Auto-download model from HuggingFace Hub if not present
+      - HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1-onnx
+      # Use INT8 quantized model for better performance
+      - MODEL_QUANTIZED=true
+    command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "/models/GTE-ModernColBERT-v1-onnx", "--cuda"]
     healthcheck:
-      start_period: 60s  # Longer start period for CUDA initialization
+      start_period: 120s  # Longer start period for model download + CUDA initialization
     deploy:
       resources:
         limits:
@@ -29,3 +33,6 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+volumes:
+  lategrep-models:

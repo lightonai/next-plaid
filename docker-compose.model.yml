@@ -12,13 +12,21 @@ services:
       target: runtime-model
     volumes:
       - lategrep-indices:/data/indices
-      - ./onnx/models:/models:ro
-    command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "/models/answerai-colbert-small-v1"]
+      - lategrep-models:/models
+    environment:
+      # Auto-download model from HuggingFace Hub if not present
+      - HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1-onnx
+      # Use INT8 quantized model for better performance
+      - MODEL_QUANTIZED=true
+    command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "/models/GTE-ModernColBERT-v1-onnx"]
     healthcheck:
-      start_period: 30s  # Longer start period for model loading
+      start_period: 120s  # Longer start period for model download + loading
     deploy:
       resources:
         limits:
           memory: 16G
         reservations:
           memory: 4G
+
+volumes:
+  lategrep-models:
