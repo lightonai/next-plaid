@@ -16,7 +16,7 @@ use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -262,6 +262,30 @@ impl HnswIndex {
     /// - scores: Array2<f32> of shape (num_queries, k) with similarity scores (higher is better)
     /// - indices: Array2<i64> of shape (num_queries, k) with vector indices (-1 for padding)
     pub fn search(&self, queries: &Array2<f32>, k: usize) -> Result<(Array2<f32>, Array2<i64>)> {
+        self.search_with_filter(queries, k, None)
+    }
+
+    /// Search for the k nearest neighbors of query vectors with an optional filter.
+    ///
+    /// The HNSW algorithm will explore all vectors during graph traversal, but only
+    /// vectors whose IDs are in the filter set will be returned as results.
+    ///
+    /// # Arguments
+    /// - `queries`: Query vectors of shape (num_queries, dim)
+    /// - `k`: Number of nearest neighbors to return
+    /// - `filter`: Optional set of vector IDs to include in results. If None, all vectors are considered.
+    ///             This filter applies to ALL queries uniformly.
+    ///
+    /// # Returns
+    /// (scores, indices) where:
+    /// - scores: Array2<f32> of shape (num_queries, k) with similarity scores (higher is better)
+    /// - indices: Array2<i64> of shape (num_queries, k) with vector indices (-1 for padding)
+    pub fn search_with_filter(
+        &self,
+        queries: &Array2<f32>,
+        k: usize,
+        filter: Option<&HashSet<usize>>,
+    ) -> Result<(Array2<f32>, Array2<i64>)> {
         if self.metadata.num_vectors == 0 {
             return Err(Error::EmptyIndex);
         }
@@ -279,7 +303,104 @@ impl HnswIndex {
         let results: Vec<Vec<(f32, usize)>> = queries
             .axis_iter(Axis(0))
             .into_par_iter()
-            .map(|query| self.search_single(query, k))
+            .map(|query| self.search_single_filtered(query, k, filter))
+            .collect();
+
+        // Convert to output arrays
+        let mut scores = Array2::from_elem((num_queries, k), f32::NEG_INFINITY);
+        let mut indices = Array2::from_elem((num_queries, k), -1i64);
+
+        for (i, neighbors) in results.iter().enumerate() {
+            for (j, (score, idx)) in neighbors.iter().enumerate() {
+                if j < k {
+                    scores[[i, j]] = *score;
+                    indices[[i, j]] = *idx as i64;
+                }
+            }
+        }
+
+        Ok((scores, indices))
+    }
+
+    /// Search for the k nearest neighbors of query vectors with per-query candidate lists.
+    ///
+    /// Each query has its own list of candidate vector IDs to consider for scoring.
+    /// The HNSW algorithm will explore all vectors during graph traversal, but only
+    /// vectors whose IDs are in the respective query's candidate list will be returned as results.
+    ///
+    /// # Arguments
+    /// - `queries`: Query vectors of shape (num_queries, dim)
+    /// - `k`: Number of nearest neighbors to return
+    /// - `candidate_ids`: Slice of candidate ID slices, one per query. Must have length equal to num_queries.
+    ///                    Each inner slice contains the vector IDs that query is allowed to return.
+    ///                    Each query can have a different number of candidates.
+    ///
+    /// # Returns
+    /// (scores, indices) where:
+    /// - scores: Array2<f32> of shape (num_queries, k) with similarity scores (higher is better)
+    /// - indices: Array2<i64> of shape (num_queries, k) with vector indices (-1 for padding)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // Query 0 can only return from vectors [1, 5, 10, 20]
+    /// // Query 1 can only return from vectors [100, 101, 102, 103, 104, 105, 106]
+    /// // Query 2 can only return from vectors [50, 51]
+    /// let candidate_ids: Vec<Vec<usize>> = vec![
+    ///     vec![1, 5, 10, 20],
+    ///     vec![100, 101, 102, 103, 104, 105, 106],
+    ///     vec![50, 51],
+    /// ];
+    /// let candidate_refs: Vec<&[usize]> = candidate_ids.iter().map(|v| v.as_slice()).collect();
+    /// let (scores, indices) = index.search_with_ids(&queries, k, &candidate_refs)?;
+    /// ```
+    ///
+    /// # Errors
+    /// Returns an error if the number of candidate lists doesn't match the number of queries.
+    pub fn search_with_ids(
+        &self,
+        queries: &Array2<f32>,
+        k: usize,
+        candidate_ids: &[&[usize]],
+    ) -> Result<(Array2<f32>, Array2<i64>)> {
+        if self.metadata.num_vectors == 0 {
+            return Err(Error::EmptyIndex);
+        }
+
+        let (num_queries, dim) = queries.dim();
+
+        if dim != self.metadata.dim {
+            return Err(Error::DimensionMismatch {
+                expected: self.metadata.dim,
+                got: dim,
+            });
+        }
+
+        if candidate_ids.len() != num_queries {
+            return Err(Error::InvalidArgument(format!(
+                "Number of candidate lists ({}) must match number of queries ({})",
+                candidate_ids.len(),
+                num_queries
+            )));
+        }
+
+        // Convert slices to HashSets for O(1) lookup during search
+        let filters: Vec<HashSet<usize>> = candidate_ids
+            .iter()
+            .map(|ids| ids.iter().copied().collect())
+            .collect();
+
+        // Parallel search for all queries with their respective filters
+        let results: Vec<Vec<(f32, usize)>> = queries
+            .axis_iter(Axis(0))
+            .into_par_iter()
+            .zip(filters.par_iter())
+            .map(|(query, filter)| {
+                if filter.is_empty() {
+                    Vec::new()
+                } else {
+                    self.search_single_filtered(query, k, Some(filter))
+                }
+            })
             .collect();
 
         // Convert to output arrays
@@ -350,9 +471,10 @@ impl HnswIndex {
 
     /// Load vectors from mmap to flat cache.
     fn load_vectors_to_flat(&mut self) -> Result<()> {
-        let mmap = self.vectors_mmap.as_ref().ok_or_else(|| {
-            Error::CorruptedIndex("vectors.bin not loaded".to_string())
-        })?;
+        let mmap = self
+            .vectors_mmap
+            .as_ref()
+            .ok_or_else(|| Error::CorruptedIndex("vectors.bin not loaded".to_string()))?;
 
         let dim = self.metadata.dim;
         let num_vectors = self.metadata.num_vectors;
@@ -501,14 +623,18 @@ impl HnswIndex {
                             .iter()
                             .map(|&n| {
                                 let v = self.get_vector_flat(n);
-                                let dist: f32 = neighbor_vec.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
+                                let dist: f32 =
+                                    neighbor_vec.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
                                 (dist, n)
                             })
                             .collect();
 
                         candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-                        neighbor.neighbors[l] =
-                            candidates.iter().take(max_connections).map(|(_, idx)| *idx).collect();
+                        neighbor.neighbors[l] = candidates
+                            .iter()
+                            .take(max_connections)
+                            .map(|(_, idx)| *idx)
+                            .collect();
                     }
                 }
             }
@@ -636,8 +762,16 @@ impl HnswIndex {
         result_vec
     }
 
-    /// Search for k nearest neighbors of a single query (uses mmap).
-    fn search_single(&self, query: ArrayView1<f32>, k: usize) -> Vec<(f32, usize)> {
+    /// Search for k nearest neighbors of a single query with optional filter (uses mmap).
+    ///
+    /// The filter only affects which results are returned - all vectors are still
+    /// explored during graph traversal for proper HNSW search behavior.
+    fn search_single_filtered(
+        &self,
+        query: ArrayView1<f32>,
+        k: usize,
+        filter: Option<&HashSet<usize>>,
+    ) -> Vec<(f32, usize)> {
         let entry_point = match self.metadata.entry_point {
             Some(ep) => ep,
             None => return Vec::new(),
@@ -678,17 +812,29 @@ impl HnswIndex {
         }
 
         // Search at level 0 with ef_search
-        let ef = self.metadata.config.ef_search.max(k);
-        self.search_layer_query(query, curr_node, ef, k)
+        // When filtering, we need a larger ef to ensure we find enough matching results
+        let ef = if filter.is_some() {
+            // Increase ef when filtering to explore more candidates
+            (self.metadata.config.ef_search * 2).max(k * 4)
+        } else {
+            self.metadata.config.ef_search.max(k)
+        };
+        self.search_layer_query_filtered(query, curr_node, ef, k, filter)
     }
 
-    /// Search layer during query time (uses mmap).
-    fn search_layer_query(
+    /// Search layer during query time with optional filter (uses mmap).
+    ///
+    /// The filter only affects which results are returned - all vectors are still
+    /// explored (added to candidates) for proper graph traversal. This ensures
+    /// the HNSW search can navigate through the graph effectively even when
+    /// most vectors are filtered out.
+    fn search_layer_query_filtered(
         &self,
         query: ArrayView1<f32>,
         entry_point: usize,
         ef: usize,
         k: usize,
+        filter: Option<&HashSet<usize>>,
     ) -> Vec<(f32, usize)> {
         let entry_vec = match self.get_vector_from_mmap(entry_point) {
             Some(v) => v,
@@ -701,23 +847,27 @@ impl HnswIndex {
         let mut visited = vec![false; num_nodes];
         visited[entry_point] = true;
 
-        // candidates: max-heap by distance
+        // candidates: max-heap by distance (for graph exploration - includes ALL vectors)
         let mut candidates: BinaryHeap<(OrderedFloat<f32>, usize)> = BinaryHeap::new();
         candidates.push((OrderedFloat(entry_dist), entry_point));
 
-        // results: min-heap to keep track of worst result (for pruning)
-        let mut results: BinaryHeap<Reverse<(OrderedFloat<f32>, usize)>> = BinaryHeap::new();
-        results.push(Reverse((OrderedFloat(entry_dist), entry_point)));
+        // filtered_results: only vectors that pass the filter
+        let mut filtered_results: BinaryHeap<Reverse<(OrderedFloat<f32>, usize)>> =
+            BinaryHeap::new();
+
+        // Check if entry point passes filter
+        let entry_passes_filter = filter.map_or(true, |f| f.contains(&entry_point));
+        if entry_passes_filter {
+            filtered_results.push(Reverse((OrderedFloat(entry_dist), entry_point)));
+        }
+
+        // Track worst candidate distance for exploration cutoff
+        let mut worst_candidate_dist = entry_dist;
 
         while let Some((OrderedFloat(cand_dist), cand_id)) = candidates.pop() {
-            // Get the worst (smallest) distance in results
-            let worst_dist = results
-                .peek()
-                .map(|Reverse((d, _))| d.0)
-                .unwrap_or(f32::NEG_INFINITY);
-
-            // If candidate is worse than our worst result and we have enough results, stop
-            if results.len() >= ef && cand_dist < worst_dist {
+            // Stop if candidate is worse than the worst we've seen and we've explored enough
+            // We use a more lenient stopping condition to ensure thorough exploration
+            if cand_dist < worst_candidate_dist * 0.5 && filtered_results.len() >= k {
                 break;
             }
 
@@ -735,18 +885,29 @@ impl HnswIndex {
                 if let Some(neighbor_vec) = self.get_vector_from_mmap(neighbor) {
                     let dist = Self::inner_product(query, neighbor_vec.view());
 
-                    let worst = results
-                        .peek()
-                        .map(|Reverse((d, _))| d.0)
-                        .unwrap_or(f32::NEG_INFINITY);
+                    // Always add to candidates for graph exploration
+                    candidates.push((OrderedFloat(dist), neighbor));
 
-                    if results.len() < ef || dist > worst {
-                        candidates.push((OrderedFloat(dist), neighbor));
-                        results.push(Reverse((OrderedFloat(dist), neighbor)));
+                    // Update worst candidate distance
+                    if dist > worst_candidate_dist {
+                        worst_candidate_dist = dist;
+                    }
 
-                        // Keep only ef best results
-                        while results.len() > ef {
-                            results.pop();
+                    // Only add to results if it passes the filter
+                    let passes_filter = filter.map_or(true, |f| f.contains(&neighbor));
+                    if passes_filter {
+                        let worst_filtered = filtered_results
+                            .peek()
+                            .map(|Reverse((d, _))| d.0)
+                            .unwrap_or(f32::NEG_INFINITY);
+
+                        if filtered_results.len() < ef || dist > worst_filtered {
+                            filtered_results.push(Reverse((OrderedFloat(dist), neighbor)));
+
+                            // Keep only ef best filtered results
+                            while filtered_results.len() > ef {
+                                filtered_results.pop();
+                            }
                         }
                     }
                 }
@@ -754,7 +915,7 @@ impl HnswIndex {
         }
 
         // Convert to sorted vector (highest distance first)
-        let mut result_vec: Vec<(f32, usize)> = results
+        let mut result_vec: Vec<(f32, usize)> = filtered_results
             .into_iter()
             .map(|Reverse((d, id))| (d.0, id))
             .collect();
@@ -792,8 +953,8 @@ impl HnswIndex {
 
     /// Load the graph structure from disk.
     fn load_graph(path: &Path) -> Result<Vec<RwLock<Node>>> {
-        let file =
-            File::open(path).map_err(|_| Error::CorruptedIndex("graph.bin not found".to_string()))?;
+        let file = File::open(path)
+            .map_err(|_| Error::CorruptedIndex("graph.bin not found".to_string()))?;
         let mut reader = BufReader::new(file);
 
         let num_nodes = reader.read_u64::<LittleEndian>()? as usize;
@@ -897,5 +1058,277 @@ mod tests {
         let idx2 = index.update(&vectors2).unwrap();
         assert_eq!(idx2, 20);
         assert_eq!(index.len(), 50);
+    }
+
+    #[test]
+    fn test_hnsw_filtered_search() {
+        let dir = tempdir().unwrap();
+        let config = HnswConfig::default();
+
+        let mut index = HnswIndex::new(dir.path(), 64, config).unwrap();
+
+        // Create vectors where vectors 0-49 are similar to each other (group A)
+        // and vectors 50-99 are similar to each other (group B)
+        let vectors = Array2::from_shape_fn((100, 64), |(i, j)| {
+            if i < 50 {
+                ((i * 64 + j) as f32).sin()
+            } else {
+                ((i * 64 + j) as f32).cos()
+            }
+        });
+
+        index.update(&vectors).unwrap();
+
+        // Query using vector 0 (from group A)
+        let query = vectors.slice(ndarray::s![0..1, ..]).to_owned();
+
+        // Search without filter - should return results from both groups
+        let (_scores_all, indices_all) = index.search(&query, 10).unwrap();
+
+        // Create filter for only even-indexed vectors
+        let filter: HashSet<usize> = (0..100).filter(|x| x % 2 == 0).collect();
+        let (scores_filtered, indices_filtered) = index
+            .search_with_filter(&query, 10, Some(&filter))
+            .unwrap();
+
+        // All filtered results should be even numbers
+        for j in 0..10 {
+            let idx = indices_filtered[[0, j]];
+            if idx >= 0 {
+                assert!(
+                    idx % 2 == 0,
+                    "Filtered result {} should be even, got {}",
+                    j,
+                    idx
+                );
+            }
+        }
+
+        // Verify we got results
+        assert!(indices_filtered[[0, 0]] >= 0, "Should have at least one result");
+        assert!(scores_filtered[[0, 0]] > f32::NEG_INFINITY);
+
+        // Search with empty filter should return no results (all -1)
+        let empty_filter: HashSet<usize> = HashSet::new();
+        let (_scores_empty, indices_empty) = index
+            .search_with_filter(&query, 10, Some(&empty_filter))
+            .unwrap();
+
+        for j in 0..10 {
+            assert_eq!(
+                indices_empty[[0, j]], -1,
+                "Empty filter should return -1 for all indices"
+            );
+        }
+
+        // Search with None filter should behave like regular search
+        let (_scores_none, indices_none) = index.search_with_filter(&query, 10, None).unwrap();
+        assert_eq!(indices_none.dim(), indices_all.dim());
+        // Results should be identical
+        for j in 0..10 {
+            assert_eq!(indices_none[[0, j]], indices_all[[0, j]]);
+        }
+    }
+
+    #[test]
+    fn test_hnsw_filtered_search_subset() {
+        let dir = tempdir().unwrap();
+        let config = HnswConfig::default();
+
+        let mut index = HnswIndex::new(dir.path(), 32, config).unwrap();
+
+        // Create 50 vectors
+        let vectors = Array2::from_shape_fn((50, 32), |(i, j)| ((i * 32 + j) as f32).sin());
+        index.update(&vectors).unwrap();
+
+        // Query with vector 10
+        let query = vectors.slice(ndarray::s![10..11, ..]).to_owned();
+
+        // Filter to only allow vectors 5, 10, 15, 20, 25
+        let filter: HashSet<usize> = [5, 10, 15, 20, 25].into_iter().collect();
+        let (_scores, indices) = index.search_with_filter(&query, 5, Some(&filter)).unwrap();
+
+        // The top result should be 10 (the query itself)
+        assert_eq!(indices[[0, 0]], 10, "Query vector should be top result");
+
+        // All results should be from the filter set
+        for j in 0..5 {
+            let idx = indices[[0, j]];
+            if idx >= 0 {
+                assert!(
+                    filter.contains(&(idx as usize)),
+                    "Result {} with idx {} should be in filter set",
+                    j,
+                    idx
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_hnsw_search_with_ids() {
+        let dir = tempdir().unwrap();
+        let config = HnswConfig::default();
+
+        let mut index = HnswIndex::new(dir.path(), 32, config).unwrap();
+
+        // Create 100 vectors
+        let vectors = Array2::from_shape_fn((100, 32), |(i, j)| ((i * 32 + j) as f32).sin());
+        index.update(&vectors).unwrap();
+
+        // Create 3 queries using vectors 10, 50, and 90
+        let mut queries = Array2::zeros((3, 32));
+        queries.row_mut(0).assign(&vectors.row(10));
+        queries.row_mut(1).assign(&vectors.row(50));
+        queries.row_mut(2).assign(&vectors.row(90));
+
+        // Create different candidate lists for each query (different sizes!)
+        let candidates1: Vec<usize> = (0..30).collect(); // Query 0: 30 candidates (vectors 0-29)
+        let candidates2: Vec<usize> = (40..70).collect(); // Query 1: 30 candidates (vectors 40-69)
+        let candidates3: Vec<usize> = (80..100).collect(); // Query 2: 20 candidates (vectors 80-99)
+
+        let candidate_refs: Vec<&[usize]> = vec![&candidates1, &candidates2, &candidates3];
+
+        let (_scores, indices) = index.search_with_ids(&queries, 5, &candidate_refs).unwrap();
+
+        // Query 0 (vector 10) should return results from candidates1 (0-29)
+        // Top result should be 10 itself
+        assert_eq!(indices[[0, 0]], 10, "Query 0 top result should be 10");
+        for j in 0..5 {
+            let idx = indices[[0, j]];
+            if idx >= 0 {
+                assert!(
+                    candidates1.contains(&(idx as usize)),
+                    "Query 0 result {} should be in range 0-29, got {}",
+                    j,
+                    idx
+                );
+            }
+        }
+
+        // Query 1 (vector 50) should return results from candidates2 (40-69)
+        // Top result should be 50 itself
+        assert_eq!(indices[[1, 0]], 50, "Query 1 top result should be 50");
+        for j in 0..5 {
+            let idx = indices[[1, j]];
+            if idx >= 0 {
+                assert!(
+                    candidates2.contains(&(idx as usize)),
+                    "Query 1 result {} should be in range 40-69, got {}",
+                    j,
+                    idx
+                );
+            }
+        }
+
+        // Query 2 (vector 90) should return results from candidates3 (80-99)
+        // Top result should be 90 itself
+        assert_eq!(indices[[2, 0]], 90, "Query 2 top result should be 90");
+        for j in 0..5 {
+            let idx = indices[[2, j]];
+            if idx >= 0 {
+                assert!(
+                    candidates3.contains(&(idx as usize)),
+                    "Query 2 result {} should be in range 80-99, got {}",
+                    j,
+                    idx
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_hnsw_search_with_ids_different_sizes() {
+        let dir = tempdir().unwrap();
+        let config = HnswConfig::default();
+
+        let mut index = HnswIndex::new(dir.path(), 32, config).unwrap();
+
+        // Create 100 vectors
+        let vectors = Array2::from_shape_fn((100, 32), |(i, j)| ((i * 32 + j) as f32).sin());
+        index.update(&vectors).unwrap();
+
+        // Create 3 queries
+        let mut queries = Array2::zeros((3, 32));
+        queries.row_mut(0).assign(&vectors.row(5));
+        queries.row_mut(1).assign(&vectors.row(50));
+        queries.row_mut(2).assign(&vectors.row(75));
+
+        // Each query has a DIFFERENT number of candidates
+        let candidates1: Vec<usize> = vec![5, 10, 15]; // Only 3 candidates
+        let candidates2: Vec<usize> = (40..60).collect(); // 20 candidates
+        let candidates3: Vec<usize> = vec![70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80]; // 11 candidates
+
+        let candidate_refs: Vec<&[usize]> = vec![&candidates1, &candidates2, &candidates3];
+
+        let (_scores, indices) = index.search_with_ids(&queries, 5, &candidate_refs).unwrap();
+
+        // Query 0 has only 3 candidates, so only 3 valid results
+        assert_eq!(indices[[0, 0]], 5, "Query 0 top result should be 5");
+        let valid_count_q0 = (0..5).filter(|&j| indices[[0, j]] >= 0).count();
+        assert_eq!(valid_count_q0, 3, "Query 0 should have exactly 3 valid results");
+
+        // Query 1 top result should be 50
+        assert_eq!(indices[[1, 0]], 50, "Query 1 top result should be 50");
+
+        // Query 2 top result should be 75
+        assert_eq!(indices[[2, 0]], 75, "Query 2 top result should be 75");
+    }
+
+    #[test]
+    fn test_hnsw_search_with_ids_empty_candidates() {
+        let dir = tempdir().unwrap();
+        let config = HnswConfig::default();
+
+        let mut index = HnswIndex::new(dir.path(), 32, config).unwrap();
+
+        let vectors = Array2::from_shape_fn((50, 32), |(i, j)| ((i * 32 + j) as f32).sin());
+        index.update(&vectors).unwrap();
+
+        // Create 2 queries
+        let mut queries = Array2::zeros((2, 32));
+        queries.row_mut(0).assign(&vectors.row(10));
+        queries.row_mut(1).assign(&vectors.row(20));
+
+        // First query has candidates, second has empty list
+        let candidates1: Vec<usize> = vec![5, 10, 15, 20];
+        let candidates2: Vec<usize> = vec![]; // Empty!
+
+        let candidate_refs: Vec<&[usize]> = vec![&candidates1, &candidates2];
+
+        let (_scores, indices) = index.search_with_ids(&queries, 5, &candidate_refs).unwrap();
+
+        // Query 0 should have valid results
+        assert_eq!(indices[[0, 0]], 10, "Query 0 top result should be 10");
+
+        // Query 1 has no candidates, so all results should be -1
+        for j in 0..5 {
+            assert_eq!(
+                indices[[1, j]], -1,
+                "Query 1 result {} should be -1 (no candidates)",
+                j
+            );
+        }
+    }
+
+    #[test]
+    fn test_hnsw_search_with_ids_length_mismatch() {
+        let dir = tempdir().unwrap();
+        let config = HnswConfig::default();
+
+        let mut index = HnswIndex::new(dir.path(), 32, config).unwrap();
+
+        let vectors = Array2::from_shape_fn((50, 32), |(i, j)| ((i * 32 + j) as f32).sin());
+        index.update(&vectors).unwrap();
+
+        // Create 3 queries but only 2 candidate lists
+        let queries = vectors.slice(ndarray::s![0..3, ..]).to_owned();
+        let candidates1: Vec<usize> = vec![0, 1, 2];
+        let candidates2: Vec<usize> = vec![10, 11, 12];
+        let candidate_refs: Vec<&[usize]> = vec![&candidates1, &candidates2];
+
+        // Should return an error
+        let result = index.search_with_ids(&queries, 5, &candidate_refs);
+        assert!(result.is_err());
     }
 }

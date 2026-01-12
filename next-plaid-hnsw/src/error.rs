@@ -28,6 +28,10 @@ pub enum Error {
     #[error("Invalid parameter: {0}")]
     InvalidParameter(String),
 
+    /// Invalid argument provided to a function.
+    #[error("Invalid argument: {0}")]
+    InvalidArgument(String),
+
     /// Index directory does not exist.
     #[error("Index directory does not exist: {0}")]
     DirectoryNotFound(String),
