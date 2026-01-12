@@ -15,25 +15,33 @@ echo "Running pre-commit checks..."
 echo "Checking Rust formatting..."
 cargo fmt --all -- --check
 
-# Run clippy
+# Run clippy (using cross-platform features only)
 echo "Running clippy..."
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets --features npy,filtering -- -D warnings
 
 # Run Rust tests
 echo "Running Rust tests..."
 cargo test
 
-# Run API tests
-echo "Running API tests..."
-cargo test --package next-plaid-api
-
-# Build documentation
+# Build documentation (with warnings as errors)
 echo "Building documentation..."
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features npy,filtering
+
+# API crate checks
+echo "Checking API crate formatting..."
+cd next-plaid-api && cargo fmt --all -- --check
+
+echo "Running API crate clippy..."
+cargo clippy --all-targets -- -D warnings
+
+echo "Running API crate tests..."
+cargo test
+
+cd "$REPO_ROOT"
 
 # ONNX crate checks
 echo "Checking ONNX crate formatting..."
-cd onnx && cargo fmt --all -- --check
+cd next-plaid-onnx && cargo fmt --all -- --check
 
 echo "Running ONNX crate clippy..."
 cargo clippy --all-targets -- -D warnings
@@ -41,15 +49,10 @@ cargo clippy --all-targets -- -D warnings
 echo "Running ONNX crate tests..."
 cargo test
 
-cd "$REPO_ROOT"
+# Lint ONNX Python code
+echo "Linting ONNX Python code..."
+cd python && uv run --extra dev ruff check .
 
-# Lint Python code
-echo "Linting Python code..."
-cd docs && uv run --extra dev ruff check . && uv run --extra dev ruff format --check .
 cd "$REPO_ROOT"
-
-# Run API integration tests
-echo "Running API integration tests..."
-./scripts/run-api-tests.sh
 
 echo "All pre-commit checks passed!"

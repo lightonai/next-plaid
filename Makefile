@@ -47,11 +47,11 @@ bench-check:
 
 # Build documentation (using cross-platform features only)
 doc:
-	cargo doc --no-deps --features npy,filtering
+	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features npy,filtering
 
 # Open documentation in browser
 doc-open:
-	cargo doc --no-deps --features npy,filtering --open
+	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features npy,filtering --open
 
 # Clean build artifacts
 clean:
