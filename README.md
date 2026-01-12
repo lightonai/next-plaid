@@ -7,7 +7,7 @@
 <div align="center">
     <a href="https://github.com/rust-lang/rust"><img src="https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white" alt="rust"></a>
     <a href="https://github.com/onnx/onnx"><img src="https://img.shields.io/badge/onnx-%23000000.svg?style=for-the-badge&logo=onnx&logoColor=white" alt="onnx"></a>
-    <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/docker-%23000000.svg?style=for-the-badge&logo=docker&logoColor=white" alt="docker"></a>
+    <a href="https://lightonai.github.io/next-plaid/"><img src="https://img.shields.io/badge/docs-%23000000.svg?style=for-the-badge&logo=readthedocs&logoColor=white" alt="docs"></a>
 </div>
 
 &nbsp;
@@ -20,12 +20,24 @@
 
 ## Overview
 
-**NextPlaid** is identical to [FastPlaid](https://github.com/lightonai/fast-plaid) but designed for **production deployments** on CPU. While FastPlaid is optimized for GPU-accelerated research and experimentation, NextPlaid provides:
+**NextPlaid** is identical to [FastPlaid](https://github.com/lightonai/fast-plaid) but designed for **production deployments**. While FastPlaid is optimized for GPU-accelerated research and experimentation, NextPlaid provides:
 
 - **Pure Rust Implementation**: No Python or PyTorch dependencies in production
-- **CPU-Optimized**: Uses ndarray with BLAS acceleration for efficient CPU inference
-- **Docker-First**: Ready-to-deploy containers for CPU and GPU workloads
-- **REST API**: Serve late-interaction models (ColBERT) on both CPU and GPU via Docker
+- **CPU-Optimized Indexing & Search**: The PLAID index always runs on CPU using ndarray with BLAS acceleration
+- **Flexible Model Inference**: Text encoding can run on CPU or GPU depending on the Docker image used
+- **Docker-First**: Ready-to-deploy containers with model inference support
+- **REST API**: Full-featured HTTP API with Python SDK
+
+&nbsp;
+
+## Documentation
+
+Full documentation is available at **[lightonai.github.io/next-plaid](https://lightonai.github.io/next-plaid/)**
+
+- [Getting Started](https://lightonai.github.io/next-plaid/getting-started/) - 5-minute quick start guide
+- [Python SDK](https://lightonai.github.io/next-plaid/python-sdk/) - Complete SDK reference
+- [REST API](https://lightonai.github.io/next-plaid/api/) - API endpoint documentation
+- [Deployment](https://lightonai.github.io/next-plaid/deployment/docker/) - Production deployment guide
 
 &nbsp;
 
@@ -137,37 +149,47 @@ results = client.search(
 
 | Crate | Description |
 |-------|-------------|
-| [next-plaid](./next-plaid/) | Core Rust library for CPU-based PLAID search |
-| [next-plaid-api](./next-plaid-api/) | REST API server with Docker support |
-| [next-plaid-onnx](./next-plaid-onnx/) | ONNX-based ColBERT encoding in Rust |
-| [Python SDK](./next-plaid-api/python-sdk/) | Python client for the API |
-| [pylate-onnx-export](./next-plaid-onnx/python/) | CLI tool for exporting ColBERT to ONNX |
+| [next-plaid](https://crates.io/crates/next-plaid) | Core Rust library for CPU-based PLAID search |
+| [next-plaid-api](https://crates.io/crates/next-plaid-api) | REST API server with Docker support |
+| [next-plaid-onnx](https://crates.io/crates/next-plaid-onnx) | ONNX-based ColBERT encoding in Rust |
+| [next-plaid-client](https://pypi.org/project/next-plaid-client/) | Python client for the API |
+| [pylate-onnx-export](https://pypi.org/project/pylate-onnx-export/) | CLI tool for exporting ColBERT to ONNX |
 
 &nbsp;
 
 ## Docker Variants
 
-| Variant | Image Tag | Use Case |
-|---------|-----------|----------|
-| **CPU Only** | `latest` | Search with pre-computed embeddings |
-| **Model (CPU)** | `model` | Text encoding on CPU |
-| **CUDA** | `cuda` | GPU-accelerated encoding |
+Both images support model inference for text encoding. The index and search always run on CPU.
+
+| Variant | Image Tag | Description |
+|---------|-----------|-------------|
+| **CPU** | `latest` | Index, search, and model inference on CPU |
+| **CUDA** | `latest-cuda` | Index and search on CPU, model inference on GPU |
 
 &nbsp;
 
-## Text Encoding (Optional)
+## Text Encoding
 
-When the API is started with a ColBERT model, you can encode text directly instead of providing pre-computed embeddings.
+Both Docker images support model inference. When started with a ColBERT model, you can encode text directly instead of providing pre-computed embeddings.
 
 ### Start the API with a Model
 
 ```bash
-# Using a model from HuggingFace Hub (auto-downloaded)
+# CPU image (model inference on CPU)
 docker run -d \
   -p 8080:8080 \
   -v ~/.local/share/next-plaid:/data/indices \
   -v next-plaid-models:/models \
-  ghcr.io/lightonai/next-plaid-api:model \
+  ghcr.io/lightonai/next-plaid-api:latest \
+  --model lightonai/GTE-ModernColBERT-v1-onnx
+
+# CUDA image (model inference on GPU)
+docker run -d \
+  --gpus all \
+  -p 8080:8080 \
+  -v ~/.local/share/next-plaid:/data/indices \
+  -v next-plaid-models:/models \
+  ghcr.io/lightonai/next-plaid-api:latest-cuda \
   --model lightonai/GTE-ModernColBERT-v1-onnx
 ```
 
@@ -198,7 +220,7 @@ Export any PyLate-compatible ColBERT model from HuggingFace to ONNX format.
 ### Install the Export Tool
 
 ```bash
-pip install "pylate-onnx-export @ git+https://github.com/lightonai/next-plaid.git#subdirectory=next-plaid-onnx/python"
+pip install pylate-onnx-export
 ```
 
 ### Export a Model

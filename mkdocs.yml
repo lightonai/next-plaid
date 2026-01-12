@@ -1,0 +1,89 @@
+site_name: NextPlaid
+site_description: Production-Ready Multi-Vector Search for CPU & GPU
+site_url: https://lightonai.github.io/next-plaid
+repo_url: https://github.com/lightonai/next-plaid
+repo_name: lightonai/next-plaid
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  logo: logo.png
+  favicon: logo.png
+  palette:
+    - scheme: slate
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to light mode
+    - scheme: default
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to dark mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - content.code.copy
+    - content.code.annotate
+    - search.highlight
+    - search.share
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/lightonai/next-plaid
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/next-plaid-client/
+
+extra_css:
+  - stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Installation: installation.md
+  - Python SDK:
+    - Overview: python-sdk/index.md
+    - Sync Client: python-sdk/client.md
+    - Async Client: python-sdk/async-client.md
+    - Models: python-sdk/models.md
+  - REST API:
+    - Overview: api/index.md
+    - Indices: api/indices.md
+    - Documents: api/documents.md
+    - Search: api/search.md
+    - Metadata: api/metadata.md
+  - Configuration: configuration.md
+  - Deployment:
+    - Docker: deployment/docker.md
+  - Model Export: model-export.md

@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-model docker-build-cuda docker-up docker-up-model docker-up-cuda docker-down docker-logs kill-api
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-model docker-build-cuda docker-up docker-up-model docker-up-cuda docker-down docker-logs kill-api docs-serve docs-build docs-deploy
 
 all: fmt lint test
 
@@ -219,3 +219,24 @@ docker-down:
 # View Docker Compose logs
 docker-logs:
 	docker compose logs -f
+
+# =============================================================================
+# Documentation targets
+# =============================================================================
+
+# Serve documentation locally (hot-reload) on an available port
+docs-serve:
+	pip install mkdocs-material -q
+	@PORT=$$(python -c "import socket; s=socket.socket(); s.bind(('',0)); port=s.getsockname()[1]; s.close(); print(port)"); \
+	echo "Starting docs server on port $$PORT..."; \
+	mkdocs serve -a 127.0.0.1:$$PORT
+
+# Build documentation
+docs-build:
+	pip install mkdocs-material -q
+	mkdocs build
+
+# Deploy documentation to GitHub Pages
+docs-deploy:
+	pip install mkdocs-material -q
+	mkdocs gh-deploy --force
