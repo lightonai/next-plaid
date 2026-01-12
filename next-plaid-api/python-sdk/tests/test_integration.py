@@ -381,29 +381,113 @@ class TestDocumentsAndSearch:
         # Should only return docs with category A (ids 0, 2)
         assert len(results.results[0].document_ids) <= 2
 
-    def test_delete_documents(self, client, unique_index_name, cleanup_index):
-        """Test deleting documents by ID."""
+    def test_delete_documents_by_metadata(self, client, unique_index_name, cleanup_index):
+        """Test deleting documents by metadata filter condition."""
         cleanup_index(unique_index_name)
 
         client.create_index(unique_index_name, IndexConfig(nbits=2))
 
         documents = [
             Document(embeddings=[random_embedding(seed=i)])
-            for i in range(3)
+            for i in range(4)
         ]
-        metadata = [{"doc_id": i} for i in range(3)]
+        metadata = [
+            {"doc_id": 0, "category": "A"},
+            {"doc_id": 1, "category": "B"},
+            {"doc_id": 2, "category": "A"},
+            {"doc_id": 3, "category": "B"},
+        ]
         client.update_documents(unique_index_name, documents, metadata)
         time.sleep(2)
 
         info = client.get_index(unique_index_name)
-        initial_count = info.num_documents
+        assert info.num_documents == 4
 
-        # Delete first document
-        result = client.delete_documents(unique_index_name, document_ids=[0])
-        assert result.deleted == 1
+        # Delete documents with category A (async - returns message)
+        result = client.delete_documents(
+            unique_index_name,
+            condition="category = ?",
+            parameters=["A"]
+        )
+        # Should return a status message
+        assert "queued" in result.lower() or "delete" in result.lower()
+
+        # Wait for background deletion to complete
+        time.sleep(2)
 
         info = client.get_index(unique_index_name)
-        assert info.num_documents == initial_count - 1
+        # Should have 2 documents remaining (category B)
+        assert info.num_documents == 2
+
+        # Verify only category B documents remain
+        query_result = client.query_metadata(
+            unique_index_name,
+            condition="category = ?",
+            parameters=["B"]
+        )
+        assert query_result["count"] == 2
+
+    def test_delete_documents_no_match(self, client, unique_index_name, cleanup_index):
+        """Test delete when no documents match the condition."""
+        cleanup_index(unique_index_name)
+
+        client.create_index(unique_index_name, IndexConfig(nbits=2))
+
+        documents = [
+            Document(embeddings=[random_embedding(seed=i)])
+            for i in range(2)
+        ]
+        metadata = [{"category": "existing"} for _ in range(2)]
+        client.update_documents(unique_index_name, documents, metadata)
+        time.sleep(2)
+
+        # Delete with condition that matches nothing
+        result = client.delete_documents(
+            unique_index_name,
+            condition="category = ?",
+            parameters=["nonexistent"]
+        )
+        # Should return a message about no matches
+        assert "no documents match" in result.lower()
+
+        # Verify no documents were deleted
+        info = client.get_index(unique_index_name)
+        assert info.num_documents == 2
+
+    def test_delete_documents_complex_condition(self, client, unique_index_name, cleanup_index):
+        """Test delete with complex SQL condition."""
+        cleanup_index(unique_index_name)
+
+        client.create_index(unique_index_name, IndexConfig(nbits=2))
+
+        documents = [
+            Document(embeddings=[random_embedding(seed=i)])
+            for i in range(5)
+        ]
+        metadata = [
+            {"year": 2020, "score": 50},
+            {"year": 2021, "score": 100},
+            {"year": 2022, "score": 150},
+            {"year": 2020, "score": 30},
+            {"year": 2023, "score": 200},
+        ]
+        client.update_documents(unique_index_name, documents, metadata)
+        time.sleep(2)
+
+        # Delete documents where year < 2022 AND score < 100
+        # This should match: doc 0 (2020, 50) and doc 3 (2020, 30)
+        result = client.delete_documents(
+            unique_index_name,
+            condition="year < ? AND score < ?",
+            parameters=[2022, 100]
+        )
+        assert "queued" in result.lower() or "delete" in result.lower()
+
+        # Wait for background deletion
+        time.sleep(2)
+
+        info = client.get_index(unique_index_name)
+        assert info.num_documents == 3  # 5 - 2 = 3
 
 
 # ==================== Metadata Tests ====================

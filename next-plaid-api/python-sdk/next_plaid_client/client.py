@@ -17,7 +17,6 @@ from .models import (
     MetadataResponse,
     MetadataCheckResponse,
     EncodeResponse,
-    DeleteDocumentsResponse,
 )
 
 
@@ -269,27 +268,39 @@ class NextPlaidClient(BaseNextPlaidClient):
         )
 
     def delete_documents(
-        self, index_name: str, document_ids: List[int]
-    ) -> DeleteDocumentsResponse:
+        self,
+        index_name: str,
+        condition: str,
+        parameters: Optional[List[Any]] = None,
+    ) -> str:
         """
-        Delete documents by their IDs.
+        Delete documents matching a metadata filter condition.
+
+        This is an asynchronous operation - it returns immediately with a status
+        message and processes deletion in the background.
 
         Args:
             index_name: Name of the index.
-            document_ids: List of document IDs to delete.
+            condition: SQL WHERE condition for selecting documents to delete
+                      (e.g., "category = ? AND year < ?").
+            parameters: Parameters for the condition placeholders.
 
         Returns:
-            DeleteDocumentsResponse with deletion stats.
+            Status message indicating the delete request was queued.
 
         Raises:
             IndexNotFoundError: If the index does not exist.
+            MetadataNotFoundError: If the index has no metadata.
+            ValidationError: If the condition is invalid.
         """
-        data = self._request(
+        payload: Dict[str, Any] = {"condition": condition}
+        if parameters:
+            payload["parameters"] = parameters
+        return self._request(
             "DELETE",
             f"/indices/{index_name}/documents",
-            json={"document_ids": document_ids},
+            json=payload,
         )
-        return DeleteDocumentsResponse.from_dict(data)
 
     # ==================== Search Operations ====================
 

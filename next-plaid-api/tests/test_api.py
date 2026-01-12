@@ -815,20 +815,324 @@ class TestDocumentOperations:
         assert response.json()["count"] == 4
 
     def test_delete_documents(self, api_client, created_index):
-        """Test deleting documents from an index."""
+        """Test deleting documents from an index by metadata filter."""
         # First, get current document count
         response = requests.get(f"{api_client}/indices/{TEST_INDEX_NAME}")
         initial_count = response.json()["num_documents"]
 
-        # Delete the documents we just added (IDs 10 and 11)
+        # Delete the documents we just added (year = 2024 from arXiv journal)
+        # These are the 2 new papers we added in test_add_documents
         response = requests.delete(
             f"{api_client}/indices/{TEST_INDEX_NAME}/documents",
-            json={"document_ids": [NUM_DOCUMENTS, NUM_DOCUMENTS + 1]},
+            json={"condition": "journal = ?", "parameters": ["arXiv"]},
+        )
+        # Now returns 202 Accepted for background processing
+        assert response.status_code == 202
+
+        # Wait for deletion to complete
+        def wait_for_deletion(expected_count: int, max_wait: float = 30.0) -> dict:
+            start = time.time()
+            while time.time() - start < max_wait:
+                resp = requests.get(f"{api_client}/indices/{TEST_INDEX_NAME}")
+                if resp.status_code == 200:
+                    info = resp.json()
+                    if info.get("num_documents", 0) == expected_count:
+                        return info
+                time.sleep(0.1)
+            raise TimeoutError(f"Index did not reach {expected_count} documents")
+
+        # We had initial_count documents, deleting 2 arXiv papers
+        info = wait_for_deletion(initial_count - 2)
+        assert info["num_documents"] == initial_count - 2
+
+
+# -----------------------------------------------------------------------------
+# Delete Operations Tests
+# -----------------------------------------------------------------------------
+
+
+def wait_for_document_count(api_url: str, index_name: str, expected_count: int, max_wait: float = 30.0) -> dict:
+    """Wait for an index to have exactly the expected number of documents."""
+    start = time.time()
+    while time.time() - start < max_wait:
+        response = requests.get(f"{api_url}/indices/{index_name}")
+        if response.status_code == 200:
+            info = response.json()
+            if info.get("num_documents", 0) == expected_count:
+                return info
+        time.sleep(0.1)
+    raise TimeoutError(f"Index '{index_name}' did not reach exactly {expected_count} documents within {max_wait}s")
+
+
+class TestDeleteOperations:
+    """Dedicated tests for the delete endpoint with metadata filtering."""
+
+    def test_delete_by_category(self, api_client):
+        """Test deleting documents by category filter."""
+        index_name = "test_delete_category"
+        np.random.seed(600)
+
+        # Cleanup
+        requests.delete(f"{api_client}/indices/{index_name}")
+
+        # Create index
+        response = requests.post(
+            f"{api_client}/indices",
+            json={"name": index_name, "config": {"nbits": 4}},
         )
         assert response.status_code == 200
-        data = response.json()
-        assert data["deleted"] == 2
-        assert data["remaining"] == initial_count - 2
+
+        # Add documents with different categories
+        docs = [{"embeddings": generate_normalized_embeddings(30)} for _ in range(6)]
+        metadata = [
+            {"title": f"Doc {i}", "category": "A" if i < 3 else "B", "score": i * 10}
+            for i in range(6)
+        ]
+
+        response = requests.post(
+            f"{api_client}/indices/{index_name}/update",
+            json={"documents": docs, "metadata": metadata},
+        )
+        assert response.status_code == 202
+        wait_for_index(api_client, index_name, 6)
+
+        # Delete all documents in category A
+        response = requests.delete(
+            f"{api_client}/indices/{index_name}/documents",
+            json={"condition": "category = ?", "parameters": ["A"]},
+        )
+        assert response.status_code == 202
+
+        # Wait for deletion to complete
+        info = wait_for_document_count(api_client, index_name, 3)
+        assert info["num_documents"] == 3
+
+        # Verify only category B documents remain
+        response = requests.post(
+            f"{api_client}/indices/{index_name}/metadata/query",
+            json={"condition": "category = ?", "parameters": ["B"]},
+        )
+        assert response.status_code == 200
+        assert response.json()["count"] == 3
+
+        # Cleanup
+        requests.delete(f"{api_client}/indices/{index_name}")
+
+    def test_delete_by_complex_condition(self, api_client):
+        """Test deleting documents with complex SQL condition."""
+        index_name = "test_delete_complex"
+        np.random.seed(601)
+
+        # Cleanup
+        requests.delete(f"{api_client}/indices/{index_name}")
+
+        # Create index
+        response = requests.post(
+            f"{api_client}/indices",
+            json={"name": index_name, "config": {"nbits": 4}},
+        )
+        assert response.status_code == 200
+
+        # Add documents with various attributes
+        docs = [{"embeddings": generate_normalized_embeddings(30)} for _ in range(8)]
+        metadata = [
+            {"title": "Doc 0", "year": 2020, "citations": 50, "active": True},
+            {"title": "Doc 1", "year": 2021, "citations": 100, "active": True},
+            {"title": "Doc 2", "year": 2022, "citations": 150, "active": False},
+            {"title": "Doc 3", "year": 2023, "citations": 200, "active": True},
+            {"title": "Doc 4", "year": 2020, "citations": 30, "active": False},
+            {"title": "Doc 5", "year": 2021, "citations": 80, "active": True},
+            {"title": "Doc 6", "year": 2022, "citations": 120, "active": True},
+            {"title": "Doc 7", "year": 2023, "citations": 250, "active": False},
+        ]
+
+        response = requests.post(
+            f"{api_client}/indices/{index_name}/update",
+            json={"documents": docs, "metadata": metadata},
+        )
+        assert response.status_code == 202
+        wait_for_index(api_client, index_name, 8)
+
+        # Delete documents with (year < 2022 AND citations < 100)
+        # This should delete: Doc 0 (2020, 50), Doc 4 (2020, 30), Doc 5 (2021, 80) = 3 docs
+        response = requests.delete(
+            f"{api_client}/indices/{index_name}/documents",
+            json={"condition": "year < ? AND citations < ?", "parameters": [2022, 100]},
+        )
+        assert response.status_code == 202
+
+        # Wait for deletion to complete (8 - 3 = 5)
+        info = wait_for_document_count(api_client, index_name, 5)
+        assert info["num_documents"] == 5
+
+        # Cleanup
+        requests.delete(f"{api_client}/indices/{index_name}")
+
+    def test_delete_no_matches(self, api_client):
+        """Test delete request when no documents match the condition."""
+        index_name = "test_delete_no_match"
+        np.random.seed(602)
+
+        # Cleanup
+        requests.delete(f"{api_client}/indices/{index_name}")
+
+        # Create index
+        response = requests.post(
+            f"{api_client}/indices",
+            json={"name": index_name, "config": {"nbits": 4}},
+        )
+        assert response.status_code == 200
+
+        # Add documents
+        docs = [{"embeddings": generate_normalized_embeddings(30)} for _ in range(3)]
+        metadata = [{"title": f"Doc {i}", "category": "existing"} for i in range(3)]
+
+        response = requests.post(
+            f"{api_client}/indices/{index_name}/update",
+            json={"documents": docs, "metadata": metadata},
+        )
+        assert response.status_code == 202
+        wait_for_index(api_client, index_name, 3)
+
+        # Delete with condition that matches nothing
+        response = requests.delete(
+            f"{api_client}/indices/{index_name}/documents",
+            json={"condition": "category = ?", "parameters": ["nonexistent"]},
+        )
+        # Should still return 202 but with message about no matches
+        assert response.status_code == 202
+        assert "No documents match" in response.json()
+
+        # Verify no documents were deleted
+        response = requests.get(f"{api_client}/indices/{index_name}")
+        assert response.json()["num_documents"] == 3
+
+        # Cleanup
+        requests.delete(f"{api_client}/indices/{index_name}")
+
+    def test_delete_invalid_condition(self, api_client):
+        """Test delete with invalid SQL condition returns error."""
+        index_name = "test_delete_invalid"
+        np.random.seed(603)
+
+        # Cleanup
+        requests.delete(f"{api_client}/indices/{index_name}")
+
+        # Create index with some documents
+        response = requests.post(
+            f"{api_client}/indices",
+            json={"name": index_name, "config": {"nbits": 4}},
+        )
+        assert response.status_code == 200
+
+        docs = [{"embeddings": generate_normalized_embeddings(30)} for _ in range(2)]
+        metadata = [{"title": f"Doc {i}"} for i in range(2)]
+
+        response = requests.post(
+            f"{api_client}/indices/{index_name}/update",
+            json={"documents": docs, "metadata": metadata},
+        )
+        assert response.status_code == 202
+        wait_for_index(api_client, index_name, 2)
+
+        # Delete with invalid SQL
+        response = requests.delete(
+            f"{api_client}/indices/{index_name}/documents",
+            json={"condition": "INVALID SQL ;;; DROP TABLE", "parameters": []},
+        )
+        # Should return 400 Bad Request for invalid condition
+        assert response.status_code == 400
+
+        # Cleanup
+        requests.delete(f"{api_client}/indices/{index_name}")
+
+    def test_delete_empty_condition(self, api_client):
+        """Test delete with empty condition returns error."""
+        index_name = "test_delete_empty"
+        np.random.seed(604)
+
+        # Cleanup
+        requests.delete(f"{api_client}/indices/{index_name}")
+
+        # Create index
+        response = requests.post(
+            f"{api_client}/indices",
+            json={"name": index_name, "config": {"nbits": 4}},
+        )
+        assert response.status_code == 200
+
+        docs = [{"embeddings": generate_normalized_embeddings(30)} for _ in range(2)]
+        metadata = [{"title": f"Doc {i}"} for i in range(2)]
+
+        response = requests.post(
+            f"{api_client}/indices/{index_name}/update",
+            json={"documents": docs, "metadata": metadata},
+        )
+        assert response.status_code == 202
+        wait_for_index(api_client, index_name, 2)
+
+        # Delete with empty condition
+        response = requests.delete(
+            f"{api_client}/indices/{index_name}/documents",
+            json={"condition": "", "parameters": []},
+        )
+        # Should return 400 Bad Request
+        assert response.status_code == 400
+
+        # Cleanup
+        requests.delete(f"{api_client}/indices/{index_name}")
+
+    def test_delete_returns_202_immediately(self, api_client):
+        """Test that delete returns 202 Accepted immediately without blocking."""
+        index_name = "test_delete_async"
+        np.random.seed(605)
+
+        # Cleanup
+        requests.delete(f"{api_client}/indices/{index_name}")
+
+        # Create index with documents
+        response = requests.post(
+            f"{api_client}/indices",
+            json={"name": index_name, "config": {"nbits": 4}},
+        )
+        assert response.status_code == 200
+
+        docs = [{"embeddings": generate_normalized_embeddings(30)} for _ in range(5)]
+        metadata = [{"title": f"Doc {i}", "to_delete": True} for i in range(5)]
+
+        response = requests.post(
+            f"{api_client}/indices/{index_name}/update",
+            json={"documents": docs, "metadata": metadata},
+        )
+        assert response.status_code == 202
+        wait_for_index(api_client, index_name, 5)
+
+        # Delete request should return immediately with 202
+        start_time = time.time()
+        response = requests.delete(
+            f"{api_client}/indices/{index_name}/documents",
+            json={"condition": "to_delete = ?", "parameters": [True]},
+        )
+        elapsed = time.time() - start_time
+
+        assert response.status_code == 202
+        # Response should be fast (under 1 second for async)
+        assert elapsed < 1.0, f"Delete took {elapsed}s, expected < 1s for async response"
+
+        # Wait for deletion to complete
+        wait_for_document_count(api_client, index_name, 0)
+
+        # Cleanup
+        requests.delete(f"{api_client}/indices/{index_name}")
+
+    def test_delete_nonexistent_index(self, api_client):
+        """Test delete on nonexistent index returns 404."""
+        response = requests.delete(
+            f"{api_client}/indices/nonexistent_delete_test/documents",
+            json={"condition": "category = ?", "parameters": ["test"]},
+        )
+        assert response.status_code == 404
+
 
 
 # -----------------------------------------------------------------------------

@@ -23,9 +23,9 @@ use crate::error::{ApiError, ApiResult};
 use crate::handlers::encode::encode_documents_internal;
 use crate::models::{
     AddDocumentsRequest, CreateIndexRequest, CreateIndexResponse, DeleteDocumentsRequest,
-    DeleteDocumentsResponse, DeleteIndexResponse, DocumentEmbeddings, ErrorResponse,
-    IndexConfigStored, IndexInfoResponse, UpdateIndexConfigRequest, UpdateIndexConfigResponse,
-    UpdateIndexRequest, UpdateWithEncodingRequest,
+    DeleteIndexResponse, DocumentEmbeddings, ErrorResponse, IndexConfigStored, IndexInfoResponse,
+    UpdateIndexConfigRequest, UpdateIndexConfigResponse, UpdateIndexRequest,
+    UpdateWithEncodingRequest,
 };
 use crate::state::{AppState, LoadedIndex};
 
@@ -629,7 +629,10 @@ pub async fn add_documents(
     Ok((StatusCode::ACCEPTED, Json("Update queued in background")))
 }
 
-/// Delete documents from an index by their IDs.
+/// Delete documents from an index by metadata filter.
+///
+/// Returns 202 Accepted immediately and processes deletion in background.
+/// Documents matching the SQL WHERE condition will be deleted.
 #[utoipa::path(
     delete,
     path = "/indices/{name}/documents",
@@ -639,51 +642,132 @@ pub async fn add_documents(
     ),
     request_body = DeleteDocumentsRequest,
     responses(
-        (status = 200, description = "Documents deleted successfully", body = DeleteDocumentsResponse),
+        (status = 202, description = "Delete request accepted for background processing", body = String),
         (status = 400, description = "Invalid request", body = ErrorResponse),
-        (status = 404, description = "Index not found", body = ErrorResponse)
+        (status = 404, description = "Index or metadata not found", body = ErrorResponse)
     )
 )]
 pub async fn delete_documents(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
     Json(req): Json<DeleteDocumentsRequest>,
-) -> ApiResult<Json<DeleteDocumentsResponse>> {
-    if req.document_ids.is_empty() {
-        return Err(ApiError::BadRequest("No document IDs provided".to_string()));
+) -> ApiResult<impl IntoResponse> {
+    if req.condition.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Delete condition cannot be empty".to_string(),
+        ));
     }
 
-    // Deletions are usually fast, but we must lock to avoid conflict with updates.
+    // Verify index exists
+    let path_str = state.index_path(&name).to_string_lossy().to_string();
+    if !state.index_exists_on_disk(&name) {
+        return Err(ApiError::IndexNotFound(name));
+    }
+
+    // Verify metadata exists
+    if !filtering::exists(&path_str) {
+        return Err(ApiError::MetadataNotFound(name));
+    }
+
+    // Query document IDs matching the condition (synchronous - fast)
+    let document_ids = filtering::where_condition(&path_str, &req.condition, &req.parameters)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid delete condition: {}", e)))?;
+
+    if document_ids.is_empty() {
+        // No documents to delete - return immediately
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json("No documents match the condition".to_string()),
+        ));
+    }
+
+    let doc_count = document_ids.len();
     let lock = get_index_lock(&name);
-    let _guard = lock.lock().await;
 
-    let start = std::time::Instant::now();
-    let name_for_log = name.clone();
+    // Acquire semaphore permit to limit queued tasks
+    let semaphore = get_index_semaphore(&name);
+    let permit = semaphore.clone().try_acquire_owned().map_err(|_| {
+        ApiError::ServiceUnavailable(format!(
+            "Delete queue full for index '{}'. Max {} pending deletes. Retry later.",
+            name, MAX_QUEUED_TASKS_PER_INDEX
+        ))
+    })?;
 
-    // Run blocking IO in separate thread
-    let (deleted, remaining) = task::spawn_blocking(move || -> ApiResult<(usize, usize)> {
-        let path_str = state.index_path(&name).to_string_lossy().to_string();
-        let mut index = Index::load(&path_str)?;
+    let name_clone = name.clone();
+    let state_clone = state.clone();
 
-        let deleted = index.delete(&req.document_ids)?;
-        let remaining = index.metadata.num_documents;
+    // Spawn background task
+    tokio::spawn(async move {
+        // Permit is held until this task completes
+        let _permit = permit;
 
-        state.reload_index(&name)?;
-        Ok((deleted, remaining))
-    })
-    .await
-    .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))??;
+        // Acquire per-index lock
+        let _guard = lock.lock().await;
 
-    let duration = start.elapsed();
-    tracing::info!(
-        index = %name_for_log,
-        deleted = deleted,
-        remaining = remaining,
-        duration_ms = duration.as_millis() as u64,
-        "Documents deleted"
+        let name_inner = name_clone.clone();
+        let start = std::time::Instant::now();
+
+        // Run blocking IO in separate thread
+        let result = task::spawn_blocking(move || -> ApiResult<(usize, usize)> {
+            let path_str = state_clone
+                .index_path(&name_inner)
+                .to_string_lossy()
+                .to_string();
+            let mut index = Index::load(&path_str)?;
+
+            // Delete documents by IDs
+            let deleted = index.delete(&document_ids)?;
+
+            // Also delete from metadata database
+            if filtering::exists(&path_str) {
+                filtering::delete(&path_str, &document_ids)
+                    .map_err(|e| ApiError::Internal(format!("Failed to delete metadata: {}", e)))?;
+            }
+
+            let remaining = index.metadata.num_documents;
+
+            // Reload state
+            state_clone.reload_index(&name_inner)?;
+            Ok((deleted, remaining))
+        })
+        .await;
+
+        let duration = start.elapsed();
+
+        // Log result
+        match result {
+            Ok(Ok((deleted, remaining))) => {
+                tracing::info!(
+                    index = %name_clone,
+                    deleted = deleted,
+                    remaining = remaining,
+                    duration_ms = duration.as_millis() as u64,
+                    "Documents deleted successfully"
+                );
+            }
+            Ok(Err(e)) => {
+                tracing::error!(index = %name_clone, error = %e, "Background error deleting documents");
+            }
+            Err(e) => {
+                tracing::error!(index = %name_clone, error = %e, "Background delete task panicked");
+            }
+        }
+    });
+
+    tracing::debug!(
+        index = %name,
+        matching_documents = doc_count,
+        "Delete request queued for background processing"
     );
 
-    Ok(Json(DeleteDocumentsResponse { deleted, remaining }))
+    // Return 202 Accepted immediately
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(format!(
+            "Delete queued: {} documents matching condition",
+            doc_count
+        )),
+    ))
 }
 
 /// Delete an entire index and all its data.

@@ -7,9 +7,11 @@ name = "next-plaid-client"
 version = "0.1.0"
 description = "Python SDK for the Next Plaid ColBERT Search API"
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = { text = "Apache-2.0" }
 requires-python = ">=3.8"
-authors = [{ name = "Raphael Sourty, LightOn", email = "contact@lighton.ai" }]
+authors = [
+    { name = "Raphael Sourty, LightOn", email = "raphael.sourty@lighton.ai" },
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -23,16 +25,10 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Text Processing :: Indexing",
 ]
-dependencies = [
-    "httpx>=0.24.0",
-]
+dependencies = ["httpx>=0.24.0"]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "pytest-asyncio>=0.21.0",
-]
+dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0", "pytest-asyncio>=0.21.0"]
 
 [project.urls]
 Homepage = "https://github.com/lightonai/next-plaid"

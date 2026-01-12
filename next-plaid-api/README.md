@@ -131,6 +131,19 @@ curl -X POST http://localhost:8080/indices/my_index/search/filtered \
   }'
 ```
 
+### Delete Documents by Metadata
+
+Delete documents matching a SQL WHERE condition (async, returns 202 Accepted):
+
+```bash
+curl -X DELETE http://localhost:8080/indices/my_index/documents \
+  -H "Content-Type: application/json" \
+  -d '{
+    "condition": "category = ? AND year < ?",
+    "parameters": ["outdated", 2020]
+  }'
+```
+
 ### Text Encoding (requires `--model`)
 
 ```bash
@@ -196,7 +209,7 @@ curl -X POST http://localhost:8080/encode \
 |--------|----------|-------------|
 | `POST` | `/indices/{name}/update` | Add documents (creates index on first call) |
 | `POST` | `/indices/{name}/documents` | Add documents to existing index |
-| `DELETE` | `/indices/{name}/documents` | Delete documents by ID |
+| `DELETE` | `/indices/{name}/documents` | Delete documents by metadata filter (async, returns 202) |
 | `POST` | `/indices/{name}/update_with_encoding` | Add text documents (requires model) |
 
 ### Search

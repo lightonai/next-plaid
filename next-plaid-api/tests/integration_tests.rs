@@ -1061,31 +1061,42 @@ async fn test_delete_documents() {
     let fixture = TestFixture::new().await;
     let dim = 32;
 
-    // Create and populate index with metadata
+    // Create and populate index with metadata including category field
     let documents = generate_documents(10, 10, dim);
-    let metadata: Vec<Value> = (0..10).map(|i| json!({"id": i})).collect();
+    let metadata: Vec<Value> = (0..10)
+        .map(|i| {
+            json!({
+                "id": i,
+                "category": if i < 3 { "A" } else { "B" }
+            })
+        })
+        .collect();
 
     fixture
         .create_and_populate_index("delete_test", documents, metadata, None)
         .await;
 
-    // Delete documents 2, 5, 7
+    // Delete documents with category A (should be docs 0, 1, 2)
     let resp = fixture
         .client
         .delete(fixture.url("/indices/delete_test/documents"))
         .json(&json!({
-            "document_ids": [2, 5, 7]
+            "condition": "category = ?",
+            "parameters": ["A"]
         }))
         .send()
         .await
         .unwrap();
 
-    assert!(resp.status().is_success());
-    let body: DeleteDocumentsResponse = resp.json().await.unwrap();
-    assert_eq!(body.deleted, 3);
-    assert_eq!(body.remaining, 7);
+    // Should return 202 Accepted for async processing
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body: String = resp.json().await.unwrap();
+    assert!(body.contains("3")); // Should mention 3 documents
 
-    // Verify index info
+    // Wait for deletion to complete
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify index info - should have 7 documents remaining
     let resp = fixture
         .client
         .get(fixture.url("/indices/delete_test"))

@@ -360,12 +360,18 @@ pub struct MetadataCountResponse {
 // Delete
 // =============================================================================
 
-/// Request to delete documents.
+/// Request to delete documents by metadata filter.
+///
+/// Documents matching the SQL WHERE condition will be deleted from the index.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct DeleteDocumentsRequest {
-    /// Document IDs to delete
-    #[schema(example = json!([5, 10, 15]))]
-    pub document_ids: Vec<i64>,
+    /// SQL WHERE condition for selecting documents to delete (e.g., "category = ? AND year < ?")
+    #[schema(example = "category = ? AND year < ?")]
+    pub condition: String,
+    /// Parameters for the condition
+    #[serde(default)]
+    #[schema(example = json!(["outdated", 2020]))]
+    pub parameters: Vec<serde_json::Value>,
 }
 
 /// Response after deleting documents.
