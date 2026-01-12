@@ -37,13 +37,10 @@
 # =============================================================================
 
 # =============================================================================
-# Builder stage - CPU with model support
+# Chef stage - Install cargo-chef for dependency caching
 # =============================================================================
-FROM debian:bookworm-slim AS builder-cpu
+FROM debian:bookworm-slim AS chef-cpu
 
-WORKDIR /app
-
-# Install build dependencies and Rust
 RUN apt-get update && apt-get install -y \
     curl \
     build-essential \
@@ -52,27 +49,47 @@ RUN apt-get update && apt-get install -y \
     libopenblas-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust (latest stable)
+# Install Rust and cargo-chef
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
+RUN cargo install cargo-chef
 
-# Copy the workspace files
+WORKDIR /app
+
+# =============================================================================
+# Planner stage - Create dependency recipe
+# =============================================================================
+FROM chef-cpu AS planner-cpu
+
 COPY Cargo.toml Cargo.lock ./
 COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
 
-# Build with model support (CPU)
+RUN cargo chef prepare --recipe-path recipe.json
+
+# =============================================================================
+# Builder stage - Build dependencies (cached) then application
+# =============================================================================
+FROM chef-cpu AS builder-cpu
+
+# Build dependencies first (this layer is cached if recipe.json doesn't change)
+COPY --from=planner-cpu /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json --package next-plaid-api --features "openblas,model"
+
+# Now build the actual application
+COPY Cargo.toml Cargo.lock ./
+COPY next-plaid ./next-plaid
+COPY next-plaid-api ./next-plaid-api
+COPY next-plaid-onnx ./next-plaid-onnx
+
 RUN cargo build --release --package next-plaid-api --features "openblas,model"
 
 # =============================================================================
-# Builder stage - CUDA with model support
+# Chef stage for CUDA - Install cargo-chef
 # =============================================================================
-FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 AS builder-cuda
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 AS chef-cuda
 
-WORKDIR /app
-
-# Install Rust and build dependencies
 RUN apt-get update && apt-get install -y \
     curl \
     build-essential \
@@ -82,11 +99,12 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust (latest stable)
+# Install Rust and cargo-chef
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
+RUN cargo install cargo-chef
 
-# Download ONNX Runtime GPU (version must match ort crate - requires >= 1.23.x)
+# Download ONNX Runtime GPU
 ARG ORT_VERSION=1.23.0
 RUN mkdir -p /opt/ort_gpu && \
     wget -q https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz && \
@@ -94,17 +112,38 @@ RUN mkdir -p /opt/ort_gpu && \
     cp -r onnxruntime-linux-x64-gpu-${ORT_VERSION}/lib/* /opt/ort_gpu/ && \
     rm -rf onnxruntime-linux-x64-gpu-${ORT_VERSION} onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz
 
-# Copy the workspace files
+ENV ORT_DYLIB_PATH=/opt/ort_gpu/libonnxruntime.so.${ORT_VERSION}
+ENV LD_LIBRARY_PATH=/opt/ort_gpu:${LD_LIBRARY_PATH}
+
+WORKDIR /app
+
+# =============================================================================
+# Planner stage for CUDA - Create dependency recipe
+# =============================================================================
+FROM chef-cuda AS planner-cuda
+
 COPY Cargo.toml Cargo.lock ./
 COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
 
-# Set environment for CUDA build
-ENV ORT_DYLIB_PATH=/opt/ort_gpu/libonnxruntime.so.${ORT_VERSION}
-ENV LD_LIBRARY_PATH=/opt/ort_gpu:${LD_LIBRARY_PATH}
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Build with CUDA support
+# =============================================================================
+# Builder stage for CUDA - Build dependencies (cached) then application
+# =============================================================================
+FROM chef-cuda AS builder-cuda
+
+# Build dependencies first (this layer is cached if recipe.json doesn't change)
+COPY --from=planner-cuda /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json --package next-plaid-api --features "openblas,cuda"
+
+# Now build the actual application
+COPY Cargo.toml Cargo.lock ./
+COPY next-plaid ./next-plaid
+COPY next-plaid-api ./next-plaid-api
+COPY next-plaid-onnx ./next-plaid-onnx
+
 RUN cargo build --release --package next-plaid-api --features "openblas,cuda"
 
 # =============================================================================

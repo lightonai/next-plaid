@@ -115,7 +115,7 @@ jobs:
           context: .
           file: next-plaid-api/Dockerfile
           target: runtime-cpu
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}
