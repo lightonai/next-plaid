@@ -6,6 +6,7 @@ High-performance, memory-efficient HNSW (Hierarchical Navigable Small World) ind
 
 - **Low Memory Usage**: Uses memory-mapped files to minimize RAM consumption
 - **Fast Search**: Approximate nearest neighbor search with configurable accuracy
+- **Filtered Search**: Search within specific subsets of vectors with per-query candidate lists
 - **Incremental Updates**: Add vectors to an existing index without rebuilding
 - **Persistent Storage**: Save and load indices from disk
 - **Parallel Processing**: Multi-threaded search using rayon
@@ -161,7 +162,49 @@ for q in 0..queries.nrows() {
 }
 ```
 
-### 4. Saving and Loading
+### 4. Filtered Search
+
+Search within specific subsets of vectors using candidate lists. Each query can have its own distinct set of candidate vector IDs.
+
+#### Same filter for all queries
+
+Use `search_with_filter()` when all queries should search within the same subset:
+
+```rust
+use std::collections::HashSet;
+
+// Only search within vectors 0-99
+let filter: HashSet<usize> = (0..100).collect();
+
+let (scores, indices) = index.search_with_filter(&queries, k, Some(&filter))?;
+// All results will be from the filter set
+```
+
+#### Per-query candidate lists
+
+Use `search_with_ids()` when each query needs a different set of candidates:
+
+```rust
+// 3 queries, each with different candidates
+let candidates0: Vec<usize> = vec![10, 20, 30, 40, 50];     // 5 candidates
+let candidates1: Vec<usize> = (100..200).collect();         // 100 candidates
+let candidates2: Vec<usize> = vec![500, 501];               // 2 candidates
+
+let candidate_refs: Vec<&[usize]> = vec![
+    &candidates0,
+    &candidates1,
+    &candidates2,
+];
+
+let (scores, indices) = index.search_with_ids(&queries, k, &candidate_refs)?;
+// Query 0 results come only from candidates0
+// Query 1 results come only from candidates1
+// Query 2 results come only from candidates2
+```
+
+The HNSW algorithm still explores all vectors during graph traversal for efficient navigation, but only returns results from the specified candidate sets.
+
+### 5. Saving and Loading
 
 The index is automatically saved when calling `update()`. To load an existing index:
 
@@ -174,7 +217,7 @@ println!("Loaded {} vectors", index.len());
 let (scores, indices) = index.search(&queries, 10)?;
 ```
 
-### 5. Index Files
+### 6. Index Files
 
 The index directory contains:
 - `metadata.json` - Configuration and statistics
@@ -224,6 +267,22 @@ pub fn update(&mut self, vectors: &Array2<f32>) -> Result<usize>
 // Search for k nearest neighbors
 pub fn search(&self, queries: &Array2<f32>, k: usize) -> Result<(Array2<f32>, Array2<i64>)>
 
+// Search with a uniform filter applied to all queries
+pub fn search_with_filter(
+    &self,
+    queries: &Array2<f32>,
+    k: usize,
+    filter: Option<&HashSet<usize>>
+) -> Result<(Array2<f32>, Array2<i64>)>
+
+// Search with per-query candidate lists (each query can have different candidates)
+pub fn search_with_ids(
+    &self,
+    queries: &Array2<f32>,
+    k: usize,
+    candidate_ids: &[&[usize]]
+) -> Result<(Array2<f32>, Array2<i64>)>
+
 // Get number of vectors
 pub fn len(&self) -> usize
 
@@ -258,6 +317,9 @@ pub fn ef_search(self, ef: usize) -> Self
 ```bash
 # Run all tests
 cargo test -p next-plaid-hnsw
+
+# Run filtered search tests
+cargo test -p next-plaid-hnsw --test filtered_search
 
 # Run benchmark comparison tests
 cargo test -p next-plaid-hnsw --test benchmark_comparison -- --nocapture
