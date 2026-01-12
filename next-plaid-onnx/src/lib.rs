@@ -357,11 +357,11 @@ pub struct Colbert {
 /// [`Colbert::from_pretrained`]. You typically don't need to create this manually.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColbertConfig {
-    /// Prefix prepended to queries (e.g., "[Q] " or "[unused0]")
+    /// Prefix prepended to queries (e.g., "\[Q\] " or "\[unused0\]")
     #[serde(default = "default_query_prefix")]
     pub query_prefix: String,
 
-    /// Prefix prepended to documents (e.g., "[D] " or "[unused1]")
+    /// Prefix prepended to documents (e.g., "\[D\] " or "\[unused1\]")
     #[serde(default = "default_document_prefix")]
     pub document_prefix: String,
 

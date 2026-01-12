@@ -542,7 +542,7 @@ pub struct EncodeRequest {
 /// Response containing embeddings for encoded texts.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct EncodeResponse {
-    /// Embeddings for each text: [num_texts][num_tokens][embedding_dim]
+    /// Embeddings for each text: \[num_texts\]\[num_tokens\]\[embedding_dim\]
     #[schema(example = json!([[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]]))]
     pub embeddings: Vec<Vec<Vec<f32>>>,
     /// Number of texts encoded

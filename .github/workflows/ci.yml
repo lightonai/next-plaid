@@ -164,3 +164,51 @@ jobs:
 
           # Cleanup
           kill $API_PID 2>/dev/null || true
+
+  python-sdk-tests:
+    name: Python SDK Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install OpenBLAS
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build API server
+        run: cargo build --release -p next-plaid-api
+
+      - name: Install Python SDK
+        run: |
+          cd next-plaid-api/python-sdk
+          pip install -e ".[dev]"
+
+      - name: Run Python SDK tests
+        run: |
+          # Start API server in background
+          mkdir -p test_indices
+          ./target/release/next-plaid-api -d test_indices &
+          API_PID=$!
+
+          # Wait for server to be ready
+          for i in {1..30}; do
+            if curl -s http://localhost:8080/health >/dev/null 2>&1; then
+              echo "API server is ready"
+              break
+            fi
+            echo "Waiting for API server... ($i/30)"
+            sleep 1
+          done
+
+          # Run Python SDK tests
+          cd next-plaid-api/python-sdk
+          pytest tests/ -v
+
+          # Cleanup
+          kill $API_PID 2>/dev/null || true

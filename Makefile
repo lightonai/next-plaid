@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-model docker-build-cuda docker-up docker-up-model docker-up-cuda docker-down docker-logs
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-model docker-build-cuda docker-up docker-up-model docker-up-cuda docker-down docker-logs kill-api
 
 all: fmt lint test
 
@@ -62,8 +62,16 @@ example:
 	cargo run --example basic --release
 
 # Run all CI checks locally
-ci: fmt-check clippy test doc bench-check ci-api test-api-integration ci-onnx
+ci: fmt-check clippy test doc bench-check ci-api ci-onnx
 	@echo "All CI checks passed!"
+
+# Kill any existing API process on port 8080
+kill-api:
+	@if lsof -t -i:8080 >/dev/null 2>&1; then \
+		echo "Killing process on port 8080..."; \
+		kill -9 $$(lsof -t -i:8080) 2>/dev/null || true; \
+		sleep 2; \
+	fi
 
 # Run CI checks for api crate (using cross-platform features only)
 ci-api:
@@ -77,7 +85,7 @@ ci-onnx:
 	cd next-plaid-onnx && cargo clippy --all-targets -- -D warnings
 	cd next-plaid-onnx && cargo test
 	cd next-plaid-onnx/python && uv run --extra dev ruff check .
-	cd next-plaid-onnx/python && uv run --extra dev pytest tests/
+	cd next-plaid-onnx/python && uv run --extra dev python -m pytest tests/
 
 # Run API integration tests (starts server, runs Python tests, cleans up)
 test-api-integration:

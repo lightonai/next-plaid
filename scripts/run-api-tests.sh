@@ -44,7 +44,7 @@ cleanup() {
 
     # Kill any process on the API port
     if lsof -t -i:"$API_PORT" >/dev/null 2>&1; then
-        log_warn "Killing existing process on port $API_PORT..."
+        log_warn "Killing process on port $API_PORT..."
         kill -9 $(lsof -t -i:"$API_PORT") 2>/dev/null || true
     fi
 
@@ -65,7 +65,7 @@ cd "$REPO_ROOT"
 if lsof -t -i:"$API_PORT" >/dev/null 2>&1; then
     log_warn "Killing existing process on port $API_PORT..."
     kill -9 $(lsof -t -i:"$API_PORT") 2>/dev/null || true
-    sleep 1
+    sleep 2
 fi
 
 # Build the API server

@@ -1,10 +1,10 @@
-# Lategrep
+# NextPlaid
 
 A CPU-based Rust implementation of the PLAID algorithm for efficient multi-vector search (late interaction retrieval).
 
 ## Overview
 
-Lategrep is a pure Rust, CPU-only implementation of [FastPlaid](https://github.com/lightonai/fast-plaid). It provides the same functionality for multi-vector search using the PLAID algorithm, but runs entirely on CPU using [ndarray](https://github.com/rust-ndarray/ndarray) instead of GPU tensors.
+Next-Plaid is a pure Rust, CPU-only implementation of [FastPlaid](https://github.com/lightonai/fast-plaid). It provides the same functionality for multi-vector search using the PLAID algorithm, but runs entirely on CPU using [ndarray](https://github.com/rust-ndarray/ndarray) instead of GPU tensors.
 
 ## Features
 
@@ -17,11 +17,11 @@ Lategrep is a pure Rust, CPU-only implementation of [FastPlaid](https://github.c
 
 ## Performance
 
-Lategrep achieves **faster indexing than FastPlaid** on CPU with BLAS acceleration enabled.
+Next-Plaid achieves **faster indexing than FastPlaid** on CPU with BLAS acceleration enabled.
 
 ### SciFact Benchmark (5,183 documents, 1.2M tokens)
 
-| Operation                  | Lategrep   | FastPlaid | Speedup          |
+| Operation                  | Next-Plaid   | FastPlaid | Speedup          |
 | -------------------------- | ---------- | --------- | ---------------- |
 | Index + Update (batch=800) | **12.19s** | 19.46s    | **1.60x faster** |
 | Search (300 queries)       | **16.38s** | 85.85s    | **5.2x faster**  |
@@ -31,7 +31,7 @@ Lategrep achieves **faster indexing than FastPlaid** on CPU with BLAS accelerati
 
 Both implementations achieve equivalent retrieval quality:
 
-| Metric              | Lategrep | FastPlaid | Difference |
+| Metric              | Next-Plaid | FastPlaid | Difference |
 | ------------------- | -------- | --------- | ---------- |
 | MAP                 | 0.7077   | 0.7114    | -0.5%      |
 | NDCG@10             | 0.7439   | 0.7464    | -0.3%      |
@@ -40,9 +40,9 @@ Both implementations achieve equivalent retrieval quality:
 
 ### Memory Usage
 
-Lategrep uses significantly less memory than FastPlaid:
+Next-Plaid uses significantly less memory than FastPlaid:
 
-| Operation      | Lategrep   | FastPlaid | Savings      |
+| Operation      | Next-Plaid   | FastPlaid | Savings      |
 | -------------- | ---------- | --------- | ------------ |
 | Index + Update | **473 MB** | 3,317 MB  | **86% less** |
 | Search         | **480 MB** | 3,361 MB  | **86% less** |
@@ -364,7 +364,7 @@ cargo test --features "npy filtering"
 
 ### FastPlaid Compatibility
 
-Lategrep is designed to produce results compatible with FastPlaid. The comparison tests verify:
+Next-Plaid is designed to produce results compatible with FastPlaid. The comparison tests verify:
 
 1. **Retrieval Quality**: MAP, NDCG@10, NDCG@100, Recall@10, Recall@100
 2. **Result Overlap**: Jaccard similarity between result sets
@@ -383,7 +383,7 @@ make compare-scifact-cached     # Quick retrieval quality comparison
 
 ## Algorithm
 
-Lategrep implements the PLAID (Passage-Level Aligned Interaction with Documents) algorithm:
+Next-Plaid implements the PLAID (Passage-Level Aligned Interaction with Documents) algorithm:
 
 1. **Index Creation**:
 
@@ -416,18 +416,30 @@ If you use this work, please cite:
 }
 ```
 
+WRITE A CLI WHICH CAN BE INSTALLED VIA CARGO TO LAUNCH THE API.
+WRITE A PYTHON SDK TO INTERACT WITH THE RUST API, CONSIDER BOTH SYNC AND ASYNC. ADD DEDICATED TESTS FOR THE PYTHON SDK.
 
-Update README to reflect new name next-plaid.
-MAIN README SHOULD EXPLAIN HOW TO RUN THE DOCKER FIRST.
+MAIN README SHOULD EXPLAIN HOW TO RUN THE DOCKER FIRST.  
+FINALLY HOW TO USE THE PYTHON SDK. THEN HOW TO USE THE RUST CRATE. 
+EACH CREATE SHOULD HAVE ITS OWN README.
 
-WRITE A PYTHON SDK TO INTERACT WITH THE RUST API, CONSIDER BOTH SYNC AND ASYNC.
+WRITE LICENSE PROPERLY.
+WRITE LICENSE APACHE 2.0.
+MCP / 
+
+THEN OPEN THE REPOSITORY, CREATE THE CRATE AND PUSH AS MUCH ARTIFACT AS POSSIBLE TO EASE INSTALLATION.
+2 python packages: onnx converter and API CLIENT.
+Create the rust crate: 3 crates: next-plaid, next-plaid-api, next-plaid-onnx.
+Push the Docker image to docker hub public repository.
+PUSH EVERYTHING FROM THE CI.
+
 Monitor memory usage with large indexes.
 
-AT SOME POINT IF OPEN SOURCE GENERATE BEAUTIFUL DOCUMENTATION.
+GENERATE BEAUTIFUL DOCUMENTATION.
 ALSO GENERATE BEAUTIFUL README.
-ASSERT THAT NEXT-PLAID CAN BE CREATED FROM FAST-PLAID INDEX.
-PUSH ARTIFACTS SO IT BECOME EASY TO INSTALL such as the docker, and each crate.
 
+ASSERT THAT NEXT-PLAID CAN BE CREATED FROM FAST-PLAID INDEX.
 UPDATE FAST-PLAID CPU TO RELY ON NEXT-PLAID.
 
-WRITE LICENSE APACHE 2.0.
+ADD DISCLAIMER ABOUT AI USAGE. TELL THAT AI ASSISTED IN THE CREATION OF THIS REPOSITORY AND MAIN PART OF THE CODE BUT UNDER HUMAN SUPERVISION.
+EXPLAIN THAT THE OVERALL CODE LOGIC COME FROM FAST-PLAID AND THAT THE AI HELPED WRITING RUST CODE BASED ON THE HRYBRID RUST PYTHON CODE OF FAST-PLAID which was WRITTEN manually BY Raphaël SOURTY.
