@@ -13,25 +13,25 @@
   "num_queries": 300,
   "num_centroids": 16384,
   "next-plaid": {
-    "index_time_s": 125.13,
-    "search_time_s": 3.993,
+    "index_time_s": 113.592,
+    "search_time_s": 5.257,
     "num_batches": 54,
     "metrics": {
-      "map": 0.7092,
-      "ndcg@10": 0.7436,
-      "ndcg@100": 0.7677,
-      "recall@10": 0.8533,
-      "recall@100": 0.9627
+      "map": 0.7091,
+      "ndcg@10": 0.7429,
+      "ndcg@100": 0.7681,
+      "recall@10": 0.8517,
+      "recall@100": 0.966
     },
     "memory": {
-      "index_peak_mb": 311.0,
-      "search_peak_mb": 938.9,
-      "peak_overall_mb": 938.9
+      "index_peak_mb": 312.2,
+      "search_peak_mb": 209.6,
+      "peak_overall_mb": 312.2
     }
   },
   "fastplaid": {
-    "index_time_s": 19.034,
-    "search_time_s": 179.494,
+    "index_time_s": 16.582,
+    "search_time_s": 156.038,
     "num_batches": 7,
     "metrics": {
       "map": 0.7115,
@@ -41,17 +41,17 @@
       "recall@100": 0.956
     },
     "memory": {
-      "index_peak_mb": 1641.0,
-      "search_peak_mb": 454.4,
-      "peak_overall_mb": 1641.0
+      "index_peak_mb": 1672.6,
+      "search_peak_mb": 566.2,
+      "peak_overall_mb": 1672.6
     }
   },
   "comparison": {
-    "result_overlap_10": 0.8519,
-    "result_overlap_100": 0.8769,
-    "map_diff_pct": 0.32,
+    "result_overlap_10": 0.8365,
+    "result_overlap_100": 0.8196,
+    "map_diff_pct": 0.35,
     "speedup": 0.15,
-    "memory_savings_pct": 42.8
+    "memory_savings_pct": 81.3
   },
   "assertions": {
     "map_passed": true,

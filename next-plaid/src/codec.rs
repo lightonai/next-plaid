@@ -1,42 +1,40 @@
 //! Residual codec for quantization and decompression
 
-use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2, Axis};
+use ndarray::{Array1, Array2, ArrayView1, Axis};
 use next_plaid_hnsw::HnswIndex;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
 
+/// Maximum number of centroids to load into memory at once.
+pub const MAX_CENTROIDS_IN_MEMORY: usize = 100_000;
+
 /// Storage backend for centroids using HNSW index.
 ///
-/// This struct wraps an HNSW index that stores the centroids on disk,
-/// along with a cached copy for fast view/row access operations.
-/// The HNSW index can be used directly for approximate nearest neighbor
-/// search when the number of centroids is large.
+/// This struct wraps an HNSW index that stores the centroids on disk.
+/// Centroids are loaded lazily from the memory-mapped HNSW index to
+/// avoid keeping all centroids in memory at once.
+///
+/// For large centroid counts (>100k), this significantly reduces memory usage
+/// compared to caching all centroids upfront.
 pub struct CentroidStore {
-    /// HNSW index containing the centroids
+    /// HNSW index containing the centroids (memory-mapped)
     hnsw: Arc<HnswIndex>,
-    /// Cached centroids for fast access (loaded from HNSW)
-    centroids_cache: Array2<f32>,
 }
 
 impl CentroidStore {
     /// Create a new CentroidStore from an HNSW index.
     ///
-    /// This loads all centroids from the HNSW index into a cache for fast access.
+    /// This does NOT load centroids into memory - they are accessed lazily
+    /// from the HNSW's memory-mapped storage.
     pub fn from_hnsw(hnsw: Arc<HnswIndex>) -> Result<Self> {
-        let centroids_cache = hnsw
-            .get_all_vectors()
-            .map_err(|e| Error::IndexLoad(format!("Failed to load centroids from HNSW: {}", e)))?;
-
-        Ok(Self {
-            hnsw,
-            centroids_cache,
-        })
+        Ok(Self { hnsw })
     }
 
     /// Create a new CentroidStore from centroids and save to HNSW.
     ///
-    /// This creates an HNSW index, adds the centroids to it, and caches them.
+    /// This creates an HNSW index and adds the centroids to it.
+    /// The centroids are persisted to disk and accessed via memory-mapping.
     pub fn from_centroids(centroids: Array2<f32>, index_path: &std::path::Path) -> Result<Self> {
         use next_plaid_hnsw::HnswConfig;
 
@@ -49,18 +47,16 @@ impl CentroidStore {
 
         Ok(Self {
             hnsw: Arc::new(hnsw),
-            centroids_cache: centroids,
         })
     }
 
-    /// Create a CentroidStore from pre-built HNSW and centroids cache.
+    /// Create a CentroidStore from a pre-built HNSW.
     ///
-    /// Used during index creation when we already have both.
-    pub fn from_hnsw_and_cache(hnsw: Arc<HnswIndex>, centroids_cache: Array2<f32>) -> Self {
-        Self {
-            hnsw,
-            centroids_cache,
-        }
+    /// The centroids_cache parameter is ignored - centroids are loaded
+    /// lazily from the HNSW index.
+    #[deprecated(note = "Use from_hnsw instead - centroids are no longer cached")]
+    pub fn from_hnsw_and_cache(hnsw: Arc<HnswIndex>, _centroids_cache: Array2<f32>) -> Self {
+        Self { hnsw }
     }
 
     /// Get the underlying HNSW index.
@@ -70,31 +66,47 @@ impl CentroidStore {
         &self.hnsw
     }
 
-    /// Get a view of the centroids as ArrayView2.
-    ///
-    /// Returns a view of the cached centroids.
-    pub fn view(&self) -> ArrayView2<'_, f32> {
-        self.centroids_cache.view()
-    }
-
     /// Get the number of centroids (rows).
     pub fn nrows(&self) -> usize {
-        self.centroids_cache.nrows()
+        self.hnsw.len()
     }
 
     /// Get the embedding dimension (columns).
     pub fn ncols(&self) -> usize {
-        self.centroids_cache.ncols()
+        self.hnsw.dim()
     }
 
-    /// Get a view of a single centroid row.
-    pub fn row(&self, idx: usize) -> ArrayView1<'_, f32> {
-        self.centroids_cache.row(idx)
+    /// Get a single centroid by index.
+    ///
+    /// This loads the centroid from the HNSW's memory-mapped storage.
+    /// Returns an owned Array1 since we cannot return a view into mmap data.
+    pub fn row(&self, idx: usize) -> Array1<f32> {
+        self.hnsw
+            .get_vector(idx)
+            .expect("Failed to load centroid from HNSW")
     }
 
-    /// Get a view of rows [start..end] as ArrayView2.
-    pub fn slice_rows(&self, start: usize, end: usize) -> ArrayView2<'_, f32> {
-        self.centroids_cache.slice(s![start..end, ..])
+    /// Load a batch of rows [start..end] into memory.
+    ///
+    /// Returns an owned Array2 loaded from the HNSW's memory-mapped storage.
+    /// This is the recommended way to access multiple centroids efficiently.
+    ///
+    /// Note: The batch size (end - start) should be kept reasonable (e.g., <= 100k)
+    /// to avoid excessive memory usage.
+    pub fn slice_rows(&self, start: usize, end: usize) -> Array2<f32> {
+        let end = end.min(self.nrows());
+        let batch_size = end - start;
+        let dim = self.ncols();
+
+        let mut result = Array2::zeros((batch_size, dim));
+        for (i, global_idx) in (start..end).enumerate() {
+            let vec = self
+                .hnsw
+                .get_vector(global_idx)
+                .expect("Failed to load centroid from HNSW");
+            result.row_mut(i).assign(&vec);
+        }
+        result
     }
 }
 
@@ -102,7 +114,6 @@ impl Clone for CentroidStore {
     fn clone(&self) -> Self {
         Self {
             hnsw: Arc::clone(&self.hnsw),
-            centroids_cache: self.centroids_cache.clone(),
         }
     }
 }
@@ -246,13 +257,6 @@ impl ResidualCodec {
         self.centroids.nrows()
     }
 
-    /// Returns a view of the centroids.
-    ///
-    /// This is zero-copy for the cached centroids.
-    pub fn centroids_view(&self) -> ArrayView2<'_, f32> {
-        self.centroids.view()
-    }
-
     /// Returns the underlying HNSW index for centroid search.
     ///
     /// Use this for approximate nearest neighbor search when the number
@@ -263,7 +267,10 @@ impl ResidualCodec {
 
     /// Compress embeddings into centroid codes using nearest neighbor search.
     ///
-    /// Uses batch matrix multiplication for efficiency:
+    /// Uses batch matrix multiplication for efficiency. When the number of centroids
+    /// exceeds MAX_CENTROIDS_IN_MEMORY, processes centroids in batches to limit
+    /// memory usage.
+    ///
     /// `scores = embeddings @ centroids.T  -> [N, K]`
     /// `codes = argmax(scores, axis=1)     -> [N]`
     ///
@@ -275,23 +282,39 @@ impl ResidualCodec {
     ///
     /// Centroid indices of shape `[N]`
     pub fn compress_into_codes(&self, embeddings: &Array2<f32>) -> Array1<usize> {
-        use rayon::prelude::*;
-
         let n = embeddings.nrows();
         if n == 0 {
             return Array1::zeros(0);
         }
 
-        // Get centroids view once (zero-copy for both owned and mmap)
-        let centroids = self.centroids_view();
+        let num_centroids = self.num_centroids();
 
-        // Process in batches to avoid memory issues with large matrices
-        const BATCH_SIZE: usize = 2048;
+        // If centroids fit in memory, use the simple path
+        if num_centroids <= MAX_CENTROIDS_IN_MEMORY {
+            return self.compress_into_codes_simple(embeddings);
+        }
+
+        // For large centroid counts, process centroids in batches
+        self.compress_into_codes_batched(embeddings)
+    }
+
+    /// Simple compression when all centroids fit in memory.
+    fn compress_into_codes_simple(&self, embeddings: &Array2<f32>) -> Array1<usize> {
+        use rayon::prelude::*;
+
+        let n = embeddings.nrows();
+        let num_centroids = self.num_centroids();
+
+        // Load all centroids into memory (only called when num_centroids <= MAX_CENTROIDS_IN_MEMORY)
+        let centroids = self.centroids.slice_rows(0, num_centroids);
+
+        // Process embeddings in batches to avoid memory issues with large matrices
+        const EMBED_BATCH_SIZE: usize = 2048;
 
         let mut all_codes = Vec::with_capacity(n);
 
-        for start in (0..n).step_by(BATCH_SIZE) {
-            let end = (start + BATCH_SIZE).min(n);
+        for start in (0..n).step_by(EMBED_BATCH_SIZE) {
+            let end = (start + EMBED_BATCH_SIZE).min(n);
             let batch = embeddings.slice(ndarray::s![start..end, ..]);
 
             // Batch matrix multiplication: [batch, dim] @ [dim, K] -> [batch, K]
@@ -314,6 +337,55 @@ impl ResidualCodec {
         }
 
         Array1::from_vec(all_codes)
+    }
+
+    /// Batched compression for when centroids exceed MAX_CENTROIDS_IN_MEMORY.
+    ///
+    /// Processes centroids in chunks, keeping track of the best score and code
+    /// for each embedding across all centroid batches.
+    fn compress_into_codes_batched(&self, embeddings: &Array2<f32>) -> Array1<usize> {
+        let n = embeddings.nrows();
+        let num_centroids = self.num_centroids();
+
+        // Track best code and score for each embedding
+        let mut best_codes = vec![0usize; n];
+        let mut best_scores = vec![f32::NEG_INFINITY; n];
+
+        // Process centroids in batches
+        for centroid_start in (0..num_centroids).step_by(MAX_CENTROIDS_IN_MEMORY) {
+            let centroid_end = (centroid_start + MAX_CENTROIDS_IN_MEMORY).min(num_centroids);
+            let centroid_batch = self.centroids.slice_rows(centroid_start, centroid_end);
+
+            // Process embeddings in smaller batches
+            const EMBED_BATCH_SIZE: usize = 2048;
+
+            for embed_start in (0..n).step_by(EMBED_BATCH_SIZE) {
+                let embed_end = (embed_start + EMBED_BATCH_SIZE).min(n);
+                let embed_batch = embeddings.slice(ndarray::s![embed_start..embed_end, ..]);
+
+                // Batch matrix multiplication: [batch, dim] @ [dim, centroid_batch] -> [batch, centroid_batch]
+                let scores = embed_batch.dot(&centroid_batch.t());
+
+                // Update best codes for this embedding batch
+                for (local_idx, row) in scores.axis_iter(Axis(0)).enumerate() {
+                    let global_embed_idx = embed_start + local_idx;
+
+                    // Find best in this centroid batch
+                    if let Some((local_centroid_idx, &score)) = row
+                        .iter()
+                        .enumerate()
+                        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                    {
+                        if score > best_scores[global_embed_idx] {
+                            best_scores[global_embed_idx] = score;
+                            best_codes[global_embed_idx] = centroid_start + local_centroid_idx;
+                        }
+                    }
+                }
+            }
+        }
+
+        Array1::from_vec(best_codes)
     }
 
     /// Quantize residuals into packed bytes.
@@ -415,7 +487,7 @@ impl ResidualCodec {
         let mut output = Array2::<f32>::zeros((n, dim));
 
         for i in 0..n {
-            // Get centroid for this embedding (zero-copy via CentroidStore)
+            // Get centroid for this embedding (loaded from HNSW mmap)
             let centroid = self.centroids.row(codes[i]);
 
             // Unpack residuals

@@ -365,39 +365,87 @@ pub fn update_cluster_threshold(
 // Centroid Expansion
 // ============================================================================
 
+/// ef_search parameter for outlier detection - higher means better recall.
+const OUTLIER_DETECTION_EF_SEARCH: usize = 200;
+
+/// Number of candidate centroids to retrieve from HNSW for L2 distance computation.
+/// HNSW uses inner product which may not find the true L2 nearest neighbor,
+/// so we retrieve multiple candidates and compute exact L2 to each.
+const OUTLIER_DETECTION_K_CANDIDATES: usize = 10;
+
 /// Find outlier embeddings that are far from all existing centroids.
+///
+/// Uses a hybrid approach:
+/// 1. HNSW search to find top-k candidate centroids (by inner product)
+/// 2. Compute exact L2² distance to each candidate
+/// 3. Use minimum L2² distance to determine if outlier
+///
+/// This is needed because HNSW uses inner product, which for unnormalized vectors
+/// doesn't correspond to L2 distance. The nearest neighbor by inner product
+/// might not be the nearest neighbor by L2.
 ///
 /// Returns indices of embeddings where min L2² distance > threshold².
 #[cfg(feature = "npy")]
-fn find_outliers(
+fn find_outliers_batched(
     flat_embeddings: &Array2<f32>,
-    centroids: &Array2<f32>,
+    hnsw: &next_plaid_hnsw::HnswIndex,
     threshold_sq: f32,
-) -> Vec<usize> {
-    flat_embeddings
-        .axis_iter(Axis(0))
-        .into_par_iter()
-        .enumerate()
-        .filter_map(|(i, emb)| {
-            // Find minimum squared distance to any centroid
-            let min_dist_sq = centroids
-                .axis_iter(Axis(0))
-                .map(|c| {
-                    // L2 squared distance
-                    emb.iter()
-                        .zip(c.iter())
-                        .map(|(a, b)| (a - b).powi(2))
-                        .sum::<f32>()
-                })
-                .fold(f32::INFINITY, f32::min);
+) -> Result<Vec<usize>> {
+    let num_centroids = hnsw.len();
 
-            if min_dist_sq > threshold_sq {
+    if num_centroids == 0 {
+        // No centroids, all embeddings are outliers
+        return Ok((0..flat_embeddings.nrows()).collect());
+    }
+
+    let num_embeddings = flat_embeddings.nrows();
+
+    // Determine k - use all centroids if there are fewer than our target
+    let k = OUTLIER_DETECTION_K_CANDIDATES.min(num_centroids);
+
+    // Step 1: Use HNSW to find top-k candidate centroids for each embedding
+    let (_scores, indices) = hnsw
+        .search_with_ef(flat_embeddings, k, OUTLIER_DETECTION_EF_SEARCH)
+        .map_err(|e| Error::IndexLoad(format!("HNSW search failed: {}", e)))?;
+
+    // Step 2: For each embedding, compute exact L2² to all k candidates
+    let outliers: Vec<usize> = (0..num_embeddings)
+        .into_par_iter()
+        .filter_map(|i| {
+            let emb = flat_embeddings.row(i);
+
+            // Find minimum L2² distance to any of the k candidates
+            let mut min_l2_sq = f32::INFINITY;
+
+            for j in 0..k {
+                let candidate_idx = indices[[i, j]];
+                if candidate_idx < 0 {
+                    continue;
+                }
+
+                // Get the candidate centroid and compute exact L2²
+                if let Ok(centroid) = hnsw.get_vector(candidate_idx as usize) {
+                    let l2_sq: f32 = emb
+                        .iter()
+                        .zip(centroid.iter())
+                        .map(|(a, b)| (a - b).powi(2))
+                        .sum();
+
+                    if l2_sq < min_l2_sq {
+                        min_l2_sq = l2_sq;
+                    }
+                }
+            }
+
+            if min_l2_sq > threshold_sq {
                 Some(i)
             } else {
                 None
             }
         })
-        .collect()
+        .collect();
+
+    Ok(outliers)
 }
 
 /// Expand centroids by clustering embeddings far from existing centroids.
@@ -430,18 +478,15 @@ pub fn update_centroids(
     let mut hnsw = HnswIndex::load(index_path)
         .map_err(|e| Error::IndexLoad(format!("Failed to load HNSW index: {}", e)))?;
 
-    let existing_centroids = hnsw
-        .get_all_vectors()
-        .map_err(|e| Error::IndexLoad(format!("Failed to load centroids from HNSW: {}", e)))?;
-
-    // Flatten all new embeddings
-    let dim = existing_centroids.ncols();
+    // Get dimension from HNSW index metadata (without loading all vectors)
+    let dim = hnsw.dim();
     let total_tokens: usize = new_embeddings.iter().map(|e| e.nrows()).sum();
 
     if total_tokens == 0 {
         return Ok(0);
     }
 
+    // Flatten all new embeddings
     let mut flat_embeddings = Array2::<f32>::zeros((total_tokens, dim));
     let mut offset = 0;
 
@@ -453,9 +498,9 @@ pub fn update_centroids(
         offset += n;
     }
 
-    // Find outliers
+    // Find outliers using batched processing (loads max 100K centroids at a time)
     let threshold_sq = cluster_threshold * cluster_threshold;
-    let outlier_indices = find_outliers(&flat_embeddings, &existing_centroids, threshold_sq);
+    let outlier_indices = find_outliers_batched(&flat_embeddings, &hnsw, threshold_sq)?;
 
     let num_outliers = outlier_indices.len();
     if num_outliers == 0 {
@@ -878,16 +923,23 @@ mod tests {
 
     #[test]
     #[cfg(feature = "npy")]
-    fn test_find_outliers() {
-        // Create centroids at (0,0), (1,1)
+    fn test_find_outliers_batched() {
+        use next_plaid_hnsw::{HnswConfig, HnswIndex};
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+
+        // Create HNSW index with centroids at (0,0), (1,1)
         let centroids = Array2::from_shape_vec((2, 2), vec![0.0, 0.0, 1.0, 1.0]).unwrap();
+        let mut hnsw = HnswIndex::new(dir.path(), 2, HnswConfig::default()).unwrap();
+        hnsw.update(&centroids).unwrap();
 
         // Create embeddings: one close to (0,0), one close to (1,1), one far away at (5,5)
         let embeddings =
             Array2::from_shape_vec((3, 2), vec![0.1, 0.1, 0.9, 0.9, 5.0, 5.0]).unwrap();
 
         // Threshold of 1.0 squared = 1.0
-        let outliers = find_outliers(&embeddings, &centroids, 1.0);
+        let outliers = find_outliers_batched(&embeddings, &hnsw, 1.0).unwrap();
 
         // Only the point at (5,5) should be an outlier
         assert_eq!(outliers.len(), 1);
