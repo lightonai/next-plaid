@@ -53,4 +53,4 @@ onnx/ort_gpu/
 # Docker persistent data (vector database indices)
 # Default location is ~/.local/share/next-plaid, but keep this in case
 # users override NEXT_PLAID_DATA to a local path
-next-plaid/
+data/

@@ -1,415 +1,232 @@
-# NextPlaid
+<div align="center">
+  <h1>NextPlaid</h1>
+</div>
 
-A CPU-based Rust implementation of the PLAID algorithm for efficient multi-vector search (late interaction retrieval).
+<p align="center"><img width=500 src="https://github.com/lightonai/next-plaid/blob/main/docs/logo.png"/></p>
+
+<div align="center">
+    <a href="https://github.com/rust-lang/rust"><img src="https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white" alt="rust"></a>
+    <a href="https://github.com/onnx/onnx"><img src="https://img.shields.io/badge/onnx-%23000000.svg?style=for-the-badge&logo=onnx&logoColor=white" alt="onnx"></a>
+    <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/docker-%23000000.svg?style=for-the-badge&logo=docker&logoColor=white" alt="docker"></a>
+</div>
+
+&nbsp;
+
+<div align="center">
+    <b>NextPlaid</b> - Production-Ready Multi-Vector Search for CPU & GPU
+</div>
+
+&nbsp;
 
 ## Overview
 
-Next-Plaid is a pure Rust, CPU-only implementation of [FastPlaid](https://github.com/lightonai/fast-plaid). It provides the same functionality for multi-vector search using the PLAID algorithm, but runs entirely on CPU using [ndarray](https://github.com/rust-ndarray/ndarray) instead of GPU tensors.
+**NextPlaid** is identical to [FastPlaid](https://github.com/lightonai/fast-plaid) but designed for **production deployments** on CPU. While FastPlaid is optimized for GPU-accelerated research and experimentation, NextPlaid provides:
 
-## Features
+- **Pure Rust Implementation**: No Python or PyTorch dependencies in production
+- **CPU-Optimized**: Uses ndarray with BLAS acceleration for efficient CPU inference
+- **Docker-First**: Ready-to-deploy containers for CPU and GPU workloads
+- **REST API**: Serve late-interaction models (ColBERT) on both CPU and GPU via Docker
 
-- **Pure Rust**: No Python or GPU dependencies required
-- **CPU Optimized**: Uses ndarray with rayon for parallel processing
-- **BLAS Acceleration**: Optional Accelerate (macOS) or OpenBLAS backends for 3.6x faster indexing
-- **Compatible**: Produces indices that can be compared against FastPlaid
-- **K-means Integration**: Uses [fastkmeans-rs](https://github.com/lightonai/fastkmeans-rs) for centroid computation
-- **Metadata Filtering**: Optional SQLite-based metadata storage for filtered search (matching FastPlaid's filtering API)
+&nbsp;
 
-## Performance
+## Quick Start with Docker
 
-Next-Plaid achieves **faster indexing than FastPlaid** on CPU with BLAS acceleration enabled.
+The fastest way to get started is using our pre-built Docker images.
 
-### SciFact Benchmark (5,183 documents, 1.2M tokens)
-
-| Operation                  | Next-Plaid   | FastPlaid | Speedup          |
-| -------------------------- | ---------- | --------- | ---------------- |
-| Index + Update (batch=800) | **12.19s** | 19.46s    | **1.60x faster** |
-| Search (300 queries)       | **16.38s** | 85.85s    | **5.2x faster**  |
-| **Total**                  | **28.57s** | 105.31s   | **3.7x faster**  |
-
-### Retrieval Quality
-
-Both implementations achieve equivalent retrieval quality:
-
-| Metric              | Next-Plaid | FastPlaid | Difference |
-| ------------------- | -------- | --------- | ---------- |
-| MAP                 | 0.7077   | 0.7114    | -0.5%      |
-| NDCG@10             | 0.7439   | 0.7464    | -0.3%      |
-| Recall@100          | 95.93%   | 95.60%    | +0.3%      |
-| Result Overlap @100 | 87.6%    | -         | -          |
-
-### Memory Usage
-
-Next-Plaid uses significantly less memory than FastPlaid:
-
-| Operation      | Next-Plaid   | FastPlaid | Savings      |
-| -------------- | ---------- | --------- | ------------ |
-| Index + Update | **473 MB** | 3,317 MB  | **86% less** |
-| Search         | **480 MB** | 3,361 MB  | **86% less** |
-| **Peak**       | **480 MB** | 3,361 MB  | **86% less** |
-
-Run the benchmark yourself:
+### Pull and Run
 
 ```bash
-make benchmark-scifact-update
+# Pull the latest image
+docker pull ghcr.io/lightonai/next-plaid-api:latest
+
+# Run with persistent storage
+docker run -d \
+  --name next-plaid-api \
+  -p 8080:8080 \
+  -v ~/.local/share/next-plaid:/data/indices \
+  ghcr.io/lightonai/next-plaid-api:latest
+
+# Verify it's running
+curl http://localhost:8080/health
 ```
 
-## Installation
-
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-next-plaid = { git = "https://github.com/lightonai/next-plaid" }
-```
-
-For NPY file support (required for index persistence):
-
-```toml
-[dependencies]
-next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy"] }
-```
-
-### BLAS Acceleration (Recommended)
-
-For optimal performance, enable BLAS acceleration:
-
-**macOS (Apple Accelerate framework):**
-
-```toml
-[dependencies]
-next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy", "accelerate"] }
-```
-
-**Linux (OpenBLAS):**
-
-```toml
-[dependencies]
-next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy", "openblas"] }
-```
-
-Note: OpenBLAS requires the system library to be installed (`apt install libopenblas-dev` on Ubuntu).
-
-### Metadata Filtering (Optional)
-
-For SQLite-based metadata filtering (matching FastPlaid's filtering API):
-
-```toml
-[dependencies]
-next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy", "filtering"] }
-```
-
-Or with BLAS acceleration:
-
-```toml
-[dependencies]
-next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy", "filtering", "accelerate"] }
-```
-
-## Usage
-
-### Creating an Index with Automatic Centroids
-
-The simplest way to create an index - centroids are computed automatically using the same heuristics as FastPlaid:
-
-```rust
-use next-plaid::{Index, IndexConfig};
-use ndarray::Array2;
-
-// Your document embeddings (list of [num_tokens, dim] arrays)
-let embeddings: Vec<Array2<f32>> = load_embeddings();
-
-// Create index with automatic centroid computation
-let config = IndexConfig::default();  // nbits=4, kmeans_niters=4, etc.
-let index = Index::create_with_kmeans(&embeddings, "path/to/index", &config)?;
-```
-
-### Creating an Index with Pre-computed Centroids
-
-For more control, you can compute centroids separately:
-
-```rust
-use next-plaid::{Index, IndexConfig, compute_kmeans, ComputeKmeansConfig};
-use ndarray::Array2;
-
-let embeddings: Vec<Array2<f32>> = load_embeddings();
-
-// Compute centroids with custom settings
-let kmeans_config = ComputeKmeansConfig {
-    kmeans_niters: 4,
-    max_points_per_centroid: 256,
-    seed: 42,
-    ..Default::default()
-};
-let centroids = compute_kmeans(&embeddings, &kmeans_config)?;
-
-// Create the index
-let config = IndexConfig {
-    nbits: 4,
-    batch_size: 50000,
-    seed: Some(42),
-    ..Default::default()
-};
-
-let index = Index::create(&embeddings, centroids, "path/to/index", &config)?;
-```
-
-### Update or Create Index
-
-For convenience, you can use `update_or_create` which automatically creates a new index if it doesn't exist, or updates an existing one:
-
-```rust
-use next-plaid::{Index, IndexConfig, UpdateConfig};
-use ndarray::Array2;
-
-let embeddings: Vec<Array2<f32>> = load_embeddings();
-let index_config = IndexConfig::default();
-let update_config = UpdateConfig::default();
-
-// Creates index if it doesn't exist, otherwise updates it
-let index = Index::update_or_create(
-    &embeddings,
-    "path/to/index",
-    &index_config,
-    &update_config,
-)?;
-```
-
-This is useful for incremental indexing pipelines where you want to add documents without checking if the index exists first.
-
-### Searching
-
-```rust
-use next-plaid::{Index, SearchParameters};
-
-// Load the index
-let index = Index::load("path/to/index")?;
-
-// Search parameters
-let params = SearchParameters {
-    batch_size: 128,
-    n_full_scores: 1024,
-    top_k: 10,
-    n_ivf_probe: 32,
-};
-
-// Single query
-let query: Array2<f32> = get_query_embeddings();
-let result = index.search(&query, &params, None)?;
-
-println!("Top results: {:?}", result.passage_ids);
-println!("Scores: {:?}", result.scores);
-
-// Batch search
-let queries: Vec<Array2<f32>> = get_multiple_queries();
-let results = index.search_batch(&queries, &params, true, None)?;
-```
-
-### Filtered Search with Metadata
-
-The `filtering` feature provides SQLite-based metadata storage for efficient filtered search:
-
-```rust
-use next-plaid::{Index, IndexConfig, SearchParameters, filtering};
-use serde_json::json;
-
-// Create index
-let embeddings: Vec<Array2<f32>> = load_embeddings();
-let config = IndexConfig::default();
-let index = Index::create_with_kmeans(&embeddings, "path/to/index", &config)?;
-
-// Create metadata database with document attributes
-let metadata = vec![
-    json!({"title": "Document 1", "category": "science", "year": 2023}),
-    json!({"title": "Document 2", "category": "history", "year": 2022}),
-    json!({"title": "Document 3", "category": "science", "year": 2024}),
-];
-filtering::create("path/to/index", &metadata)?;
-
-// Query metadata to get document subset
-let subset = filtering::where_condition(
-    "path/to/index",
-    "category = ? AND year >= ?",
-    &[json!("science"), json!(2023)],
-)?;
-// Returns: [0, 2] (documents matching the filter)
-
-// Search only within the filtered subset
-let query: Array2<f32> = get_query_embeddings();
-let params = SearchParameters::default();
-let result = index.search(&query, &params, Some(&subset))?;
-```
-
-#### Filtering API
-
-```rust
-use next-plaid::filtering;
-use serde_json::json;
-
-// Create metadata database (replaces existing)
-filtering::create("path/to/index", &metadata)?;
-
-// Add new documents with metadata
-filtering::update("path/to/index", &new_metadata)?;
-
-// Delete documents (automatically re-indexes _subset_ IDs)
-filtering::delete("path/to/index", &[1, 3, 5])?;
-
-// Query by SQL condition
-let subset = filtering::where_condition(
-    "path/to/index",
-    "category = ? OR score > ?",
-    &[json!("A"), json!(90)],
-)?;
-
-// Get full metadata rows
-let rows = filtering::get("path/to/index", None, &[], Some(&[0, 2, 4]))?;
-
-// Check if metadata exists
-if filtering::exists("path/to/index") {
-    let count = filtering::count("path/to/index")?;
-    println!("Index has {} documents with metadata", count);
-}
-```
-
-#### Supported Query Patterns
-
-```rust
-// Equality
-filtering::where_condition(path, "category = ?", &[json!("A")])?;
-
-// Comparison operators
-filtering::where_condition(path, "score > ?", &[json!(90)])?;
-filtering::where_condition(path, "year BETWEEN ? AND ?", &[json!(2020), json!(2024)])?;
-
-// Pattern matching
-filtering::where_condition(path, "title LIKE ?", &[json!("%search%")])?;
-
-// Boolean logic
-filtering::where_condition(path, "category = ? AND year >= ?", &[json!("science"), json!(2023)])?;
-filtering::where_condition(path, "category = ? OR category = ?", &[json!("A"), json!("B")])?;
-
-// NULL handling
-filtering::where_condition(path, "optional_field IS NOT NULL", &[])?;
-```
-
-## Development
-
-### Setup
+### Using Docker Compose
 
 ```bash
 # Clone the repository
 git clone https://github.com/lightonai/next-plaid.git
 cd next-plaid
 
-# Install git hooks
-make install-hooks
+# Start the API (CPU)
+docker compose up -d
 
-# Run all checks
-make ci
+# Or with CUDA support (requires NVIDIA Container Toolkit)
+docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d
 ```
 
-### Available Commands
+&nbsp;
 
-#### Core Commands
+## Python SDK
+
+Install the Python client to interact with the Next-Plaid API.
 
 ```bash
-make build          # Build the project
-make release        # Build in release mode
-make test           # Run all unit tests
-make lint           # Run clippy and format checks
-make fmt            # Format code
-make doc            # Build documentation
-make bench          # Run benchmarks
-make ci             # Run all CI checks (fmt, clippy, test, doc, bench)
+pip install next-plaid-client
 ```
 
-#### Python Tools
+### Upload and Search with Embeddings
+
+```python
+from next_plaid_client import NextPlaidClient, IndexConfig, SearchParams
+
+# Connect to the API
+client = NextPlaidClient("http://localhost:8080")
+
+# Create an index
+client.create_index("my_documents", IndexConfig(nbits=4))
+
+# Add documents with pre-computed embeddings
+# Each document is a list of token embeddings [num_tokens, embedding_dim]
+documents = [
+    {"embeddings": [[0.1, 0.2, ...], [0.3, 0.4, ...]]},  # Document 1
+    {"embeddings": [[0.5, 0.6, ...], [0.7, 0.8, ...]]}   # Document 2
+]
+metadata = [
+    {"title": "Document 1", "category": "science"},
+    {"title": "Document 2", "category": "history"}
+]
+client.add_documents("my_documents", documents, metadata)
+
+# Search with query embeddings
+results = client.search(
+    "my_documents",
+    queries=[[[0.1, 0.2, ...], [0.3, 0.4, ...]]],  # Query token embeddings
+    params=SearchParams(top_k=10)
+)
+
+# Print results
+for result in results.results:
+    for doc_id, score, meta in zip(result.document_ids, result.scores, result.metadata):
+        print(f"Doc {doc_id}: {score:.3f} - {meta['title']}")
+```
+
+### Filtered Search
+
+```python
+# Search with metadata filter (SQL-like conditions)
+results = client.search_filtered(
+    "my_documents",
+    queries=[[[0.1, 0.2, ...]]],
+    filter_condition="category = ? AND year >= ?",
+    filter_parameters=["science", 2020],
+    params=SearchParams(top_k=10)
+)
+
+# Or search within a specific subset of document IDs
+results = client.search(
+    "my_documents",
+    queries=[[[0.1, 0.2, ...]]],
+    subset=[0, 5, 10, 15],  # Only search these document IDs
+    params=SearchParams(top_k=10)
+)
+```
+
+&nbsp;
+
+## Project Structure
+
+| Crate | Description |
+|-------|-------------|
+| [next-plaid](./next-plaid/) | Core Rust library for CPU-based PLAID search |
+| [next-plaid-api](./next-plaid-api/) | REST API server with Docker support |
+| [next-plaid-onnx](./next-plaid-onnx/) | ONNX-based ColBERT encoding in Rust |
+| [Python SDK](./next-plaid-api/python-sdk/) | Python client for the API |
+| [pylate-onnx-export](./next-plaid-onnx/python/) | CLI tool for exporting ColBERT to ONNX |
+
+&nbsp;
+
+## Docker Variants
+
+| Variant | Image Tag | Use Case |
+|---------|-----------|----------|
+| **CPU Only** | `latest` | Search with pre-computed embeddings |
+| **Model (CPU)** | `model` | Text encoding on CPU |
+| **CUDA** | `cuda` | GPU-accelerated encoding |
+
+&nbsp;
+
+## Text Encoding (Optional)
+
+When the API is started with a ColBERT model, you can encode text directly instead of providing pre-computed embeddings.
+
+### Start the API with a Model
 
 ```bash
-make lint-python    # Lint Python code with ruff
-make fmt-python     # Format Python code with ruff
+# Using a model from HuggingFace Hub (auto-downloaded)
+docker run -d \
+  -p 8080:8080 \
+  -v ~/.local/share/next-plaid:/data/indices \
+  -v next-plaid-models:/models \
+  ghcr.io/lightonai/next-plaid-api:model \
+  --model lightonai/GTE-ModernColBERT-v1-onnx
 ```
 
-#### Comparison Tests
+### Upload and Search with Text
+
+```python
+# Add documents using text (model encodes them automatically)
+client.update_documents_with_encoding(
+    "my_documents",
+    documents=["Paris is the capital of France.", "Machine learning is..."],
+    metadata=[{"title": "Geography"}, {"title": "AI"}]
+)
+
+# Search with text queries
+results = client.search_with_encoding(
+    "my_documents",
+    queries=["What is the capital of France?"],
+    params=SearchParams(top_k=5)
+)
+```
+
+&nbsp;
+
+## Export ColBERT Models to ONNX
+
+Export any PyLate-compatible ColBERT model from HuggingFace to ONNX format.
+
+### Install the Export Tool
 
 ```bash
-make compare-reference       # Quick comparison with synthetic data
-make compare-scifact         # Full SciFact comparison (encodes from scratch)
-make compare-scifact-cached  # SciFact comparison with cached embeddings (faster)
+pip install "pylate-onnx-export @ git+https://github.com/lightonai/next-plaid.git#subdirectory=next-plaid-onnx/python"
 ```
 
-#### Evaluation
+### Export a Model
 
 ```bash
-make evaluate-scifact        # Evaluate next-plaid on SciFact dataset
-make evaluate-scifact-cached # Evaluate with cached embeddings (faster)
+# Export with INT8 quantization (recommended for production)
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --quantize
+
+# Export to custom directory
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./models --quantize
+
+# Push exported model to HuggingFace Hub
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --quantize --push-to-hub myorg/my-onnx-model
 ```
 
-## Testing
-
-### Unit Tests
-
-Run the full test suite:
-
-```bash
-cargo test --features npy
-```
-
-With filtering support:
-
-```bash
-cargo test --features "npy filtering"
-```
-
-### FastPlaid Compatibility
-
-Next-Plaid is designed to produce results compatible with FastPlaid. The comparison tests verify:
-
-1. **Retrieval Quality**: MAP, NDCG@10, NDCG@100, Recall@10, Recall@100
-2. **Result Overlap**: Jaccard similarity between result sets
-3. **Index Compatibility**: Cross-loading of indices
-
-#### Latest SciFact Results
-
-See [Performance](#performance) section above for the latest benchmark results.
-
-Run the comparison yourself:
-
-```bash
-make benchmark-scifact-update   # Full benchmark with updates (batch=800)
-make compare-scifact-cached     # Quick retrieval quality comparison
-```
-
-## Algorithm
-
-Next-Plaid implements the PLAID (Passage-Level Aligned Interaction with Documents) algorithm:
-
-1. **Index Creation**:
-
-   - Compute K-means centroids on all token embeddings
-   - For each document, assign tokens to nearest centroids (codes)
-   - Compute and quantize residuals (difference from centroids)
-   - Build an inverted file (IVF) mapping centroids to documents
-
-2. **Search**:
-   - Compute query-centroid similarity scores
-   - Probe top-k IVF cells to get candidate documents
-   - Compute approximate scores using centroid codes
-   - Re-rank top candidates with decompressed exact embeddings
-   - Return top-k documents by ColBERT MaxSim score
+&nbsp;
 
 ## License
 
 Apache-2.0
 
-## Citation
+&nbsp;
 
-If you use this work, please cite:
+## Citation
 
 ```bibtex
 @software{next-plaid,
-  title = {Next-Plaid: CPU-accelerated Fast-Plaid},
+  title = {NextPlaid: Production-Ready Multi-Vector Search},
   url = {https://github.com/lightonai/next-plaid},
   author = {Raphaël Sourty},
   year = {2025},

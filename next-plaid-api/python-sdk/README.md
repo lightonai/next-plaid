@@ -1,6 +1,6 @@
-# Next Plaid Client
+# next-plaid-client
 
-A Python client library for the Next Plaid ColBERT Search API.
+A Python client library for the Next-Plaid ColBERT Search API.
 
 ## Installation
 
@@ -11,14 +11,7 @@ pip install next-plaid-client
 Or install from source:
 
 ```bash
-cd python-sdk
-pip install -e .
-```
-
-For development (includes test dependencies):
-
-```bash
-pip install -e ".[dev]"
+pip install git+https://github.com/lightonai/next-plaid.git#subdirectory=next-plaid-api/python-sdk
 ```
 
 ## Quick Start
@@ -26,29 +19,20 @@ pip install -e ".[dev]"
 ```python
 from next_plaid_client import NextPlaidClient, IndexConfig, SearchParams
 
-# Create a client
+# Connect to the API
 client = NextPlaidClient("http://localhost:8080")
 
 # Check server health
 health = client.health()
 print(f"Server status: {health.status}")
-print(f"Loaded indices: {health.loaded_indices}")
 
 # Create an index
-config = IndexConfig(nbits=4, max_documents=10000)
-client.create_index("my_index", config)
+client.create_index("my_index", IndexConfig(nbits=4))
 
 # Add documents with pre-computed embeddings
 documents = [{"embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]}]
 metadata = [{"title": "Document 1", "category": "science"}]
 client.add_documents("my_index", documents, metadata)
-
-# Or use text encoding (requires model loaded on server)
-client.update_documents_with_encoding(
-    "my_index",
-    documents=["Paris is the capital of France."],
-    metadata=[{"title": "Geography"}]
-)
 
 # Search with embeddings
 results = client.search(
@@ -57,17 +41,30 @@ results = client.search(
     params=SearchParams(top_k=10)
 )
 
-# Or search with text (requires model)
+# Print results
+for result in results.results:
+    for doc_id, score, meta in zip(result.document_ids, result.scores, result.metadata):
+        print(f"Document {doc_id}: {score:.4f} - {meta}")
+```
+
+### Text Encoding (requires model on server)
+
+When the API server is started with `--model`, you can use text directly:
+
+```python
+# Add documents using text
+client.update_documents_with_encoding(
+    "my_index",
+    documents=["Paris is the capital of France."],
+    metadata=[{"title": "Geography"}]
+)
+
+# Search with text queries
 results = client.search_with_encoding(
     "my_index",
     queries=["What is the capital of France?"],
     params=SearchParams(top_k=5)
 )
-
-# Print results
-for result in results.results:
-    for doc_id, score in zip(result.document_ids, result.scores):
-        print(f"Document {doc_id}: {score:.4f}")
 ```
 
 ## API Reference
@@ -82,25 +79,17 @@ client = NextPlaidClient(
 )
 ```
 
-### Health & Monitoring
-
-```python
-health = client.health()
-# Returns: HealthResponse with status, version, loaded_indices, indices info
-```
-
 ### Index Management
 
 ```python
 # List all indices
-indices = client.list_indices()  # Returns: List[str]
+indices = client.list_indices()
 
 # Get index info
-info = client.get_index("my_index")  # Returns: IndexInfo
+info = client.get_index("my_index")
 
 # Create index
-config = IndexConfig(nbits=4, max_documents=10000)
-client.create_index("my_index", config)
+client.create_index("my_index", IndexConfig(nbits=4, max_documents=10000))
 
 # Update index config
 client.update_index_config("my_index", max_documents=5000)
@@ -112,16 +101,10 @@ client.delete_index("my_index")
 ### Document Management
 
 ```python
-from next_plaid_client import Document
-
 # Add documents with embeddings
-doc = Document(embeddings=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
-client.add_documents("my_index", [doc], metadata=[{"title": "Doc 1"}])
+client.add_documents("my_index", documents, metadata)
 
-# Update documents (batched)
-client.update_documents("my_index", documents=[...], metadata=[...])
-
-# Update with text encoding (requires model)
+# Add documents with text encoding (requires model)
 client.update_documents_with_encoding(
     "my_index",
     documents=["Text to encode..."],
@@ -129,15 +112,12 @@ client.update_documents_with_encoding(
 )
 
 # Delete documents
-result = client.delete_documents("my_index", document_ids=[5, 10, 15])
-# Returns: DeleteDocumentsResponse with deleted count
+client.delete_documents("my_index", document_ids=[5, 10, 15])
 ```
 
 ### Search Operations
 
 ```python
-from next_plaid_client import SearchParams
-
 params = SearchParams(
     top_k=10,           # Number of results per query
     n_ivf_probe=8,      # IVF cells to probe
@@ -147,43 +127,26 @@ params = SearchParams(
 # Search with embeddings
 results = client.search("my_index", queries=[...], params=params)
 
-# Search within a subset
+# Search within a subset of documents
 results = client.search("my_index", queries=[...], subset=[0, 5, 10])
 
 # Search with metadata filter
 results = client.search_filtered(
     "my_index",
     queries=[...],
-    filter_condition="category = ? AND score > ?",
-    filter_parameters=["science", 90]
+    filter_condition="category = ? AND year > ?",
+    filter_parameters=["science", 2020]
 )
 
 # Search with text queries (requires model)
 results = client.search_with_encoding("my_index", queries=["query text"])
-
-# Filtered search with text (requires model)
-results = client.search_filtered_with_encoding(
-    "my_index",
-    queries=["query text"],
-    filter_condition="category = ?",
-    filter_parameters=["science"]
-)
 ```
 
-### Metadata Management
+### Metadata Operations
 
 ```python
 # Get all metadata
 metadata = client.get_metadata("my_index")
-
-# Add metadata
-client.add_metadata("my_index", metadata=[{"title": "Doc 1"}])
-
-# Get metadata count
-count = client.get_metadata_count("my_index")
-
-# Check which documents exist
-check = client.check_metadata("my_index", document_ids=[0, 5, 10])
 
 # Query metadata with SQL conditions
 result = client.query_metadata(
@@ -192,19 +155,18 @@ result = client.query_metadata(
     parameters=["science"]
 )
 
-# Get metadata by IDs or condition
+# Get metadata by document IDs
 metadata = client.get_metadata_by_ids("my_index", document_ids=[0, 5])
 ```
 
 ### Text Encoding
 
 ```python
-# Encode texts (requires model)
+# Encode texts to embeddings (requires model)
 result = client.encode(
     texts=["Hello world", "Test document"],
     input_type="document"  # or "query"
 )
-# Returns: EncodeResponse with embeddings
 ```
 
 ## Exception Handling
@@ -223,108 +185,44 @@ try:
     client.get_index("nonexistent")
 except IndexNotFoundError as e:
     print(f"Index not found: {e.message}")
-except ValidationError as e:
-    print(f"Invalid request: {e.message}")
 except RateLimitError as e:
-    print(f"Rate limited: {e.message}")
-except ModelNotLoadedError as e:
-    print(f"Model not loaded: {e.message}")
+    print(f"Rate limited, retry after: {e.retry_after}")
 except NextPlaidError as e:
     print(f"API error: {e.message} (code: {e.code})")
 ```
 
-## Context Manager
-
-```python
-with NextPlaidClient("http://localhost:8080") as client:
-    health = client.health()
-    # Session is automatically closed when exiting the context
-```
-
 ## Async Client
 
-The library also provides an async client for use with asyncio:
+The library provides an async client for use with asyncio:
 
 ```python
 import asyncio
 from next_plaid_client import AsyncNextPlaidClient, IndexConfig, SearchParams
 
 async def main():
-    # Using async context manager (recommended)
     async with AsyncNextPlaidClient("http://localhost:8080") as client:
-        # Check server health
         health = await client.health()
         print(f"Server status: {health.status}")
 
-        # Create an index
-        config = IndexConfig(nbits=4, max_documents=10000)
-        await client.create_index("my_index", config)
+        await client.create_index("my_index", IndexConfig(nbits=4))
 
-        # Search with text queries (requires model)
         results = await client.search_with_encoding(
             "my_index",
             queries=["What is the capital of France?"],
             params=SearchParams(top_k=5)
         )
 
-        for result in results.results:
-            for doc_id, score in zip(result.document_ids, result.scores):
-                print(f"Document {doc_id}: {score:.4f}")
-
-# Run the async function
 asyncio.run(main())
 ```
 
-### Async Methods
+All synchronous methods are available as async methods with the same signatures.
 
-All methods available in `NextPlaidClient` are also available in `AsyncNextPlaidClient` with the same signatures, but they return coroutines that must be awaited:
+## Context Manager
 
 ```python
-# Health & Monitoring
-health = await client.health()
-
-# Index Management
-indices = await client.list_indices()
-info = await client.get_index("my_index")
-await client.create_index("my_index", config)
-await client.delete_index("my_index")
-await client.update_index_config("my_index", max_documents=5000)
-
-# Document Management
-await client.add_documents("my_index", documents, metadata)
-await client.update_documents("my_index", documents)
-await client.update_documents_with_encoding("my_index", ["text..."])
-result = await client.delete_documents("my_index", [0, 1, 2])
-
-# Search
-results = await client.search("my_index", queries)
-results = await client.search_filtered("my_index", queries, "category = ?", ["science"])
-results = await client.search_with_encoding("my_index", ["query text"])
-results = await client.search_filtered_with_encoding("my_index", ["query"], "category = ?", ["science"])
-
-# Metadata
-metadata = await client.get_metadata("my_index")
-await client.add_metadata("my_index", [{"title": "Doc 1"}])
-count = await client.get_metadata_count("my_index")
-check = await client.check_metadata("my_index", [0, 1, 2])
-result = await client.query_metadata("my_index", "category = ?", ["science"])
-metadata = await client.get_metadata_by_ids("my_index", document_ids=[0, 1])
-
-# Encoding
-result = await client.encode(["Hello world"], input_type="document")
-```
-
-## Running Tests
-
-```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
-# Run tests
-pytest
-
-# Run with coverage
-pytest --cov=next_plaid_client --cov-report=html
+with NextPlaidClient("http://localhost:8080") as client:
+    health = client.health()
+    # Session is automatically closed when exiting
 ```
 
 ## License
