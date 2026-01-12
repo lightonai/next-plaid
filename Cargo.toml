@@ -8,6 +8,8 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/lightonai/next-plaid"
 homepage = "https://github.com/lightonai/next-plaid"
+authors = ["Raphael Sourty, LightOn <contact@lighton.ai>"]
+documentation = "https://docs.rs/next-plaid"
 
 [workspace.dependencies]
 ndarray = { version = "0.16", features = ["rayon"] }

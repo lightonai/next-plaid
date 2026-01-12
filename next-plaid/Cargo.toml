@@ -6,6 +6,9 @@ description = "CPU-based PLAID implementation for multi-vector search using ndar
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+authors.workspace = true
+documentation.workspace = true
+readme = "README.md"
 keywords = ["search", "multi-vector", "plaid", "colbert", "ndarray"]
 categories = ["science", "algorithms"]
 

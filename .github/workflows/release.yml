@@ -1,0 +1,248 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  CARGO_TERM_COLOR: always
+  REGISTRY: ghcr.io
+  IMAGE_NAME: lightonai/next-plaid-api
+
+jobs:
+  # Job 1: Publish Rust crates to crates.io
+  publish-crates:
+    name: Publish Rust Crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install OpenBLAS
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+
+      - name: Publish next-plaid
+        run: cargo publish -p next-plaid --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io index
+        run: sleep 30
+
+      - name: Publish next-plaid-onnx
+        run: cargo publish -p next-plaid-onnx --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Job 2: Publish Python packages to PyPI
+  publish-python:
+    name: Publish Python Packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build and publish next-plaid-client
+        working-directory: next-plaid-api/python-sdk
+        run: |
+          python -m build
+          twine upload dist/* -u __token__ -p ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Build and publish colbert-export
+        working-directory: next-plaid-onnx/python
+        run: |
+          python -m build
+          twine upload dist/* -u __token__ -p ${{ secrets.PYPI_API_TOKEN }}
+
+  # Job 3: Build and push Docker images (CPU variant)
+  publish-docker-cpu:
+    name: Build & Push Docker (CPU)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build and push CPU image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: next-plaid-api/Dockerfile
+          target: runtime-cpu
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}-cpu
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-cpu
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Job 4: Build and push Docker images (Model variant - CPU encoding)
+  publish-docker-model:
+    name: Build & Push Docker (Model)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Model image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: next-plaid-api/Dockerfile
+          target: runtime-model
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}-model
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-model
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Job 5: Build and push Docker images (CUDA variant - GPU encoding)
+  publish-docker-cuda:
+    name: Build & Push Docker (CUDA)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build and push CUDA image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: next-plaid-api/Dockerfile
+          target: runtime-cuda
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}-cuda
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-cuda
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Job 6: Create GitHub Release
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [publish-crates, publish-python, publish-docker-cpu, publish-docker-model, publish-docker-cuda]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG=$(git log --pretty=format:"- %s" $PREV_TAG..HEAD)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s" -20)
+          fi
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: |
+            ## What's Changed
+            ${{ steps.changelog.outputs.CHANGELOG }}
+
+            ## Installation
+
+            ### Rust
+            ```toml
+            [dependencies]
+            next-plaid = "${{ steps.version.outputs.VERSION }}"
+            next-plaid-onnx = "${{ steps.version.outputs.VERSION }}"
+            ```
+
+            ### Python
+            ```bash
+            pip install next-plaid-client colbert-export
+            ```
+
+            ### Docker
+            ```bash
+            # CPU only (search API)
+            docker pull ghcr.io/lightonai/next-plaid-api:${{ steps.version.outputs.VERSION }}
+
+            # With text encoding (CPU)
+            docker pull ghcr.io/lightonai/next-plaid-api:${{ steps.version.outputs.VERSION }}-model
+
+            # With GPU encoding (CUDA)
+            docker pull ghcr.io/lightonai/next-plaid-api:${{ steps.version.outputs.VERSION }}-cuda
+            ```
+          generate_release_notes: true

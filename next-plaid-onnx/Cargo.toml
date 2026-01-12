@@ -1,9 +1,15 @@
 [package]
 name = "next-plaid-onnx"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Fast ColBERT multi-vector encoding using ONNX Runtime"
-license = "Apache-2.0"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["colbert", "onnx", "embeddings", "encoding", "multi-vector"]
+categories = ["science", "algorithms"]
 
 [lib]
 name = "next_plaid_onnx"
