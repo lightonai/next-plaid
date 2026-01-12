@@ -1,23 +1,18 @@
 # =============================================================================
 # Next-Plaid API Dockerfile
 # =============================================================================
-# Supports three build variants using --target:
-#   1. runtime-cpu (default): Search API with OpenBLAS, no model
-#   2. runtime-model: + Text encoding on CPU
-#   3. runtime-cuda: + GPU-accelerated encoding
+# Supports two build variants using --target:
+#   1. runtime-cpu (default): Search API with model support on CPU
+#   2. runtime-cuda: GPU-accelerated encoding with CUDA
 #
 # Build examples:
 #   docker build -t next-plaid-api -f next-plaid-api/Dockerfile .
-#   docker build -t next-plaid-api:model -f next-plaid-api/Dockerfile --target runtime-model .
 #   docker build -t next-plaid-api:cuda -f next-plaid-api/Dockerfile --target runtime-cuda .
 #
 # Run examples (with persistent storage):
-#   # CPU only - indices stored at ~/.local/share/next-plaid/<index-name>/
-#   docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices next-plaid-api
-#
-#   # With model support (CPU encoding)
+#   # CPU encoding - indices stored at ~/.local/share/next-plaid/<index-name>/
 #   docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices -v models:/models \
-#     next-plaid-api:model --model /models/colbert
+#     next-plaid-api --model /models/colbert
 #
 #   # With CUDA support (GPU encoding)
 #   docker run -p 8080:8080 --gpus all -v ~/.local/share/next-plaid:/data/indices -v models:/models \
@@ -25,11 +20,11 @@
 #
 # Auto-download model from HuggingFace Hub:
 #   docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices -v models:/models \
-#     next-plaid-api:cuda --model lightonai/GTE-ModernColBERT-v1-onnx --cuda
+#     next-plaid-api --model lightonai/GTE-ModernColBERT-v1-onnx
 #
 #   # With INT8 quantization (faster):
 #   docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices -v models:/models \
-#     next-plaid-api:cuda --model lightonai/GTE-ModernColBERT-v1-onnx --int8 --cuda
+#     next-plaid-api --model lightonai/GTE-ModernColBERT-v1-onnx --int8
 #
 # Vector Database Persistence:
 #   Default location: ~/.local/share/next-plaid/<index-name>/
@@ -42,41 +37,24 @@
 # =============================================================================
 
 # =============================================================================
-# Builder stage - CPU only (no model support)
-# =============================================================================
-FROM rust:1.85-bookworm AS builder-cpu
-
-WORKDIR /app
-
-# Install dependencies for building (including OpenBLAS for BLAS acceleration)
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    libopenblas-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy the workspace files (excluding tests which are in .dockerignore)
-COPY Cargo.toml Cargo.lock ./
-COPY next-plaid ./next-plaid
-COPY next-plaid-api ./next-plaid-api
-COPY next-plaid-onnx ./next-plaid-onnx
-
-# Build the API in release mode with OpenBLAS
-RUN cargo build --release --package next-plaid-api --features openblas
-
-# =============================================================================
 # Builder stage - CPU with model support
 # =============================================================================
-FROM rust:1.85-bookworm AS builder-model
+FROM debian:bookworm-slim AS builder-cpu
 
 WORKDIR /app
 
-# Install dependencies for building
+# Install build dependencies and Rust
 RUN apt-get update && apt-get install -y \
+    curl \
+    build-essential \
     pkg-config \
     libssl-dev \
     libopenblas-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Rust (latest stable)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Copy the workspace files
 COPY Cargo.toml Cargo.lock ./
@@ -104,7 +82,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust
+# Install Rust (latest stable)
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -130,52 +108,9 @@ ENV LD_LIBRARY_PATH=/opt/ort_gpu:${LD_LIBRARY_PATH}
 RUN cargo build --release --package next-plaid-api --features "openblas,cuda"
 
 # =============================================================================
-# Runtime stage - CPU only (default, smallest image)
+# Runtime stage - CPU with model support (default)
 # =============================================================================
 FROM debian:bookworm-slim AS runtime-cpu
-
-WORKDIR /app
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    libssl3 \
-    libsqlite3-0 \
-    libopenblas0 \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user
-RUN useradd -m -u 1000 -s /bin/bash nextplaid
-
-# Create indices directory
-RUN mkdir -p /data/indices && chown -R nextplaid:nextplaid /data
-
-# Copy binary from builder
-COPY --from=builder-cpu /app/target/release/next-plaid-api /usr/local/bin/next-plaid-api
-
-# Switch to non-root user
-USER nextplaid
-
-# Expose API port
-EXPOSE 8080
-
-# Default environment variables
-ENV RUST_LOG=info
-ENV INDEX_DIR=/data/indices
-
-# Health check - aggressive settings for faster freeze detection
-HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=2 \
-    CMD curl -f --max-time 5 http://localhost:8080/health || exit 1
-
-# Run the API
-ENTRYPOINT ["next-plaid-api"]
-CMD ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices"]
-
-# =============================================================================
-# Runtime stage - CPU with model support
-# =============================================================================
-FROM debian:bookworm-slim AS runtime-model
 
 WORKDIR /app
 
@@ -195,7 +130,7 @@ RUN useradd -m -u 1000 -s /bin/bash nextplaid
 RUN mkdir -p /data/indices /models && chown -R nextplaid:nextplaid /data /models
 
 # Copy binary from builder
-COPY --from=builder-model /app/target/release/next-plaid-api /usr/local/bin/next-plaid-api
+COPY --from=builder-cpu /app/target/release/next-plaid-api /usr/local/bin/next-plaid-api
 
 # Copy entrypoint script
 COPY --chmod=755 next-plaid-api/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

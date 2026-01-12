@@ -67,7 +67,7 @@ jobs:
           python -m build
           twine upload dist/* -u __token__ -p ${{ secrets.PYPI_API_TOKEN }} --skip-existing
 
-  # Job 3: Build and push Docker images (CPU variant)
+  # Job 3: Build and push Docker images (CPU variant with model support)
   publish-docker-cpu:
     name: Build & Push Docker (CPU)
     runs-on: ubuntu-latest
@@ -125,63 +125,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Job 4: Build and push Docker images (Model variant - CPU encoding)
-  publish-docker-model:
-    name: Build & Push Docker (Model)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@v1.3.1
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract version from tag
-        id: version
-        run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "VERSION=${{ inputs.version }}" >> $GITHUB_OUTPUT
-          else
-            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Build and push Model image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: next-plaid-api/Dockerfile
-          target: runtime-model
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.VERSION }}-model
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-model
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # Job 5: Build and push Docker images (CUDA variant - GPU encoding)
+  # Job 4: Build and push Docker images (CUDA variant - GPU encoding)
   publish-docker-cuda:
     name: Build & Push Docker (CUDA)
     runs-on: ubuntu-latest
@@ -237,11 +181,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Job 6: Create GitHub Release
+  # Job 5: Create GitHub Release
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [publish-crates, publish-python, publish-docker-cpu, publish-docker-model, publish-docker-cuda]
+    needs: [publish-crates, publish-python, publish-docker-cpu, publish-docker-cuda]
     permissions:
       contents: write
     steps:
@@ -294,13 +238,10 @@ jobs:
 
             ### Docker
             ```bash
-            # CPU only (search API)
+            # CPU with model support (default)
             docker pull ghcr.io/lightonai/next-plaid-api:${{ steps.version.outputs.VERSION }}
 
-            # With text encoding (CPU)
-            docker pull ghcr.io/lightonai/next-plaid-api:${{ steps.version.outputs.VERSION }}-model
-
-            # With GPU encoding (CUDA)
+            # GPU with CUDA support
             docker pull ghcr.io/lightonai/next-plaid-api:${{ steps.version.outputs.VERSION }}-cuda
             ```
           generate_release_notes: true
