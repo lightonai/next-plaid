@@ -64,4 +64,4 @@ quantize_model("./models/GTE-ModernColBERT-v1")
 
 ## License
 
-MIT
+Apache-2.0

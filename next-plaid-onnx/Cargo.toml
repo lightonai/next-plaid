@@ -3,7 +3,7 @@ name = "next-plaid-onnx"
 version = "0.1.0"
 edition = "2021"
 description = "Fast ColBERT multi-vector encoding using ONNX Runtime"
-license = "MIT"
+license = "Apache-2.0"
 
 [lib]
 name = "next_plaid_onnx"

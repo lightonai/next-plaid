@@ -329,4 +329,4 @@ pytest --cov=next_plaid_client --cov-report=html
 
 ## License
 
-MIT
+Apache-2.0
