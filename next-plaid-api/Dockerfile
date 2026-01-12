@@ -44,7 +44,7 @@
 # =============================================================================
 # Builder stage - CPU only (no model support)
 # =============================================================================
-FROM rust:1.83-bookworm AS builder-cpu
+FROM rust:1.85-bookworm AS builder-cpu
 
 WORKDIR /app
 
@@ -67,7 +67,7 @@ RUN cargo build --release --package next-plaid-api --features openblas
 # =============================================================================
 # Builder stage - CPU with model support
 # =============================================================================
-FROM rust:1.83-bookworm AS builder-model
+FROM rust:1.85-bookworm AS builder-model
 
 WORKDIR /app
 
