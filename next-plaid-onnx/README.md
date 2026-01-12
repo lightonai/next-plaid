@@ -94,32 +94,32 @@ fn main() -> anyhow::Result<()> {
 
 ### Install the Export Tool
 
-Install the `colbert-export` CLI tool directly from GitHub:
+Install the `pylate-onnx-export` CLI tool directly from GitHub:
 
 ```bash
-pip install "colbert-export @ git+https://github.com/lightonai/next-plaid.git#subdirectory=onnx/python"
+pip install "pylate-onnx-export @ git+https://github.com/lightonai/next-plaid.git#subdirectory=onnx/python"
 ```
 
 ### Export from HuggingFace
 
 ```bash
 # Export a ColBERT model to ONNX format
-colbert-export lightonai/GTE-ModernColBERT-v1
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1
 
 # Export with INT8 quantization for 2x speedup
-colbert-export lightonai/GTE-ModernColBERT-v1 --quantize
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --quantize
 
 # Export to a custom directory
-colbert-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
 
 # Quantize an existing model
 colbert-quantize ./models/GTE-ModernColBERT-v1
 
 # Export and push to HuggingFace Hub
-colbert-export lightonai/GTE-ModernColBERT-v1 --quantize --push-to-hub myorg/my-onnx-model
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --quantize --push-to-hub myorg/my-onnx-model
 
 # Push as a private repository
-colbert-export lightonai/GTE-ModernColBERT-v1 -q --push-to-hub myorg/my-onnx-model --private
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -q --push-to-hub myorg/my-onnx-model --private
 ```
 
 #### Alternative: Using uv (for development)
@@ -479,7 +479,7 @@ onnx/
 │       └── compare_pylate.rs       # Compare with PyLate reference embeddings
 ├── python/
 │   ├── src/colbert_export/         # Python package
-│   │   ├── cli.py                  # colbert-export & colbert-quantize CLI
+│   │   ├── cli.py                  # pylate-onnx-export & colbert-quantize CLI
 │   │   ├── export.py               # ONNX export logic
 │   │   ├── quantize.py             # INT8 quantization
 │   │   └── hub.py                  # HuggingFace Hub integration

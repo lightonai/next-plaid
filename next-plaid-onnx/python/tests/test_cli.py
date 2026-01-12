@@ -1,4 +1,4 @@
-"""Tests for the colbert-export CLI.
+"""Tests for the pylate-onnx-export CLI.
 
 Run with:
     pytest tests/test_cli.py -v
@@ -18,14 +18,14 @@ class TestCLIHelp:
     """Test CLI help and basic invocation."""
 
     def test_export_help(self):
-        """Test that colbert-export --help works."""
+        """Test that pylate-onnx-export --help works."""
         result = subprocess.run(
             [sys.executable, "-m", "colbert_export.cli", "--help"],
             capture_output=True,
             text=True,
         )
         assert result.returncode == 0
-        assert "colbert-export" in result.stdout
+        assert "pylate-onnx-export" in result.stdout
         assert "HuggingFace model name" in result.stdout
         assert "--quantize" in result.stdout
         assert "--force" in result.stdout
@@ -33,7 +33,7 @@ class TestCLIHelp:
         assert "--private" in result.stdout
 
     def test_export_version(self):
-        """Test that colbert-export --version works."""
+        """Test that pylate-onnx-export --version works."""
         result = subprocess.run(
             [sys.executable, "-m", "colbert_export.cli", "--version"],
             capture_output=True,

@@ -36,7 +36,7 @@ next-plaid/
 │   ├── python-sdk/       # Python client SDK
 │   └── Dockerfile        # Multi-stage Docker build
 ├── next-plaid-onnx/      # ONNX encoding support (Rust)
-│   └── python/           # colbert-export CLI tool
+│   └── python/           # pylate-onnx-export CLI tool
 ├── benchmarks/           # Evaluation benchmarks
 └── .github/workflows/    # CI/CD pipelines
 ```
@@ -179,7 +179,7 @@ Releases are automated via GitHub Actions when a version tag is pushed.
 | `next-plaid` | crates.io | Tag `v*.*.*` |
 | `next-plaid-onnx` | crates.io | Tag `v*.*.*` |
 | `next-plaid-client` | PyPI | Tag `v*.*.*` |
-| `colbert-export` | PyPI | Tag `v*.*.*` |
+| `pylate-onnx-export` | PyPI | Tag `v*.*.*` |
 | `next-plaid-api` Docker | GHCR | Tag `v*.*.*` |
 
 ### Docker Image Tags

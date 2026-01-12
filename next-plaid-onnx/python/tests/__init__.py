@@ -1,1 +1,1 @@
-"""Tests for colbert-export CLI."""
+"""Tests for pylate-onnx-export CLI."""

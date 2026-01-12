@@ -5,7 +5,7 @@ A CLI tool to export HuggingFace ColBERT models to ONNX format for fast Rust inf
 ## Installation
 
 ```bash
-pip install "colbert-export @ git+https://github.com/lightonai/next-plaid.git#subdirectory=onnx/python"
+pip install "pylate-onnx-export @ git+https://github.com/lightonai/next-plaid.git#subdirectory=onnx/python"
 ```
 
 ## Usage
@@ -14,13 +14,13 @@ pip install "colbert-export @ git+https://github.com/lightonai/next-plaid.git#su
 
 ```bash
 # Export a ColBERT model to ONNX format
-colbert-export lightonai/GTE-ModernColBERT-v1
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1
 
 # Export with INT8 quantization for 2x speedup
-colbert-export lightonai/GTE-ModernColBERT-v1 --quantize
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --quantize
 
 # Export to a custom directory
-colbert-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
 ```
 
 ### Quantize an Existing Model

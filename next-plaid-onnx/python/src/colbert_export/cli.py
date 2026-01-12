@@ -8,25 +8,25 @@ from pathlib import Path
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        prog="colbert-export",
+        prog="pylate-onnx-export",
         description="Export HuggingFace ColBERT models to ONNX format for Rust inference",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Export a model (downloads from HuggingFace and converts to ONNX)
-  colbert-export lightonai/GTE-ModernColBERT-v1
+  pylate-onnx-export lightonai/GTE-ModernColBERT-v1
 
   # Export with INT8 quantization for faster inference
-  colbert-export lightonai/GTE-ModernColBERT-v1 --quantize
+  pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --quantize
 
   # Export to a specific directory
-  colbert-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
+  pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
 
   # Export and push to HuggingFace Hub
-  colbert-export lightonai/GTE-ModernColBERT-v1 --push-to-hub myorg/my-onnx-model
+  pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --push-to-hub myorg/my-onnx-model
 
   # Export with quantization and push to Hub
-  colbert-export lightonai/GTE-ModernColBERT-v1 -q --push-to-hub myorg/my-onnx-model
+  pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -q --push-to-hub myorg/my-onnx-model
 
 Supported models:
   - lightonai/GTE-ModernColBERT-v1 (96-dim, BERT-based)

@@ -300,7 +300,7 @@ wheels = [
 ]
 
 [[package]]
-name = "colbert-export"
+name = "pylate-onnx-export"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

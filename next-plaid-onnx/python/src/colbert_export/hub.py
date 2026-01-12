@@ -128,11 +128,11 @@ let embeddings = model.encode_documents(&["Hello world"])?;
 
 ## Export Tool
 
-This model was exported using [colbert-export](https://github.com/lightonai/next-plaid/tree/main/onnx/python):
+This model was exported using [pylate-onnx-export](https://github.com/lightonai/next-plaid/tree/main/onnx/python):
 
 ```bash
-pip install "colbert-export @ git+https://github.com/lightonai/next-plaid.git#subdirectory=onnx/python"
-colbert-export {source_model} --push-to-hub {repo_id}
+pip install "pylate-onnx-export @ git+https://github.com/lightonai/next-plaid.git#subdirectory=onnx/python"
+pylate-onnx-export {source_model} --push-to-hub {repo_id}
 ```
 """
         # Upload README

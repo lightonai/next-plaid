@@ -61,7 +61,7 @@ jobs:
           python -m build
           twine upload dist/* -u __token__ -p ${{ secrets.PYPI_API_TOKEN }} --skip-existing
 
-      - name: Build and publish colbert-export
+      - name: Build and publish pylate-onnx-export
         working-directory: next-plaid-onnx/python
         run: |
           python -m build
@@ -242,7 +242,7 @@ jobs:
 
             ### Python
             ```bash
-            pip install next-plaid-client colbert-export
+            pip install next-plaid-client pylate-onnx-export
             ```
 
             ### Docker

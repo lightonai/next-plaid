@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "colbert-export"
+name = "pylate-onnx-export"
 version = "0.1.0"
 description = "Export HuggingFace ColBERT models to ONNX format for Rust inference"
 readme = "README.md"
@@ -43,7 +43,7 @@ dependencies = [
 dev = ["pytest>=7.0.0", "ruff>=0.1.0"]
 
 [project.scripts]
-colbert-export = "colbert_export.cli:main"
+pylate-onnx-export = "colbert_export.cli:main"
 colbert-quantize = "colbert_export.cli:quantize_main"
 
 [project.urls]
