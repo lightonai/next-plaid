@@ -156,6 +156,20 @@ docker compose logs -f
 docker compose down
 ```
 
+**Custom data directory:**
+
+By default, indices are stored in `~/.local/share/next-plaid/`. To customize:
+
+```bash
+# Option 1: Environment variable
+export NEXT_PLAID_DATA=/data/vector-db
+docker compose up -d
+
+# Option 2: Create a .env file
+echo "NEXT_PLAID_DATA=/data/vector-db" > .env
+docker compose up -d
+```
+
 #### Option 3: Using Docker Directly
 
 **Build the image:**
@@ -164,30 +178,31 @@ docker compose down
 # From the repository root
 
 # CPU only (default)
-docker build -t next-plaid-api -f api/Dockerfile .
+docker build -t next-plaid-api -f next-plaid-api/Dockerfile .
 
 # With model support (CPU)
-docker build -t next-plaid-api:model -f api/Dockerfile --target runtime-model .
+docker build -t next-plaid-api:model -f next-plaid-api/Dockerfile --target runtime-model .
 
 # With CUDA support
-docker build -t next-plaid-api:cuda -f api/Dockerfile --target runtime-cuda .
+docker build -t next-plaid-api:cuda -f next-plaid-api/Dockerfile --target runtime-cuda .
 ```
 
 **Run the container:**
 
 ```bash
 # CPU only - search API with pre-computed embeddings
+# Indices stored at ~/.local/share/next-plaid/<index-name>/
 docker run -d \
   --name next-plaid-api \
   -p 8080:8080 \
-  -v next-plaid-indices:/data/indices \
+  -v ~/.local/share/next-plaid:/data/indices \
   next-plaid-api
 
 # With model (CPU) - auto-downloads from HuggingFace
 docker run -d \
   --name next-plaid-api \
   -p 8080:8080 \
-  -v next-plaid-indices:/data/indices \
+  -v ~/.local/share/next-plaid:/data/indices \
   -v next-plaid-models:/models \
   next-plaid-api:model \
   --model lightonai/GTE-ModernColBERT-v1-onnx
@@ -197,7 +212,7 @@ docker run -d \
   --name next-plaid-api \
   -p 8080:8080 \
   --gpus all \
-  -v next-plaid-indices:/data/indices \
+  -v ~/.local/share/next-plaid:/data/indices \
   -v next-plaid-models:/models \
   next-plaid-api:cuda \
   --model lightonai/GTE-ModernColBERT-v1-onnx --int8 --cuda
@@ -213,17 +228,35 @@ Add `--int8` to download the INT8 quantized model for better performance.
 
 | Mount Point | Purpose | Required |
 |-------------|---------|----------|
-| `/data/indices` | Persistent index storage | Yes |
-| `/models` | ONNX model directory | Only for model/cuda variants |
+| `/data/indices` | Persistent index storage (bind mount to local directory) | Yes |
+| `/models` | ONNX model directory (named volume for HuggingFace cache) | Only for model/cuda variants |
+
+#### Data Persistence
+
+Indices are stored locally on your filesystem, not in Docker volumes. This means:
+- Data persists across container restarts
+- You can easily backup, inspect, or migrate your indices
+- Default location: `~/.local/share/next-plaid/<index-name>/`
+
+Directory structure:
+```
+~/.local/share/next-plaid/
+├── my-documents/
+│   ├── metadata.json
+│   ├── centroids.npy
+│   └── ...
+└── another-index/
+    └── ...
+```
 
 #### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `NEXT_PLAID_DATA` | `~/.local/share/next-plaid` | Local directory for index storage |
 | `RUST_LOG` | `info` | Log level (debug, info, warn, error) |
-| `INDEX_DIR` | `/data/indices` | Index storage directory |
 | `HF_TOKEN` | - | HuggingFace token for private models |
-| `MODELS_DIR` | `/models` | Directory for downloaded models |
+| `MODELS_DIR` | `/models` | Directory for downloaded models (inside container) |
 
 #### Available Models
 

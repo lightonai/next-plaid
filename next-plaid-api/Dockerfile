@@ -11,18 +11,30 @@
 #   docker build -t next-plaid-api:model -f next-plaid-api/Dockerfile --target runtime-model .
 #   docker build -t next-plaid-api:cuda -f next-plaid-api/Dockerfile --target runtime-cuda .
 #
-# Run examples:
-#   docker run -p 8080:8080 -v data:/data/indices next-plaid-api
-#   docker run -p 8080:8080 -v data:/data/indices -v models:/models next-plaid-api:model --model /models/colbert
-#   docker run -p 8080:8080 --gpus all -v data:/data/indices -v models:/models next-plaid-api:cuda --model /models/colbert --cuda
+# Run examples (with persistent storage):
+#   # CPU only - indices stored at ~/.local/share/next-plaid/<index-name>/
+#   docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices next-plaid-api
+#
+#   # With model support (CPU encoding)
+#   docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices -v models:/models \
+#     next-plaid-api:model --model /models/colbert
+#
+#   # With CUDA support (GPU encoding)
+#   docker run -p 8080:8080 --gpus all -v ~/.local/share/next-plaid:/data/indices -v models:/models \
+#     next-plaid-api:cuda --model /models/colbert --cuda
 #
 # Auto-download model from HuggingFace Hub:
-#   docker run -p 8080:8080 -v models:/models \
+#   docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices -v models:/models \
 #     next-plaid-api:cuda --model lightonai/GTE-ModernColBERT-v1-onnx --cuda
 #
 #   # With INT8 quantization (faster):
-#   docker run -p 8080:8080 -v models:/models \
+#   docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices -v models:/models \
 #     next-plaid-api:cuda --model lightonai/GTE-ModernColBERT-v1-onnx --int8 --cuda
+#
+# Vector Database Persistence:
+#   Default location: ~/.local/share/next-plaid/<index-name>/
+#   Customize via NEXT_PLAID_DATA env var or mount any path to /data/indices
+#   On container restart, existing indices are automatically loaded when accessed.
 #
 # Environment variables (optional):
 #   HF_TOKEN: Token for private HuggingFace models

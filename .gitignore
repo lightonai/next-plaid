@@ -28,6 +28,7 @@ env/
 .uv/
 *.json
 next-plaid-api/indices/
+*.npz
 
 # Test artifacts
 *.npy
@@ -49,3 +50,8 @@ onnx/target/
 onnx/models/
 onnx/ort_gpu/
 *.ipynb
+
+# Docker persistent data (vector database indices)
+# Default location is ~/.local/share/next-plaid, but keep this in case
+# users override NEXT_PLAID_DATA to a local path
+next-plaid/

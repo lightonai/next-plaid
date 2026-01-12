@@ -2,6 +2,10 @@
 # Docker Compose override for CUDA support
 # Usage: docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d
 # Or: make docker-up-cuda
+#
+# Vector Database Storage:
+#   Indices are persisted at ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}
+#   Override with: export NEXT_PLAID_DATA=/path/to/data
 # =============================================================================
 
 services:
@@ -11,7 +15,9 @@ services:
       dockerfile: next-plaid-api/Dockerfile
       target: runtime-cuda
     volumes:
-      - next-plaid-indices:/data/indices
+      # Persistent vector database storage (default: ~/.local/share/next-plaid)
+      - ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}:/data/indices
+      # Named volume for model cache (auto-downloaded from HuggingFace)
       - next-plaid-models:/models
     environment:
       - RUST_LOG=info

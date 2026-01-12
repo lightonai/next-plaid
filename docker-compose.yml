@@ -3,6 +3,18 @@
 # =============================================================================
 # Default configuration runs the CPU-only variant.
 # See commented examples below for model and CUDA variants.
+#
+# Vector Database Storage:
+#   Indices are persisted at ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}
+#   Each index is stored as a subdirectory: <data-dir>/<index-name>/
+#   On container restart, existing indices are automatically loaded.
+#
+#   To customize the storage location:
+#     export NEXT_PLAID_DATA=/path/to/data
+#     docker compose up -d
+#
+#   Or create a .env file with:
+#     NEXT_PLAID_DATA=/path/to/data
 # =============================================================================
 
 services:
@@ -17,7 +29,10 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - next-plaid-indices:/data/indices
+      # Persistent vector database storage
+      # Default: ~/.local/share/next-plaid (XDG standard for user data)
+      # Override with NEXT_PLAID_DATA environment variable
+      - ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}:/data/indices
     environment:
       - RUST_LOG=info
     healthcheck:
@@ -45,7 +60,7 @@ services:
   #   ports:
   #     - "8080:8080"
   #   volumes:
-  #     - next-plaid-indices:/data/indices
+  #     - ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}:/data/indices
   #     - ./models:/models:ro  # Mount your ONNX models here
   #   environment:
   #     - RUST_LOG=info
@@ -76,7 +91,7 @@ services:
   #   ports:
   #     - "8080:8080"
   #   volumes:
-  #     - next-plaid-indices:/data/indices
+  #     - ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}:/data/indices
   #     - ./models:/models:ro  # Mount your ONNX models here
   #   environment:
   #     - RUST_LOG=info
@@ -99,6 +114,3 @@ services:
   #           - driver: nvidia
   #             count: 1
   #             capabilities: [gpu]
-
-volumes:
-  next-plaid-indices:
