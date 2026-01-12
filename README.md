@@ -254,3 +254,9 @@ Apache-2.0
   year = {2025},
 }
 ```
+
+&nbsp;
+
+## Disclaimer
+
+This repository was developed with AI assistance under human supervision. The core algorithmic logic originates from [FastPlaid](https://github.com/lightonai/fast-plaid), which was manually written by Raphaël Sourty @ [LightOn](https://lighton.ai). AI tools helped translate and adapt the hybrid Rust/Python implementation into pure Rust code for this production-ready version.
