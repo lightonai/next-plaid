@@ -24,13 +24,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
 
       - name: Publish next-plaid
-        run: cargo publish -p next-plaid --token ${{ secrets.CARGO_REGISTRY_TOKEN }} || echo "Skipping: version may already exist on crates.io"
+        continue-on-error: true
+        run: cargo publish -p next-plaid --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Wait for crates.io index
         run: sleep 30
 
       - name: Publish next-plaid-onnx
-        run: cargo publish -p next-plaid-onnx --token ${{ secrets.CARGO_REGISTRY_TOKEN }} || echo "Skipping: version may already exist on crates.io"
+        continue-on-error: true
+        run: cargo publish -p next-plaid-onnx --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   # Job 2: Publish Python packages to PyPI
   publish-python:
