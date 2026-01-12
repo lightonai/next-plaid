@@ -125,6 +125,10 @@ pub struct HnswIndex {
     nodes: Vec<RwLock<Node>>,
     /// RNG for level generation.
     rng: ChaCha8Rng,
+    /// Start index of vectors in flat cache (for hybrid access during updates).
+    new_vectors_start: usize,
+    /// Number of vectors currently in flat cache.
+    new_vectors_count: usize,
 }
 
 impl HnswIndex {
@@ -151,6 +155,8 @@ impl HnswIndex {
             vectors_dim: dim,
             nodes: Vec::new(),
             rng,
+            new_vectors_start: 0,
+            new_vectors_count: 0,
         };
 
         Ok(index)
@@ -196,6 +202,8 @@ impl HnswIndex {
             vectors_dim: dim,
             nodes,
             rng,
+            new_vectors_start: 0,
+            new_vectors_count: 0,
         })
     }
 
@@ -226,10 +234,15 @@ impl HnswIndex {
 
         let start_idx = self.metadata.num_vectors;
 
-        // Load existing vectors into flat cache if needed
-        if self.vectors_flat.is_empty() && self.metadata.num_vectors > 0 {
-            self.load_vectors_to_flat()?;
-        }
+        // Memory-efficient hybrid approach:
+        // - Don't load existing vectors into memory (they stay in mmap)
+        // - Only keep new vectors in flat cache
+        // - Use hybrid access methods during insertion
+
+        // Clear any stale data and set up hybrid tracking
+        self.vectors_flat.clear();
+        self.new_vectors_start = start_idx;
+        self.new_vectors_count = num_new;
 
         // Add new vectors to flat cache
         self.vectors_flat.reserve(num_new * dim);
@@ -237,9 +250,9 @@ impl HnswIndex {
             self.vectors_flat.extend(row.iter());
         }
 
-        // Insert each vector into the graph
+        // Insert each vector using hybrid access (new vectors from flat cache, existing from mmap)
         for i in 0..num_new {
-            self.insert_node(start_idx + i)?;
+            self.insert_node_hybrid(start_idx + i)?;
         }
 
         // Append vectors to the vectors file
@@ -248,9 +261,11 @@ impl HnswIndex {
         // Save updated metadata and graph
         self.save()?;
 
-        // Clear cache and reload mmap
+        // Clear cache and reset hybrid tracking
         self.vectors_flat.clear();
         self.vectors_flat.shrink_to_fit();
+        self.new_vectors_start = 0;
+        self.new_vectors_count = 0;
         self.reload_vectors_mmap()?;
 
         Ok(start_idx)
@@ -263,6 +278,62 @@ impl HnswIndex {
     /// - indices: `Array2<i64>` of shape (num_queries, k) with vector indices (-1 for padding)
     pub fn search(&self, queries: &Array2<f32>, k: usize) -> Result<(Array2<f32>, Array2<i64>)> {
         self.search_with_filter(queries, k, None)
+    }
+
+    /// Search for the k nearest neighbors with a custom ef_search parameter.
+    ///
+    /// Higher ef_search values explore more candidates, giving better recall but slower search.
+    /// This is useful when you need high accuracy (e.g., for outlier detection).
+    ///
+    /// # Arguments
+    /// - `queries`: Query vectors of shape (num_queries, dim)
+    /// - `k`: Number of nearest neighbors to return
+    /// - `ef_search`: Size of dynamic candidate list during search (higher = better recall, slower)
+    ///
+    /// # Returns
+    /// (scores, indices) where:
+    /// - scores: `Array2<f32>` of shape (num_queries, k) with similarity scores (higher is better)
+    /// - indices: `Array2<i64>` of shape (num_queries, k) with vector indices (-1 for padding)
+    pub fn search_with_ef(
+        &self,
+        queries: &Array2<f32>,
+        k: usize,
+        ef_search: usize,
+    ) -> Result<(Array2<f32>, Array2<i64>)> {
+        if self.metadata.num_vectors == 0 {
+            return Err(Error::EmptyIndex);
+        }
+
+        let (num_queries, dim) = queries.dim();
+
+        if dim != self.metadata.dim {
+            return Err(Error::DimensionMismatch {
+                expected: self.metadata.dim,
+                got: dim,
+            });
+        }
+
+        // Parallel search for all queries with custom ef
+        let results: Vec<Vec<(f32, usize)>> = queries
+            .axis_iter(Axis(0))
+            .into_par_iter()
+            .map(|query| self.search_single_with_ef(query, k, ef_search))
+            .collect();
+
+        // Convert to output arrays
+        let mut scores = Array2::from_elem((num_queries, k), f32::NEG_INFINITY);
+        let mut indices = Array2::from_elem((num_queries, k), -1i64);
+
+        for (i, neighbors) in results.iter().enumerate() {
+            for (j, (score, idx)) in neighbors.iter().enumerate() {
+                if j < k {
+                    scores[[i, j]] = *score;
+                    indices[[i, j]] = *idx as i64;
+                }
+            }
+        }
+
+        Ok((scores, indices))
     }
 
     /// Search for the k nearest neighbors of query vectors with an optional filter.
@@ -459,10 +530,22 @@ impl HnswIndex {
         })
     }
 
+    /// Get the squared L2 norm of a vector by ID.
+    ///
+    /// Useful for converting inner product similarity to L2 distance:
+    /// `L2² = ||a||² + ||b||² - 2 * inner_product(a, b)`
+    pub fn get_vector_norm_sq(&self, id: usize) -> Result<f32> {
+        let vec = self.get_vector(id)?;
+        Ok(vec.dot(&vec))
+    }
+
     /// Get all vectors as a 2D array.
     ///
     /// Used for exact brute-force search when the index is small.
     /// Returns vectors of shape (num_vectors, dim).
+    ///
+    /// **Warning**: This loads all vectors into memory. For large indices,
+    /// use `get_vectors_range` to load in batches.
     pub fn get_all_vectors(&self) -> Result<Array2<f32>> {
         let n = self.metadata.num_vectors;
         let dim = self.metadata.dim;
@@ -487,6 +570,45 @@ impl HnswIndex {
         Ok(vectors)
     }
 
+    /// Get a range of vectors as a 2D array.
+    ///
+    /// Loads vectors from index `start` (inclusive) to `end` (exclusive).
+    /// Useful for loading vectors in batches to avoid memory issues with large indices.
+    ///
+    /// # Arguments
+    /// - `start`: Starting index (inclusive)
+    /// - `end`: Ending index (exclusive), clamped to num_vectors
+    ///
+    /// # Returns
+    /// `Array2<f32>` of shape (end - start, dim)
+    pub fn get_vectors_range(&self, start: usize, end: usize) -> Result<Array2<f32>> {
+        let n = self.metadata.num_vectors;
+        let dim = self.metadata.dim;
+
+        let start = start.min(n);
+        let end = end.min(n);
+
+        if start >= end {
+            return Ok(Array2::zeros((0, dim)));
+        }
+
+        let count = end - start;
+        let mut vectors = Array2::zeros((count, dim));
+
+        for i in 0..count {
+            if let Some(vec) = self.get_vector_from_mmap(start + i) {
+                vectors.row_mut(i).assign(&vec);
+            } else {
+                return Err(Error::CorruptedIndex(format!(
+                    "Failed to read vector {} from hnsw_vectors.bin",
+                    start + i
+                )));
+            }
+        }
+
+        Ok(vectors)
+    }
+
     /// Save the index to disk.
     pub fn save(&self) -> Result<()> {
         // Save metadata
@@ -503,7 +625,11 @@ impl HnswIndex {
 
     // ============== Private Methods ==============
 
+    // Legacy flat-only methods (kept for reference and potential future batch operations
+    // where all vectors are already in memory). Currently unused since we use hybrid methods.
+
     /// Get vector from flat cache by index.
+    #[allow(dead_code)]
     #[inline(always)]
     fn get_vector_flat(&self, id: usize) -> &[f32] {
         let start = id * self.vectors_dim;
@@ -511,13 +637,56 @@ impl HnswIndex {
     }
 
     /// Compute dot product between query slice and vector in flat cache.
+    #[allow(dead_code)]
     #[inline(always)]
     fn dot_product_flat(&self, query: &[f32], id: usize) -> f32 {
         let vec = self.get_vector_flat(id);
         query.iter().zip(vec.iter()).map(|(a, b)| a * b).sum()
     }
 
+    /// Get vector slice from flat cache if it's a new vector (within the current batch).
+    /// Returns None if the vector is not in the flat cache (i.e., it's an existing vector in mmap).
+    #[inline(always)]
+    fn get_vector_from_flat_cache(&self, id: usize) -> Option<&[f32]> {
+        if id >= self.new_vectors_start && id < self.new_vectors_start + self.new_vectors_count {
+            let cache_idx = id - self.new_vectors_start;
+            let start = cache_idx * self.vectors_dim;
+            let end = start + self.vectors_dim;
+            if end <= self.vectors_flat.len() {
+                return Some(&self.vectors_flat[start..end]);
+            }
+        }
+        None
+    }
+
+    /// Compute dot product using hybrid access (flat cache for new vectors, mmap for existing).
+    /// This is used during incremental updates to avoid loading all existing vectors into memory.
+    #[inline]
+    fn dot_product_hybrid(&self, query: &[f32], id: usize) -> f32 {
+        // Fast path: check flat cache first (new vectors in current batch)
+        if let Some(vec) = self.get_vector_from_flat_cache(id) {
+            return query.iter().zip(vec.iter()).map(|(a, b)| a * b).sum();
+        }
+        // Slow path: read from mmap (existing vectors)
+        if let Some(vec) = self.get_vector_from_mmap(id) {
+            return query.iter().zip(vec.iter()).map(|(a, b)| a * b).sum();
+        }
+        0.0 // Should not happen - vector not found
+    }
+
+    /// Get vector as owned Vec using hybrid access.
+    /// Used when we need ownership of the vector data (e.g., for neighbor pruning).
+    fn get_vector_hybrid_owned(&self, id: usize) -> Option<Vec<f32>> {
+        // Try flat cache first (new vectors)
+        if let Some(slice) = self.get_vector_from_flat_cache(id) {
+            return Some(slice.to_vec());
+        }
+        // Fall back to mmap (existing vectors)
+        self.get_vector_from_mmap(id).map(|arr| arr.to_vec())
+    }
+
     /// Load vectors from mmap to flat cache.
+    #[allow(dead_code)]
     fn load_vectors_to_flat(&mut self) -> Result<()> {
         let mmap = self
             .vectors_mmap
@@ -605,6 +774,7 @@ impl HnswIndex {
     }
 
     /// Insert a new node into the graph.
+    #[allow(dead_code)]
     fn insert_node(&mut self, id: usize) -> Result<()> {
         let level = self.random_level();
         let m = self.metadata.config.m;
@@ -705,6 +875,7 @@ impl HnswIndex {
     }
 
     /// Greedy search to find closest node at a given layer (using flat vectors).
+    #[allow(dead_code)]
     fn greedy_search_layer_flat(&self, query: &[f32], entry_point: usize, level: usize) -> usize {
         let mut curr_node = entry_point;
         let mut curr_dist = self.dot_product_flat(query, curr_node);
@@ -737,6 +908,7 @@ impl HnswIndex {
     }
 
     /// Search for nearest neighbors at a specific layer during build (using flat vectors).
+    #[allow(dead_code)]
     fn search_layer_build_flat(
         &self,
         query: &[f32],
@@ -810,6 +982,215 @@ impl HnswIndex {
         result_vec
     }
 
+    /// Greedy search to find closest node at a given layer (using hybrid vectors).
+    /// Used during incremental updates when new vectors are in flat cache and existing in mmap.
+    fn greedy_search_layer_hybrid(&self, query: &[f32], entry_point: usize, level: usize) -> usize {
+        let mut curr_node = entry_point;
+        let mut curr_dist = self.dot_product_hybrid(query, curr_node);
+
+        loop {
+            let node = self.nodes[curr_node].read();
+            if level >= node.neighbors.len() {
+                break;
+            }
+
+            let mut best_dist = curr_dist;
+            let mut best_node = curr_node;
+
+            for &neighbor in &node.neighbors[level] {
+                let dist = self.dot_product_hybrid(query, neighbor);
+                if dist > best_dist {
+                    best_dist = dist;
+                    best_node = neighbor;
+                }
+            }
+
+            if best_node == curr_node {
+                break;
+            }
+            curr_node = best_node;
+            curr_dist = best_dist;
+        }
+
+        curr_node
+    }
+
+    /// Search for nearest neighbors at a specific layer during build (using hybrid vectors).
+    /// Used during incremental updates when new vectors are in flat cache and existing in mmap.
+    fn search_layer_build_hybrid(
+        &self,
+        query: &[f32],
+        entry_point: usize,
+        ef: usize,
+        level: usize,
+    ) -> Vec<(f32, usize)> {
+        let entry_dist = self.dot_product_hybrid(query, entry_point);
+
+        let num_nodes = self.nodes.len();
+        let mut visited = vec![false; num_nodes];
+        visited[entry_point] = true;
+
+        let mut candidates: BinaryHeap<(OrderedFloat<f32>, usize)> = BinaryHeap::new();
+        candidates.push((OrderedFloat(entry_dist), entry_point));
+
+        let mut results: BinaryHeap<Reverse<(OrderedFloat<f32>, usize)>> = BinaryHeap::new();
+        results.push(Reverse((OrderedFloat(entry_dist), entry_point)));
+
+        while let Some((OrderedFloat(cand_dist), cand_id)) = candidates.pop() {
+            let worst_dist = results
+                .peek()
+                .map(|Reverse((d, _))| d.0)
+                .unwrap_or(f32::NEG_INFINITY);
+
+            if results.len() >= ef && cand_dist < worst_dist {
+                break;
+            }
+
+            let node = self.nodes[cand_id].read();
+            if level >= node.neighbors.len() {
+                continue;
+            }
+
+            for &neighbor in &node.neighbors[level] {
+                if visited[neighbor] {
+                    continue;
+                }
+                visited[neighbor] = true;
+
+                let dist = self.dot_product_hybrid(query, neighbor);
+
+                let worst = results
+                    .peek()
+                    .map(|Reverse((d, _))| d.0)
+                    .unwrap_or(f32::NEG_INFINITY);
+
+                if results.len() < ef || dist > worst {
+                    candidates.push((OrderedFloat(dist), neighbor));
+                    results.push(Reverse((OrderedFloat(dist), neighbor)));
+
+                    while results.len() > ef {
+                        results.pop();
+                    }
+                }
+            }
+        }
+
+        let mut result_vec: Vec<(f32, usize)> = results
+            .into_iter()
+            .map(|Reverse((d, id))| (d.0, id))
+            .collect();
+        result_vec.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        result_vec
+    }
+
+    /// Insert a new node into the graph using hybrid vector access.
+    /// This is the memory-efficient version that uses mmap for existing vectors
+    /// and flat cache only for the new vectors being inserted.
+    fn insert_node_hybrid(&mut self, id: usize) -> Result<()> {
+        let level = self.random_level();
+        let m = self.metadata.config.m;
+        let m0 = self.metadata.config.m0;
+        let ef_construction = self.metadata.config.ef_construction;
+
+        // Create new node
+        let node = Node::new(level, m, m0);
+        self.nodes.push(RwLock::new(node));
+
+        // Get query vector - must clone since it's in flat cache and we need ownership
+        // to avoid borrow checker issues during the rest of the method
+        let query: Vec<f32> = self
+            .get_vector_from_flat_cache(id)
+            .expect("New vector should be in flat cache during hybrid insert")
+            .to_vec();
+
+        // If this is the first node, set it as entry point
+        if self.metadata.entry_point.is_none() {
+            self.metadata.entry_point = Some(id);
+            self.metadata.max_level = level;
+            self.metadata.num_vectors += 1;
+            return Ok(());
+        }
+
+        let entry_point = self.metadata.entry_point.unwrap();
+        let mut curr_node = entry_point;
+
+        // Greedy search from top level to level + 1
+        for l in (level + 1..=self.metadata.max_level).rev() {
+            curr_node = self.greedy_search_layer_hybrid(&query, curr_node, l);
+        }
+
+        // Search and connect at each level from min(level, max_level) to 0
+        let start_level = level.min(self.metadata.max_level);
+        for l in (0..=start_level).rev() {
+            // Search for nearest neighbors at this level
+            let neighbors = self.search_layer_build_hybrid(&query, curr_node, ef_construction, l);
+
+            // Select the best M (or M0 for level 0) neighbors
+            let max_connections = if l == 0 { m0 } else { m };
+            let selected: Vec<usize> = neighbors
+                .iter()
+                .take(max_connections)
+                .map(|(_, idx)| *idx)
+                .collect();
+
+            // Add connections to the new node
+            {
+                let mut new_node = self.nodes[id].write();
+                if l < new_node.neighbors.len() {
+                    new_node.neighbors[l] = selected.clone();
+                }
+            }
+
+            // Add reverse connections and prune if necessary
+            for &neighbor_id in &selected {
+                let mut neighbor = self.nodes[neighbor_id].write();
+                if l < neighbor.neighbors.len() {
+                    if !neighbor.neighbors[l].contains(&id) {
+                        neighbor.neighbors[l].push(id);
+                    }
+
+                    // Prune if we have too many connections
+                    if neighbor.neighbors[l].len() > max_connections {
+                        // Get neighbor vector using hybrid access (may be in flat cache or mmap)
+                        let neighbor_vec = self
+                            .get_vector_hybrid_owned(neighbor_id)
+                            .expect("Neighbor vector must exist");
+
+                        let mut candidates: Vec<(f32, usize)> = neighbor.neighbors[l]
+                            .iter()
+                            .map(|&n| {
+                                let dist = self.dot_product_hybrid(&neighbor_vec, n);
+                                (dist, n)
+                            })
+                            .collect();
+
+                        candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+                        neighbor.neighbors[l] = candidates
+                            .iter()
+                            .take(max_connections)
+                            .map(|(_, idx)| *idx)
+                            .collect();
+                    }
+                }
+            }
+
+            // Update current node for next level
+            if !neighbors.is_empty() {
+                curr_node = neighbors[0].1;
+            }
+        }
+
+        // Update entry point if new node has higher level
+        if level > self.metadata.max_level {
+            self.metadata.entry_point = Some(id);
+            self.metadata.max_level = level;
+        }
+
+        self.metadata.num_vectors += 1;
+
+        Ok(())
+    }
+
     /// Search for k nearest neighbors of a single query with optional filter (uses mmap).
     ///
     /// The filter only affects which results are returned - all vectors are still
@@ -868,6 +1249,57 @@ impl HnswIndex {
             self.metadata.config.ef_search.max(k)
         };
         self.search_layer_query_filtered(query, curr_node, ef, k, filter)
+    }
+
+    /// Search for k nearest neighbors of a single query with custom ef_search (uses mmap).
+    fn search_single_with_ef(
+        &self,
+        query: ArrayView1<f32>,
+        k: usize,
+        ef_search: usize,
+    ) -> Vec<(f32, usize)> {
+        let entry_point = match self.metadata.entry_point {
+            Some(ep) => ep,
+            None => return Vec::new(),
+        };
+
+        let entry_vec = match self.get_vector_from_mmap(entry_point) {
+            Some(v) => v,
+            None => return Vec::new(),
+        };
+
+        let mut curr_node = entry_point;
+        let mut curr_dist = Self::inner_product(query, entry_vec.view());
+
+        // Greedy search from top level to level 1
+        for l in (1..=self.metadata.max_level).rev() {
+            loop {
+                let node = self.nodes[curr_node].read();
+                if l >= node.neighbors.len() {
+                    break;
+                }
+
+                let mut changed = false;
+                for &neighbor in &node.neighbors[l] {
+                    if let Some(neighbor_vec) = self.get_vector_from_mmap(neighbor) {
+                        let dist = Self::inner_product(query, neighbor_vec.view());
+                        if dist > curr_dist {
+                            curr_dist = dist;
+                            curr_node = neighbor;
+                            changed = true;
+                        }
+                    }
+                }
+
+                if !changed {
+                    break;
+                }
+            }
+        }
+
+        // Search at level 0 with custom ef_search
+        let ef = ef_search.max(k);
+        self.search_layer_query_filtered(query, curr_node, ef, k, None)
     }
 
     /// Search layer during query time with optional filter (uses mmap).
@@ -1385,5 +1817,48 @@ mod tests {
         // Should return an error
         let result = index.search_with_ids(&queries, 5, &candidate_refs);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_vectors_range() {
+        let dir = tempdir().unwrap();
+        let config = HnswConfig::default();
+
+        let mut index = HnswIndex::new(dir.path(), 32, config).unwrap();
+
+        // Create 100 vectors with predictable values
+        let vectors = Array2::from_shape_fn((100, 32), |(i, j)| (i * 32 + j) as f32);
+        index.update(&vectors).unwrap();
+
+        // Test getting a range of vectors
+        let range = index.get_vectors_range(10, 20).unwrap();
+        assert_eq!(range.dim(), (10, 32), "Should have 10 vectors");
+
+        // Verify content matches original vectors
+        for i in 0..10 {
+            for j in 0..32 {
+                assert_eq!(
+                    range[[i, j]],
+                    vectors[[10 + i, j]],
+                    "Vector content should match at [{}, {}]",
+                    i,
+                    j
+                );
+            }
+        }
+
+        // Test edge cases
+        let empty = index.get_vectors_range(50, 50).unwrap();
+        assert_eq!(empty.dim(), (0, 32), "Empty range should return 0 vectors");
+
+        let clamped = index.get_vectors_range(90, 200).unwrap();
+        assert_eq!(clamped.dim(), (10, 32), "Should clamp to num_vectors");
+
+        let out_of_bounds = index.get_vectors_range(100, 150).unwrap();
+        assert_eq!(
+            out_of_bounds.dim(),
+            (0, 32),
+            "Start beyond range returns empty"
+        );
     }
 }

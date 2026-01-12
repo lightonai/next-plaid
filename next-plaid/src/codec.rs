@@ -36,10 +36,70 @@ impl CentroidStore {
     /// This creates an HNSW index and adds the centroids to it.
     /// The centroids are persisted to disk and accessed via memory-mapping.
     pub fn from_centroids(centroids: Array2<f32>, index_path: &std::path::Path) -> Result<Self> {
+        Self::from_centroids_with_config(centroids, index_path, None)
+    }
+
+    /// Create a new CentroidStore from centroids with custom HNSW config.
+    ///
+    /// This creates an HNSW index with the specified config and adds the centroids to it.
+    /// The centroids are persisted to disk and accessed via memory-mapping.
+    ///
+    /// # Arguments
+    /// * `centroids` - The centroid vectors to store
+    /// * `index_path` - Path to the index directory
+    /// * `config` - Optional HNSW config. If None, uses optimized defaults for index creation.
+    pub fn from_centroids_with_config(
+        centroids: Array2<f32>,
+        index_path: &std::path::Path,
+        config: Option<next_plaid_hnsw::HnswConfig>,
+    ) -> Result<Self> {
         use next_plaid_hnsw::HnswConfig;
 
         let dim = centroids.ncols();
-        let mut hnsw = HnswIndex::new(index_path, dim, HnswConfig::default())
+        let num_centroids = centroids.nrows();
+
+        // Use provided config or optimized defaults for index creation
+        let hnsw_config = config.unwrap_or_else(|| {
+            // Optimize HNSW config based on centroid count
+            // For centroid indices, we can use aggressive settings since:
+            // 1. HNSW is only used for approximate centroid search
+            // 2. Search quality is maintained via ef_search at query time
+            // 3. Build time dominates for large indices (200K-1.5M centroids)
+
+            let m = if num_centroids < 1000 {
+                8 // Small indices need fewer connections
+            } else if num_centroids < 10_000 {
+                12
+            } else {
+                16 // Large indices need more edges for graph connectivity
+            };
+
+            // ef_construction determines search quality during build
+            // Lower values = faster build, slightly lower graph quality
+            // But search quality is maintained via ef_search at query time
+            let ef_construction = if num_centroids < 500 {
+                16 // Very fast for small indices
+            } else if num_centroids < 5_000 {
+                24 // Fast for medium indices
+            } else if num_centroids < 50_000 {
+                32 // Balanced for large indices
+            } else if num_centroids < 500_000 {
+                40 // For very large indices (200K-500K)
+            } else {
+                48 // For huge indices (>500K), still much faster than default 100
+            };
+
+            HnswConfig {
+                m,
+                m0: m * 2,
+                ef_construction,
+                ef_search: 64, // Higher for better search quality at query time
+                ml: 1.0 / (m as f32).ln(),
+                seed: 42,
+            }
+        });
+
+        let mut hnsw = HnswIndex::new(index_path, dim, hnsw_config)
             .map_err(|e| Error::IndexCreation(format!("Failed to create HNSW index: {}", e)))?;
 
         hnsw.update(&centroids)
