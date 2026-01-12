@@ -1,0 +1,48 @@
+[package]
+name = "next-plaid-hnsw"
+version.workspace = true
+edition.workspace = true
+description = "High-performance, memory-efficient HNSW index for approximate nearest neighbor search"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+documentation.workspace = true
+readme = "README.md"
+keywords = ["hnsw", "ann", "nearest-neighbor", "search", "vector"]
+categories = ["science", "algorithms", "data-structures"]
+
+[dependencies]
+ndarray = { workspace = true }
+blas-src = { version = "0.14", optional = true }
+openblas-src = { version = "0.10", features = ["cblas", "system"], optional = true }
+accelerate-src = { version = "0.3", optional = true }
+rand = "0.8"
+rand_chacha = "0.3"
+rayon = "1.10"
+num-traits = "0.2"
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+memmap2 = "0.9"
+byteorder = "1.5"
+parking_lot = "0.12"
+ordered-float = "4.2"
+
+[dev-dependencies]
+criterion = { version = "0.8.1", features = ["html_reports"] }
+tempfile = "3.10"
+ndarray-rand = "0.15"
+
+[features]
+default = []
+accelerate = ["blas-src", "accelerate-src", "ndarray/blas"]
+openblas = ["blas-src", "openblas-src", "ndarray/blas"]
+
+[[bench]]
+name = "hnsw_benchmark"
+harness = false
+
+[[test]]
+name = "benchmark_comparison"
+path = "tests/benchmark_comparison.rs"
