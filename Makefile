@@ -99,14 +99,9 @@ lint-python:
 fmt-python:
 	cd docs && uv run --extra dev ruff format .
 
-# Compare with fast-plaid reference implementation
-compare-reference:
-	cargo build --release --features npy --example benchmark_cli
-	cd docs && uv sync --extra fast-plaid && uv run python compare_reference.py --skip-cross
-
 # Benchmark SciFact with updates (batch size 800) - compares fast-plaid and lategrep
 benchmark-scifact-update:
-	cargo build --release --features npy,accelerate --example benchmark_cli
+	cargo build --release --features npy --example benchmark_cli
 	cd docs && uv sync --extra eval --extra fast-plaid && uv run python benchmark_scifact_update.py --batch-size 800
 
 # Benchmark SciFact via REST API (uses cached embeddings, with accelerate)

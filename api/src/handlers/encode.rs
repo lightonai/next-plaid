@@ -3,12 +3,18 @@
 //! Provides text encoding using the loaded ColBERT model with automatic batching
 //! of concurrent requests for improved throughput.
 
+#[cfg(feature = "model")]
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+#[cfg(feature = "model")]
+use std::sync::OnceLock;
+#[cfg(feature = "model")]
 use std::time::Duration;
 
 use axum::{extract::State, Json};
+#[cfg(feature = "model")]
 use tokio::sync::{mpsc, oneshot};
+#[cfg(feature = "model")]
 use tokio::time::Instant;
 
 use crate::error::{ApiError, ApiResult};
@@ -21,13 +27,16 @@ use crate::state::AppState;
 
 /// Maximum number of texts to batch together before processing.
 /// Aligned with typical model batch size for optimal GPU utilization.
+#[cfg(feature = "model")]
 const MAX_BATCH_TEXTS: usize = 64;
 
 /// Maximum time to wait for more requests before processing a batch.
 /// Lower = less latency for single requests, higher = better batching efficiency.
+#[cfg(feature = "model")]
 const BATCH_TIMEOUT: Duration = Duration::from_millis(10);
 
 /// Channel buffer size for batch queue.
+#[cfg(feature = "model")]
 const BATCH_CHANNEL_SIZE: usize = 256;
 
 // --- Batch Types ---
