@@ -1,81 +1,108 @@
 //! Residual codec for quantization and decompression
 
 use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2, Axis};
+use next_plaid_hnsw::HnswIndex;
+use std::sync::Arc;
 
 use crate::error::{Error, Result};
 
-/// Storage backend for centroids, supporting both owned arrays and memory-mapped files.
+/// Storage backend for centroids using HNSW index.
 ///
-/// This enum enables `ResidualCodec` to work with centroids stored either:
-/// - In memory as an owned `Array2<f32>` (default, for `Index` and `LoadedIndex`)
-/// - Memory-mapped from disk (for `MmapIndex`, reducing RAM usage)
-pub enum CentroidStore {
-    /// Centroids stored as an owned ndarray (loaded into RAM)
-    Owned(Array2<f32>),
-    /// Centroids stored as a memory-mapped NPY file (OS-managed paging)
-    #[cfg(feature = "npy")]
-    Mmap(crate::mmap::MmapNpyArray2F32),
+/// This struct wraps an HNSW index that stores the centroids on disk,
+/// along with a cached copy for fast view/row access operations.
+/// The HNSW index can be used directly for approximate nearest neighbor
+/// search when the number of centroids is large.
+pub struct CentroidStore {
+    /// HNSW index containing the centroids
+    hnsw: Arc<HnswIndex>,
+    /// Cached centroids for fast access (loaded from HNSW)
+    centroids_cache: Array2<f32>,
 }
 
 impl CentroidStore {
+    /// Create a new CentroidStore from an HNSW index.
+    ///
+    /// This loads all centroids from the HNSW index into a cache for fast access.
+    pub fn from_hnsw(hnsw: Arc<HnswIndex>) -> Result<Self> {
+        let centroids_cache = hnsw
+            .get_all_vectors()
+            .map_err(|e| Error::IndexLoad(format!("Failed to load centroids from HNSW: {}", e)))?;
+
+        Ok(Self {
+            hnsw,
+            centroids_cache,
+        })
+    }
+
+    /// Create a new CentroidStore from centroids and save to HNSW.
+    ///
+    /// This creates an HNSW index, adds the centroids to it, and caches them.
+    pub fn from_centroids(centroids: Array2<f32>, index_path: &std::path::Path) -> Result<Self> {
+        use next_plaid_hnsw::HnswConfig;
+
+        let dim = centroids.ncols();
+        let mut hnsw = HnswIndex::new(index_path, dim, HnswConfig::default())
+            .map_err(|e| Error::IndexCreation(format!("Failed to create HNSW index: {}", e)))?;
+
+        hnsw.update(&centroids)
+            .map_err(|e| Error::IndexCreation(format!("Failed to add centroids to HNSW: {}", e)))?;
+
+        Ok(Self {
+            hnsw: Arc::new(hnsw),
+            centroids_cache: centroids,
+        })
+    }
+
+    /// Create a CentroidStore from pre-built HNSW and centroids cache.
+    ///
+    /// Used during index creation when we already have both.
+    pub fn from_hnsw_and_cache(hnsw: Arc<HnswIndex>, centroids_cache: Array2<f32>) -> Self {
+        Self {
+            hnsw,
+            centroids_cache,
+        }
+    }
+
+    /// Get the underlying HNSW index.
+    ///
+    /// Use this for approximate nearest neighbor search.
+    pub fn hnsw(&self) -> &Arc<HnswIndex> {
+        &self.hnsw
+    }
+
     /// Get a view of the centroids as ArrayView2.
     ///
-    /// This is zero-copy for both owned and mmap variants.
+    /// Returns a view of the cached centroids.
     pub fn view(&self) -> ArrayView2<'_, f32> {
-        match self {
-            CentroidStore::Owned(arr) => arr.view(),
-            #[cfg(feature = "npy")]
-            CentroidStore::Mmap(mmap) => mmap.view(),
-        }
+        self.centroids_cache.view()
     }
 
     /// Get the number of centroids (rows).
     pub fn nrows(&self) -> usize {
-        match self {
-            CentroidStore::Owned(arr) => arr.nrows(),
-            #[cfg(feature = "npy")]
-            CentroidStore::Mmap(mmap) => mmap.nrows(),
-        }
+        self.centroids_cache.nrows()
     }
 
     /// Get the embedding dimension (columns).
     pub fn ncols(&self) -> usize {
-        match self {
-            CentroidStore::Owned(arr) => arr.ncols(),
-            #[cfg(feature = "npy")]
-            CentroidStore::Mmap(mmap) => mmap.ncols(),
-        }
+        self.centroids_cache.ncols()
     }
 
     /// Get a view of a single centroid row.
     pub fn row(&self, idx: usize) -> ArrayView1<'_, f32> {
-        match self {
-            CentroidStore::Owned(arr) => arr.row(idx),
-            #[cfg(feature = "npy")]
-            CentroidStore::Mmap(mmap) => mmap.row(idx),
-        }
+        self.centroids_cache.row(idx)
     }
 
     /// Get a view of rows [start..end] as ArrayView2.
-    ///
-    /// This is zero-copy for both owned and mmap variants.
     pub fn slice_rows(&self, start: usize, end: usize) -> ArrayView2<'_, f32> {
-        match self {
-            CentroidStore::Owned(arr) => arr.slice(s![start..end, ..]),
-            #[cfg(feature = "npy")]
-            CentroidStore::Mmap(mmap) => mmap.slice_rows(start, end),
-        }
+        self.centroids_cache.slice(s![start..end, ..])
     }
 }
 
 impl Clone for CentroidStore {
     fn clone(&self) -> Self {
-        match self {
-            // For owned, just clone the array
-            CentroidStore::Owned(arr) => CentroidStore::Owned(arr.clone()),
-            // For mmap, we need to convert to owned since Mmap isn't Clone
-            #[cfg(feature = "npy")]
-            CentroidStore::Mmap(mmap) => CentroidStore::Owned(mmap.to_owned()),
+        Self {
+            hnsw: Arc::clone(&self.hnsw),
+            centroids_cache: self.centroids_cache.clone(),
         }
     }
 }
@@ -105,34 +132,37 @@ pub struct ResidualCodec {
 }
 
 impl ResidualCodec {
-    /// Creates a new ResidualCodec and pre-computes lookup tables.
+    /// Creates a new ResidualCodec with centroids stored in HNSW index.
     ///
     /// # Arguments
     ///
     /// * `nbits` - Number of bits per code (e.g., 2 bits = 4 buckets)
     /// * `centroids` - Coarse centroids of shape `[num_centroids, dim]`
+    /// * `index_path` - Path to the index directory where HNSW files will be stored
     /// * `avg_residual` - Global average residual
     /// * `bucket_cutoffs` - Quantization boundaries (optional, for indexing)
     /// * `bucket_weights` - Reconstruction values (optional, for search)
     pub fn new(
         nbits: usize,
         centroids: Array2<f32>,
+        index_path: &std::path::Path,
         avg_residual: Array1<f32>,
         bucket_cutoffs: Option<Array1<f32>>,
         bucket_weights: Option<Array1<f32>>,
     ) -> Result<Self> {
+        let centroid_store = CentroidStore::from_centroids(centroids, index_path)?;
         Self::new_with_store(
             nbits,
-            CentroidStore::Owned(centroids),
+            centroid_store,
             avg_residual,
             bucket_cutoffs,
             bucket_weights,
         )
     }
 
-    /// Creates a new ResidualCodec with a specified centroid storage backend.
+    /// Creates a new ResidualCodec with a pre-existing CentroidStore.
     ///
-    /// This is the internal constructor that supports both owned and mmap centroids.
+    /// This is the internal constructor used when the CentroidStore is already available.
     pub fn new_with_store(
         nbits: usize,
         centroids: CentroidStore,
@@ -218,9 +248,17 @@ impl ResidualCodec {
 
     /// Returns a view of the centroids.
     ///
-    /// This is zero-copy for both owned and mmap centroids.
+    /// This is zero-copy for the cached centroids.
     pub fn centroids_view(&self) -> ArrayView2<'_, f32> {
         self.centroids.view()
+    }
+
+    /// Returns the underlying HNSW index for centroid search.
+    ///
+    /// Use this for approximate nearest neighbor search when the number
+    /// of centroids is large (>10k).
+    pub fn hnsw(&self) -> &Arc<HnswIndex> {
+        self.centroids.hnsw()
     }
 
     /// Compress embeddings into centroid codes using nearest neighbor search.
@@ -405,93 +443,19 @@ impl ResidualCodec {
         Ok(output)
     }
 
-    /// Load codec from index directory
+    /// Load codec from index directory.
+    ///
+    /// Loads centroids from the HNSW index files (hnsw_metadata.json, hnsw_vectors.bin, hnsw_graph.bin).
     #[cfg(feature = "npy")]
     pub fn load_from_dir(index_path: &std::path::Path) -> Result<Self> {
         use ndarray_npy::ReadNpyExt;
         use std::fs::File;
 
-        let centroids_path = index_path.join("centroids.npy");
-        let centroids: Array2<f32> = Array2::read_npy(
-            File::open(&centroids_path)
-                .map_err(|e| Error::IndexLoad(format!("Failed to open centroids.npy: {}", e)))?,
-        )
-        .map_err(|e| Error::IndexLoad(format!("Failed to read centroids.npy: {}", e)))?;
+        // Load centroids from HNSW index
+        let hnsw = HnswIndex::load(index_path)
+            .map_err(|e| Error::IndexLoad(format!("Failed to load HNSW index: {}", e)))?;
+        let centroid_store = CentroidStore::from_hnsw(Arc::new(hnsw))?;
 
-        let avg_residual_path = index_path.join("avg_residual.npy");
-        let avg_residual: Array1<f32> =
-            Array1::read_npy(File::open(&avg_residual_path).map_err(|e| {
-                Error::IndexLoad(format!("Failed to open avg_residual.npy: {}", e))
-            })?)
-            .map_err(|e| Error::IndexLoad(format!("Failed to read avg_residual.npy: {}", e)))?;
-
-        let bucket_cutoffs_path = index_path.join("bucket_cutoffs.npy");
-        let bucket_cutoffs: Option<Array1<f32>> = if bucket_cutoffs_path.exists() {
-            Some(
-                Array1::read_npy(File::open(&bucket_cutoffs_path).map_err(|e| {
-                    Error::IndexLoad(format!("Failed to open bucket_cutoffs.npy: {}", e))
-                })?)
-                .map_err(|e| {
-                    Error::IndexLoad(format!("Failed to read bucket_cutoffs.npy: {}", e))
-                })?,
-            )
-        } else {
-            None
-        };
-
-        let bucket_weights_path = index_path.join("bucket_weights.npy");
-        let bucket_weights: Option<Array1<f32>> = if bucket_weights_path.exists() {
-            Some(
-                Array1::read_npy(File::open(&bucket_weights_path).map_err(|e| {
-                    Error::IndexLoad(format!("Failed to open bucket_weights.npy: {}", e))
-                })?)
-                .map_err(|e| {
-                    Error::IndexLoad(format!("Failed to read bucket_weights.npy: {}", e))
-                })?,
-            )
-        } else {
-            None
-        };
-
-        // Read nbits from metadata
-        let metadata_path = index_path.join("metadata.json");
-        let metadata: serde_json::Value = serde_json::from_reader(
-            File::open(&metadata_path)
-                .map_err(|e| Error::IndexLoad(format!("Failed to open metadata.json: {}", e)))?,
-        )
-        .map_err(|e| Error::IndexLoad(format!("Failed to parse metadata.json: {}", e)))?;
-
-        let nbits = metadata["nbits"]
-            .as_u64()
-            .ok_or_else(|| Error::IndexLoad("nbits not found in metadata".into()))?
-            as usize;
-
-        Self::new(
-            nbits,
-            centroids,
-            avg_residual,
-            bucket_cutoffs,
-            bucket_weights,
-        )
-    }
-
-    /// Load codec from index directory with memory-mapped centroids.
-    ///
-    /// This is similar to `load_from_dir` but uses memory-mapped I/O for the
-    /// centroids file, reducing RAM usage. The other small tensors (bucket weights,
-    /// etc.) are still loaded into memory as they are negligible in size.
-    ///
-    /// Use this when loading for `MmapIndex` to minimize memory footprint.
-    #[cfg(feature = "npy")]
-    pub fn load_mmap_from_dir(index_path: &std::path::Path) -> Result<Self> {
-        use ndarray_npy::ReadNpyExt;
-        use std::fs::File;
-
-        // Memory-map centroids instead of loading into RAM
-        let centroids_path = index_path.join("centroids.npy");
-        let mmap_centroids = crate::mmap::MmapNpyArray2F32::from_npy_file(&centroids_path)?;
-
-        // Load small tensors into memory (negligible size)
         let avg_residual_path = index_path.join("avg_residual.npy");
         let avg_residual: Array1<f32> =
             Array1::read_npy(File::open(&avg_residual_path).map_err(|e| {
@@ -542,27 +506,46 @@ impl ResidualCodec {
 
         Self::new_with_store(
             nbits,
-            CentroidStore::Mmap(mmap_centroids),
+            centroid_store,
             avg_residual,
             bucket_cutoffs,
             bucket_weights,
         )
+    }
+
+    /// Load codec from index directory (alias for load_from_dir).
+    ///
+    /// Both methods now load centroids from HNSW, so mmap distinction is no longer needed.
+    /// This method is kept for API compatibility.
+    #[cfg(feature = "npy")]
+    pub fn load_mmap_from_dir(index_path: &std::path::Path) -> Result<Self> {
+        // Both load methods now use HNSW, so they behave the same
+        Self::load_from_dir(index_path)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn test_codec_creation() {
+        let dir = tempdir().unwrap();
         let centroids =
             Array2::from_shape_vec((4, 8), (0..32).map(|x| x as f32).collect()).unwrap();
         let avg_residual = Array1::zeros(8);
         let bucket_cutoffs = Some(Array1::from_vec(vec![-0.5, 0.0, 0.5]));
         let bucket_weights = Some(Array1::from_vec(vec![-0.75, -0.25, 0.25, 0.75]));
 
-        let codec = ResidualCodec::new(2, centroids, avg_residual, bucket_cutoffs, bucket_weights);
+        let codec = ResidualCodec::new(
+            2,
+            centroids,
+            dir.path(),
+            avg_residual,
+            bucket_cutoffs,
+            bucket_weights,
+        );
         assert!(codec.is_ok());
 
         let codec = codec.unwrap();
@@ -573,6 +556,7 @@ mod tests {
 
     #[test]
     fn test_compress_into_codes() {
+        let dir = tempdir().unwrap();
         let centroids = Array2::from_shape_vec(
             (3, 4),
             vec![
@@ -584,7 +568,7 @@ mod tests {
         .unwrap();
 
         let avg_residual = Array1::zeros(4);
-        let codec = ResidualCodec::new(2, centroids, avg_residual, None, None).unwrap();
+        let codec = ResidualCodec::new(2, centroids, dir.path(), avg_residual, None, None).unwrap();
 
         let embeddings = Array2::from_shape_vec(
             (2, 4),
@@ -603,6 +587,7 @@ mod tests {
     #[test]
     fn test_quantize_decompress_roundtrip_4bit() {
         // Test round-trip with 4-bit quantization
+        let dir = tempdir().unwrap();
         let dim = 8;
         let centroids = Array2::zeros((4, dim));
         let avg_residual = Array1::zeros(dim);
@@ -618,6 +603,7 @@ mod tests {
         let codec = ResidualCodec::new(
             4,
             centroids,
+            dir.path(),
             avg_residual,
             Some(Array1::from_vec(bucket_cutoffs)),
             Some(Array1::from_vec(bucket_weights)),

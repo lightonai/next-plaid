@@ -167,17 +167,17 @@ impl HnswIndex {
         }
 
         // Load metadata
-        let metadata_path = directory.join("metadata.json");
+        let metadata_path = directory.join("hnsw_metadata.json");
         let metadata_file = File::open(&metadata_path)
-            .map_err(|_| Error::CorruptedIndex("metadata.json not found".to_string()))?;
+            .map_err(|_| Error::CorruptedIndex("hnsw_metadata.json not found".to_string()))?;
         let metadata: HnswMetadata = serde_json::from_reader(BufReader::new(metadata_file))?;
 
         // Load graph
-        let graph_path = directory.join("graph.bin");
+        let graph_path = directory.join("hnsw_graph.bin");
         let nodes = Self::load_graph(&graph_path)?;
 
         // Memory-map vectors
-        let vectors_path = directory.join("vectors.bin");
+        let vectors_path = directory.join("hnsw_vectors.bin");
         let vectors_mmap = if vectors_path.exists() && metadata.num_vectors > 0 {
             let file = File::open(&vectors_path)?;
             Some(unsafe { MmapOptions::new().map(&file)? })
@@ -259,8 +259,8 @@ impl HnswIndex {
     /// Search for the k nearest neighbors of query vectors.
     ///
     /// Returns (scores, indices) where:
-    /// - scores: Array2<f32> of shape (num_queries, k) with similarity scores (higher is better)
-    /// - indices: Array2<i64> of shape (num_queries, k) with vector indices (-1 for padding)
+    /// - scores: `Array2<f32>` of shape (num_queries, k) with similarity scores (higher is better)
+    /// - indices: `Array2<i64>` of shape (num_queries, k) with vector indices (-1 for padding)
     pub fn search(&self, queries: &Array2<f32>, k: usize) -> Result<(Array2<f32>, Array2<i64>)> {
         self.search_with_filter(queries, k, None)
     }
@@ -274,12 +274,12 @@ impl HnswIndex {
     /// - `queries`: Query vectors of shape (num_queries, dim)
     /// - `k`: Number of nearest neighbors to return
     /// - `filter`: Optional set of vector IDs to include in results. If None, all vectors are considered.
-    ///             This filter applies to ALL queries uniformly.
+    ///   This filter applies to ALL queries uniformly.
     ///
     /// # Returns
     /// (scores, indices) where:
-    /// - scores: Array2<f32> of shape (num_queries, k) with similarity scores (higher is better)
-    /// - indices: Array2<i64> of shape (num_queries, k) with vector indices (-1 for padding)
+    /// - scores: `Array2<f32>` of shape (num_queries, k) with similarity scores (higher is better)
+    /// - indices: `Array2<i64>` of shape (num_queries, k) with vector indices (-1 for padding)
     pub fn search_with_filter(
         &self,
         queries: &Array2<f32>,
@@ -332,13 +332,13 @@ impl HnswIndex {
     /// - `queries`: Query vectors of shape (num_queries, dim)
     /// - `k`: Number of nearest neighbors to return
     /// - `candidate_ids`: Slice of candidate ID slices, one per query. Must have length equal to num_queries.
-    ///                    Each inner slice contains the vector IDs that query is allowed to return.
-    ///                    Each query can have a different number of candidates.
+    ///   Each inner slice contains the vector IDs that query is allowed to return.
+    ///   Each query can have a different number of candidates.
     ///
     /// # Returns
     /// (scores, indices) where:
-    /// - scores: Array2<f32> of shape (num_queries, k) with similarity scores (higher is better)
-    /// - indices: Array2<i64> of shape (num_queries, k) with vector indices (-1 for padding)
+    /// - scores: `Array2<f32>` of shape (num_queries, k) with similarity scores (higher is better)
+    /// - indices: `Array2<i64>` of shape (num_queries, k) with vector indices (-1 for padding)
     ///
     /// # Example
     /// ```rust,ignore
@@ -439,15 +439,63 @@ impl HnswIndex {
         &self.metadata.config
     }
 
+    /// Get a single vector by ID.
+    ///
+    /// Returns the vector at the given index, or an error if the index is out of bounds
+    /// or the vector cannot be read.
+    pub fn get_vector(&self, id: usize) -> Result<Array1<f32>> {
+        if id >= self.metadata.num_vectors {
+            return Err(Error::InvalidArgument(format!(
+                "Vector ID {} out of bounds (index has {} vectors)",
+                id, self.metadata.num_vectors
+            )));
+        }
+
+        self.get_vector_from_mmap(id).ok_or_else(|| {
+            Error::CorruptedIndex(format!(
+                "Failed to read vector {} from hnsw_vectors.bin",
+                id
+            ))
+        })
+    }
+
+    /// Get all vectors as a 2D array.
+    ///
+    /// Used for exact brute-force search when the index is small.
+    /// Returns vectors of shape (num_vectors, dim).
+    pub fn get_all_vectors(&self) -> Result<Array2<f32>> {
+        let n = self.metadata.num_vectors;
+        let dim = self.metadata.dim;
+
+        if n == 0 {
+            return Ok(Array2::zeros((0, dim)));
+        }
+
+        let mut vectors = Array2::zeros((n, dim));
+
+        for i in 0..n {
+            if let Some(vec) = self.get_vector_from_mmap(i) {
+                vectors.row_mut(i).assign(&vec);
+            } else {
+                return Err(Error::CorruptedIndex(format!(
+                    "Failed to read vector {} from hnsw_vectors.bin",
+                    i
+                )));
+            }
+        }
+
+        Ok(vectors)
+    }
+
     /// Save the index to disk.
     pub fn save(&self) -> Result<()> {
         // Save metadata
-        let metadata_path = self.directory.join("metadata.json");
+        let metadata_path = self.directory.join("hnsw_metadata.json");
         let metadata_file = File::create(&metadata_path)?;
         serde_json::to_writer_pretty(BufWriter::new(metadata_file), &self.metadata)?;
 
         // Save graph
-        let graph_path = self.directory.join("graph.bin");
+        let graph_path = self.directory.join("hnsw_graph.bin");
         self.save_graph(&graph_path)?;
 
         Ok(())
@@ -474,7 +522,7 @@ impl HnswIndex {
         let mmap = self
             .vectors_mmap
             .as_ref()
-            .ok_or_else(|| Error::CorruptedIndex("vectors.bin not loaded".to_string()))?;
+            .ok_or_else(|| Error::CorruptedIndex("hnsw_vectors.bin not loaded".to_string()))?;
 
         let dim = self.metadata.dim;
         let num_vectors = self.metadata.num_vectors;
@@ -496,7 +544,7 @@ impl HnswIndex {
 
     /// Append vectors to the vectors file.
     fn append_vectors(&self, vectors: &Array2<f32>) -> Result<()> {
-        let vectors_path = self.directory.join("vectors.bin");
+        let vectors_path = self.directory.join("hnsw_vectors.bin");
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -514,7 +562,7 @@ impl HnswIndex {
 
     /// Reload the memory-mapped vectors file.
     fn reload_vectors_mmap(&mut self) -> Result<()> {
-        let vectors_path = self.directory.join("vectors.bin");
+        let vectors_path = self.directory.join("hnsw_vectors.bin");
         if vectors_path.exists() {
             let file = File::open(&vectors_path)?;
             self.vectors_mmap = Some(unsafe { MmapOptions::new().map(&file)? });
@@ -856,7 +904,7 @@ impl HnswIndex {
             BinaryHeap::new();
 
         // Check if entry point passes filter
-        let entry_passes_filter = filter.map_or(true, |f| f.contains(&entry_point));
+        let entry_passes_filter = filter.is_none_or(|f| f.contains(&entry_point));
         if entry_passes_filter {
             filtered_results.push(Reverse((OrderedFloat(entry_dist), entry_point)));
         }
@@ -894,7 +942,7 @@ impl HnswIndex {
                     }
 
                     // Only add to results if it passes the filter
-                    let passes_filter = filter.map_or(true, |f| f.contains(&neighbor));
+                    let passes_filter = filter.is_none_or(|f| f.contains(&neighbor));
                     if passes_filter {
                         let worst_filtered = filtered_results
                             .peek()
@@ -954,7 +1002,7 @@ impl HnswIndex {
     /// Load the graph structure from disk.
     fn load_graph(path: &Path) -> Result<Vec<RwLock<Node>>> {
         let file = File::open(path)
-            .map_err(|_| Error::CorruptedIndex("graph.bin not found".to_string()))?;
+            .map_err(|_| Error::CorruptedIndex("hnsw_graph.bin not found".to_string()))?;
         let mut reader = BufReader::new(file);
 
         let num_nodes = reader.read_u64::<LittleEndian>()? as usize;
@@ -1087,9 +1135,8 @@ mod tests {
 
         // Create filter for only even-indexed vectors
         let filter: HashSet<usize> = (0..100).filter(|x| x % 2 == 0).collect();
-        let (scores_filtered, indices_filtered) = index
-            .search_with_filter(&query, 10, Some(&filter))
-            .unwrap();
+        let (scores_filtered, indices_filtered) =
+            index.search_with_filter(&query, 10, Some(&filter)).unwrap();
 
         // All filtered results should be even numbers
         for j in 0..10 {
@@ -1105,7 +1152,10 @@ mod tests {
         }
 
         // Verify we got results
-        assert!(indices_filtered[[0, 0]] >= 0, "Should have at least one result");
+        assert!(
+            indices_filtered[[0, 0]] >= 0,
+            "Should have at least one result"
+        );
         assert!(scores_filtered[[0, 0]] > f32::NEG_INFINITY);
 
         // Search with empty filter should return no results (all -1)
@@ -1116,7 +1166,8 @@ mod tests {
 
         for j in 0..10 {
             assert_eq!(
-                indices_empty[[0, j]], -1,
+                indices_empty[[0, j]],
+                -1,
                 "Empty filter should return -1 for all indices"
             );
         }
@@ -1266,7 +1317,10 @@ mod tests {
         // Query 0 has only 3 candidates, so only 3 valid results
         assert_eq!(indices[[0, 0]], 5, "Query 0 top result should be 5");
         let valid_count_q0 = (0..5).filter(|&j| indices[[0, j]] >= 0).count();
-        assert_eq!(valid_count_q0, 3, "Query 0 should have exactly 3 valid results");
+        assert_eq!(
+            valid_count_q0, 3,
+            "Query 0 should have exactly 3 valid results"
+        );
 
         // Query 1 top result should be 50
         assert_eq!(indices[[1, 0]], 50, "Query 1 top result should be 50");
@@ -1304,7 +1358,8 @@ mod tests {
         // Query 1 has no candidates, so all results should be -1
         for j in 0..5 {
             assert_eq!(
-                indices[[1, j]], -1,
+                indices[[1, j]],
+                -1,
                 "Query 1 result {} should be -1 (no candidates)",
                 j
             );

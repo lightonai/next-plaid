@@ -137,7 +137,9 @@ fn benchmark_filtered_search(c: &mut Criterion) {
             BenchmarkId::new(format!("brute_force_{}pct", 10), num_vectors),
             &(&database, &queries, &filter),
             |b, (db, q, f)| {
-                b.iter(|| brute_force_search_filtered(black_box(*db), black_box(*q), k, black_box(*f)));
+                b.iter(|| {
+                    brute_force_search_filtered(black_box(*db), black_box(*q), k, black_box(*f))
+                });
             },
         );
 
@@ -154,7 +156,10 @@ fn benchmark_filtered_search(c: &mut Criterion) {
             BenchmarkId::new(format!("hnsw_{}pct", 10), num_vectors),
             &(&index, &queries, &candidate_refs_10),
             |b, (idx, q, candidates)| {
-                b.iter(|| idx.search_with_ids(black_box(*q), k, black_box(candidates)).unwrap());
+                b.iter(|| {
+                    idx.search_with_ids(black_box(*q), k, black_box(candidates))
+                        .unwrap()
+                });
             },
         );
 
@@ -167,7 +172,9 @@ fn benchmark_filtered_search(c: &mut Criterion) {
             BenchmarkId::new(format!("brute_force_{}pct", 50), num_vectors),
             &(&database, &queries, &filter_50),
             |b, (db, q, f)| {
-                b.iter(|| brute_force_search_filtered(black_box(*db), black_box(*q), k, black_box(*f)));
+                b.iter(|| {
+                    brute_force_search_filtered(black_box(*db), black_box(*q), k, black_box(*f))
+                });
             },
         );
 
@@ -175,7 +182,10 @@ fn benchmark_filtered_search(c: &mut Criterion) {
             BenchmarkId::new(format!("hnsw_{}pct", 50), num_vectors),
             &(&index, &queries, &candidate_refs_50),
             |b, (idx, q, candidates)| {
-                b.iter(|| idx.search_with_ids(black_box(*q), k, black_box(candidates)).unwrap());
+                b.iter(|| {
+                    idx.search_with_ids(black_box(*q), k, black_box(candidates))
+                        .unwrap()
+                });
             },
         );
     }
@@ -193,19 +203,15 @@ fn benchmark_build(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(num_vectors as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("hnsw", num_vectors),
-            &database,
-            |b, db| {
-                b.iter(|| {
-                    let dir = tempdir().unwrap();
-                    let config = HnswConfig::default();
-                    let mut index = HnswIndex::new(dir.path(), dim, config).unwrap();
-                    index.update(black_box(db)).unwrap();
-                    index
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("hnsw", num_vectors), &database, |b, db| {
+            b.iter(|| {
+                let dir = tempdir().unwrap();
+                let config = HnswConfig::default();
+                let mut index = HnswIndex::new(dir.path(), dim, config).unwrap();
+                index.update(black_box(db)).unwrap();
+                index
+            });
+        });
     }
 
     group.finish();
@@ -257,10 +263,7 @@ fn benchmark_memory(c: &mut Criterion) {
             BenchmarkId::new("load_index", num_vectors),
             dir.path(),
             |b, path| {
-                b.iter(|| {
-                    let loaded = HnswIndex::load(black_box(path)).unwrap();
-                    loaded
-                });
+                b.iter(|| HnswIndex::load(black_box(path)).unwrap());
             },
         );
     }

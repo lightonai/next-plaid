@@ -33,6 +33,7 @@ half = "2.4"
 byteorder = "1.5"
 rusqlite = { version = "0.38", optional = true, features = ["bundled"] }
 regex = { version = "1.11", optional = true }
+next-plaid-hnsw = { path = "../next-plaid-hnsw" }
 
 [dev-dependencies]
 criterion = { version = "0.8.1", features = ["html_reports"] }
@@ -43,8 +44,8 @@ tempfile = "3.10"
 default = []
 npy = ["ndarray-npy"]
 filtering = ["rusqlite", "regex"]
-accelerate = ["blas-src", "accelerate-src", "ndarray/blas", "fastkmeans-rs/accelerate"]
-openblas = ["blas-src", "openblas-src", "ndarray/blas", "fastkmeans-rs/openblas"]
+accelerate = ["blas-src", "accelerate-src", "ndarray/blas", "fastkmeans-rs/accelerate", "next-plaid-hnsw/accelerate"]
+openblas = ["blas-src", "openblas-src", "ndarray/blas", "fastkmeans-rs/openblas", "next-plaid-hnsw/openblas"]
 
 [[bench]]
 name = "plaid_benchmark"

@@ -33,7 +33,10 @@ fn generate_vectors(num_vectors: usize, dim: usize, seed: u64) -> Array2<f32> {
 }
 
 /// Helper to create an index with vectors.
-fn create_index_with_vectors(num_vectors: usize, dim: usize) -> (HnswIndex, Array2<f32>, tempfile::TempDir) {
+fn create_index_with_vectors(
+    num_vectors: usize,
+    dim: usize,
+) -> (HnswIndex, Array2<f32>, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let config = HnswConfig::default();
     let mut index = HnswIndex::new(dir.path(), dim, config).unwrap();
@@ -59,7 +62,10 @@ fn test_search_with_ids_basic() {
 
     // Top result should be 25 (the query itself)
     assert_eq!(indices[[0, 0]], 25, "Top result should be the query vector");
-    assert!(scores[[0, 0]] > 0.99, "Score for exact match should be ~1.0");
+    assert!(
+        scores[[0, 0]] > 0.99,
+        "Score for exact match should be ~1.0"
+    );
 
     // All results should be within the candidate set
     for j in 0..5 {
@@ -87,19 +93,17 @@ fn test_search_with_ids_per_query_different_candidates() {
     queries.row_mut(3).assign(&vectors.row(160));
 
     // Each query has completely different candidates
-    let candidates0: Vec<usize> = (0..50).collect();      // 50 candidates
-    let candidates1: Vec<usize> = (50..100).collect();    // 50 candidates
-    let candidates2: Vec<usize> = (100..150).collect();   // 50 candidates
-    let candidates3: Vec<usize> = (150..200).collect();   // 50 candidates
+    let candidates0: Vec<usize> = (0..50).collect(); // 50 candidates
+    let candidates1: Vec<usize> = (50..100).collect(); // 50 candidates
+    let candidates2: Vec<usize> = (100..150).collect(); // 50 candidates
+    let candidates3: Vec<usize> = (150..200).collect(); // 50 candidates
 
-    let candidate_refs: Vec<&[usize]> = vec![
-        &candidates0,
-        &candidates1,
-        &candidates2,
-        &candidates3,
-    ];
+    let candidate_refs: Vec<&[usize]> =
+        vec![&candidates0, &candidates1, &candidates2, &candidates3];
 
-    let (_scores, indices) = index.search_with_ids(&queries, 10, &candidate_refs).unwrap();
+    let (_scores, indices) = index
+        .search_with_ids(&queries, 10, &candidate_refs)
+        .unwrap();
 
     // Verify each query only returns results from its candidate set
     for (q_idx, candidates) in [&candidates0, &candidates1, &candidates2, &candidates3]
@@ -139,28 +143,39 @@ fn test_search_with_ids_varying_candidate_sizes() {
     queries.row_mut(2).assign(&vectors.row(95));
 
     // Each query has a DIFFERENT number of candidates
-    let candidates0: Vec<usize> = vec![5];                           // 1 candidate
-    let candidates1: Vec<usize> = vec![48, 49, 50, 51, 52];          // 5 candidates
-    let candidates2: Vec<usize> = (80..100).collect();               // 20 candidates
+    let candidates0: Vec<usize> = vec![5]; // 1 candidate
+    let candidates1: Vec<usize> = vec![48, 49, 50, 51, 52]; // 5 candidates
+    let candidates2: Vec<usize> = (80..100).collect(); // 20 candidates
 
     let candidate_refs: Vec<&[usize]> = vec![&candidates0, &candidates1, &candidates2];
 
-    let (_scores, indices) = index.search_with_ids(&queries, 10, &candidate_refs).unwrap();
+    let (_scores, indices) = index
+        .search_with_ids(&queries, 10, &candidate_refs)
+        .unwrap();
 
     // Query 0: only 1 candidate, so only 1 valid result
     assert_eq!(indices[[0, 0]], 5);
     let valid_count_q0 = (0..10).filter(|&j| indices[[0, j]] >= 0).count();
-    assert_eq!(valid_count_q0, 1, "Query 0 should have exactly 1 valid result");
+    assert_eq!(
+        valid_count_q0, 1,
+        "Query 0 should have exactly 1 valid result"
+    );
 
     // Query 1: 5 candidates, so up to 5 valid results
     assert_eq!(indices[[1, 0]], 50);
     let valid_count_q1 = (0..10).filter(|&j| indices[[1, j]] >= 0).count();
-    assert_eq!(valid_count_q1, 5, "Query 1 should have exactly 5 valid results");
+    assert_eq!(
+        valid_count_q1, 5,
+        "Query 1 should have exactly 5 valid results"
+    );
 
     // Query 2: 20 candidates, asking for 10, should get 10
     assert_eq!(indices[[2, 0]], 95);
     let valid_count_q2 = (0..10).filter(|&j| indices[[2, j]] >= 0).count();
-    assert_eq!(valid_count_q2, 10, "Query 2 should have exactly 10 valid results");
+    assert_eq!(
+        valid_count_q2, 10,
+        "Query 2 should have exactly 10 valid results"
+    );
 }
 
 #[test]
@@ -321,14 +336,18 @@ fn test_search_with_ids_large_scale() {
 
     let candidate_refs: Vec<&[usize]> = candidate_lists.iter().map(|v| v.as_slice()).collect();
 
-    let (_scores, indices) = index.search_with_ids(&queries, 10, &candidate_refs).unwrap();
+    let (_scores, indices) = index
+        .search_with_ids(&queries, 10, &candidate_refs)
+        .unwrap();
 
     // Verify each query's top result is itself
     for (i, &expected_top) in query_indices.iter().enumerate() {
         assert_eq!(
-            indices[[i, 0]], expected_top as i64,
+            indices[[i, 0]],
+            expected_top as i64,
             "Query {} top result should be {}",
-            i, expected_top
+            i,
+            expected_top
         );
     }
 }

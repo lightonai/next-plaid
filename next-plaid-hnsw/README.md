@@ -240,16 +240,6 @@ The index directory contains:
 - **For balanced performance**: Use defaults (`M=16`, `ef_construction=100`, `ef_search=50`)
 - **For maximum speed**: Use `M=8-12`, `ef_construction=50`, `ef_search=20-30`
 
-## Performance
-
-Benchmarks comparing HNSW vs brute-force dot product search (128-dim vectors, k=10):
-
-| Dataset Size | Brute-Force | HNSW | Speedup | Recall@10 |
-|--------------|-------------|------|---------|-----------|
-| 1,000 | 2.5 ms | 0.8 ms | 3x | 95%+ |
-| 10,000 | 25 ms | 2 ms | 12x | 92%+ |
-| 100,000 | 250 ms | 5 ms | 50x | 90%+ |
-
 ## API Reference
 
 ### `HnswIndex`

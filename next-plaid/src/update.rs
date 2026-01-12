@@ -406,7 +406,7 @@ fn find_outliers(
 /// 1. Flatten all new embeddings
 /// 2. Find outliers (distance > cluster_threshold²)
 /// 3. Cluster outliers to get new centroids
-/// 4. Append new centroids to centroids.npy
+/// 4. Add new centroids to HNSW index
 /// 5. Extend ivf_lengths.npy with zeros
 /// 6. Update metadata.json num_partitions
 ///
@@ -419,14 +419,20 @@ pub fn update_centroids(
     config: &UpdateConfig,
 ) -> Result<usize> {
     use ndarray_npy::{ReadNpyExt, WriteNpyExt};
+    use next_plaid_hnsw::HnswIndex;
 
-    let centroids_path = index_path.join("centroids.npy");
-    if !centroids_path.exists() {
+    // Load existing centroids from HNSW index
+    let hnsw_metadata_path = index_path.join("hnsw_metadata.json");
+    if !hnsw_metadata_path.exists() {
         return Ok(0);
     }
 
-    // Load existing centroids
-    let existing_centroids: Array2<f32> = Array2::read_npy(File::open(&centroids_path)?)?;
+    let mut hnsw = HnswIndex::load(index_path)
+        .map_err(|e| Error::IndexLoad(format!("Failed to load HNSW index: {}", e)))?;
+
+    let existing_centroids = hnsw
+        .get_all_vectors()
+        .map_err(|e| Error::IndexLoad(format!("Failed to load centroids from HNSW: {}", e)))?;
 
     // Flatten all new embeddings
     let dim = existing_centroids.ncols();
@@ -486,18 +492,11 @@ pub fn update_centroids(
     let new_centroids = compute_kmeans(&outlier_docs, &kmeans_config)?;
     let k_new = new_centroids.nrows();
 
-    // Concatenate centroids
-    let new_num_centroids = existing_centroids.nrows() + k_new;
-    let mut final_centroids = Array2::<f32>::zeros((new_num_centroids, dim));
-    final_centroids
-        .slice_mut(s![..existing_centroids.nrows(), ..])
-        .assign(&existing_centroids);
-    final_centroids
-        .slice_mut(s![existing_centroids.nrows().., ..])
-        .assign(&new_centroids);
+    // Add new centroids to HNSW index (HNSW automatically saves to disk)
+    hnsw.update(&new_centroids)
+        .map_err(|e| Error::IndexCreation(format!("Failed to add centroids to HNSW: {}", e)))?;
 
-    // Save updated centroids
-    final_centroids.write_npy(File::create(&centroids_path)?)?;
+    let new_num_centroids = hnsw.len();
 
     // Extend ivf_lengths.npy with zeros for new centroids
     let ivf_lengths_path = index_path.join("ivf_lengths.npy");

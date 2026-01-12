@@ -3,10 +3,14 @@
 use ndarray::{Array1, Array2};
 use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;
+use tempfile::tempdir;
 
 fn main() {
     println!("Next-Plaid basic example");
     println!("======================\n");
+
+    // Create a temporary directory for the index
+    let temp_dir = tempdir().expect("Failed to create temp dir");
 
     // Generate some random document embeddings
     let num_docs = 100;
@@ -52,6 +56,7 @@ fn main() {
     let codec = next_plaid::ResidualCodec::new(
         2,
         centroids.clone(),
+        temp_dir.path(),
         avg_residual,
         Some(bucket_cutoffs),
         Some(bucket_weights),

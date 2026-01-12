@@ -12,26 +12,26 @@
   "num_documents": 5183,
   "num_queries": 300,
   "num_centroids": 16384,
-  "lategrep": {
-    "index_time_s": 126.385,
-    "search_time_s": 3.936,
+  "next-plaid": {
+    "index_time_s": 125.13,
+    "search_time_s": 3.993,
     "num_batches": 54,
     "metrics": {
-      "map": 0.7074,
-      "ndcg@10": 0.7426,
-      "ndcg@100": 0.7662,
-      "recall@10": 0.854,
+      "map": 0.7092,
+      "ndcg@10": 0.7436,
+      "ndcg@100": 0.7677,
+      "recall@10": 0.8533,
       "recall@100": 0.9627
     },
     "memory": {
-      "index_peak_mb": 305.2,
-      "search_peak_mb": 991.1,
-      "peak_overall_mb": 991.1
+      "index_peak_mb": 311.0,
+      "search_peak_mb": 938.9,
+      "peak_overall_mb": 938.9
     }
   },
   "fastplaid": {
-    "index_time_s": 16.284,
-    "search_time_s": 140.496,
+    "index_time_s": 19.034,
+    "search_time_s": 179.494,
     "num_batches": 7,
     "metrics": {
       "map": 0.7115,
@@ -41,17 +41,17 @@
       "recall@100": 0.956
     },
     "memory": {
-      "index_peak_mb": 1683.8,
-      "search_peak_mb": 531.6,
-      "peak_overall_mb": 1683.8
+      "index_peak_mb": 1641.0,
+      "search_peak_mb": 454.4,
+      "peak_overall_mb": 1641.0
     }
   },
   "comparison": {
-    "result_overlap_10": 0.8553,
-    "result_overlap_100": 0.8759,
-    "map_diff_pct": 0.58,
-    "speedup": 0.13,
-    "memory_savings_pct": 41.1
+    "result_overlap_10": 0.8519,
+    "result_overlap_100": 0.8769,
+    "map_diff_pct": 0.32,
+    "speedup": 0.15,
+    "memory_savings_pct": 42.8
   },
   "assertions": {
     "map_passed": true,

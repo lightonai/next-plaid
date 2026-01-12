@@ -1675,6 +1675,7 @@ dependencies = [
  "ndarray 0.16.1",
  "ndarray-npy",
  "ndarray-rand",
+ "next-plaid-hnsw",
  "num-traits",
  "openblas-src",
  "rand 0.8.5",

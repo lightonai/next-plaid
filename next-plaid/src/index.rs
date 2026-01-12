@@ -189,8 +189,14 @@ impl Index {
 
         // Train codec: compute residuals and quantization parameters
         let avg_residual = Array1::zeros(embedding_dim);
-        let initial_codec =
-            ResidualCodec::new(config.nbits, centroids.clone(), avg_residual, None, None)?;
+        let initial_codec = ResidualCodec::new(
+            config.nbits,
+            centroids.clone(),
+            index_dir,
+            avg_residual,
+            None,
+            None,
+        )?;
 
         // Compute codes for heldout samples
         let heldout_codes = initial_codec.compress_into_codes(&heldout);
@@ -232,24 +238,22 @@ impl Index {
         let bucket_cutoffs = Array1::from_vec(quantiles(&flat_residuals, &quantile_values));
         let bucket_weights = Array1::from_vec(quantiles(&flat_residuals, &weight_quantile_values));
 
-        let codec = ResidualCodec::new(
+        // Create the final codec reusing the HNSW index from initial_codec
+        let codec = ResidualCodec::new_with_store(
             config.nbits,
-            centroids.clone(),
+            initial_codec.centroids.clone(), // Reuse the CentroidStore (with HNSW) from initial codec
             avg_res_per_dim.clone(),
             Some(bucket_cutoffs.clone()),
             Some(bucket_weights.clone()),
         )?;
 
-        // Save codec components
+        // Save codec components (centroids already saved in HNSW)
         #[cfg(feature = "npy")]
         {
             use ndarray_npy::WriteNpyExt;
 
-            let centroids_path = index_dir.join("centroids.npy");
-            codec
-                .centroids_view()
-                .to_owned()
-                .write_npy(File::create(&centroids_path)?)?;
+            // Note: centroids.npy is no longer saved - centroids are stored in HNSW index
+            // (hnsw_metadata.json, hnsw_vectors.bin, hnsw_graph.bin)
 
             let cutoffs_path = index_dir.join("bucket_cutoffs.npy");
             bucket_cutoffs.write_npy(File::create(&cutoffs_path)?)?;
@@ -1606,7 +1610,10 @@ mod tests {
 
         // Verify index was created
         assert!(temp_dir.path().join("metadata.json").exists());
-        assert!(temp_dir.path().join("centroids.npy").exists());
+        // Centroids are now stored in HNSW index files
+        assert!(temp_dir.path().join("hnsw_metadata.json").exists());
+        assert!(temp_dir.path().join("hnsw_vectors.bin").exists());
+        assert!(temp_dir.path().join("hnsw_graph.bin").exists());
     }
 
     #[test]

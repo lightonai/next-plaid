@@ -814,51 +814,51 @@ def main():
     # Run evaluations
     print("\n[4/5] Running benchmarks...")
 
-    if not args.skip_lategrep:
-        print("\n  --- Lategrep (with updates) ---")
-        try:
-            lg_output = run_lategrep_with_updates(
-                doc_embeddings, query_embeddings, centroids, config
-            )
-            lg_metrics = evaluate_results(lg_output["results"], queries, qrels, documents_ids)
-            results["next-plaid"] = lg_output
-            all_metrics["next-plaid"] = lg_metrics
-            print(f"    Index+Update time: {lg_output['index_time_s']:.2f}s")
-            print(f"    Search time:       {lg_output['search_time_s']:.2f}s")
-            print(f"    Num batches:       {lg_output['num_batches']}")
-            print(f"    MAP:               {lg_metrics['map']:.4f}")
-            print(f"    NDCG@10:           {lg_metrics['ndcg@10']:.4f}")
-            print(f"    Recall@100:        {lg_metrics['recall@100']:.4f}")
-            mem = lg_output["memory"]
-            print(f"    Peak RAM (index):  {mem.index_peak_mb:.1f} MB")
-            print(f"    Peak RAM (search): {mem.search_peak_mb:.1f} MB")
-        except Exception as e:
-            print(f"    ERROR: {e}")
-            import traceback
 
-            traceback.print_exc()
+    print("\n  --- Lategrep (with updates) ---")
+    try:
+        lg_output = run_lategrep_with_updates(
+            doc_embeddings, query_embeddings, centroids, config
+        )
+        lg_metrics = evaluate_results(lg_output["results"], queries, qrels, documents_ids)
+        results["next-plaid"] = lg_output
+        all_metrics["next-plaid"] = lg_metrics
+        print(f"    Index+Update time: {lg_output['index_time_s']:.2f}s")
+        print(f"    Search time:       {lg_output['search_time_s']:.2f}s")
+        print(f"    Num batches:       {lg_output['num_batches']}")
+        print(f"    MAP:               {lg_metrics['map']:.4f}")
+        print(f"    NDCG@10:           {lg_metrics['ndcg@10']:.4f}")
+        print(f"    Recall@100:        {lg_metrics['recall@100']:.4f}")
+        mem = lg_output["memory"]
+        print(f"    Peak RAM (index):  {mem.index_peak_mb:.1f} MB")
+        print(f"    Peak RAM (search): {mem.search_peak_mb:.1f} MB")
+    except Exception as e:
+        print(f"    ERROR: {e}")
+        import traceback
 
-    if not args.skip_fastplaid:
-        print("\n  --- Fast-plaid (with updates) ---")
-        try:
-            fp_output = run_fastplaid_with_updates(doc_embeddings, query_embeddings, config)
-            fp_metrics = evaluate_results(fp_output["results"], queries, qrels, documents_ids)
-            results["fastplaid"] = fp_output
-            all_metrics["fastplaid"] = fp_metrics
-            print(f"    Index+Update time: {fp_output['index_time_s']:.2f}s")
-            print(f"    Search time:       {fp_output['search_time_s']:.2f}s")
-            print(f"    Num batches:       {fp_output['num_batches']}")
-            print(f"    MAP:               {fp_metrics['map']:.4f}")
-            print(f"    NDCG@10:           {fp_metrics['ndcg@10']:.4f}")
-            print(f"    Recall@100:        {fp_metrics['recall@100']:.4f}")
-            mem = fp_output["memory"]
-            print(f"    Peak RAM (index):  {mem.index_peak_mb:.1f} MB")
-            print(f"    Peak RAM (search): {mem.search_peak_mb:.1f} MB")
-        except Exception as e:
-            print(f"    ERROR: {e}")
-            import traceback
+        traceback.print_exc()
 
-            traceback.print_exc()
+
+    print("\n  --- Fast-plaid (with updates) ---")
+    try:
+        fp_output = run_fastplaid_with_updates(doc_embeddings, query_embeddings, config)
+        fp_metrics = evaluate_results(fp_output["results"], queries, qrels, documents_ids)
+        results["fastplaid"] = fp_output
+        all_metrics["fastplaid"] = fp_metrics
+        print(f"    Index+Update time: {fp_output['index_time_s']:.2f}s")
+        print(f"    Search time:       {fp_output['search_time_s']:.2f}s")
+        print(f"    Num batches:       {fp_output['num_batches']}")
+        print(f"    MAP:               {fp_metrics['map']:.4f}")
+        print(f"    NDCG@10:           {fp_metrics['ndcg@10']:.4f}")
+        print(f"    Recall@100:        {fp_metrics['recall@100']:.4f}")
+        mem = fp_output["memory"]
+        print(f"    Peak RAM (index):  {mem.index_peak_mb:.1f} MB")
+        print(f"    Peak RAM (search): {mem.search_peak_mb:.1f} MB")
+    except Exception as e:
+        print(f"    ERROR: {e}")
+        import traceback
+
+        traceback.print_exc()
 
     # Compare results
     print("\n[5/5] Comparison and Assertions...")

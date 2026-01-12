@@ -4,8 +4,13 @@ use ndarray::{Array1, Array2};
 use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;
 use std::hint::black_box;
+use tempfile::TempDir;
 
-fn create_test_codec(embedding_dim: usize, num_centroids: usize) -> next_plaid::ResidualCodec {
+fn create_test_codec(
+    embedding_dim: usize,
+    num_centroids: usize,
+    temp_dir: &TempDir,
+) -> next_plaid::ResidualCodec {
     let centroids = {
         let c: Array2<f32> = Array2::random(
             (num_centroids, embedding_dim),
@@ -26,6 +31,7 @@ fn create_test_codec(embedding_dim: usize, num_centroids: usize) -> next_plaid::
     next_plaid::ResidualCodec::new(
         2,
         centroids,
+        temp_dir.path(),
         avg_residual,
         Some(bucket_cutoffs),
         Some(bucket_weights),
@@ -38,7 +44,8 @@ fn benchmark_compress_into_codes(c: &mut Criterion) {
     let num_centroids = 1024;
     let num_embeddings = 1000;
 
-    let codec = create_test_codec(embedding_dim, num_centroids);
+    let temp_dir = TempDir::new().unwrap();
+    let codec = create_test_codec(embedding_dim, num_centroids, &temp_dir);
 
     let embeddings = {
         let e: Array2<f32> = Array2::random(
@@ -63,7 +70,8 @@ fn benchmark_quantize_residuals(c: &mut Criterion) {
     let num_centroids = 1024;
     let num_embeddings = 1000;
 
-    let codec = create_test_codec(embedding_dim, num_centroids);
+    let temp_dir = TempDir::new().unwrap();
+    let codec = create_test_codec(embedding_dim, num_centroids, &temp_dir);
 
     let residuals = Array2::random((num_embeddings, embedding_dim), Uniform::new(-1.0, 1.0));
 
@@ -77,7 +85,8 @@ fn benchmark_decompress(c: &mut Criterion) {
     let num_centroids = 1024;
     let num_embeddings = 1000;
 
-    let codec = create_test_codec(embedding_dim, num_centroids);
+    let temp_dir = TempDir::new().unwrap();
+    let codec = create_test_codec(embedding_dim, num_centroids, &temp_dir);
 
     let codes: Array1<usize> = (0..num_embeddings)
         .map(|_| rand::random::<usize>() % num_centroids)

@@ -109,7 +109,7 @@ fmt-python:
 
 # Benchmark SciFact with updates (batch size 800) - compares fast-plaid and next-plaid
 benchmark-scifact-update:
-	cargo build --release --features npy --example benchmark_cli
+	cargo build --release --example benchmark_cli
 	cd benchmarks && uv sync --extra eval --extra fast-plaid && uv run python benchmark_scifact_update.py --batch-size 800
 
 # Benchmark SciFact via REST API (uses cached embeddings, with accelerate)
@@ -117,7 +117,7 @@ benchmark-scifact-update:
 benchmark-scifact-api:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
 	rm -rf next-plaid-api/indices
-	cargo build --release -p next-plaid-api 
+	cargo build --release -p next-plaid-api
 	./target/release/next-plaid-api -h 127.0.0.1 -p 8080 -d ./next-plaid-api/indices & \
 	API_PID=$$!; \
 	sleep 2; \

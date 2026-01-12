@@ -185,7 +185,8 @@ fn test_benchmark_1000_vectors() {
     );
 
     // Estimate memory for brute force (need to load all vectors)
-    let brute_force_mem_mb = (num_vectors * dim * std::mem::size_of::<f32>()) as f64 / 1024.0 / 1024.0;
+    let brute_force_mem_mb =
+        (num_vectors * dim * std::mem::size_of::<f32>()) as f64 / 1024.0 / 1024.0;
     println!("Brute-force memory (vectors): {:.2} MB", brute_force_mem_mb);
 
     // === HNSW search ===
@@ -227,7 +228,10 @@ fn test_benchmark_1000_vectors() {
 
     // Note: HNSW may not be faster than brute-force for small datasets (<10k vectors)
     // The speedup assertion is removed as HNSW is optimized for larger datasets
-    println!("Note: HNSW speedup is {:.2}x (may be <1 for small datasets)", speedup);
+    println!(
+        "Note: HNSW speedup is {:.2}x (may be <1 for small datasets)",
+        speedup
+    );
 
     // Verify recall is reasonable
     assert!(
@@ -257,9 +261,9 @@ fn test_memory_efficiency() {
     index.update(&database).unwrap();
 
     // Check file sizes
-    let vectors_path = dir.path().join("vectors.bin");
-    let graph_path = dir.path().join("graph.bin");
-    let metadata_path = dir.path().join("metadata.json");
+    let vectors_path = dir.path().join("hnsw_vectors.bin");
+    let graph_path = dir.path().join("hnsw_graph.bin");
+    let metadata_path = dir.path().join("hnsw_metadata.json");
 
     let vectors_size = std::fs::metadata(&vectors_path)
         .map(|m| m.len())
@@ -270,9 +274,15 @@ fn test_memory_efficiency() {
         .unwrap_or(0);
 
     println!("Index storage breakdown:");
-    println!("  - vectors.bin: {:.2} MB", vectors_size as f64 / 1024.0 / 1024.0);
-    println!("  - graph.bin: {:.2} MB", graph_size as f64 / 1024.0 / 1024.0);
-    println!("  - metadata.json: {} bytes", metadata_size);
+    println!(
+        "  - hnsw_vectors.bin: {:.2} MB",
+        vectors_size as f64 / 1024.0 / 1024.0
+    );
+    println!(
+        "  - hnsw_graph.bin: {:.2} MB",
+        graph_size as f64 / 1024.0 / 1024.0
+    );
+    println!("  - hnsw_metadata.json: {} bytes", metadata_size);
     println!(
         "  - Total: {:.2} MB",
         (vectors_size + graph_size + metadata_size) as f64 / 1024.0 / 1024.0
