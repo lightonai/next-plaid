@@ -60,14 +60,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-lategrep = { git = "https://github.com/lightonai/lategrep" }
+next-plaid = { git = "https://github.com/lightonai/next-plaid" }
 ```
 
 For NPY file support (required for index persistence):
 
 ```toml
 [dependencies]
-lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy"] }
+next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy"] }
 ```
 
 ### BLAS Acceleration (Recommended)
@@ -78,14 +78,14 @@ For optimal performance, enable BLAS acceleration:
 
 ```toml
 [dependencies]
-lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy", "accelerate"] }
+next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy", "accelerate"] }
 ```
 
 **Linux (OpenBLAS):**
 
 ```toml
 [dependencies]
-lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy", "openblas"] }
+next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy", "openblas"] }
 ```
 
 Note: OpenBLAS requires the system library to be installed (`apt install libopenblas-dev` on Ubuntu).
@@ -96,14 +96,14 @@ For SQLite-based metadata filtering (matching FastPlaid's filtering API):
 
 ```toml
 [dependencies]
-lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy", "filtering"] }
+next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy", "filtering"] }
 ```
 
 Or with BLAS acceleration:
 
 ```toml
 [dependencies]
-lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy", "filtering", "accelerate"] }
+next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy", "filtering", "accelerate"] }
 ```
 
 ## Usage
@@ -113,7 +113,7 @@ lategrep = { git = "https://github.com/lightonai/lategrep", features = ["npy", "
 The simplest way to create an index - centroids are computed automatically using the same heuristics as FastPlaid:
 
 ```rust
-use lategrep::{Index, IndexConfig};
+use next-plaid::{Index, IndexConfig};
 use ndarray::Array2;
 
 // Your document embeddings (list of [num_tokens, dim] arrays)
@@ -129,7 +129,7 @@ let index = Index::create_with_kmeans(&embeddings, "path/to/index", &config)?;
 For more control, you can compute centroids separately:
 
 ```rust
-use lategrep::{Index, IndexConfig, compute_kmeans, ComputeKmeansConfig};
+use next-plaid::{Index, IndexConfig, compute_kmeans, ComputeKmeansConfig};
 use ndarray::Array2;
 
 let embeddings: Vec<Array2<f32>> = load_embeddings();
@@ -159,7 +159,7 @@ let index = Index::create(&embeddings, centroids, "path/to/index", &config)?;
 For convenience, you can use `update_or_create` which automatically creates a new index if it doesn't exist, or updates an existing one:
 
 ```rust
-use lategrep::{Index, IndexConfig, UpdateConfig};
+use next-plaid::{Index, IndexConfig, UpdateConfig};
 use ndarray::Array2;
 
 let embeddings: Vec<Array2<f32>> = load_embeddings();
@@ -180,7 +180,7 @@ This is useful for incremental indexing pipelines where you want to add document
 ### Searching
 
 ```rust
-use lategrep::{Index, SearchParameters};
+use next-plaid::{Index, SearchParameters};
 
 // Load the index
 let index = Index::load("path/to/index")?;
@@ -210,7 +210,7 @@ let results = index.search_batch(&queries, &params, true, None)?;
 The `filtering` feature provides SQLite-based metadata storage for efficient filtered search:
 
 ```rust
-use lategrep::{Index, IndexConfig, SearchParameters, filtering};
+use next-plaid::{Index, IndexConfig, SearchParameters, filtering};
 use serde_json::json;
 
 // Create index
@@ -243,7 +243,7 @@ let result = index.search(&query, &params, Some(&subset))?;
 #### Filtering API
 
 ```rust
-use lategrep::filtering;
+use next-plaid::filtering;
 use serde_json::json;
 
 // Create metadata database (replaces existing)
@@ -299,8 +299,8 @@ filtering::where_condition(path, "optional_field IS NOT NULL", &[])?;
 
 ```bash
 # Clone the repository
-git clone https://github.com/lightonai/lategrep.git
-cd lategrep
+git clone https://github.com/lightonai/next-plaid.git
+cd next-plaid
 
 # Install git hooks
 make install-hooks
@@ -342,7 +342,7 @@ make compare-scifact-cached  # SciFact comparison with cached embeddings (faster
 #### Evaluation
 
 ```bash
-make evaluate-scifact        # Evaluate lategrep on SciFact dataset
+make evaluate-scifact        # Evaluate next-plaid on SciFact dataset
 make evaluate-scifact-cached # Evaluate with cached embeddings (faster)
 ```
 
@@ -408,26 +408,26 @@ Apache-2.0
 If you use this work, please cite:
 
 ```bibtex
-@software{lategrep,
-  title = {Lategrep: CPU-based PLAID implementation},
-  url = {https://github.com/lightonai/lategrep},
+@software{next-plaid,
+  title = {Next-Plaid: CPU-accelerated Fast-Plaid},
+  url = {https://github.com/lightonai/next-plaid},
   author = {Raphaël Sourty},
   year = {2025},
 }
 ```
 
-REORGANIZE THE REPO TO HAVE 3 CRATES: LATEGREP, API, ONNX.
-REGORGANIZE THE PYTHON TESTS AND RUST TESTS ACCORDINGLY.
+
+Update README to reflect new name next-plaid.
+MAIN README SHOULD EXPLAIN HOW TO RUN THE DOCKER FIRST.
 
 WRITE A PYTHON SDK TO INTERACT WITH THE RUST API, CONSIDER BOTH SYNC AND ASYNC.
-
 Monitor memory usage with large indexes.
 
 AT SOME POINT IF OPEN SOURCE GENERATE BEAUTIFUL DOCUMENTATION.
-
-RENAME TO NEXT-PLAID.
-
+ALSO GENERATE BEAUTIFUL README.
 ASSERT THAT NEXT-PLAID CAN BE CREATED FROM FAST-PLAID INDEX.
+PUSH ARTIFACTS SO IT BECOME EASY TO INSTALL such as the docker, and each crate.
 
 UPDATE FAST-PLAID CPU TO RELY ON NEXT-PLAID.
 
+WRITE LICENSE APACHE 2.0.

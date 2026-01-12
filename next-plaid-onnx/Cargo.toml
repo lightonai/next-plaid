@@ -1,0 +1,39 @@
+[package]
+name = "next-plaid-onnx"
+version = "0.1.0"
+edition = "2021"
+description = "Fast ColBERT multi-vector encoding using ONNX Runtime"
+license = "MIT"
+
+[lib]
+name = "next_plaid_onnx"
+path = "src/lib.rs"
+
+[[bin]]
+name = "benchmark"
+path = "src/bin/benchmark.rs"
+
+[[bin]]
+name = "compare_pylate"
+path = "src/bin/compare_pylate.rs"
+
+[features]
+default = []  # CPU by default - works everywhere out of the box
+cuda = ["ort/cuda"]
+tensorrt = ["ort/tensorrt"]
+coreml = ["ort/coreml"]
+directml = ["ort/directml"]
+
+[dependencies]
+# ort with download-binaries handles everything automatically:
+# - Downloads correct ONNX Runtime for your platform
+# - CPU works out of the box
+# - Enable cuda/tensorrt/coreml/directml features for GPU acceleration
+# Using load-dynamic for better compatibility across systems
+ort = { version = "2.0.0-rc.11", features = ["ndarray", "load-dynamic"] }
+tokenizers = { version = "0.21.1", default-features = false, features = ["onig"] }
+ndarray = "0.16"
+anyhow = "1.0"
+glob = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

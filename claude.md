@@ -1,11 +1,11 @@
-# Lategrep
+# Next-Plaid
 
 A CPU-based, pure Rust implementation of the PLAID algorithm for efficient multi-vector (ColBERT-style) search. Reimplements fast-plaid without GPU/PyTorch dependencies.
 
 ## Project Structure
 
 ```
-lategrep/
+next-plaid/
 ├── src/
 │   ├── lib.rs              # Public API exports
 │   ├── error.rs            # Error types
@@ -80,7 +80,7 @@ let results = mmap_index.search(&query, &params)?;
 ### Metadata Filtering
 
 ```rust
-use lategrep::filtering;
+use next-plaid::filtering;
 
 // Create metadata database
 filtering::create("my_index", &metadata_vec)?;
@@ -162,7 +162,7 @@ make evaluate-scifact
 
 ## Performance (SciFact benchmark)
 
-| Metric | Lategrep | vs Fast-plaid |
+| Metric | Next-Plaid | vs Fast-plaid |
 |--------|----------|---------------|
 | Index time | 12s | 1.6x faster |
 | Search (300 queries) | 16s | 5.2x faster |

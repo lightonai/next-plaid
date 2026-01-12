@@ -27,16 +27,16 @@ ENV/
 env/
 .uv/
 *.json
-api/indices/
+next-plaid-api/indices/
 
 # Test artifacts
 *.npy
 test_index/
 
 # Documentation build
-/docs/_build/
-/docs/evaluation_datasets/
-/docs/scifact_embeddings/
+/benchmarks/_build/
+/benchmarks/evaluation_datasets/
+/benchmarks/scifact_embeddings/
 
 # Benchmark results
 /target/criterion/

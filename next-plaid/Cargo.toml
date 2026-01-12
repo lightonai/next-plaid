@@ -1,0 +1,48 @@
+[package]
+name = "next-plaid"
+version.workspace = true
+edition.workspace = true
+description = "CPU-based PLAID implementation for multi-vector search using ndarray"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["search", "multi-vector", "plaid", "colbert", "ndarray"]
+categories = ["science", "algorithms"]
+
+[dependencies]
+ndarray = { workspace = true }
+blas-src = { version = "0.14", optional = true }
+openblas-src = { version = "0.10", features = ["cblas", "system"], optional = true }
+accelerate-src = { version = "0.3", optional = true }
+ndarray-rand = "0.15"
+rand = "0.8"
+rand_chacha = "0.3"
+rayon = "1.10"
+num-traits = "0.2"
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ndarray-npy = { version = "0.9.1", optional = true }
+fastkmeans-rs = "0.1.4"
+indicatif = "0.18.3"
+memmap2 = "0.9"
+half = "2.4"
+byteorder = "1.5"
+rusqlite = { version = "0.38", optional = true, features = ["bundled"] }
+regex = { version = "1.11", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.8.1", features = ["html_reports"] }
+approx = "0.5"
+tempfile = "3.10"
+
+[features]
+default = []
+npy = ["ndarray-npy"]
+filtering = ["rusqlite", "regex"]
+accelerate = ["blas-src", "accelerate-src", "ndarray/blas", "fastkmeans-rs/accelerate"]
+openblas = ["blas-src", "openblas-src", "ndarray/blas", "fastkmeans-rs/openblas"]
+
+[[bench]]
+name = "plaid_benchmark"
+harness = false

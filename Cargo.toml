@@ -1,73 +1,20 @@
 [workspace]
-members = [".", "api", "onnx"]
+members = ["next-plaid", "next-plaid-api", "next-plaid-onnx"]
+resolver = "2"
 
-[package]
-name = "lategrep"
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "CPU-based PLAID implementation for multi-vector search using ndarray"
 license = "Apache-2.0"
-repository = "https://github.com/lightonai/lategrep"
-homepage = "https://github.com/lightonai/lategrep"
-keywords = ["search", "multi-vector", "plaid", "colbert", "ndarray"]
-categories = ["science", "algorithms"]
+repository = "https://github.com/lightonai/next-plaid"
+homepage = "https://github.com/lightonai/next-plaid"
 
-[dependencies]
-ndarray = { version = "0.16", features = [
-    "rayon",
-] } # pinned: fastkmeans-rs requires 0.16
-# BLAS backends (optional)
-blas-src = { version = "0.14", optional = true } # pinned: compatibility with openblas-src
-openblas-src = { version = "0.10", features = [
-    "cblas",
-    "system",
-], optional = true }
-accelerate-src = { version = "0.3", optional = true }
-ndarray-rand = "0.15" # pinned: requires ndarray 0.16
-rand = "0.8" # pinned: rand_chacha 0.3 compatibility
-rand_chacha = "0.3" # pinned: fastkmeans-rs uses rand 0.8
-rayon = "1.10"
-num-traits = "0.2"
-thiserror = "2.0"
+[workspace.dependencies]
+ndarray = { version = "0.16", features = ["rayon"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-ndarray-npy = { version = "0.9.1", optional = true } # pinned: requires ndarray 0.16
-fastkmeans-rs = { version = "0.1.4" }
-indicatif = "0.18.3"
-memmap2 = "0.9"
-half = "2.4"
-byteorder = "1.5"
-rusqlite = { version = "0.38", optional = true, features = ["bundled"] }
-regex = { version = "1.11", optional = true }
-
-[dev-dependencies]
-criterion = { version = "0.8.1", features = [
-    "html_reports",
-] } # 0.8 has breaking changes
-approx = "0.5"
-tempfile = "3.10"
-
-[features]
-default = []
-npy = ["ndarray-npy"]
-filtering = ["rusqlite", "regex"]
-# BLAS backends for accelerated matrix operations (enables ndarray/blas and fastkmeans-rs/blas)
-accelerate = [
-    "blas-src",
-    "accelerate-src",
-    "ndarray/blas",
-    "fastkmeans-rs/accelerate",
-] # macOS Accelerate framework
-openblas = [
-    "blas-src",
-    "openblas-src",
-    "ndarray/blas",
-    "fastkmeans-rs/openblas",
-] # OpenBLAS (Linux/cross-platform)
-
-[[bench]]
-name = "plaid_benchmark"
-harness = false
+thiserror = "2.0"
+anyhow = "1.0"
 
 [profile.release]
 lto = true

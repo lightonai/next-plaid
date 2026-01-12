@@ -1,0 +1,34 @@
+[project]
+name = "next-plaid-benchmarks"
+version = "0.1.0"
+description = "Benchmarks and evaluation tools for next-plaid"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20.0",
+    "torch>=2.0.0",
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.8.0",
+]
+fast-plaid = [
+    "fast-plaid>=0.1.0",
+]
+eval = [
+    "beir>=2.0.0",
+    "ranx>=0.3.0",
+    "pylate>=1.0.0",
+    "fastkmeans>=0.1.0",
+    "tqdm>=4.60.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]

@@ -1,0 +1,66 @@
+[package]
+name = "next-plaid-api"
+version = "0.1.0"
+edition = "2021"
+description = "REST API for next-plaid multi-vector search"
+license = "Apache-2.0"
+
+[dependencies]
+# Core next-plaid library
+next-plaid = { path = "../next-plaid", features = ["npy", "filtering"] }
+
+# Web framework
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1.0", features = ["full"] }
+tower = { version = "0.5", features = ["util", "limit"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "timeout"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Arrays
+ndarray = { version = "0.16", features = [
+    "serde",
+] } # pinned: must match main crate
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+uuid = { version = "1.0", features = ["v4", "serde"] }
+parking_lot = "0.12"
+base64 = "0.22"
+sysinfo = "0.33"
+
+# Model support (optional)
+next-plaid-onnx = { path = "../next-plaid-onnx", optional = true }
+
+# Rate limiting
+tower_governor = "0.8"
+
+# OpenAPI / Swagger
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
+
+[features]
+default = []
+openblas = ["next-plaid/openblas"]
+accelerate = ["next-plaid/accelerate"]
+model = ["dep:next-plaid-onnx"]
+cuda = ["model", "next-plaid-onnx/cuda"]
+
+[dev-dependencies]
+reqwest = { version = "0.13", features = ["json"] }
+ndarray-rand = "0.15"                               # pinned: must match main crate
+tempfile = "3.15"
+rand = "0.8"                                        # pinned: must match main crate
+
+[[bin]]
+name = "next-plaid-api"
+path = "src/main.rs"

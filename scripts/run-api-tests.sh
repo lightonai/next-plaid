@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 API_PORT=8080
 API_PID=""
-TEST_INDEX_DIR="$REPO_ROOT/api/test_indices"
+TEST_INDEX_DIR="$REPO_ROOT/next-plaid-api/test_indices"
 
 # Colors for output
 RED='\033[0;31m'
@@ -70,14 +70,14 @@ fi
 
 # Build the API server
 log_info "Building API server..."
-cargo build --release -p lategrep-api
+cargo build --release -p next-plaid-api
 
 # Create test index directory
 mkdir -p "$TEST_INDEX_DIR"
 
 # Start the API server in the background
 log_info "Starting API server on port $API_PORT..."
-"$REPO_ROOT/target/release/lategrep-api" -d "$TEST_INDEX_DIR" -p "$API_PORT" &
+"$REPO_ROOT/target/release/next-plaid-api" -d "$TEST_INDEX_DIR" -p "$API_PORT" &
 API_PID=$!
 
 # Wait for the server to be ready
@@ -96,7 +96,7 @@ log_info "API server is ready!"
 
 # Run the Python tests
 log_info "Running API integration tests..."
-cd "$REPO_ROOT/api/tests"
+cd "$REPO_ROOT/next-plaid-api/tests"
 
 # Sync dependencies with uv
 uv sync

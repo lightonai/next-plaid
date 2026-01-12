@@ -5,14 +5,14 @@
 # =============================================================================
 
 services:
-  lategrep-api:
+  next-plaid-api:
     build:
       context: .
-      dockerfile: api/Dockerfile
+      dockerfile: next-plaid-api/Dockerfile
       target: runtime-cuda
     volumes:
-      - lategrep-indices:/data/indices
-      - lategrep-models:/models
+      - next-plaid-indices:/data/indices
+      - next-plaid-models:/models
     environment:
       - RUST_LOG=info
       - NVIDIA_VISIBLE_DEVICES=all
@@ -32,4 +32,4 @@ services:
               capabilities: [gpu]
 
 volumes:
-  lategrep-models:
+  next-plaid-models:

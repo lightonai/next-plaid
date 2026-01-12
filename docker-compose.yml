@@ -1,5 +1,5 @@
 # =============================================================================
-# Lategrep API Docker Compose
+# Next-Plaid API Docker Compose
 # =============================================================================
 # Default configuration runs the CPU-only variant.
 # See commented examples below for model and CUDA variants.
@@ -9,15 +9,15 @@ services:
   # ---------------------------------------------------------------------------
   # CPU-only variant (default) - smallest image, no encoding support
   # ---------------------------------------------------------------------------
-  lategrep-api:
+  next-plaid-api:
     build:
       context: .
-      dockerfile: api/Dockerfile
+      dockerfile: next-plaid-api/Dockerfile
       # target: runtime-cpu  # Default target, can be omitted
     ports:
       - "8080:8080"
     volumes:
-      - lategrep-indices:/data/indices
+      - next-plaid-indices:/data/indices
     environment:
       - RUST_LOG=info
     healthcheck:
@@ -37,15 +37,15 @@ services:
   # ---------------------------------------------------------------------------
   # Model variant (CPU encoding) - uncomment to use
   # ---------------------------------------------------------------------------
-  # lategrep-api-model:
+  # next-plaid-api-model:
   #   build:
   #     context: .
-  #     dockerfile: api/Dockerfile
+  #     dockerfile: next-plaid-api/Dockerfile
   #     target: runtime-model
   #   ports:
   #     - "8080:8080"
   #   volumes:
-  #     - lategrep-indices:/data/indices
+  #     - next-plaid-indices:/data/indices
   #     - ./models:/models:ro  # Mount your ONNX models here
   #   environment:
   #     - RUST_LOG=info
@@ -68,15 +68,15 @@ services:
   # CUDA variant (GPU encoding) - uncomment to use
   # Requires: NVIDIA Container Toolkit (nvidia-docker2)
   # ---------------------------------------------------------------------------
-  # lategrep-api-cuda:
+  # next-plaid-api-cuda:
   #   build:
   #     context: .
-  #     dockerfile: api/Dockerfile
+  #     dockerfile: next-plaid-api/Dockerfile
   #     target: runtime-cuda
   #   ports:
   #     - "8080:8080"
   #   volumes:
-  #     - lategrep-indices:/data/indices
+  #     - next-plaid-indices:/data/indices
   #     - ./models:/models:ro  # Mount your ONNX models here
   #   environment:
   #     - RUST_LOG=info
@@ -101,4 +101,4 @@ services:
   #             capabilities: [gpu]
 
 volumes:
-  lategrep-indices:
+  next-plaid-indices:

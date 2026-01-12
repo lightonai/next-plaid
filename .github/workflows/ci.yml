@@ -35,7 +35,7 @@ jobs:
       - name: Clippy (main crate)
         run: cargo clippy --all-targets --features "npy,filtering,openblas" -- -D warnings
       - name: Clippy (API crate)
-        run: cargo clippy --package lategrep-api --all-targets -- -D warnings
+        run: cargo clippy --package next-plaid-api --all-targets -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
@@ -62,7 +62,7 @@ jobs:
         run: cargo test --features "npy,filtering,accelerate"
 
       - name: Run API tests
-        run: cargo test --package lategrep-api
+        run: cargo test --package next-plaid-api
 
   doc:
     name: Documentation
@@ -96,7 +96,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run ONNX crate tests
-        working-directory: onnx
+        working-directory: next-plaid-onnx
         run: cargo test
 
   onnx-clippy:
@@ -109,7 +109,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Clippy (ONNX crate)
-        working-directory: onnx
+        working-directory: next-plaid-onnx
         run: cargo clippy --all-targets -- -D warnings
 
   api-integration:
@@ -134,18 +134,18 @@ jobs:
           version: "latest"
 
       - name: Build API server
-        run: cargo build --release -p lategrep-api
+        run: cargo build --release -p next-plaid-api
 
       - name: Setup Python environment
         run: |
-          cd api/tests
+          cd next-plaid-api/tests
           uv sync
 
       - name: Run API integration tests
         run: |
           # Start API server in background
-          mkdir -p api/test_indices
-          ./target/release/lategrep-api -d api/test_indices &
+          mkdir -p next-plaid-api/test_indices
+          ./target/release/next-plaid-api -d next-plaid-api/test_indices &
           API_PID=$!
 
           # Wait for server to be ready
@@ -159,7 +159,7 @@ jobs:
           done
 
           # Run tests
-          cd api/tests
+          cd next-plaid-api/tests
           uv run pytest test_api.py -v
 
           # Cleanup

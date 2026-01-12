@@ -67,17 +67,17 @@ ci: fmt-check clippy test doc bench-check ci-api test-api-integration ci-onnx
 
 # Run CI checks for api crate (using cross-platform features only)
 ci-api:
-	cd api && cargo fmt --all -- --check
-	cd api && cargo clippy --all-targets -- -D warnings
-	cd api && cargo test
+	cd next-plaid-api && cargo fmt --all -- --check
+	cd next-plaid-api && cargo clippy --all-targets -- -D warnings
+	cd next-plaid-api && cargo test
 
 # Run CI checks for onnx crate (using cross-platform features only)
 ci-onnx:
-	cd onnx && cargo fmt --all -- --check
-	cd onnx && cargo clippy --all-targets -- -D warnings
-	cd onnx && cargo test
-	cd onnx/python && uv run --extra dev ruff check .
-	cd onnx/python && uv run --extra dev pytest tests/
+	cd next-plaid-onnx && cargo fmt --all -- --check
+	cd next-plaid-onnx && cargo clippy --all-targets -- -D warnings
+	cd next-plaid-onnx && cargo test
+	cd next-plaid-onnx/python && uv run --extra dev ruff check .
+	cd next-plaid-onnx/python && uv run --extra dev pytest tests/
 
 # Run API integration tests (starts server, runs Python tests, cleans up)
 test-api-integration:
@@ -85,7 +85,7 @@ test-api-integration:
 
 # Run API rate limiting tests (must run serially due to timing sensitivity)
 test-api-rate-limit:
-	cd api && cargo test test_rate_limiting --features accelerate -- --test-threads=1
+	cd next-plaid-api && cargo test test_rate_limiting --features accelerate -- --test-threads=1
 
 # Install git hooks
 install-hooks:
@@ -93,27 +93,27 @@ install-hooks:
 
 # Lint Python code
 lint-python:
-	cd docs && uv run --extra dev ruff check .
+	cd benchmarks && uv run --extra dev ruff check .
 
 # Format Python code
 fmt-python:
-	cd docs && uv run --extra dev ruff format .
+	cd benchmarks && uv run --extra dev ruff format .
 
-# Benchmark SciFact with updates (batch size 800) - compares fast-plaid and lategrep
+# Benchmark SciFact with updates (batch size 800) - compares fast-plaid and next-plaid
 benchmark-scifact-update:
 	cargo build --release --features npy --example benchmark_cli
-	cd docs && uv sync --extra eval --extra fast-plaid && uv run python benchmark_scifact_update.py --batch-size 800
+	cd benchmarks && uv sync --extra eval --extra fast-plaid && uv run python benchmark_scifact_update.py --batch-size 800
 
 # Benchmark SciFact via REST API (uses cached embeddings, with accelerate)
 # Starts the server in background, runs benchmark, then stops server
 benchmark-scifact-api:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
-	rm -rf api/indices
-	cargo build --release -p lategrep-api 
-	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices & \
+	rm -rf next-plaid-api/indices
+	cargo build --release -p next-plaid-api 
+	./target/release/next-plaid-api -h 127.0.0.1 -p 8080 -d ./next-plaid-api/indices & \
 	API_PID=$$!; \
 	sleep 2; \
-	cd docs && uv sync --extra eval && uv run python benchmark_scifact_api.py --batch-size 80; \
+	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_api.py --batch-size 80; \
 	EXIT_CODE=$$?; \
 	kill $$API_PID 2>/dev/null || true; \
 	exit $$EXIT_CODE
@@ -122,20 +122,20 @@ benchmark-scifact-api:
 # Requires model feature and a downloaded ONNX model
 benchmark-api-encoding:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
-	rm -rf api/indices
-	cargo build --release -p lategrep-api --features model,cuda
-	./target/release/lategrep-api -h 127.0.0.1 -p 8080 -d ./api/indices --model ./onnx/models/GTE-ModernColBERT-v1 & \
+	rm -rf next-plaid-api/indices
+	cargo build --release -p next-plaid-api --features model,cuda
+	./target/release/next-plaid-api -h 127.0.0.1 -p 8080 -d ./next-plaid-api/indices --model ./next-plaid-onnx/models/GTE-ModernColBERT-v1 & \
 	API_PID=$$!; \
 	sleep 3; \
-	cd docs && uv sync --extra eval && uv run python benchmark_scifact_api_encoding.py --batch-size 100; \
+	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_api_encoding.py --batch-size 100; \
 	EXIT_CODE=$$?; \
 	kill $$API_PID 2>/dev/null || true; \
 	exit $$EXIT_CODE
 
 launch-api-debug:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
-	rm -rf api/indices
-	cd api && RUST_LOG=debug cargo run --release
+	rm -rf next-plaid-api/indices
+	cd next-plaid-api && RUST_LOG=debug cargo run --release
 
 # =============================================================================
 # ONNX ColBERT targets
@@ -143,36 +143,36 @@ launch-api-debug:
 
 # Set up ONNX Python environment
 onnx-setup:
-	cd onnx/python && uv sync
+	cd next-plaid-onnx/python && uv sync
 
 # Export default model (GTE-ModernColBERT-v1) to ONNX
 onnx-export:
-	cd onnx/python && uv run python export_onnx.py
+	cd next-plaid-onnx/python && uv run python export_onnx.py
 
 # Export all supported models to ONNX
 onnx-export-all:
-	cd onnx/python && uv run python export_onnx.py --all
+	cd next-plaid-onnx/python && uv run python export_onnx.py --all
 
 # Run Python benchmark (PyLate vs ONNX-Python)
 onnx-benchmark:
-	cd onnx/python && uv run python generate_reference.py --benchmark
+	cd next-plaid-onnx/python && uv run python generate_reference.py --benchmark
 
 # Run Rust ONNX benchmark (compares against PyLate)
 onnx-benchmark-rust: onnx-benchmark
-	cd onnx && cargo run --release --bin benchmark_encoding -- --model-dir models/GTE-ModernColBERT-v1
+	cd next-plaid-onnx && cargo run --release --bin benchmark_encoding -- --model-dir models/GTE-ModernColBERT-v1
 
 # Compare Rust ONNX embeddings against PyLate reference
 onnx-compare:
-	cd onnx/python && uv run python generate_reference.py
-	cd onnx && cargo run --release --bin compare_pylate
+	cd next-plaid-onnx/python && uv run python generate_reference.py
+	cd next-plaid-onnx && cargo run --release --bin compare_pylate
 
 # Lint ONNX Python code
 onnx-lint:
-	cd onnx/python && uv run --extra dev ruff check .
+	cd next-plaid-onnx/python && uv run --extra dev ruff check .
 
 # Format ONNX Python code
 onnx-fmt:
-	cd onnx/python && uv run --extra dev ruff format .
+	cd next-plaid-onnx/python && uv run --extra dev ruff format .
 
 # =============================================================================
 # Docker targets
@@ -180,27 +180,27 @@ onnx-fmt:
 
 # Build Docker image (CPU only, default)
 docker-build:
-	docker build -t lategrep-api -f api/Dockerfile .
+	docker build -t next-plaid-api -f next-plaid-api/Dockerfile .
 
 # Build Docker image with model support (CPU encoding)
 docker-build-model:
-	docker build -t lategrep-api:model -f api/Dockerfile --target runtime-model .
+	docker build -t next-plaid-api:model -f next-plaid-api/Dockerfile --target runtime-model .
 
 # Build Docker image with CUDA support (GPU encoding)
 docker-build-cuda:
-	docker build -t lategrep-api:cuda -f api/Dockerfile --target runtime-cuda .
+	docker build -t next-plaid-api:cuda -f next-plaid-api/Dockerfile --target runtime-cuda .
 
 # Start Docker Compose (CPU only)
 docker-up:
 	docker compose up -d
 
 # Start Docker Compose with model support (CPU encoding)
-# Requires models to be present in ./onnx/models/
+# Requires models to be present in ./next-plaid-onnx/models/
 docker-up-model: docker-build-model
 	docker compose -f docker-compose.yml -f docker-compose.model.yml up -d
 
 # Start Docker Compose with CUDA support (GPU encoding)
-# Requires: NVIDIA Container Toolkit and models in ./onnx/models/
+# Requires: NVIDIA Container Toolkit and models in ./next-plaid-onnx/models/
 docker-up-cuda: docker-build-cuda
 	docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d
 
