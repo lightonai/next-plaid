@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task;
 use tokio::time::Instant;
 
-use next_plaid::{filtering, Index, IndexConfig, MmapIndex, UpdateConfig};
+use next_plaid::{filtering, IndexConfig, MmapIndex, UpdateConfig};
 
 use crate::error::{ApiError, ApiResult};
 use crate::handlers::encode::encode_documents_internal;
@@ -27,7 +27,7 @@ use crate::models::{
     UpdateIndexConfigRequest, UpdateIndexConfigResponse, UpdateIndexRequest,
     UpdateWithEncodingRequest,
 };
-use crate::state::{AppState, LoadedIndex};
+use crate::state::AppState;
 
 // --- Concurrency Control ---
 
@@ -225,7 +225,7 @@ async fn process_batch(
 
         // Run Update
         let (mut index, doc_ids) =
-            Index::update_or_create(&embeddings, &path_str, &index_config, &update_config)
+            MmapIndex::update_or_create(&embeddings, &path_str, &index_config, &update_config)
                 .map_err(|e| format!("Index update failed: {}", e))?;
 
         // Handle Metadata
@@ -250,15 +250,8 @@ async fn process_batch(
 
         // Reload State
         state_clone.unload_index(&name_inner);
-        let loaded = if state_clone.config.use_mmap {
-            let mmap_idx = MmapIndex::load(&path_str)
-                .map_err(|e| format!("Failed to load mmap index: {}", e))?;
-            LoadedIndex::Mmap(mmap_idx)
-        } else {
-            let idx = Index::load(&path_str).map_err(|e| format!("Failed to load index: {}", e))?;
-            LoadedIndex::Regular(idx)
-        };
-        state_clone.register_index(&name_inner, loaded);
+        let idx = MmapIndex::load(&path_str).map_err(|e| format!("Failed to load index: {}", e))?;
+        state_clone.register_index(&name_inner, idx);
 
         Ok(())
     })
@@ -329,7 +322,7 @@ fn to_ndarray(doc: &DocumentEmbeddings) -> ApiResult<Array2<f32>> {
 
 /// Evict oldest documents if index exceeds max_documents limit.
 /// Returns the number of documents evicted.
-fn evict_oldest_documents(index: &mut Index, max_documents: usize) -> ApiResult<usize> {
+fn evict_oldest_documents(index: &mut MmapIndex, max_documents: usize) -> ApiResult<usize> {
     let current_count = index.metadata.num_documents;
 
     if current_count <= max_documents {
@@ -440,7 +433,7 @@ pub async fn get_index_info(
     let index = state.get_index(&name)?;
     let idx = index.read();
 
-    let path_str = idx.path().to_string();
+    let path_str = idx.path.clone();
     let has_metadata = filtering::exists(&path_str);
     let metadata_count = if has_metadata {
         filtering::count(&path_str).ok()
@@ -578,7 +571,7 @@ pub async fn add_documents(
                 .index_path(&name_inner)
                 .to_string_lossy()
                 .to_string();
-            let mut index = Index::load(&path_str)?;
+            let mut index = MmapIndex::load(&path_str)?;
 
             // Update with metadata (metadata is required)
             let update_config = UpdateConfig::default();
@@ -713,7 +706,7 @@ pub async fn delete_documents(
                 .index_path(&name_inner)
                 .to_string_lossy()
                 .to_string();
-            let mut index = Index::load(&path_str)?;
+            let mut index = MmapIndex::load(&path_str)?;
 
             // Delete documents by IDs
             let deleted = index.delete(&document_ids)?;

@@ -61,7 +61,7 @@ DATASET_CONFIG = {
     },
 }
 
-MODEL_NAME = "lightonai/GTE-ModernColBERT-v1"
+MODEL_NAME = "answerdotai/answerai-colbert-small-v1"
 
 
 def load_beir_dataset(dataset_name: str, split: str = "test"):
@@ -99,7 +99,7 @@ def compute_embeddings(
     documents: list[dict],
     queries: dict,
     output_dir: Path,
-    model_name: str = "lightonai/GTE-ModernColBERT-v1",
+    model_name: str = "answerdotai/answerai-colbert-small-v1",
     query_length: int = 48,
     document_length: int = 300,
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:

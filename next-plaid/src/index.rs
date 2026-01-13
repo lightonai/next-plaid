@@ -12,7 +12,6 @@ use crate::codec::ResidualCodec;
 use crate::error::{Error, Result};
 #[cfg(feature = "npy")]
 use crate::kmeans::{compute_kmeans, ComputeKmeansConfig};
-use crate::strided_tensor::{IvfStridedTensor, StridedTensor};
 use crate::utils::{quantile, quantiles};
 
 /// Configuration for index creation
@@ -91,6 +90,370 @@ pub struct ChunkMetadata {
     pub num_embeddings: usize,
     #[serde(default)]
     pub embedding_offset: usize,
+}
+
+// ============================================================================
+// Standalone Index Creation Functions
+// ============================================================================
+
+/// Create index files on disk from embeddings and centroids.
+///
+/// This is a standalone function that creates all necessary index files
+/// without constructing an in-memory Index object. Both Index and MmapIndex
+/// can use this function to create their files, then load them in their
+/// preferred format.
+///
+/// # Arguments
+///
+/// * `embeddings` - List of document embeddings
+/// * `centroids` - Pre-computed centroids from K-means
+/// * `index_path` - Directory to save the index
+/// * `config` - Index configuration
+///
+/// # Returns
+///
+/// Metadata about the created index
+#[cfg(feature = "npy")]
+pub fn create_index_files(
+    embeddings: &[Array2<f32>],
+    centroids: Array2<f32>,
+    index_path: &str,
+    config: &IndexConfig,
+) -> Result<Metadata> {
+    let index_dir = Path::new(index_path);
+    fs::create_dir_all(index_dir)?;
+
+    let num_documents = embeddings.len();
+    let embedding_dim = centroids.ncols();
+    let num_centroids = centroids.nrows();
+
+    if num_documents == 0 {
+        return Err(Error::IndexCreation("No documents provided".into()));
+    }
+
+    // Calculate statistics
+    let total_embeddings: usize = embeddings.iter().map(|e| e.nrows()).sum();
+    let avg_doclen = total_embeddings as f64 / num_documents as f64;
+
+    // Sample documents for codec training
+    let sample_count = ((16.0 * (120.0 * num_documents as f64).sqrt()) as usize)
+        .min(num_documents)
+        .max(1);
+
+    let mut rng = if let Some(seed) = config.seed {
+        use rand::SeedableRng;
+        rand_chacha::ChaCha8Rng::seed_from_u64(seed)
+    } else {
+        use rand::SeedableRng;
+        rand_chacha::ChaCha8Rng::from_entropy()
+    };
+
+    use rand::seq::SliceRandom;
+    let mut indices: Vec<usize> = (0..num_documents).collect();
+    indices.shuffle(&mut rng);
+    let sample_indices: Vec<usize> = indices.into_iter().take(sample_count).collect();
+
+    // Collect sample embeddings for training
+    let heldout_size = (0.05 * total_embeddings as f64).min(50000.0) as usize;
+    let mut heldout_embeddings: Vec<f32> = Vec::with_capacity(heldout_size * embedding_dim);
+    let mut collected = 0;
+
+    for &idx in sample_indices.iter().rev() {
+        if collected >= heldout_size {
+            break;
+        }
+        let emb = &embeddings[idx];
+        let take = (heldout_size - collected).min(emb.nrows());
+        for row in emb.axis_iter(Axis(0)).take(take) {
+            heldout_embeddings.extend(row.iter());
+        }
+        collected += take;
+    }
+
+    let heldout = Array2::from_shape_vec((collected, embedding_dim), heldout_embeddings)
+        .map_err(|e| Error::IndexCreation(format!("Failed to create heldout array: {}", e)))?;
+
+    // Train codec: compute residuals and quantization parameters
+    let avg_residual = Array1::zeros(embedding_dim);
+    let initial_codec =
+        ResidualCodec::new(config.nbits, centroids.clone(), avg_residual, None, None)?;
+
+    // Compute codes for heldout samples
+    let heldout_codes = initial_codec.compress_into_codes(&heldout);
+
+    // Compute residuals
+    let mut residuals = heldout.clone();
+    for i in 0..heldout.nrows() {
+        let centroid = initial_codec.centroids.row(heldout_codes[i]);
+        for j in 0..embedding_dim {
+            residuals[[i, j]] -= centroid[j];
+        }
+    }
+
+    // Compute cluster threshold from residual distances
+    let distances: Array1<f32> = residuals
+        .axis_iter(Axis(0))
+        .map(|row| row.dot(&row).sqrt())
+        .collect();
+    #[allow(unused_variables)]
+    let cluster_threshold = quantile(&distances, 0.75);
+
+    // Compute average residual per dimension
+    let avg_res_per_dim: Array1<f32> = residuals
+        .axis_iter(Axis(1))
+        .map(|col| col.iter().map(|x| x.abs()).sum::<f32>() / col.len() as f32)
+        .collect();
+
+    // Compute quantization buckets
+    let n_options = 1 << config.nbits;
+    let quantile_values: Vec<f64> = (1..n_options)
+        .map(|i| i as f64 / n_options as f64)
+        .collect();
+    let weight_quantile_values: Vec<f64> = (0..n_options)
+        .map(|i| (i as f64 + 0.5) / n_options as f64)
+        .collect();
+
+    // Flatten residuals for quantile computation
+    let flat_residuals: Array1<f32> = residuals.iter().copied().collect();
+    let bucket_cutoffs = Array1::from_vec(quantiles(&flat_residuals, &quantile_values));
+    let bucket_weights = Array1::from_vec(quantiles(&flat_residuals, &weight_quantile_values));
+
+    let codec = ResidualCodec::new(
+        config.nbits,
+        centroids.clone(),
+        avg_res_per_dim.clone(),
+        Some(bucket_cutoffs.clone()),
+        Some(bucket_weights.clone()),
+    )?;
+
+    // Save codec components
+    use ndarray_npy::WriteNpyExt;
+
+    let centroids_path = index_dir.join("centroids.npy");
+    codec
+        .centroids_view()
+        .to_owned()
+        .write_npy(File::create(&centroids_path)?)?;
+
+    let cutoffs_path = index_dir.join("bucket_cutoffs.npy");
+    bucket_cutoffs.write_npy(File::create(&cutoffs_path)?)?;
+
+    let weights_path = index_dir.join("bucket_weights.npy");
+    bucket_weights.write_npy(File::create(&weights_path)?)?;
+
+    let avg_res_path = index_dir.join("avg_residual.npy");
+    avg_res_per_dim.write_npy(File::create(&avg_res_path)?)?;
+
+    let threshold_path = index_dir.join("cluster_threshold.npy");
+    Array1::from_vec(vec![cluster_threshold]).write_npy(File::create(&threshold_path)?)?;
+
+    // Process documents in chunks
+    let n_chunks = (num_documents as f64 / config.batch_size as f64).ceil() as usize;
+
+    // Save plan
+    let plan_path = index_dir.join("plan.json");
+    let plan = serde_json::json!({
+        "nbits": config.nbits,
+        "num_chunks": n_chunks,
+    });
+    let mut plan_file = File::create(&plan_path)?;
+    writeln!(plan_file, "{}", serde_json::to_string_pretty(&plan)?)?;
+
+    let mut all_codes: Vec<usize> = Vec::with_capacity(total_embeddings);
+    let mut doc_lengths: Vec<i64> = Vec::with_capacity(num_documents);
+
+    let progress = indicatif::ProgressBar::new(n_chunks as u64);
+    progress.set_message("Creating index...");
+
+    for chunk_idx in 0..n_chunks {
+        let start = chunk_idx * config.batch_size;
+        let end = (start + config.batch_size).min(num_documents);
+        let chunk_docs = &embeddings[start..end];
+
+        // Collect document lengths
+        let chunk_doclens: Vec<i64> = chunk_docs.iter().map(|d| d.nrows() as i64).collect();
+        let total_tokens: usize = chunk_doclens.iter().sum::<i64>() as usize;
+
+        // Concatenate all embeddings in the chunk for batch processing
+        let mut batch_embeddings = Array2::<f32>::zeros((total_tokens, embedding_dim));
+        let mut offset = 0;
+        for doc in chunk_docs {
+            let n = doc.nrows();
+            batch_embeddings
+                .slice_mut(s![offset..offset + n, ..])
+                .assign(doc);
+            offset += n;
+        }
+
+        // BATCH: Compress all embeddings at once
+        let batch_codes = codec.compress_into_codes(&batch_embeddings);
+
+        // BATCH: Compute residuals using parallel subtraction
+        let mut batch_residuals = batch_embeddings;
+        {
+            use rayon::prelude::*;
+            let centroids = &codec.centroids;
+            batch_residuals
+                .axis_iter_mut(Axis(0))
+                .into_par_iter()
+                .zip(batch_codes.as_slice().unwrap().par_iter())
+                .for_each(|(mut row, &code)| {
+                    let centroid = centroids.row(code);
+                    row.iter_mut()
+                        .zip(centroid.iter())
+                        .for_each(|(r, c)| *r -= c);
+                });
+        }
+
+        // BATCH: Quantize all residuals at once
+        let batch_packed = codec.quantize_residuals(&batch_residuals)?;
+
+        // Track codes for IVF building
+        for &len in &chunk_doclens {
+            doc_lengths.push(len);
+        }
+        all_codes.extend(batch_codes.iter().copied());
+
+        // Save chunk metadata
+        let chunk_meta = ChunkMetadata {
+            num_documents: end - start,
+            num_embeddings: batch_codes.len(),
+            embedding_offset: 0, // Will be updated later
+        };
+
+        let chunk_meta_path = index_dir.join(format!("{}.metadata.json", chunk_idx));
+        serde_json::to_writer_pretty(BufWriter::new(File::create(&chunk_meta_path)?), &chunk_meta)?;
+
+        // Save chunk doclens
+        let doclens_path = index_dir.join(format!("doclens.{}.json", chunk_idx));
+        serde_json::to_writer(BufWriter::new(File::create(&doclens_path)?), &chunk_doclens)?;
+
+        // Save chunk codes
+        let chunk_codes_arr: Array1<i64> = batch_codes.iter().map(|&x| x as i64).collect();
+        let codes_path = index_dir.join(format!("{}.codes.npy", chunk_idx));
+        chunk_codes_arr.write_npy(File::create(&codes_path)?)?;
+
+        // Save chunk residuals
+        let residuals_path = index_dir.join(format!("{}.residuals.npy", chunk_idx));
+        batch_packed.write_npy(File::create(&residuals_path)?)?;
+
+        progress.inc(1);
+    }
+    progress.finish();
+
+    // Update chunk metadata with global offsets
+    let mut current_offset = 0usize;
+    for chunk_idx in 0..n_chunks {
+        let chunk_meta_path = index_dir.join(format!("{}.metadata.json", chunk_idx));
+        let mut meta: serde_json::Value =
+            serde_json::from_reader(BufReader::new(File::open(&chunk_meta_path)?))?;
+
+        if let Some(obj) = meta.as_object_mut() {
+            obj.insert("embedding_offset".to_string(), current_offset.into());
+            let num_emb = obj["num_embeddings"].as_u64().unwrap_or(0) as usize;
+            current_offset += num_emb;
+        }
+
+        serde_json::to_writer_pretty(BufWriter::new(File::create(&chunk_meta_path)?), &meta)?;
+    }
+
+    // Build IVF (Inverted File)
+    let mut code_to_docs: BTreeMap<usize, Vec<i64>> = BTreeMap::new();
+    let mut emb_idx = 0;
+
+    for (doc_id, &len) in doc_lengths.iter().enumerate() {
+        for _ in 0..len {
+            let code = all_codes[emb_idx];
+            code_to_docs.entry(code).or_default().push(doc_id as i64);
+            emb_idx += 1;
+        }
+    }
+
+    // Deduplicate document IDs per centroid
+    let mut ivf_data: Vec<i64> = Vec::new();
+    let mut ivf_lengths: Vec<i32> = vec![0; num_centroids];
+
+    for (centroid_id, ivf_len) in ivf_lengths.iter_mut().enumerate() {
+        if let Some(docs) = code_to_docs.get(&centroid_id) {
+            let mut unique_docs: Vec<i64> = docs.clone();
+            unique_docs.sort_unstable();
+            unique_docs.dedup();
+            *ivf_len = unique_docs.len() as i32;
+            ivf_data.extend(unique_docs);
+        }
+    }
+
+    let ivf = Array1::from_vec(ivf_data);
+    let ivf_lengths = Array1::from_vec(ivf_lengths);
+
+    let ivf_path = index_dir.join("ivf.npy");
+    ivf.write_npy(File::create(&ivf_path)?)?;
+
+    let ivf_lengths_path = index_dir.join("ivf_lengths.npy");
+    ivf_lengths.write_npy(File::create(&ivf_lengths_path)?)?;
+
+    // Save global metadata
+    let metadata = Metadata {
+        num_chunks: n_chunks,
+        nbits: config.nbits,
+        num_partitions: num_centroids,
+        num_embeddings: total_embeddings,
+        avg_doclen,
+        num_documents,
+    };
+
+    let metadata_path = index_dir.join("metadata.json");
+    serde_json::to_writer_pretty(BufWriter::new(File::create(&metadata_path)?), &metadata)?;
+
+    Ok(metadata)
+}
+
+/// Create index files with automatic K-means centroid computation.
+///
+/// This is a standalone function that runs K-means to compute centroids,
+/// then creates all index files on disk.
+///
+/// # Arguments
+///
+/// * `embeddings` - List of document embeddings
+/// * `index_path` - Directory to save the index
+/// * `config` - Index configuration
+///
+/// # Returns
+///
+/// Metadata about the created index
+#[cfg(feature = "npy")]
+pub fn create_index_with_kmeans_files(
+    embeddings: &[Array2<f32>],
+    index_path: &str,
+    config: &IndexConfig,
+) -> Result<Metadata> {
+    if embeddings.is_empty() {
+        return Err(Error::IndexCreation("No documents provided".into()));
+    }
+
+    // Build K-means configuration from IndexConfig
+    let kmeans_config = ComputeKmeansConfig {
+        kmeans_niters: config.kmeans_niters,
+        max_points_per_centroid: config.max_points_per_centroid,
+        seed: config.seed.unwrap_or(42),
+        n_samples_kmeans: config.n_samples_kmeans,
+        num_partitions: None, // Let the heuristic decide
+    };
+
+    // Compute centroids using fast-plaid's approach
+    let centroids = compute_kmeans(embeddings, &kmeans_config)?;
+
+    // Create the index files
+    let metadata = create_index_files(embeddings, centroids, index_path, config)?;
+
+    // If below start_from_scratch threshold, save raw embeddings for potential rebuilds
+    if embeddings.len() <= config.start_from_scratch {
+        let index_dir = std::path::Path::new(index_path);
+        crate::update::save_embeddings_npy(index_dir, embeddings)?;
+    }
+
+    Ok(metadata)
 }
 
 /// A PLAID index for multi-vector search
@@ -476,11 +839,6 @@ impl Index {
 
     /// Create a new index from document embeddings with automatic centroid computation.
     ///
-    /// This method implements the same logic as fast-plaid's `create()`:
-    /// 1. Computes centroids using K-means with automatic K calculation
-    /// 2. Creates the index using the computed centroids
-    /// 3. If num_documents <= start_from_scratch, saves raw embeddings for potential rebuilds
-    ///
     /// # Arguments
     ///
     /// * `embeddings` - List of document embeddings, each of shape `[num_tokens, dim]`
@@ -496,33 +854,11 @@ impl Index {
         index_path: &str,
         config: &IndexConfig,
     ) -> Result<Self> {
-        if embeddings.is_empty() {
-            return Err(Error::IndexCreation("No documents provided".into()));
-        }
+        // Use standalone function to create files
+        create_index_with_kmeans_files(embeddings, index_path, config)?;
 
-        // Build K-means configuration from IndexConfig
-        let kmeans_config = ComputeKmeansConfig {
-            kmeans_niters: config.kmeans_niters,
-            max_points_per_centroid: config.max_points_per_centroid,
-            seed: config.seed.unwrap_or(42),
-            n_samples_kmeans: config.n_samples_kmeans,
-            num_partitions: None, // Let the heuristic decide
-        };
-
-        // Compute centroids using fast-plaid's approach
-        let centroids = compute_kmeans(embeddings, &kmeans_config)?;
-
-        // Create the index with the computed centroids
-        let index = Self::create(embeddings, centroids, index_path, config)?;
-
-        // If below start_from_scratch threshold, save raw embeddings for potential rebuilds
-        // This matches fast-plaid's behavior in create() (fast_plaid.py:499-506)
-        if embeddings.len() <= config.start_from_scratch {
-            let index_dir = std::path::Path::new(index_path);
-            crate::update::save_embeddings_npy(index_dir, embeddings)?;
-        }
-
-        Ok(index)
+        // Load the index from disk
+        Self::load(index_path)
     }
 
     /// Load an existing index from disk.
@@ -1047,166 +1383,6 @@ impl Index {
     }
 }
 
-/// A loaded index optimized for search with StridedTensor storage.
-///
-/// This struct contains all data required for search operations, stored in
-/// a format optimized for batch lookups. It uses `StridedTensor` for efficient
-/// retrieval of variable-length sequences.
-pub struct LoadedIndex {
-    /// Index metadata
-    pub metadata: Metadata,
-    /// Residual codec for quantization/decompression
-    pub codec: ResidualCodec,
-    /// IVF index mapping centroids to document IDs
-    pub ivf: IvfStridedTensor,
-    /// Document codes (centroid assignments) stored contiguously
-    pub doc_codes: StridedTensor<usize>,
-    /// Packed residuals stored contiguously
-    pub doc_residuals: StridedTensor<u8>,
-    /// Number of bits for quantization
-    pub nbits: usize,
-}
-
-impl LoadedIndex {
-    /// Create a LoadedIndex from an existing Index.
-    ///
-    /// This converts the Index's per-document storage to contiguous StridedTensor storage.
-    pub fn from_index(index: Index) -> Self {
-        let embedding_dim = index.codec.embedding_dim();
-        let packed_dim = embedding_dim * index.metadata.nbits / 8;
-        let num_documents = index.doc_codes.len();
-
-        // Convert doc_codes to contiguous storage
-        let total_codes: usize = index.doc_lengths.iter().sum::<i64>() as usize;
-        let mut codes_data = Array2::<usize>::zeros((total_codes, 1));
-        let mut offset = 0;
-
-        for codes in &index.doc_codes {
-            for (j, &code) in codes.iter().enumerate() {
-                codes_data[[offset + j, 0]] = code;
-            }
-            offset += codes.len();
-        }
-
-        let doc_codes = StridedTensor::new(codes_data, index.doc_lengths.clone());
-
-        // Convert doc_residuals to contiguous storage
-        let mut residuals_data = Array2::<u8>::zeros((total_codes, packed_dim));
-        offset = 0;
-
-        for residuals in &index.doc_residuals {
-            residuals_data
-                .slice_mut(s![offset..offset + residuals.nrows(), ..])
-                .assign(residuals);
-            offset += residuals.nrows();
-        }
-
-        let doc_residuals = StridedTensor::new(residuals_data, index.doc_lengths.clone());
-
-        // Convert IVF to IvfStridedTensor
-        let ivf = IvfStridedTensor::new(index.ivf, index.ivf_lengths);
-
-        Self {
-            metadata: index.metadata,
-            codec: index.codec,
-            ivf,
-            doc_codes,
-            doc_residuals,
-            nbits: num_documents, // Will be set below
-        }
-    }
-
-    /// Load a LoadedIndex from disk.
-    #[cfg(feature = "npy")]
-    pub fn load(index_path: &str) -> Result<Self> {
-        let index = Index::load(index_path)?;
-        let nbits = index.metadata.nbits;
-        let mut loaded = Self::from_index(index);
-        loaded.nbits = nbits;
-        Ok(loaded)
-    }
-
-    /// Get candidate documents from IVF for given centroid indices.
-    pub fn get_candidates(&self, centroid_indices: &[usize]) -> Vec<i64> {
-        self.ivf.lookup(centroid_indices)
-    }
-
-    /// Lookup codes and residuals for a batch of document IDs.
-    ///
-    /// Returns (codes, residuals, lengths) for efficient batch decompression.
-    pub fn lookup_documents(&self, doc_ids: &[usize]) -> (Array1<usize>, Array2<u8>, Array1<i64>) {
-        let (codes, lengths) = self.doc_codes.lookup_codes(doc_ids);
-        let (residuals, _) = self.doc_residuals.lookup_2d(doc_ids);
-        (codes, residuals, lengths)
-    }
-
-    /// Decompress embeddings for a batch of document IDs.
-    ///
-    /// Returns the decompressed embeddings as a contiguous array along with lengths.
-    pub fn decompress_documents(&self, doc_ids: &[usize]) -> Result<(Array2<f32>, Array1<i64>)> {
-        let (codes, residuals, lengths) = self.lookup_documents(doc_ids);
-
-        // Decompress using the codec
-        let embeddings = self.codec.decompress(&residuals, &codes.view())?;
-
-        Ok((embeddings, lengths))
-    }
-
-    /// Get the number of documents in the index.
-    pub fn num_documents(&self) -> usize {
-        self.doc_codes.len()
-    }
-
-    /// Get the embedding dimension.
-    pub fn embedding_dim(&self) -> usize {
-        self.codec.embedding_dim()
-    }
-
-    /// Reconstruct embeddings for specific documents.
-    ///
-    /// This method retrieves the compressed codes and residuals for each document
-    /// and decompresses them to recover the original embeddings.
-    ///
-    /// # Arguments
-    ///
-    /// * `doc_ids` - Slice of document IDs to reconstruct (0-indexed)
-    ///
-    /// # Returns
-    ///
-    /// A vector of 2D arrays, one per document. Each array has shape `[num_tokens, dim]`.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use next_plaid::LoadedIndex;
-    ///
-    /// let index = LoadedIndex::load("/path/to/index")?;
-    /// let embeddings = index.reconstruct(&[0, 1, 2])?;
-    ///
-    /// for (i, emb) in embeddings.iter().enumerate() {
-    ///     println!("Document {}: {} tokens x {} dim", i, emb.nrows(), emb.ncols());
-    /// }
-    /// ```
-    pub fn reconstruct(&self, doc_ids: &[i64]) -> Result<Vec<Array2<f32>>> {
-        crate::embeddings::reconstruct_embeddings(self, doc_ids)
-    }
-
-    /// Reconstruct a single document's embeddings.
-    ///
-    /// Convenience method for reconstructing a single document.
-    ///
-    /// # Arguments
-    ///
-    /// * `doc_id` - Document ID to reconstruct (0-indexed)
-    ///
-    /// # Returns
-    ///
-    /// A 2D array with shape `[num_tokens, dim]`.
-    pub fn reconstruct_single(&self, doc_id: i64) -> Result<Array2<f32>> {
-        crate::embeddings::reconstruct_single(self, doc_id)
-    }
-}
-
 // ============================================================================
 // Memory-Mapped Index for Low Memory Usage
 // ============================================================================
@@ -1497,6 +1673,21 @@ impl MmapIndex {
         self.doc_lengths.len()
     }
 
+    /// Get the total number of embeddings in the index.
+    pub fn num_embeddings(&self) -> usize {
+        self.metadata.num_embeddings
+    }
+
+    /// Get the number of partitions (centroids).
+    pub fn num_partitions(&self) -> usize {
+        self.metadata.num_partitions
+    }
+
+    /// Get the average document length.
+    pub fn avg_doclen(&self) -> f64 {
+        self.metadata.avg_doclen
+    }
+
     /// Get the embedding dimension.
     pub fn embedding_dim(&self) -> usize {
         self.codec.embedding_dim()
@@ -1528,7 +1719,7 @@ impl MmapIndex {
     /// }
     /// ```
     pub fn reconstruct(&self, doc_ids: &[i64]) -> Result<Vec<Array2<f32>>> {
-        crate::embeddings::reconstruct_embeddings_mmap(self, doc_ids)
+        crate::embeddings::reconstruct_embeddings(self, doc_ids)
     }
 
     /// Reconstruct a single document's embeddings.
@@ -1543,7 +1734,180 @@ impl MmapIndex {
     ///
     /// A 2D array with shape `[num_tokens, dim]`.
     pub fn reconstruct_single(&self, doc_id: i64) -> Result<Array2<f32>> {
-        crate::embeddings::reconstruct_single_mmap(self, doc_id)
+        crate::embeddings::reconstruct_single(self, doc_id)
+    }
+
+    /// Create a new index from document embeddings with automatic centroid computation.
+    ///
+    /// This method:
+    /// 1. Computes centroids using K-means
+    /// 2. Creates index files on disk
+    /// 3. Loads the index using memory-mapped I/O
+    ///
+    /// Note: During creation, data is temporarily held in RAM for processing,
+    /// then written to disk and loaded as mmap.
+    ///
+    /// # Arguments
+    ///
+    /// * `embeddings` - List of document embeddings, each of shape `[num_tokens, dim]`
+    /// * `index_path` - Directory to save the index
+    /// * `config` - Index configuration
+    ///
+    /// # Returns
+    ///
+    /// The created MmapIndex
+    pub fn create_with_kmeans(
+        embeddings: &[Array2<f32>],
+        index_path: &str,
+        config: &IndexConfig,
+    ) -> Result<Self> {
+        // Use standalone function to create files
+        create_index_with_kmeans_files(embeddings, index_path, config)?;
+
+        // Load as memory-mapped index
+        Self::load(index_path)
+    }
+
+    /// Update the index with new documents.
+    ///
+    /// This method adds new documents to an existing index using the buffer mechanism.
+    /// During the update, data is temporarily loaded into RAM, files are updated,
+    /// then the index is reloaded as mmap.
+    ///
+    /// # Arguments
+    ///
+    /// * `embeddings` - New document embeddings to add
+    /// * `config` - Update configuration
+    ///
+    /// # Returns
+    ///
+    /// Vector of document IDs assigned to the new embeddings
+    pub fn update(
+        &mut self,
+        embeddings: &[Array2<f32>],
+        config: &crate::update::UpdateConfig,
+    ) -> Result<Vec<i64>> {
+        let path = self.path.clone();
+
+        // Load as regular Index for mutation
+        let mut temp_index = Index::load(&path)?;
+
+        // Perform the update
+        let doc_ids = temp_index.update(embeddings, config)?;
+
+        // Reload self as mmap
+        *self = Self::load(&path)?;
+
+        Ok(doc_ids)
+    }
+
+    /// Update the index with new documents and optional metadata.
+    ///
+    /// # Arguments
+    ///
+    /// * `embeddings` - New document embeddings to add
+    /// * `config` - Update configuration
+    /// * `metadata` - Optional metadata for new documents
+    ///
+    /// # Returns
+    ///
+    /// Vector of document IDs assigned to the new embeddings
+    #[cfg(feature = "filtering")]
+    pub fn update_with_metadata(
+        &mut self,
+        embeddings: &[Array2<f32>],
+        config: &crate::update::UpdateConfig,
+        metadata: Option<&[serde_json::Value]>,
+    ) -> Result<Vec<i64>> {
+        let path = self.path.clone();
+
+        // Load as regular Index for mutation
+        let mut temp_index = Index::load(&path)?;
+
+        // Perform the update with metadata
+        let doc_ids = temp_index.update_with_metadata(embeddings, config, metadata)?;
+
+        // Reload self as mmap
+        *self = Self::load(&path)?;
+
+        Ok(doc_ids)
+    }
+
+    /// Update an existing index or create a new one if it doesn't exist.
+    ///
+    /// # Arguments
+    ///
+    /// * `embeddings` - Document embeddings to add
+    /// * `index_path` - Directory for the index
+    /// * `index_config` - Configuration for index creation
+    /// * `update_config` - Configuration for updates
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (MmapIndex, `Vec<i64>`) containing the index and document IDs
+    pub fn update_or_create(
+        embeddings: &[Array2<f32>],
+        index_path: &str,
+        index_config: &IndexConfig,
+        update_config: &crate::update::UpdateConfig,
+    ) -> Result<(Self, Vec<i64>)> {
+        let index_dir = std::path::Path::new(index_path);
+        let metadata_path = index_dir.join("metadata.json");
+
+        if metadata_path.exists() {
+            // Index exists, load and update
+            let mut index = Self::load(index_path)?;
+            let doc_ids = index.update(embeddings, update_config)?;
+            Ok((index, doc_ids))
+        } else {
+            // Index doesn't exist, create new
+            let num_docs = embeddings.len();
+            let index = Self::create_with_kmeans(embeddings, index_path, index_config)?;
+            let doc_ids: Vec<i64> = (0..num_docs as i64).collect();
+            Ok((index, doc_ids))
+        }
+    }
+
+    /// Delete documents from the index.
+    ///
+    /// # Arguments
+    ///
+    /// * `doc_ids` - Slice of document IDs to delete (0-indexed)
+    ///
+    /// # Returns
+    ///
+    /// The number of documents actually deleted
+    pub fn delete(&mut self, doc_ids: &[i64]) -> Result<usize> {
+        self.delete_with_options(doc_ids, true)
+    }
+
+    /// Delete documents from the index with control over metadata deletion.
+    ///
+    /// # Arguments
+    ///
+    /// * `doc_ids` - Slice of document IDs to delete
+    /// * `delete_metadata` - If true, also delete from metadata.db if it exists
+    ///
+    /// # Returns
+    ///
+    /// The number of documents actually deleted
+    pub fn delete_with_options(
+        &mut self,
+        doc_ids: &[i64],
+        #[allow(unused_variables)] delete_metadata: bool,
+    ) -> Result<usize> {
+        let path = self.path.clone();
+
+        // Load as regular Index for mutation
+        let mut temp_index = Index::load(&path)?;
+
+        // Perform the deletion
+        let deleted = temp_index.delete_with_options(doc_ids, delete_metadata)?;
+
+        // Reload self as mmap
+        *self = Self::load(&path)?;
+
+        Ok(deleted)
     }
 }
 

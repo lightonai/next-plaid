@@ -14,7 +14,8 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "npy")]
-use next_plaid::{Index, IndexConfig, SearchParameters, UpdateConfig};
+use next_plaid::index::Index;
+use next_plaid::{IndexConfig, SearchParameters, UpdateConfig};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

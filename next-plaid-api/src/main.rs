@@ -387,7 +387,6 @@ async fn main() {
     let mut host = "0.0.0.0".to_string();
     let mut port: u16 = 8080;
     let mut index_dir = PathBuf::from("./indices");
-    let mut use_mmap = true;
     let mut model_path: Option<PathBuf> = None;
     let mut use_cuda = false;
 
@@ -424,10 +423,6 @@ async fn main() {
                     std::process::exit(1);
                 }
             }
-            "--no-mmap" => {
-                use_mmap = false;
-                i += 1;
-            }
             "--model" | "-m" => {
                 if i + 1 < args.len() {
                     model_path = Some(PathBuf::from(&args[i + 1]));
@@ -451,7 +446,6 @@ Options:
   -h, --host <HOST>        Host to bind to (default: 0.0.0.0)
   -p, --port <PORT>        Port to bind to (default: 8080)
   -d, --index-dir <DIR>    Directory for storing indices (default: ./indices)
-  --no-mmap                Disable memory-mapped indices (use more RAM)
   -m, --model <PATH>       Path to ONNX model directory for encoding (optional)
   --cuda                   Use CUDA for model inference (requires --model)
   --help                   Show this help message
@@ -483,7 +477,6 @@ Examples:
     // Create config
     let config = ApiConfig {
         index_dir,
-        use_mmap,
         default_top_k: 10,
         model_path: model_path.clone(),
         use_cuda,
@@ -491,7 +484,7 @@ Examples:
 
     tracing::info!("Starting Next-Plaid API server");
     tracing::info!("Index directory: {:?}", config.index_dir);
-    tracing::info!("Memory-mapped indices: {}", config.use_mmap);
+    tracing::info!("Using memory-mapped indices for efficient memory usage");
 
     // Load model if specified
     #[cfg(feature = "model")]

@@ -8,7 +8,7 @@ use std::sync::Arc;
 #[cfg(feature = "model")]
 use std::sync::Mutex;
 
-use next_plaid::{Index, MmapIndex};
+use next_plaid::MmapIndex;
 use parking_lot::RwLock;
 
 use crate::error::{ApiError, ApiResult};
@@ -18,8 +18,6 @@ use crate::error::{ApiError, ApiResult};
 pub struct ApiConfig {
     /// Base directory for storing indices
     pub index_dir: PathBuf,
-    /// Whether to use memory-mapped indices for search (lower memory usage)
-    pub use_mmap: bool,
     /// Default number of results to return
     pub default_top_k: usize,
     /// Path to ONNX model directory (optional, only used with "model" feature)
@@ -34,7 +32,6 @@ impl Default for ApiConfig {
     fn default() -> Self {
         Self {
             index_dir: PathBuf::from("./indices"),
-            use_mmap: true,
             default_top_k: 10,
             model_path: None,
             use_cuda: false,
@@ -42,70 +39,14 @@ impl Default for ApiConfig {
     }
 }
 
-/// Wrapper for either a regular Index or a memory-mapped MmapIndex.
-pub enum LoadedIndex {
-    /// Regular index (all data in memory)
-    Regular(Index),
-    /// Memory-mapped index (lower memory usage)
-    Mmap(MmapIndex),
-}
-
-impl LoadedIndex {
-    /// Get the number of documents in the index.
-    pub fn num_documents(&self) -> usize {
-        match self {
-            LoadedIndex::Regular(idx) => idx.metadata.num_documents,
-            LoadedIndex::Mmap(idx) => idx.num_documents(),
-        }
-    }
-
-    /// Get the number of embeddings in the index.
-    pub fn num_embeddings(&self) -> usize {
-        match self {
-            LoadedIndex::Regular(idx) => idx.metadata.num_embeddings,
-            LoadedIndex::Mmap(idx) => idx.metadata.num_embeddings,
-        }
-    }
-
-    /// Get the number of partitions (centroids).
-    pub fn num_partitions(&self) -> usize {
-        match self {
-            LoadedIndex::Regular(idx) => idx.metadata.num_partitions,
-            LoadedIndex::Mmap(idx) => idx.metadata.num_partitions,
-        }
-    }
-
-    /// Get the average document length.
-    pub fn avg_doclen(&self) -> f64 {
-        match self {
-            LoadedIndex::Regular(idx) => idx.metadata.avg_doclen,
-            LoadedIndex::Mmap(idx) => idx.metadata.avg_doclen,
-        }
-    }
-
-    /// Get the embedding dimension.
-    pub fn embedding_dim(&self) -> usize {
-        match self {
-            LoadedIndex::Regular(idx) => idx.codec.embedding_dim(),
-            LoadedIndex::Mmap(idx) => idx.embedding_dim(),
-        }
-    }
-
-    /// Get the index path.
-    pub fn path(&self) -> &str {
-        match self {
-            LoadedIndex::Regular(idx) => &idx.path,
-            LoadedIndex::Mmap(idx) => &idx.path,
-        }
-    }
-}
-
 /// Application state containing loaded indices.
+///
+/// All indices are stored as MmapIndex for efficient memory usage.
 pub struct AppState {
     /// Configuration
     pub config: ApiConfig,
     /// Loaded indices by name
-    indices: RwLock<HashMap<String, Arc<RwLock<LoadedIndex>>>>,
+    indices: RwLock<HashMap<String, Arc<RwLock<MmapIndex>>>>,
     /// Optional ONNX model for encoding texts
     #[cfg(feature = "model")]
     pub model: Option<Mutex<next_plaid_onnx::Colbert>>,
@@ -161,22 +102,16 @@ impl AppState {
             return Err(ApiError::IndexNotFound(name.to_string()));
         }
 
-        let loaded = if self.config.use_mmap {
-            let idx = MmapIndex::load(&path_str)?;
-            LoadedIndex::Mmap(idx)
-        } else {
-            let idx = Index::load(&path_str)?;
-            LoadedIndex::Regular(idx)
-        };
+        let idx = MmapIndex::load(&path_str)?;
 
         let mut indices = self.indices.write();
-        indices.insert(name.to_string(), Arc::new(RwLock::new(loaded)));
+        indices.insert(name.to_string(), Arc::new(RwLock::new(idx)));
 
         Ok(())
     }
 
     /// Get a loaded index by name.
-    pub fn get_index(&self, name: &str) -> ApiResult<Arc<RwLock<LoadedIndex>>> {
+    pub fn get_index(&self, name: &str) -> ApiResult<Arc<RwLock<MmapIndex>>> {
         // First check if already loaded
         {
             let indices = self.indices.read();
@@ -203,7 +138,7 @@ impl AppState {
     }
 
     /// Register a new index (after creation).
-    pub fn register_index(&self, name: &str, index: LoadedIndex) {
+    pub fn register_index(&self, name: &str, index: MmapIndex) {
         let mut indices = self.indices.write();
         indices.insert(name.to_string(), Arc::new(RwLock::new(index)));
     }

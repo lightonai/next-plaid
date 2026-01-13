@@ -19,7 +19,7 @@ use crate::models::{
     ErrorResponse, FilteredSearchRequest, FilteredSearchWithEncodingRequest, QueryEmbeddings,
     QueryResultResponse, SearchRequest, SearchResponse, SearchWithEncodingRequest,
 };
-use crate::state::{AppState, LoadedIndex};
+use crate::state::AppState;
 
 /// Convert query embeddings from JSON format to ndarray.
 fn to_ndarray(query: &QueryEmbeddings) -> ApiResult<Array2<f32>> {
@@ -146,35 +146,17 @@ pub async fn search(
 
     let start = std::time::Instant::now();
 
-    // Perform search based on index type and collect raw results
-    let raw_results: Vec<(usize, Vec<i64>, Vec<f32>)> = match &*idx {
-        LoadedIndex::Regular(index) => {
-            if queries.len() == 1 {
-                let result = index.search(&queries[0], &params, req.subset.as_deref())?;
-                vec![(result.query_id, result.passage_ids, result.scores)]
-            } else {
-                let subsets = req.subset.as_ref().map(|s| vec![s.clone(); queries.len()]);
-                let batch_results =
-                    index.search_batch(&queries, &params, false, subsets.as_deref())?;
-                batch_results
-                    .into_iter()
-                    .map(|r| (r.query_id, r.passage_ids, r.scores))
-                    .collect()
-            }
-        }
-        LoadedIndex::Mmap(index) => {
-            if queries.len() == 1 {
-                let result = index.search(&queries[0], &params, req.subset.as_deref())?;
-                vec![(result.query_id, result.passage_ids, result.scores)]
-            } else {
-                let batch_results =
-                    index.search_batch(&queries, &params, true, req.subset.as_deref())?;
-                batch_results
-                    .into_iter()
-                    .map(|r| (r.query_id, r.passage_ids, r.scores))
-                    .collect()
-            }
-        }
+    // Perform search and collect raw results
+    let index = &*idx;
+    let raw_results: Vec<(usize, Vec<i64>, Vec<f32>)> = if queries.len() == 1 {
+        let result = index.search(&queries[0], &params, req.subset.as_deref())?;
+        vec![(result.query_id, result.passage_ids, result.scores)]
+    } else {
+        let batch_results = index.search_batch(&queries, &params, true, req.subset.as_deref())?;
+        batch_results
+            .into_iter()
+            .map(|r| (r.query_id, r.passage_ids, r.scores))
+            .collect()
     };
 
     // Enrich results with metadata

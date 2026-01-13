@@ -592,7 +592,7 @@ pub fn search_one_mmap(
             let start = index.doc_offsets[doc_id as usize];
             let end = index.doc_offsets[doc_id as usize + 1];
             let codes = index.mmap_codes.slice(start, end);
-            let score = approximate_score_mmap(&query_centroid_scores, codes);
+            let score = approximate_score_mmap(&query_centroid_scores, &codes);
             (doc_id, score)
         })
         .collect();

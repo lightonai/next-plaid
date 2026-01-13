@@ -41,6 +41,10 @@ const BATCH_CHANNEL_SIZE: usize = 256;
 
 // --- Batch Types ---
 
+/// Type alias for encoding results: either embeddings or error message.
+#[cfg(feature = "model")]
+type EncodeResult = Result<Vec<Vec<Vec<f32>>>, String>;
+
 /// A single item in the encode batch queue, representing one client request.
 #[cfg(feature = "model")]
 struct EncodeBatchItem {
@@ -49,7 +53,7 @@ struct EncodeBatchItem {
     /// Input type (query or document)
     input_type: InputType,
     /// Channel to send results back to the client
-    response_tx: oneshot::Sender<Result<Vec<Vec<Vec<f32>>>, String>>,
+    response_tx: oneshot::Sender<EncodeResult>,
 }
 
 /// Handle to the encode batch queue.
@@ -177,8 +181,7 @@ async fn process_encode_batch(items: Vec<EncodeBatchItem>, state: &Arc<AppState>
     }
 
     // Prepare results storage
-    let mut results: HashMap<usize, Result<Vec<Vec<Vec<f32>>>, String>> =
-        HashMap::with_capacity(num_requests);
+    let mut results: HashMap<usize, EncodeResult> = HashMap::with_capacity(num_requests);
 
     // Process queries batch
     if !query_items.is_empty() {

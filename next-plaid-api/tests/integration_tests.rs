@@ -26,9 +26,7 @@ use next_plaid_api::{
     state::{ApiConfig, AppState},
 };
 
-// Import next_plaid_onnx when model feature is enabled
-#[cfg(feature = "model")]
-use next_plaid_onnx;
+// next_plaid_onnx is available when model feature is enabled
 
 /// Test fixture that sets up a temporary API server.
 struct TestFixture {
@@ -44,7 +42,6 @@ impl TestFixture {
 
         let config = ApiConfig {
             index_dir: temp_dir.path().to_path_buf(),
-            use_mmap: false, // Use regular indices for testing
             default_top_k: 10,
             model_path: None,
             use_cuda: false,
@@ -365,7 +362,6 @@ impl RateLimitedTestFixture {
 
         let config = ApiConfig {
             index_dir: temp_dir.path().to_path_buf(),
-            use_mmap: false,
             default_top_k: 10,
             model_path: None,
             use_cuda: false,
@@ -1759,14 +1755,13 @@ impl ModelTestFixture {
 
         // Export model if it doesn't exist
         if !model_path.join("model.onnx").exists() {
-            Self::export_model(&workspace_root).expect("Failed to export ONNX model");
+            Self::export_model(workspace_root).expect("Failed to export ONNX model");
         }
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
         let config = ApiConfig {
             index_dir: temp_dir.path().to_path_buf(),
-            use_mmap: false,
             default_top_k: 10,
             model_path: Some(model_path.clone()),
             use_cuda: false,
@@ -2179,7 +2174,7 @@ async fn test_search_with_encoding() {
     let ai_docs_in_top: usize = ml_result
         .document_ids
         .iter()
-        .filter(|&&id| id >= 5 && id <= 9)
+        .filter(|&&id| (5..=9).contains(&id))
         .count();
     assert!(
         ai_docs_in_top >= 1,

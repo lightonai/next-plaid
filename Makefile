@@ -117,7 +117,7 @@ benchmark-scifact-update:
 benchmark-scifact-api:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
 	rm -rf next-plaid-api/indices
-	cargo build --release -p next-plaid-api 
+	cargo build --release -p next-plaid-api  --features accelerate
 	./target/release/next-plaid-api -h 127.0.0.1 -p 8080 -d ./next-plaid-api/indices & \
 	API_PID=$$!; \
 	sleep 2; \

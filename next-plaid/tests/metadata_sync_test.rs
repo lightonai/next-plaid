@@ -14,7 +14,8 @@ use std::thread;
 use ndarray::Array2;
 use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;
-use next_plaid::{Index, IndexConfig, UpdateConfig};
+use next_plaid::index::Index;
+use next_plaid::{IndexConfig, UpdateConfig};
 use tempfile::TempDir;
 
 fn setup_test_dir() -> TempDir {

@@ -5,7 +5,8 @@
 use ndarray::Array2;
 use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;
-use next_plaid::{filtering, Index, IndexConfig, SearchParameters};
+use next_plaid::index::Index;
+use next_plaid::{filtering, IndexConfig, SearchParameters};
 use serde_json::json;
 use tempfile::TempDir;
 

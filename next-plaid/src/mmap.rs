@@ -509,15 +509,19 @@ impl MmapNpyArray1I64 {
 
     /// Get a slice of the data as &[i64].
     ///
+    /// Returns a `Vec<i64>` instead of &[i64] to handle unaligned data safely.
+    ///
     /// # Safety
     /// The caller must ensure start <= end <= len.
-    pub fn slice(&self, start: usize, end: usize) -> &[i64] {
-        let byte_start = self.data_offset + start * 8;
-        let byte_end = self.data_offset + end * 8;
-        let bytes = &self._mmap[byte_start..byte_end];
+    pub fn slice(&self, start: usize, end: usize) -> Vec<i64> {
+        let count = end - start;
+        let mut result = Vec::with_capacity(count);
 
-        // Safety: We've verified bounds and i64 is 8-byte aligned in NPY format
-        unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const i64, end - start) }
+        for i in start..end {
+            result.push(self.get(i));
+        }
+
+        result
     }
 
     /// Get a value at an index.

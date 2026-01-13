@@ -20,21 +20,22 @@ pub mod index;
 pub mod kmeans;
 pub mod mmap;
 pub mod search;
-pub mod strided_tensor;
 pub mod update;
 pub mod utils;
 
-pub use codec::{CentroidStore, ResidualCodec};
+pub use codec::ResidualCodec;
 #[cfg(feature = "npy")]
 pub use delete::delete_from_index;
 pub use error::{Error, Result};
 #[cfg(feature = "npy")]
 pub use index::MmapIndex;
-pub use index::{Index, IndexConfig, LoadedIndex, Metadata};
+pub use index::{IndexConfig, Metadata};
 pub use kmeans::{
     compute_centroids, compute_centroids_from_documents, compute_kmeans, estimate_num_partitions,
     ComputeKmeansConfig, FastKMeans, KMeansConfig,
 };
 pub use search::{QueryResult, SearchParameters};
-pub use strided_tensor::{IvfStridedTensor, StridedTensor};
 pub use update::UpdateConfig;
+
+// Note: Index struct is kept internal for use by MmapIndex mutation operations
+// CentroidStore is also internal - codec abstraction handles it

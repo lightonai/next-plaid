@@ -11,9 +11,9 @@
 //! # Example
 //!
 //! ```ignore
-//! use next_plaid::{LoadedIndex, embeddings};
+//! use next_plaid::{MmapIndex, embeddings};
 //!
-//! let index = LoadedIndex::load("/path/to/index")?;
+//! let index = MmapIndex::load("/path/to/index")?;
 //!
 //! // Reconstruct embeddings for specific documents
 //! let doc_ids = vec![0, 5, 10];
@@ -31,77 +31,11 @@ use ndarray::Array2;
 use rayon::prelude::*;
 
 use crate::error::{Error, Result};
-use crate::index::LoadedIndex;
-
-/// Reconstruct embeddings for specific documents from a LoadedIndex.
-///
-/// This function retrieves the compressed codes and residuals for each document
-/// and decompresses them using the index's codec to recover the original embeddings.
-///
-/// # Arguments
-///
-/// * `index` - Reference to the loaded index
-/// * `doc_ids` - Slice of document IDs to reconstruct (0-indexed)
-///
-/// # Returns
-///
-/// A vector of 2D arrays, one per document. Each array has shape `[num_tokens, dim]`
-/// where `num_tokens` is the number of embeddings for that document and `dim` is
-/// the embedding dimension.
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - A document ID is out of range
-/// - Decompression fails (e.g., missing bucket weights)
-///
-/// # Example
-///
-/// ```ignore
-/// use next_plaid::{LoadedIndex, embeddings};
-///
-/// let index = LoadedIndex::load("/path/to/index")?;
-/// let embeddings = embeddings::reconstruct_embeddings(&index, &[0, 1, 2])?;
-/// ```
-pub fn reconstruct_embeddings(index: &LoadedIndex, doc_ids: &[i64]) -> Result<Vec<Array2<f32>>> {
-    let num_documents = index.num_documents();
-
-    // Validate document IDs
-    for &doc_id in doc_ids {
-        if doc_id < 0 || doc_id as usize >= num_documents {
-            return Err(Error::Search(format!(
-                "Invalid document ID: {} (index has {} documents)",
-                doc_id, num_documents
-            )));
-        }
-    }
-
-    // Process documents in parallel
-    doc_ids
-        .par_iter()
-        .map(|&doc_id| {
-            let doc_id_usize = doc_id as usize;
-
-            // Lookup codes and residuals for this document
-            let (codes, lengths) = index.doc_codes.lookup_codes(&[doc_id_usize]);
-            let (residuals, _) = index.doc_residuals.lookup_2d(&[doc_id_usize]);
-
-            // Handle empty documents
-            let doc_len = lengths[0] as usize;
-            if doc_len == 0 {
-                return Ok(Array2::zeros((0, index.embedding_dim())));
-            }
-
-            // Decompress using the codec
-            index.codec.decompress(&residuals, &codes.view())
-        })
-        .collect()
-}
 
 /// Reconstruct embeddings for specific documents from an MmapIndex.
 ///
-/// This is the memory-mapped version of `reconstruct_embeddings`, which reads
-/// codes and residuals directly from memory-mapped files.
+/// This function retrieves the compressed codes and residuals for each document
+/// from memory-mapped files and decompresses them using the index's codec.
 ///
 /// # Arguments
 ///
@@ -118,10 +52,10 @@ pub fn reconstruct_embeddings(index: &LoadedIndex, doc_ids: &[i64]) -> Result<Ve
 /// use next_plaid::{MmapIndex, embeddings};
 ///
 /// let index = MmapIndex::load("/path/to/index")?;
-/// let embeddings = embeddings::reconstruct_embeddings_mmap(&index, &[0, 1, 2])?;
+/// let embeddings = embeddings::reconstruct_embeddings(&index, &[0, 1, 2])?;
 /// ```
 #[cfg(feature = "npy")]
-pub fn reconstruct_embeddings_mmap(
+pub fn reconstruct_embeddings(
     index: &crate::index::MmapIndex,
     doc_ids: &[i64],
 ) -> Result<Vec<Array2<f32>>> {
@@ -169,23 +103,6 @@ pub fn reconstruct_embeddings_mmap(
         .collect()
 }
 
-/// Reconstruct a single document's embeddings from a LoadedIndex.
-///
-/// This is a convenience function for reconstructing a single document.
-///
-/// # Arguments
-///
-/// * `index` - Reference to the loaded index
-/// * `doc_id` - Document ID to reconstruct (0-indexed)
-///
-/// # Returns
-///
-/// A 2D array with shape `[num_tokens, dim]`.
-pub fn reconstruct_single(index: &LoadedIndex, doc_id: i64) -> Result<Array2<f32>> {
-    let results = reconstruct_embeddings(index, &[doc_id])?;
-    Ok(results.into_iter().next().unwrap())
-}
-
 /// Reconstruct a single document's embeddings from an MmapIndex.
 ///
 /// This is a convenience function for reconstructing a single document.
@@ -199,11 +116,8 @@ pub fn reconstruct_single(index: &LoadedIndex, doc_id: i64) -> Result<Array2<f32
 ///
 /// A 2D array with shape `[num_tokens, dim]`.
 #[cfg(feature = "npy")]
-pub fn reconstruct_single_mmap(
-    index: &crate::index::MmapIndex,
-    doc_id: i64,
-) -> Result<Array2<f32>> {
-    let results = reconstruct_embeddings_mmap(index, &[doc_id])?;
+pub fn reconstruct_single(index: &crate::index::MmapIndex, doc_id: i64) -> Result<Array2<f32>> {
+    let results = reconstruct_embeddings(index, &[doc_id])?;
     Ok(results.into_iter().next().unwrap())
 }
 
