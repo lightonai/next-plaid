@@ -6,9 +6,6 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 
-/// Maximum number of centroids to load into memory at once.
-pub const MAX_CENTROIDS_IN_MEMORY: usize = 100_000;
-
 /// Storage backend for centroids using HNSW index.
 ///
 /// This struct wraps an HNSW index that stores the centroids on disk.
@@ -325,14 +322,11 @@ impl ResidualCodec {
         self.centroids.hnsw()
     }
 
-    /// Compress embeddings into centroid codes using nearest neighbor search.
+    /// Compress embeddings into centroid codes using HNSW search.
     ///
-    /// Uses batch matrix multiplication for efficiency. When the number of centroids
-    /// exceeds MAX_CENTROIDS_IN_MEMORY, processes centroids in batches to limit
-    /// memory usage.
-    ///
-    /// `scores = embeddings @ centroids.T  -> [N, K]`
-    /// `codes = argmax(scores, axis=1)     -> [N]`
+    /// This function uses the HNSW index to find the nearest centroid for each embedding
+    /// via approximate nearest neighbor search, which is more efficient than brute-force
+    /// matrix multiplication, especially for large centroid counts.
     ///
     /// # Arguments
     ///
@@ -342,110 +336,67 @@ impl ResidualCodec {
     ///
     /// Centroid indices of shape `[N]`
     pub fn compress_into_codes(&self, embeddings: &Array2<f32>) -> Array1<usize> {
+        self.compress_into_codes_with_ef(embeddings, None)
+            .expect("HNSW compression failed")
+    }
+
+    /// Compress embeddings into centroid codes using HNSW search with custom ef_search.
+    ///
+    /// Higher ef_search values give better accuracy but slower search.
+    /// Recommended values:
+    /// - 50-100 for balanced accuracy/speed
+    /// - 100-200 for high accuracy
+    /// - 200+ for maximum accuracy
+    ///
+    /// # Arguments
+    ///
+    /// * `embeddings` - Embeddings of shape `[N, dim]`
+    /// * `ef_search` - Optional size of dynamic candidate list during search
+    ///
+    /// # Returns
+    ///
+    /// Centroid indices of shape `[N]`
+    pub fn compress_into_codes_with_ef(
+        &self,
+        embeddings: &Array2<f32>,
+        ef_search: Option<usize>,
+    ) -> Result<Array1<usize>> {
         let n = embeddings.nrows();
         if n == 0 {
-            return Array1::zeros(0);
+            return Ok(Array1::zeros(0));
         }
 
-        let num_centroids = self.num_centroids();
-
-        // If centroids fit in memory, use the simple path
-        if num_centroids <= MAX_CENTROIDS_IN_MEMORY {
-            return self.compress_into_codes_simple(embeddings);
+        let dim = embeddings.ncols();
+        if dim != self.embedding_dim() {
+            return Err(Error::Codec(format!(
+                "Dimension mismatch: embeddings have dim={}, but index has dim={}",
+                dim,
+                self.embedding_dim()
+            )));
         }
 
-        // For large centroid counts, process centroids in batches
-        self.compress_into_codes_batched(embeddings)
-    }
-
-    /// Simple compression when all centroids fit in memory.
-    fn compress_into_codes_simple(&self, embeddings: &Array2<f32>) -> Array1<usize> {
-        use rayon::prelude::*;
-
-        let n = embeddings.nrows();
-        let num_centroids = self.num_centroids();
-
-        // Load all centroids into memory (only called when num_centroids <= MAX_CENTROIDS_IN_MEMORY)
-        let centroids = self.centroids.slice_rows(0, num_centroids);
-
-        // Process embeddings in batches to avoid memory issues with large matrices
-        const EMBED_BATCH_SIZE: usize = 2048;
-
-        let mut all_codes = Vec::with_capacity(n);
-
-        for start in (0..n).step_by(EMBED_BATCH_SIZE) {
-            let end = (start + EMBED_BATCH_SIZE).min(n);
-            let batch = embeddings.slice(ndarray::s![start..end, ..]);
-
-            // Batch matrix multiplication: [batch, dim] @ [dim, K] -> [batch, K]
-            let scores = batch.dot(&centroids.t());
-
-            // Parallel argmax over each row
-            let batch_codes: Vec<usize> = scores
-                .axis_iter(Axis(0))
-                .into_par_iter()
-                .map(|row| {
-                    row.iter()
-                        .enumerate()
-                        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                        .map(|(idx, _)| idx)
-                        .unwrap_or(0)
-                })
-                .collect();
-
-            all_codes.extend(batch_codes);
+        // Use HNSW search to find nearest centroid (k=1)
+        let (_, indices) = if let Some(ef) = ef_search {
+            self.hnsw().search_with_ef(embeddings, 1, ef)
+        } else {
+            self.hnsw().search(embeddings, 1)
         }
+        .map_err(|e| Error::Codec(format!("HNSW search failed: {}", e)))?;
 
-        Array1::from_vec(all_codes)
-    }
-
-    /// Batched compression for when centroids exceed MAX_CENTROIDS_IN_MEMORY.
-    ///
-    /// Processes centroids in chunks, keeping track of the best score and code
-    /// for each embedding across all centroid batches.
-    fn compress_into_codes_batched(&self, embeddings: &Array2<f32>) -> Array1<usize> {
-        let n = embeddings.nrows();
-        let num_centroids = self.num_centroids();
-
-        // Track best code and score for each embedding
-        let mut best_codes = vec![0usize; n];
-        let mut best_scores = vec![f32::NEG_INFINITY; n];
-
-        // Process centroids in batches
-        for centroid_start in (0..num_centroids).step_by(MAX_CENTROIDS_IN_MEMORY) {
-            let centroid_end = (centroid_start + MAX_CENTROIDS_IN_MEMORY).min(num_centroids);
-            let centroid_batch = self.centroids.slice_rows(centroid_start, centroid_end);
-
-            // Process embeddings in smaller batches
-            const EMBED_BATCH_SIZE: usize = 2048;
-
-            for embed_start in (0..n).step_by(EMBED_BATCH_SIZE) {
-                let embed_end = (embed_start + EMBED_BATCH_SIZE).min(n);
-                let embed_batch = embeddings.slice(ndarray::s![embed_start..embed_end, ..]);
-
-                // Batch matrix multiplication: [batch, dim] @ [dim, centroid_batch] -> [batch, centroid_batch]
-                let scores = embed_batch.dot(&centroid_batch.t());
-
-                // Update best codes for this embedding batch
-                for (local_idx, row) in scores.axis_iter(Axis(0)).enumerate() {
-                    let global_embed_idx = embed_start + local_idx;
-
-                    // Find best in this centroid batch
-                    if let Some((local_centroid_idx, &score)) = row
-                        .iter()
-                        .enumerate()
-                        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                    {
-                        if score > best_scores[global_embed_idx] {
-                            best_scores[global_embed_idx] = score;
-                            best_codes[global_embed_idx] = centroid_start + local_centroid_idx;
-                        }
-                    }
+        // Extract the first (and only) result for each query
+        // indices is [N, 1], we want [N]
+        let codes: Vec<usize> = indices
+            .iter()
+            .map(|&idx| {
+                if idx >= 0 {
+                    idx as usize
+                } else {
+                    0 // Default to first centroid if no match found
                 }
-            }
-        }
+            })
+            .collect();
 
-        Array1::from_vec(best_codes)
+        Ok(Array1::from_vec(codes))
     }
 
     /// Quantize residuals into packed bytes.
