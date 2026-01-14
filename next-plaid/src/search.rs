@@ -12,6 +12,11 @@ use crate::codec::CentroidStore;
 use crate::error::Result;
 use crate::index::Index;
 
+/// Maximum number of documents to decompress concurrently during exact scoring.
+/// This limits peak memory usage from parallel decompression.
+/// With 128 docs × ~300KB per doc = ~40MB max concurrent decompression memory.
+const DECOMPRESS_CHUNK_SIZE: usize = 128;
+
 /// Search parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchParameters {
@@ -392,12 +397,18 @@ pub fn search_one(
     }
 
     // Compute exact scores with decompressed embeddings
+    // Use chunked processing to limit concurrent memory from parallel decompression
     let mut exact_scores: Vec<(i64, f32)> = to_decompress
-        .par_iter()
-        .filter_map(|&doc_id| {
-            let doc_embeddings = index.get_document_embeddings(doc_id as usize).ok()?;
-            let score = colbert_score(&query.view(), &doc_embeddings.view());
-            Some((doc_id, score))
+        .par_chunks(DECOMPRESS_CHUNK_SIZE)
+        .flat_map(|chunk| {
+            chunk
+                .iter()
+                .filter_map(|&doc_id| {
+                    let doc_embeddings = index.get_document_embeddings(doc_id as usize).ok()?;
+                    let score = colbert_score(&query.view(), &doc_embeddings.view());
+                    Some((doc_id, score))
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
 
@@ -670,12 +681,18 @@ pub fn search_one_mmap(
     }
 
     // Compute exact scores with decompressed embeddings
+    // Use chunked processing to limit concurrent memory from parallel decompression
     let mut exact_scores: Vec<(i64, f32)> = to_decompress
-        .par_iter()
-        .filter_map(|&doc_id| {
-            let doc_embeddings = index.get_document_embeddings(doc_id as usize).ok()?;
-            let score = colbert_score(&query.view(), &doc_embeddings.view());
-            Some((doc_id, score))
+        .par_chunks(DECOMPRESS_CHUNK_SIZE)
+        .flat_map(|chunk| {
+            chunk
+                .iter()
+                .filter_map(|&doc_id| {
+                    let doc_embeddings = index.get_document_embeddings(doc_id as usize).ok()?;
+                    let score = colbert_score(&query.view(), &doc_embeddings.view());
+                    Some((doc_id, score))
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
 
@@ -781,12 +798,18 @@ fn search_one_mmap_batched(
     }
 
     // Compute exact scores with decompressed embeddings
+    // Use chunked processing to limit concurrent memory from parallel decompression
     let mut exact_scores: Vec<(i64, f32)> = to_decompress
-        .par_iter()
-        .filter_map(|&doc_id| {
-            let doc_embeddings = index.get_document_embeddings(doc_id as usize).ok()?;
-            let score = colbert_score(&query.view(), &doc_embeddings.view());
-            Some((doc_id, score))
+        .par_chunks(DECOMPRESS_CHUNK_SIZE)
+        .flat_map(|chunk| {
+            chunk
+                .iter()
+                .filter_map(|&doc_id| {
+                    let doc_embeddings = index.get_document_embeddings(doc_id as usize).ok()?;
+                    let score = colbert_score(&query.view(), &doc_embeddings.view());
+                    Some((doc_id, score))
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
 
