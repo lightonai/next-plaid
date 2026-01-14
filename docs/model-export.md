@@ -32,11 +32,11 @@ pylate-onnx-export lightonai/GTE-ModernColBERT-v1
 This creates a directory with:
 
 ```
-GTE-ModernColBERT-v1-onnx/
-├── model.onnx           # ONNX model
-├── tokenizer.json       # Tokenizer
-├── tokenizer_config.json
-└── config.json          # Model config
+GTE-ModernColBERT-v1/
+├── model.onnx                        # FP32 ONNX model
+├── model_int8.onnx                   # INT8 quantized (with --quantize)
+├── tokenizer.json                    # Tokenizer
+└── config_sentence_transformers.json # Model config
 ```
 
 ### Export with Quantization

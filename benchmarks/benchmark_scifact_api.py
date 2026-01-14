@@ -14,7 +14,7 @@ This script:
 
 Usage:
     # First, start the API server:
-    cargo run --release -p next-plaid-api -- -h 127.0.0.1 -p 8080 -d ./indices --no-mmap
+    cargo run --release -p next-plaid-api -- -h 127.0.0.1 -p 8080 -d ./indices
 
     # Then run the benchmark:
     python benchmark_scifact_api.py [--batch-size 100] [--port 8080]
@@ -475,7 +475,7 @@ def run_api_benchmark(
         raise RuntimeError(
             f"Cannot connect to API server at {base_url}. "
             "Please start the server first with:\n"
-            f"  cargo run --release -p next-plaid-api -- -h {config.host} -p {config.port} -d ./indices --no-mmap"
+            f"  cargo run --release -p next-plaid-api -- -h {config.host} -p {config.port} -d ./indices"
         )
 
     index_name = "scifact_benchmark"

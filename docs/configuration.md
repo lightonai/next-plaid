@@ -25,9 +25,11 @@ client.create_index("my_index", config)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `nbits` | `int` | `4` | Quantization bits for residuals |
+| `nbits` | `int` | `4` | Quantization bits for residuals (2 or 4) |
 | `batch_size` | `int` | `50000` | Tokens per batch during indexing |
-| `seed` | `int?` | `None` | Random seed for reproducibility |
+| `seed` | `int?` | `42` | Random seed for reproducibility |
+| `kmeans_niters` | `int` | `4` | K-means iterations |
+| `max_points_per_centroid` | `int` | `256` | Maximum points per centroid for K-means |
 | `start_from_scratch` | `int` | `999` | Rebuild threshold for small indices |
 | `max_documents` | `int?` | `None` | Maximum documents allowed |
 
@@ -92,6 +94,8 @@ results = client.search("my_index", queries, params)
 | `top_k` | `int` | `10` | Number of results to return |
 | `n_ivf_probe` | `int` | `8` | IVF partitions to search |
 | `n_full_scores` | `int` | `4096` | Candidates for exact scoring |
+| `batch_size` | `int` | `2000` | Documents per scoring batch |
+| `centroid_batch_size` | `int` | `100000` | Batch size for centroid scoring (0 = exhaustive) |
 
 ### top_k
 

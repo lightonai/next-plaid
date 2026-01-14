@@ -101,24 +101,21 @@ cargo doc --open
 ### Building Images
 
 ```bash
-# CPU-only image (default)
+# CPU image with model support (default)
 make docker-build
 
-# With model support (CPU encoding)
-docker build -t next-plaid-api:model -f next-plaid-api/Dockerfile --target runtime-model .
-
 # With CUDA support (GPU encoding)
-docker build -t next-plaid-api:cuda -f next-plaid-api/Dockerfile --target runtime-cuda .
+make docker-build-cuda
 ```
 
 ### Running Locally
 
 ```bash
-# Start with Docker Compose
+# Start with Docker Compose (includes model support)
 make docker-up
 
-# With model support
-make docker-up-model
+# With CUDA support (GPU encoding)
+make docker-up-cuda
 
 # View logs
 make docker-logs

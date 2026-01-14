@@ -37,58 +37,55 @@ The PLAID index and search always run on CPU. Model inference for text encoding 
 
 ## Docker Compose
 
-### CPU
+### CPU with Model Support (Default)
 
 ```yaml
 # docker-compose.yml
-version: '3.8'
-
 services:
-  next-plaid:
-    image: ghcr.io/lightonai/next-plaid-api:latest
+  next-plaid-api:
+    build:
+      context: .
+      dockerfile: next-plaid-api/Dockerfile
+      target: runtime-cpu
     ports:
       - "8080:8080"
     volumes:
-      - ~/.local/share/next-plaid:/data/indices
+      - ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}:/data/indices
       - next-plaid-models:/models
     environment:
       - RUST_LOG=info
-      - HF_TOKEN=${HF_TOKEN:-}
-    command: --model lightonai/GTE-ModernColBERT-v1-onnx
+    command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "lightonai/GTE-ModernColBERT-v1-onnx", "--int8"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 2
+      start_period: 120s
+    restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 8G
+          memory: 16G
         reservations:
-          memory: 1G
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+          memory: 4G
 
 volumes:
   next-plaid-models:
 ```
 
-### CUDA
+### CUDA (GPU Encoding)
+
+Use as an overlay with `docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d`:
 
 ```yaml
 # docker-compose.cuda.yml
-version: '3.8'
-
 services:
-  next-plaid:
-    image: ghcr.io/lightonai/next-plaid-api:latest-cuda
-    ports:
-      - "8080:8080"
-    volumes:
-      - ~/.local/share/next-plaid:/data/indices
-      - next-plaid-models:/models
+  next-plaid-api:
+    build:
+      target: runtime-cuda
     environment:
-      - RUST_LOG=info
       - NVIDIA_VISIBLE_DEVICES=all
-    command: --model lightonai/GTE-ModernColBERT-v1-onnx
+    command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "lightonai/GTE-ModernColBERT-v1-onnx", "--int8", "--cuda"]
     deploy:
       resources:
         reservations:
@@ -96,9 +93,6 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-
-volumes:
-  next-plaid-models:
 ```
 
 ---
@@ -106,14 +100,11 @@ volumes:
 ## Running Docker Compose
 
 ```bash
-# CPU only
+# CPU with model support (default)
 docker compose up -d
 
-# With model
-docker compose -f docker-compose.model.yml up -d
-
-# With CUDA
-docker compose -f docker-compose.cuda.yml up -d
+# With CUDA (GPU encoding)
+docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d
 
 # View logs
 docker compose logs -f

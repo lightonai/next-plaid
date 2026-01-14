@@ -183,11 +183,10 @@ EXPOSE 8080
 # Default environment variables
 ENV RUST_LOG=info
 ENV INDEX_DIR=/data/indices
-# Memory-mapped indices are enabled by default (use --no-mmap to disable)
-# This allows indices larger than available RAM by letting the OS manage paging
+# Memory-mapped indices are always enabled for efficient memory usage
 # Set HF_MODEL_ID to auto-download model from HuggingFace Hub
 # Example: ENV HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1-onnx
-# Set MODEL_QUANTIZED=true to use INT8 quantized model
+# Use --int8 flag to download INT8 quantized model (handled by entrypoint)
 
 # Health check
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=2 \
@@ -242,11 +241,10 @@ EXPOSE 8080
 # Default environment variables
 ENV RUST_LOG=info
 ENV INDEX_DIR=/data/indices
-# Memory-mapped indices are enabled by default (use --no-mmap to disable)
-# This allows indices larger than available RAM by letting the OS manage paging
+# Memory-mapped indices are always enabled for efficient memory usage
 # Set HF_MODEL_ID to auto-download model from HuggingFace Hub
 # Example: ENV HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1-onnx
-# Set MODEL_QUANTIZED=true to use INT8 quantized model
+# Use --int8 flag to download INT8 quantized model (handled by entrypoint)
 
 # Health check
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=2 \

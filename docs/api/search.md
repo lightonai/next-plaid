@@ -291,6 +291,8 @@ Search with text queries and metadata filtering.
 | `top_k` | 10 | Number of results to return per query |
 | `n_ivf_probe` | 8 | Number of IVF partitions to search |
 | `n_full_scores` | 4096 | Candidates for exact scoring |
+| `batch_size` | 2000 | Documents per scoring batch |
+| `centroid_batch_size` | 100000 | Batch size for centroid scoring (0 = exhaustive) |
 
 ### Tuning for Quality vs Speed
 

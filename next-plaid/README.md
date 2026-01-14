@@ -49,7 +49,7 @@ Note: OpenBLAS requires the system library to be installed (`apt install libopen
 ### Creating an Index
 
 ```rust
-use next_plaid::{Index, IndexConfig};
+use next_plaid::{MmapIndex, IndexConfig};
 use ndarray::Array2;
 
 // Your document embeddings (list of [num_tokens, dim] arrays)
@@ -57,23 +57,24 @@ let embeddings: Vec<Array2<f32>> = load_embeddings();
 
 // Create index with automatic centroid computation
 let config = IndexConfig::default();  // nbits=4, kmeans_niters=4, etc.
-let index = Index::create_with_kmeans(&embeddings, "path/to/index", &config)?;
+let index = MmapIndex::create_with_kmeans(&embeddings, "path/to/index", &config)?;
 ```
 
 ### Searching
 
 ```rust
-use next_plaid::{Index, SearchParameters};
+use next_plaid::{MmapIndex, SearchParameters};
 
 // Load the index
-let index = Index::load("path/to/index")?;
+let index = MmapIndex::load("path/to/index")?;
 
 // Search parameters
 let params = SearchParameters {
-    batch_size: 128,
+    batch_size: 2000,
     n_full_scores: 1024,
     top_k: 10,
     n_ivf_probe: 32,
+    centroid_batch_size: 100_000,
 };
 
 // Single query
@@ -93,14 +94,14 @@ let results = index.search_batch(&queries, &params, true, None)?;
 For convenience, use `update_or_create` to automatically create a new index if it doesn't exist, or update an existing one:
 
 ```rust
-use next_plaid::{Index, IndexConfig, UpdateConfig};
+use next_plaid::{MmapIndex, IndexConfig, UpdateConfig};
 
 let embeddings: Vec<Array2<f32>> = load_embeddings();
 let index_config = IndexConfig::default();
 let update_config = UpdateConfig::default();
 
 // Creates index if it doesn't exist, otherwise updates it
-let index = Index::update_or_create(
+let (index, doc_ids) = MmapIndex::update_or_create(
     &embeddings,
     "path/to/index",
     &index_config,
@@ -113,13 +114,13 @@ let index = Index::update_or_create(
 SQLite-based metadata storage enables efficient filtered search:
 
 ```rust
-use next_plaid::{Index, IndexConfig, SearchParameters, filtering};
+use next_plaid::{MmapIndex, IndexConfig, SearchParameters, filtering};
 use serde_json::json;
 
 // Create index
 let embeddings: Vec<Array2<f32>> = load_embeddings();
 let config = IndexConfig::default();
-let index = Index::create_with_kmeans(&embeddings, "path/to/index", &config)?;
+let index = MmapIndex::create_with_kmeans(&embeddings, "path/to/index", &config)?;
 
 // Create metadata database with document attributes
 let metadata = vec![
@@ -151,25 +152,33 @@ let result = index.search(&query, &params, Some(&subset))?;
 |-----------|---------|-------------|
 | `nbits` | 4 | Quantization bits (2 or 4). Lower = faster but less accurate |
 | `batch_size` | 50000 | Tokens per batch during indexing |
-| `seed` | None | Random seed for reproducibility |
+| `seed` | Some(42) | Random seed for reproducibility |
+| `kmeans_niters` | 4 | K-means iterations |
+| `max_points_per_centroid` | 256 | Maximum points per centroid for K-means |
+| `n_samples_kmeans` | None | Number of samples for K-means (auto if None) |
+| `start_from_scratch` | 999 | Threshold for saving embeddings.npy for rebuilds |
 
 ### SearchParameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `batch_size` | 128 | Batch size for processing queries |
+| `batch_size` | 2000 | Documents per scoring batch |
 | `n_full_scores` | 4096 | Candidates for full scoring |
 | `top_k` | 10 | Number of results to return |
-| `n_ivf_probe` | 8 | Cluster probes per query |
+| `n_ivf_probe` | 8 | Cluster probes per query token |
+| `centroid_batch_size` | 100000 | Batch size for centroid scoring (0 = exhaustive) |
 
 ### UpdateConfig
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
+| `batch_size` | 50000 | Batch size for processing documents |
 | `buffer_size` | 100 | Documents to accumulate before centroid expansion |
 | `start_from_scratch` | 999 | Rebuild threshold for small indices |
 | `kmeans_niters` | 4 | K-means iterations for centroid expansion |
 | `max_points_per_centroid` | 256 | Maximum points per centroid |
+| `n_samples_kmeans` | None | Number of samples for K-means (auto if None) |
+| `seed` | 42 | Random seed |
 
 ## Algorithm
 

@@ -1,8 +1,8 @@
 # =============================================================================
 # Next-Plaid API Docker Compose
 # =============================================================================
-# Default configuration runs the CPU-only variant.
-# See commented examples below for model and CUDA variants.
+# Default configuration with model support (CPU encoding).
+# Use docker-compose.cuda.yml overlay for GPU encoding.
 #
 # Vector Database Storage:
 #   Indices are persisted at ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}
@@ -18,14 +18,11 @@
 # =============================================================================
 
 services:
-  # ---------------------------------------------------------------------------
-  # CPU-only variant (default) - smallest image, no encoding support
-  # ---------------------------------------------------------------------------
   next-plaid-api:
     build:
       context: .
       dockerfile: next-plaid-api/Dockerfile
-      # target: runtime-cpu  # Default target, can be omitted
+      target: runtime-cpu
     ports:
       - "8080:8080"
     volumes:
@@ -33,84 +30,25 @@ services:
       # Default: ~/.local/share/next-plaid (XDG standard for user data)
       # Override with NEXT_PLAID_DATA environment variable
       - ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}:/data/indices
+      # Named volume for model cache (auto-downloaded from HuggingFace)
+      - next-plaid-models:/models
     environment:
       - RUST_LOG=info
+    # Auto-download INT8 model from HuggingFace Hub
+    command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "lightonai/GTE-ModernColBERT-v1-onnx", "--int8"]
     healthcheck:
       test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
       interval: 15s
       timeout: 5s
       retries: 2
-      start_period: 10s
+      start_period: 120s  # Longer start period for model download + loading
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 8G
+          memory: 16G
         reservations:
-          memory: 1G
+          memory: 4G
 
-  # ---------------------------------------------------------------------------
-  # Model variant (CPU encoding) - uncomment to use
-  # ---------------------------------------------------------------------------
-  # next-plaid-api-model:
-  #   build:
-  #     context: .
-  #     dockerfile: next-plaid-api/Dockerfile
-  #     target: runtime-model
-  #   ports:
-  #     - "8080:8080"
-  #   volumes:
-  #     - ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}:/data/indices
-  #     - ./models:/models:ro  # Mount your ONNX models here
-  #   environment:
-  #     - RUST_LOG=info
-  #   command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "/models/colbert"]
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
-  #     interval: 15s
-  #     timeout: 5s
-  #     retries: 2
-  #     start_period: 30s  # Longer start period for model loading
-  #   restart: unless-stopped
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         memory: 16G
-  #       reservations:
-  #         memory: 4G
-
-  # ---------------------------------------------------------------------------
-  # CUDA variant (GPU encoding) - uncomment to use
-  # Requires: NVIDIA Container Toolkit (nvidia-docker2)
-  # ---------------------------------------------------------------------------
-  # next-plaid-api-cuda:
-  #   build:
-  #     context: .
-  #     dockerfile: next-plaid-api/Dockerfile
-  #     target: runtime-cuda
-  #   ports:
-  #     - "8080:8080"
-  #   volumes:
-  #     - ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}:/data/indices
-  #     - ./models:/models:ro  # Mount your ONNX models here
-  #   environment:
-  #     - RUST_LOG=info
-  #     - NVIDIA_VISIBLE_DEVICES=all
-  #   command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "/models/colbert", "--cuda"]
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
-  #     interval: 15s
-  #     timeout: 5s
-  #     retries: 2
-  #     start_period: 60s  # Longer start period for CUDA initialization
-  #   restart: unless-stopped
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         memory: 16G
-  #       reservations:
-  #         memory: 4G
-  #         devices:
-  #           - driver: nvidia
-  #             count: 1
-  #             capabilities: [gpu]
+volumes:
+  next-plaid-models:

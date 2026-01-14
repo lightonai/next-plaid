@@ -100,16 +100,7 @@ For Rust developers who want to embed NextPlaid directly:
 next-plaid = { git = "https://github.com/lightonai/next-plaid" }
 ```
 
-### With NPY Support (Recommended)
-
-Required for index persistence:
-
-```toml
-[dependencies]
-next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy"] }
-```
-
-### With BLAS Acceleration
+### With BLAS Acceleration (Recommended)
 
 === "macOS (Accelerate)"
 
@@ -117,7 +108,7 @@ next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy
     [dependencies]
     next-plaid = {
       git = "https://github.com/lightonai/next-plaid",
-      features = ["npy", "accelerate"]
+      features = ["accelerate"]
     }
     ```
 
@@ -139,26 +130,14 @@ next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy
     [dependencies]
     next-plaid = {
       git = "https://github.com/lightonai/next-plaid",
-      features = ["npy", "openblas"]
+      features = ["openblas"]
     }
     ```
-
-### With Metadata Filtering
-
-```toml
-[dependencies]
-next-plaid = {
-  git = "https://github.com/lightonai/next-plaid",
-  features = ["npy", "filtering", "openblas"]
-}
-```
 
 ### Feature Flags
 
 | Feature | Description |
 |---------|-------------|
-| `npy` | Index persistence with ndarray-npy |
-| `filtering` | SQLite-based metadata support |
 | `accelerate` | macOS BLAS acceleration |
 | `openblas` | Linux OpenBLAS acceleration |
 
@@ -204,8 +183,11 @@ See [Model Export](model-export.md) for usage details.
 git clone https://github.com/lightonai/next-plaid.git
 cd next-plaid
 
-# Build the API server
-cargo build --release -p next-plaid-api --features "npy,filtering,openblas"
+# Build the API server (Linux)
+cargo build --release -p next-plaid-api --features "openblas"
+
+# Build the API server (macOS)
+cargo build --release -p next-plaid-api --features "accelerate"
 
 # Run the server
 ./target/release/next-plaid-api --index-dir ./indices

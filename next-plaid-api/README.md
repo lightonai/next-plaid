@@ -30,7 +30,7 @@ curl http://localhost:8080/health
 ### Using Docker Compose
 
 ```bash
-# CPU only (default)
+# CPU with model support (default)
 docker compose up -d
 
 # With CUDA support (GPU encoding)
@@ -55,9 +55,10 @@ cargo build --release -p next-plaid-api --features openblas
 
 | Variant | Target | Use Case |
 |---------|--------|----------|
-| **CPU Only** | `runtime-cpu` (default) | Search API with pre-computed embeddings |
-| **Model (CPU)** | `runtime-model` | Text encoding on CPU |
-| **Model (CUDA)** | `runtime-cuda` | GPU-accelerated encoding |
+| **CPU** | `runtime-cpu` (default) | Search API with model support on CPU |
+| **CUDA** | `runtime-cuda` | GPU-accelerated model encoding |
+
+Both variants include model support. Use the `--model` flag to enable text encoding.
 
 ### Running with a Model
 
@@ -161,10 +162,8 @@ curl -X POST http://localhost:8080/encode \
 | `-h, --host` | `0.0.0.0` | Host to bind to |
 | `-p, --port` | `8080` | Port to bind to |
 | `-d, --index-dir` | `./indices` | Directory for storing indices |
-| `--no-mmap` | false | Disable memory-mapped indices |
-| `-m, --model` | none | Path to ONNX model or HuggingFace model ID |
+| `-m, --model` | none | Path to ONNX model directory for encoding |
 | `--cuda` | false | Use CUDA for model inference |
-| `--int8` | false | Use INT8 quantized model |
 
 ### Index Configuration
 
