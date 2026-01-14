@@ -918,6 +918,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#centroid_score_threshold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        centroid_score_threshold
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#tuning-guidelines" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1405,6 +1416,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#centroid_score_threshold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        centroid_score_threshold
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#tuning-guidelines" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1732,8 +1754,9 @@
 </span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">top_k</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">n_ivf_probe</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
 </span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">n_full_scores</span><span class="o">=</span><span class="mi">4096</span><span class="p">,</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="p">)</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="n">results</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">search</span><span class="p">(</span><span class="s2">&quot;my_index&quot;</span><span class="p">,</span> <span class="n">queries</span><span class="p">,</span> <span class="n">params</span><span class="p">)</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="n">centroid_score_threshold</span><span class="o">=</span><span class="mf">0.4</span><span class="p">,</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="p">)</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="n">results</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">search</span><span class="p">(</span><span class="s2">&quot;my_index&quot;</span><span class="p">,</span> <span class="n">queries</span><span class="p">,</span> <span class="n">params</span><span class="p">)</span>
 </span></code></pre></div>
 <h3 id="parameters_1">Parameters<a class="headerlink" href="#parameters_1" title="Permanent link">&para;</a></h3>
 <table>
@@ -1775,6 +1798,12 @@
 <td><code>int</code></td>
 <td><code>100000</code></td>
 <td>Batch size for centroid scoring (0 = exhaustive)</td>
+</tr>
+<tr>
+<td><code>centroid_score_threshold</code></td>
+<td><code>float?</code></td>
+<td><code>0.4</code></td>
+<td>Centroid pruning threshold. Set to <code>None</code> to disable</td>
 </tr>
 </tbody>
 </table>
@@ -1836,27 +1865,63 @@
 </tr>
 </tbody>
 </table>
+<h3 id="centroid_score_threshold">centroid_score_threshold<a class="headerlink" href="#centroid_score_threshold" title="Permanent link">&para;</a></h3>
+<p>Centroid pruning threshold that filters out low-scoring centroids during search.</p>
+<ul>
+<li>Centroids with max score (across all query tokens) below this threshold are filtered</li>
+<li>Significantly speeds up search with minimal quality impact</li>
+<li>Set to <code>None</code> to disable pruning entirely</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>None</code></td>
+<td>Maximum accuracy, slowest</td>
+</tr>
+<tr>
+<td>0.35-0.4</td>
+<td>High recall for large top_k</td>
+</tr>
+<tr>
+<td>0.4</td>
+<td>Balanced (default)</td>
+</tr>
+<tr>
+<td>0.45-0.5</td>
+<td>Faster for small top_k</td>
+</tr>
+</tbody>
+</table>
 <h3 id="tuning-guidelines">Tuning Guidelines<a class="headerlink" href="#tuning-guidelines" title="Permanent link">&para;</a></h3>
 <p><strong>Maximum quality:</strong></p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">SearchParams</span><span class="p">(</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">top_k</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">n_ivf_probe</span><span class="o">=</span><span class="mi">32</span><span class="p">,</span>
 </span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">n_full_scores</span><span class="o">=</span><span class="mi">16384</span><span class="p">,</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="p">)</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">centroid_score_threshold</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>  <span class="c1"># Disable pruning</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="p">)</span>
 </span></code></pre></div>
 <p><strong>Balanced:</strong></p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">SearchParams</span><span class="p">(</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">top_k</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>
 </span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">n_ivf_probe</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">n_full_scores</span><span class="o">=</span><span class="mi">4096</span><span class="p">,</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="p">)</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">centroid_score_threshold</span><span class="o">=</span><span class="mf">0.4</span><span class="p">,</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">)</span>
 </span></code></pre></div>
 <p><strong>Maximum speed:</strong></p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">SearchParams</span><span class="p">(</span>
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">top_k</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>
 </span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">n_ivf_probe</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
 </span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">n_full_scores</span><span class="o">=</span><span class="mi">1024</span><span class="p">,</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="p">)</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="n">centroid_score_threshold</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>  <span class="c1"># Aggressive pruning</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="p">)</span>
 </span></code></pre></div>
 <hr />
 <h2 id="environment-variables">Environment Variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h2>

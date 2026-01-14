@@ -917,6 +917,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#centroid-score-threshold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Centroid Score Threshold
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#tuning-for-quality-vs-speed" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1373,6 +1384,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#centroid-score-threshold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Centroid Score Threshold
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#tuning-for-quality-vs-speed" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1481,6 +1503,12 @@
 <td><code>int</code></td>
 <td>No</td>
 <td>Candidates for scoring (default: 4096)</td>
+</tr>
+<tr>
+<td><code>params.centroid_score_threshold</code></td>
+<td><code>float?</code></td>
+<td>No</td>
+<td>Centroid pruning threshold (default: 0.4). Set to null to disable</td>
 </tr>
 <tr>
 <td><code>subset</code></td>
@@ -1938,26 +1966,41 @@
 <td>100000</td>
 <td>Batch size for centroid scoring (0 = exhaustive)</td>
 </tr>
+<tr>
+<td><code>centroid_score_threshold</code></td>
+<td>0.4</td>
+<td>Centroid pruning threshold. Set to null to disable</td>
+</tr>
 </tbody>
 </table>
+<h3 id="centroid-score-threshold">Centroid Score Threshold<a class="headerlink" href="#centroid-score-threshold" title="Permanent link">&para;</a></h3>
+<p>The <code>centroid_score_threshold</code> parameter enables centroid pruning during search. Centroids with a maximum score (across all query tokens) below this threshold are filtered out before scoring. This significantly speeds up search with minimal quality impact.</p>
+<ul>
+<li><strong>Default (0.4)</strong>: Good balance between speed and quality</li>
+<li><strong>Higher values (0.45-0.5)</strong>: Faster, more aggressive pruning (use for smaller k values)</li>
+<li><strong>Lower values (0.3-0.4)</strong>: More candidates, better recall (use for larger k values)</li>
+<li><strong>null</strong>: Disable pruning entirely (slowest but most accurate)</li>
+</ul>
 <h3 id="tuning-for-quality-vs-speed">Tuning for Quality vs Speed<a class="headerlink" href="#tuning-for-quality-vs-speed" title="Permanent link">&para;</a></h3>
 <p><strong>Higher quality (slower):</strong></p>
 <div class="language-json highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="p">{</span>
 </span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">&quot;params&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 </span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="nt">&quot;top_k&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">100</span><span class="p">,</span>
 </span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span><span class="nt">&quot;n_ivf_probe&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">32</span><span class="p">,</span>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">    </span><span class="nt">&quot;n_full_scores&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8192</span>
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">  </span><span class="p">}</span>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="p">}</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">    </span><span class="nt">&quot;n_full_scores&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8192</span><span class="p">,</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">    </span><span class="nt">&quot;centroid_score_threshold&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.35</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="p">}</span>
 </span></code></pre></div>
 <p><strong>Faster (lower quality):</strong></p>
 <div class="language-json highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="p">{</span>
 </span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">&quot;params&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 </span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nt">&quot;top_k&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
 </span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="nt">&quot;n_ivf_probe&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">    </span><span class="nt">&quot;n_full_scores&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1024</span>
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">  </span><span class="p">}</span>
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="p">}</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">    </span><span class="nt">&quot;n_full_scores&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1024</span><span class="p">,</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">    </span><span class="nt">&quot;centroid_score_threshold&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.5</span>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="p">}</span>
 </span></code></pre></div>
 <hr />
 <h2 id="batch-search">Batch Search<a class="headerlink" href="#batch-search" title="Permanent link">&para;</a></h2>

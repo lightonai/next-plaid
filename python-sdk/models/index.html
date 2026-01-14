@@ -1539,7 +1539,8 @@
 </span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">top_k</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">n_ivf_probe</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
 </span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">n_full_scores</span><span class="o">=</span><span class="mi">4096</span><span class="p">,</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="p">)</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="n">centroid_score_threshold</span><span class="o">=</span><span class="mf">0.4</span><span class="p">,</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="p">)</span>
 </span></code></pre></div>
 <table>
 <thead>
@@ -1569,6 +1570,12 @@
 <td><code>4096</code></td>
 <td>Candidates for exact scoring</td>
 </tr>
+<tr>
+<td><code>centroid_score_threshold</code></td>
+<td><code>float \| None</code></td>
+<td><code>0.4</code></td>
+<td>Centroid pruning threshold. Set to <code>None</code> to disable</td>
+</tr>
 </tbody>
 </table>
 <p><strong>Tuning Guidelines:</strong></p>
@@ -1576,6 +1583,9 @@
 <li>Increase <code>n_ivf_probe</code> for better recall (slower)</li>
 <li>Increase <code>n_full_scores</code> for more accurate ranking (slower)</li>
 <li>Decrease both for faster but less accurate search</li>
+<li>Increase <code>centroid_score_threshold</code> (0.45-0.5) for faster search with smaller k</li>
+<li>Decrease <code>centroid_score_threshold</code> (0.3-0.4) for better recall with larger k</li>
+<li>Set <code>centroid_score_threshold=None</code> to disable pruning (slowest but most accurate)</li>
 </ul>
 <hr />
 <h2 id="response-models">Response Models<a class="headerlink" href="#response-models" title="Permanent link">&para;</a></h2>
