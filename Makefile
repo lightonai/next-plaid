@@ -126,6 +126,21 @@ benchmark-scifact-api:
 	kill $$API_PID 2>/dev/null || true; \
 	exit $$EXIT_CODE
 
+# Benchmark Next-Plaid API (uses cached embeddings, with accelerate)
+# Starts the server in background, runs benchmark, then stops server
+# Benchmark also the delete operations
+benchmark-next-plaid-api:
+	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
+	rm -rf next-plaid-api/indices
+	cargo build --release -p next-plaid-api  --features accelerate
+	./target/release/next-plaid-api -h 127.0.0.1 -p 8080 -d ./next-plaid-api/indices & \
+	API_PID=$$!; \
+	sleep 2; \
+	cd benchmarks && uv sync --extra eval && uv run python benchmark_next_plaid_api.py --batch-size 80; \
+	EXIT_CODE=$$?; \
+	kill $$API_PID 2>/dev/null || true; \
+	exit $$EXIT_CODE
+
 # Benchmark SciFact with server-side encoding (API encodes text internally)
 # Requires model feature and a downloaded ONNX model
 benchmark-api-encoding:

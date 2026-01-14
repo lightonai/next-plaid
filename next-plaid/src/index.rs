@@ -1129,12 +1129,14 @@ impl Index {
 
             // 2. Delete buffered docs from index (they were indexed without centroid expansion)
             //    This matches fast-plaid's delete_fn(subset=documents_to_delete)
+            //    Use delete_from_index_keep_buffer to preserve buffer files since we need
+            //    the buffer data for re-indexing with expanded centroids
             if num_buffered > 0 && self.metadata.num_documents >= num_buffered {
                 let start_del_idx = self.metadata.num_documents - num_buffered;
                 let docs_to_delete: Vec<i64> = (start_del_idx..self.metadata.num_documents)
                     .map(|i| i as i64)
                     .collect();
-                crate::delete::delete_from_index(&docs_to_delete, &path_str)?;
+                crate::delete::delete_from_index_keep_buffer(&docs_to_delete, &path_str)?;
                 // Reload after delete to get updated metadata
                 *self = Index::load(&path_str)?;
             }
@@ -1174,7 +1176,12 @@ impl Index {
             // New documents start at current num_documents
             start_doc_id = self.metadata.num_documents as i64;
 
-            save_buffer(index_path, embeddings)?;
+            // Accumulate buffer: combine existing buffer with new embeddings
+            let combined_buffer: Vec<Array2<f32>> = buffer
+                .into_iter()
+                .chain(embeddings.iter().cloned())
+                .collect();
+            save_buffer(index_path, &combined_buffer)?;
 
             // Update index without threshold update
             update_index(

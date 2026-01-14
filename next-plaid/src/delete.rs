@@ -41,6 +41,29 @@ use crate::index::Metadata;
 /// println!("Deleted {} documents", deleted);
 /// ```
 pub fn delete_from_index(doc_ids: &[i64], index_path: &str) -> Result<usize> {
+    delete_from_index_impl(doc_ids, index_path, true)
+}
+
+/// Delete documents from an existing index without cleaning buffer files.
+///
+/// This is used internally during update operations where the buffer documents
+/// are being deleted from the index but the buffer data itself is still needed
+/// for re-indexing with expanded centroids.
+///
+/// # Arguments
+///
+/// * `doc_ids` - A slice of document IDs to be removed from the index (0-indexed).
+/// * `index_path` - The directory path of the index to modify.
+///
+/// # Returns
+///
+/// The number of documents actually deleted (some IDs may not exist).
+pub fn delete_from_index_keep_buffer(doc_ids: &[i64], index_path: &str) -> Result<usize> {
+    delete_from_index_impl(doc_ids, index_path, false)
+}
+
+/// Internal implementation of delete_from_index with optional buffer cleanup.
+fn delete_from_index_impl(doc_ids: &[i64], index_path: &str, clean_buffer: bool) -> Result<usize> {
     use ndarray_npy::{ReadNpyExt, WriteNpyExt};
 
     let index_dir = Path::new(index_path);
@@ -51,6 +74,9 @@ pub fn delete_from_index(doc_ids: &[i64], index_path: &str) -> Result<usize> {
         File::open(&metadata_path)
             .map_err(|e| Error::Delete(format!("Failed to open metadata: {}", e)))?,
     ))?;
+
+    // Save original document count before any modifications - needed for buffer cleanup
+    let original_num_documents = metadata.num_documents;
 
     let num_chunks = metadata.num_chunks;
     let nbits = metadata.nbits;
@@ -241,7 +267,10 @@ pub fn delete_from_index(doc_ids: &[i64], index_path: &str) -> Result<usize> {
 
     // Clean up buffer.npy and embeddings.npy (start-from-scratch files)
     // These files store raw embeddings by document index, so we need to filter them
-    clean_embeddings_files(index_dir, &ids_to_delete)?;
+    // Skip this when called from update operations that need to preserve the buffer
+    if clean_buffer {
+        clean_embeddings_files(index_dir, &ids_to_delete, original_num_documents)?;
+    }
 
     Ok(docs_actually_deleted)
 }
@@ -251,7 +280,17 @@ pub fn delete_from_index(doc_ids: &[i64], index_path: &str) -> Result<usize> {
 /// These files store raw embeddings indexed by document ID. When documents are deleted,
 /// we need to remove their embeddings from these files to prevent them from being
 /// re-added during updates.
-fn clean_embeddings_files(index_dir: &Path, ids_to_delete: &HashSet<i64>) -> Result<()> {
+///
+/// # Arguments
+///
+/// * `index_dir` - Path to the index directory
+/// * `ids_to_delete` - Set of document IDs being deleted
+/// * `original_num_documents` - The total document count BEFORE deletion (needed for buffer ID calculation)
+fn clean_embeddings_files(
+    index_dir: &Path,
+    ids_to_delete: &HashSet<i64>,
+    original_num_documents: usize,
+) -> Result<()> {
     use ndarray_npy::{ReadNpyExt, WriteNpyExt};
 
     // Clean embeddings.npy (start-from-scratch storage)
@@ -313,24 +352,11 @@ fn clean_embeddings_files(index_dir: &Path, ids_to_delete: &HashSet<i64>) -> Res
         let mut new_lengths: Vec<i64> = Vec::new();
         let mut offset = 0;
 
-        // Buffer documents are indexed relative to existing documents
-        // We need to check the buffer_info to get the starting doc ID
-        let buffer_start_doc_id = if buffer_info_path.exists() {
-            // Buffer documents start after the main index documents
-            // The metadata.json num_documents tells us how many main docs there are
-            let metadata_path = index_dir.join("metadata.json");
-            if metadata_path.exists() {
-                let meta: serde_json::Value =
-                    serde_json::from_reader(BufReader::new(File::open(&metadata_path)?))?;
-                meta.get("num_documents")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0)
-            } else {
-                0
-            }
-        } else {
-            0
-        };
+        // Buffer documents are the LAST `buffer_len` documents in the index.
+        // Their IDs are: (original_num_documents - buffer_len) to (original_num_documents - 1)
+        // We use the original_num_documents (before deletion) to calculate the correct start ID.
+        let buffer_len = lengths.len();
+        let buffer_start_doc_id = (original_num_documents as i64) - (buffer_len as i64);
 
         for (i, &len) in lengths.iter().enumerate() {
             let len_usize = len as usize;

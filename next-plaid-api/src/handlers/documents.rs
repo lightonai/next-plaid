@@ -709,13 +709,11 @@ pub async fn delete_documents(
             let mut index = MmapIndex::load(&path_str)?;
 
             // Delete documents by IDs
+            // Note: index.delete() already handles metadata deletion internally,
+            // so we don't need to call filtering::delete() separately.
+            // Calling it again would delete WRONG rows because the metadata DB
+            // is re-indexed after the first delete.
             let deleted = index.delete(&document_ids)?;
-
-            // Also delete from metadata database
-            if filtering::exists(&path_str) {
-                filtering::delete(&path_str, &document_ids)
-                    .map_err(|e| ApiError::Internal(format!("Failed to delete metadata: {}", e)))?;
-            }
 
             let remaining = index.metadata.num_documents;
 
