@@ -1,4 +1,4 @@
-//! Lategrep API Library
+//! NextPlaid API Library
 //!
 //! This crate provides a REST API for the next-plaid multi-vector search engine.
 //!

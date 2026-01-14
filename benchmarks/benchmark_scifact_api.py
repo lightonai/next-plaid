@@ -288,7 +288,7 @@ def evaluate_results(
 # ============================================================================
 
 
-class LategrepAPIClient:
+class NextPlaidAPIClient:
     """Client for next-plaid REST API."""
 
     def __init__(self, base_url: str):
@@ -464,7 +464,7 @@ def run_api_benchmark(
         config: Benchmark configuration
     """
     base_url = f"http://{config.host}:{config.port}"
-    client = LategrepAPIClient(base_url)
+    client = NextPlaidAPIClient(base_url)
 
     # Check that server is running
     print("    Connecting to API server...")

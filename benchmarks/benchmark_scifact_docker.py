@@ -90,7 +90,7 @@ class DockerComposeManager:
         self.compose_file = compose_file
         # Find repo root (parent of benchmarks directory)
         self.project_dir = project_dir or str(Path(__file__).parent.parent)
-        self.container_name = "lategrep-next-plaid-api-1"
+        self.container_name = "next-plaid-api-1"
 
     def _run_compose(
         self, *args, check: bool = True, capture_output: bool = False

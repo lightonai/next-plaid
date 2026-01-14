@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Comprehensive integration tests for the Lategrep REST API.
+"""Comprehensive integration tests for the NextPlaid REST API.
 
 This test suite validates all major API endpoints including:
 - Health checks

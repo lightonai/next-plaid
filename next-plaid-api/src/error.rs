@@ -55,9 +55,9 @@ pub enum ApiError {
     #[allow(dead_code)]
     ModelError(String),
 
-    /// Lategrep library error
-    #[error("Lategrep error: {0}")]
-    Lategrep(#[from] next_plaid::Error),
+    /// NextPlaid library error
+    #[error("Next-Plaid error: {0}")]
+    NextPlaid(#[from] next_plaid::Error),
 }
 
 /// JSON error response body.
@@ -117,7 +117,7 @@ impl IntoResponse for ApiError {
                 "MODEL_ERROR",
                 msg.clone(),
             ),
-            ApiError::Lategrep(e) => (
+            ApiError::NextPlaid(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "NEXT_PLAID_ERROR",
                 e.to_string(),

@@ -1,7 +1,7 @@
 [project]
 name = "next-plaid-api-tests"
 version = "0.1.0"
-description = "Integration tests for the Lategrep REST API"
+description = "Integration tests for the NextPlaid REST API"
 requires-python = ">=3.9"
 dependencies = ["requests>=2.28.0", "numpy>=1.20.0", "pytest>=7.0.0"]
 

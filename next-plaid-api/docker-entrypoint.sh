@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Lategrep API Docker Entrypoint
+# NextPlaid API Docker Entrypoint
 # =============================================================================
 # Automatically downloads models from HuggingFace Hub if needed.
 #

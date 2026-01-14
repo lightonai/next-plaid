@@ -189,7 +189,7 @@ def evaluate_results(
 # ============================================================================
 
 
-class LategrepAPIClient:
+class NextPlaidAPIClient:
     """Client for next-plaid REST API."""
 
     def __init__(self, base_url: str):
@@ -345,7 +345,7 @@ class LategrepAPIClient:
 
 
 def send_batch_with_retry(
-    client: LategrepAPIClient,
+    client: NextPlaidAPIClient,
     index_name: str,
     embeddings: list[np.ndarray],
     metadata: list[dict],
@@ -365,7 +365,7 @@ def send_batch_with_retry(
 
 
 def upload_documents_concurrent(
-    client: LategrepAPIClient,
+    client: NextPlaidAPIClient,
     index_name: str,
     doc_embeddings: list[np.ndarray],
     documents_list: list[dict],
@@ -429,7 +429,7 @@ def run_deletion_benchmark(
     7. Run search benchmark
     """
     base_url = f"http://{config.host}:{config.port}"
-    client = LategrepAPIClient(base_url)
+    client = NextPlaidAPIClient(base_url)
 
     # Check server is running
     print("    Connecting to API server...")

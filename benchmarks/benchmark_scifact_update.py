@@ -441,11 +441,11 @@ def compute_result_overlap(results_a: list, results_b: list, k: int = 100) -> fl
 
 
 # ============================================================================
-# Lategrep Runner with Updates
+# NextPlaid Runner with Updates
 # ============================================================================
 
 
-def get_lategrep_binary() -> Path:
+def get_next_plaid_binary() -> Path:
     """Build and return path to next-plaid benchmark_cli binary."""
     import platform
 
@@ -475,14 +475,14 @@ def get_lategrep_binary() -> Path:
     return binary_path
 
 
-def run_lategrep_with_updates(
+def run_next_plaid_with_updates(
     doc_embeddings: list[np.ndarray],
     query_embeddings: list[np.ndarray],
     centroids: np.ndarray,
     config: BenchmarkConfig,
 ) -> dict:
     """Run next-plaid with initial create + incremental updates."""
-    binary_path = get_lategrep_binary()
+    binary_path = get_next_plaid_binary()
 
     # Memory monitoring for subprocess
     mem_monitor = SubprocessMemoryMonitor(interval=0.02)
@@ -815,9 +815,9 @@ def main():
     # Run evaluations
     print("\n[4/5] Running benchmarks...")
 
-    print("\n  --- Lategrep (with updates) ---")
+    print("\n  --- NextPlaid (with updates) ---")
     try:
-        lg_output = run_lategrep_with_updates(doc_embeddings, query_embeddings, centroids, config)
+        lg_output = run_next_plaid_with_updates(doc_embeddings, query_embeddings, centroids, config)
         lg_metrics = evaluate_results(lg_output["results"], queries, qrels, documents_ids)
         results["next-plaid"] = lg_output
         all_metrics["next-plaid"] = lg_metrics
@@ -847,7 +847,7 @@ def main():
         # Metric comparison
         print("\n  Metrics (next-plaid vs fast-plaid):")
         print("  " + "-" * 60)
-        print(f"  {'Metric':<15} {'Lategrep':>12} {'Fast-plaid':>12} {'Diff':>10}")
+        print(f"  {'Metric':<15} {'NextPlaid':>12} {'Fast-plaid':>12} {'Diff':>10}")
         print("  " + "-" * 60)
 
         for metric in ["map", "ndcg@10", "ndcg@100", "recall@10", "recall@100"]:
@@ -869,16 +869,16 @@ def main():
 
         # Performance
         print("\n  Performance:")
-        print(f"    Lategrep index+update:   {results['next-plaid']['index_time_s']:.2f}s")
+        print(f"    NextPlaid index+update:   {results['next-plaid']['index_time_s']:.2f}s")
         print(f"    Fast-plaid index+update: {results['fastplaid']['index_time_s']:.2f}s")
         speedup = results["fastplaid"]["index_time_s"] / results["next-plaid"]["index_time_s"]
-        print(f"    Lategrep speedup:        {speedup:.2f}x")
+        print(f"    NextPlaid speedup:        {speedup:.2f}x")
 
         # Memory comparison
         lg_mem = results["next-plaid"]["memory"]
         fp_mem = results["fastplaid"]["memory"]
         print("\n  Memory Usage:")
-        print(f"  {'Phase':<20} {'Lategrep':>12} {'Fast-plaid':>12} {'Savings':>12}")
+        print(f"  {'Phase':<20} {'NextPlaid':>12} {'Fast-plaid':>12} {'Savings':>12}")
         print("  " + "-" * 56)
         print(
             f"  {'Index/Update':<20} {lg_mem.index_peak_mb:>10.1f} MB {fp_mem.index_peak_mb:>10.1f} MB "

@@ -1,5 +1,5 @@
 """
-Data models for the Lategrep SDK.
+Data models for the NextPlaid SDK.
 """
 
 from dataclasses import dataclass, field
