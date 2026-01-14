@@ -225,7 +225,7 @@ main() {
                 elif [ "$arg" != "--int8" ]; then
                     new_args+=("$arg")
                 fi
-                ((i++))
+                i=$((i + 1))
             done
 
             # Execute with modified arguments

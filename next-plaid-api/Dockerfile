@@ -47,12 +47,30 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     libopenblas-dev \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust and cargo-chef
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN cargo install cargo-chef
+
+# Download ONNX Runtime CPU (architecture-aware)
+ARG ORT_VERSION=1.23.0
+RUN mkdir -p /opt/ort_cpu && \
+    ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then \
+        ORT_ARCH="aarch64"; \
+    else \
+        ORT_ARCH="x64"; \
+    fi && \
+    wget -q https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz && \
+    tar -xzf onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz && \
+    cp -r onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}/lib/* /opt/ort_cpu/ && \
+    rm -rf onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION} onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz
+
+ENV ORT_DYLIB_PATH=/opt/ort_cpu/libonnxruntime.so.${ORT_VERSION}
+ENV LD_LIBRARY_PATH=/opt/ort_cpu:${LD_LIBRARY_PATH}
 
 WORKDIR /app
 
@@ -165,14 +183,22 @@ RUN apt-get update && apt-get install -y \
 # Create non-root user
 RUN useradd -m -u 1000 -s /bin/bash nextplaid
 
-# Create directories for indices and models
-RUN mkdir -p /data/indices /models && chown -R nextplaid:nextplaid /data /models
+# Create directories for indices, models, and ONNX Runtime
+RUN mkdir -p /data/indices /models /opt/ort_cpu && chown -R nextplaid:nextplaid /data /models
+
+# Copy ONNX Runtime CPU libraries from builder
+COPY --from=builder-cpu /opt/ort_cpu /opt/ort_cpu
 
 # Copy binary from builder
 COPY --from=builder-cpu /app/target/release/next-plaid-api /usr/local/bin/next-plaid-api
 
 # Copy entrypoint script
 COPY --chmod=755 next-plaid-api/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# Set library paths for ONNX Runtime
+ARG ORT_VERSION=1.23.0
+ENV ORT_DYLIB_PATH=/opt/ort_cpu/libonnxruntime.so.${ORT_VERSION}
+ENV LD_LIBRARY_PATH=/opt/ort_cpu:${LD_LIBRARY_PATH}
 
 # Switch to non-root user
 USER nextplaid
