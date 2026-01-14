@@ -17,7 +17,7 @@ cargo fmt --all -- --check
 
 # Run clippy (using cross-platform features only)
 echo "Running clippy..."
-cargo clippy --all-targets --features npy,filtering -- -D warnings
+cargo clippy --all-targets -- -D warnings
 
 # Run Rust tests
 echo "Running Rust tests..."
@@ -25,7 +25,7 @@ cargo test
 
 # Build documentation (with warnings as errors)
 echo "Building documentation..."
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features npy,filtering
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
 # API crate checks
 echo "Checking API crate formatting..."

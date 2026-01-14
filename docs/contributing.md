@@ -57,7 +57,7 @@ make build
 make release
 
 # Build with specific features
-cargo build --release -p next-plaid --features "npy,filtering,openblas"
+cargo build --release -p next-plaid --features "openblas"
 ```
 
 ### Testing
@@ -67,7 +67,7 @@ cargo build --release -p next-plaid --features "npy,filtering,openblas"
 make test
 
 # Run with specific features
-cargo test --features "npy,filtering,openblas"
+cargo test --features "openblas"
 
 # Run API integration tests
 make test-api
@@ -222,28 +222,31 @@ Releases are automated via GitHub Actions when a version tag is pushed.
 
 ### What Gets Published
 
-| Package | Registry |
-|---------|----------|
-| `next-plaid` | crates.io |
-| `next-plaid-onnx` | crates.io |
-| `next-plaid-client` | PyPI |
-| `pylate-onnx-export` | PyPI |
-| `next-plaid-api` | GitHub Container Registry |
+| Package              | Registry                  |
+| -------------------- | ------------------------- |
+| `next-plaid`         | crates.io                 |
+| `next-plaid-onnx`    | crates.io                 |
+| `next-plaid-client`  | PyPI                      |
+| `pylate-onnx-export` | PyPI                      |
+| `next-plaid-api`     | GitHub Container Registry |
 
 ### Creating a Release
 
 1. **Update version numbers** in:
+
    - `/Cargo.toml` (workspace version)
    - `/next-plaid-api/python-sdk/pyproject.toml`
    - `/next-plaid-onnx/python/pyproject.toml`
 
 2. **Commit the version bump**:
+
    ```bash
    git add -A
    git commit -m "chore: release v0.2.0"
    ```
 
 3. **Create and push the tag**:
+
    ```bash
    git tag v0.2.0
    git push origin main --tags
