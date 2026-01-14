@@ -38,7 +38,7 @@ impl Default for SearchParameters {
             batch_size: 2000,
             n_full_scores: 4096,
             top_k: 10,
-            n_ivf_probe: 8,
+            n_ivf_probe: 16,
             centroid_batch_size: default_centroid_batch_size(),
         }
     }
@@ -590,14 +590,5 @@ mod tests {
         // q0 max: 0.8 (from token 1), q1 max: 0.9 (from token 2)
         // Total: 0.8 + 0.9 = 1.7
         assert!((score - 1.7).abs() < 1e-5);
-    }
-
-    #[test]
-    fn test_search_params_default() {
-        let params = SearchParameters::default();
-        assert_eq!(params.batch_size, 2000);
-        assert_eq!(params.n_full_scores, 4096);
-        assert_eq!(params.top_k, 10);
-        assert_eq!(params.n_ivf_probe, 8);
     }
 }

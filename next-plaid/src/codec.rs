@@ -58,39 +58,45 @@ impl CentroidStore {
         // Use provided config or optimized defaults for index creation
         let hnsw_config = config.unwrap_or_else(|| {
             // Optimize HNSW config based on centroid count
-            // For centroid indices, we can use aggressive settings since:
-            // 1. HNSW is only used for approximate centroid search
-            // 2. Search quality is maintained via ef_search at query time
-            // 3. Build time dominates for large indices (200K-1.5M centroids)
+            // HNSW is used for centroid assignment during compression.
+            // Accurate centroid assignment is critical for search quality
+            // (better assignment = better residual quantization = better retrieval).
 
+            // m=16 works well with the batch greedy search algorithm
             let m = if num_centroids < 1000 {
-                8 // Small indices need fewer connections
+                8
             } else if num_centroids < 10_000 {
                 12
             } else {
-                16 // Large indices need more edges for graph connectivity
+                16 // Standard for large indices
             };
 
-            // ef_construction determines search quality during build
-            // Lower values = faster build, slightly lower graph quality
-            // But search quality is maintained via ef_search at query time
+            // ef_construction determines graph quality during build
+            // Higher values = better connected graph = more accurate greedy search
             let ef_construction = if num_centroids < 500 {
-                16 // Very fast for small indices
+                64
             } else if num_centroids < 5_000 {
-                24 // Fast for medium indices
+                128
             } else if num_centroids < 50_000 {
-                32 // Balanced for large indices
+                256 // High quality for 10K-50K centroids
             } else if num_centroids < 500_000 {
-                40 // For very large indices (200K-500K)
+                300 // Very large indices
             } else {
-                48 // For huge indices (>500K), still much faster than default 100
+                400 // Huge indices
+            };
+
+            // Higher m0 gives more layer-0 edges for better greedy search
+            let m0 = if num_centroids < 1000 {
+                m * 2
+            } else {
+                m * 3 // More layer-0 connections for large indices
             };
 
             HnswConfig {
                 m,
-                m0: m * 2,
+                m0,
                 ef_construction,
-                ef_search: 64, // Higher for better search quality at query time
+                ef_search: 512, // Used for non-batched search
                 ml: 1.0 / (m as f32).ln(),
                 seed: 42,
             }
@@ -322,11 +328,11 @@ impl ResidualCodec {
         self.centroids.hnsw()
     }
 
-    /// Compress embeddings into centroid codes using HNSW search.
+    /// Compress embeddings into centroid codes using batched HNSW search.
     ///
-    /// This function uses the HNSW index to find the nearest centroid for each embedding
-    /// via approximate nearest neighbor search, which is more efficient than brute-force
-    /// matrix multiplication, especially for large centroid counts.
+    /// This function uses a batched HNSW search optimized for k=1 nearest neighbor.
+    /// It groups queries by their current best node and uses BLAS matrix multiply
+    /// for efficient distance computation, significantly faster than per-query search.
     ///
     /// # Arguments
     ///
@@ -342,16 +348,14 @@ impl ResidualCodec {
 
     /// Compress embeddings into centroid codes using HNSW search with custom ef_search.
     ///
-    /// Higher ef_search values give better accuracy but slower search.
-    /// Recommended values:
-    /// - 50-100 for balanced accuracy/speed
-    /// - 100-200 for high accuracy
-    /// - 200+ for maximum accuracy
+    /// When ef_search is None, uses the optimized batched k=1 search.
+    /// When ef_search is specified, falls back to per-query search for higher accuracy.
     ///
     /// # Arguments
     ///
     /// * `embeddings` - Embeddings of shape `[N, dim]`
-    /// * `ef_search` - Optional size of dynamic candidate list during search
+    /// * `ef_search` - Optional size of dynamic candidate list during search.
+    ///   If None, uses optimized batched search.
     ///
     /// # Returns
     ///
@@ -375,13 +379,19 @@ impl ResidualCodec {
             )));
         }
 
-        // Use HNSW search to find nearest centroid (k=1)
-        let (_, indices) = if let Some(ef) = ef_search {
-            self.hnsw().search_with_ef(embeddings, 1, ef)
-        } else {
-            self.hnsw().search(embeddings, 1)
+        // Use batched k=1 search when no custom ef_search is specified
+        if ef_search.is_none() {
+            return self
+                .hnsw()
+                .search_batch_k1(embeddings)
+                .map_err(|e| Error::Codec(format!("Batched HNSW search failed: {}", e)));
         }
-        .map_err(|e| Error::Codec(format!("HNSW search failed: {}", e)))?;
+
+        // Fall back to per-query search with custom ef_search
+        let (_, indices) = self
+            .hnsw()
+            .search_with_ef(embeddings, 1, ef_search.unwrap())
+            .map_err(|e| Error::Codec(format!("HNSW search failed: {}", e)))?;
 
         // Extract the first (and only) result for each query
         // indices is [N, 1], we want [N]

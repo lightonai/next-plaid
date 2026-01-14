@@ -26,10 +26,6 @@ use next_plaid_api::{
     state::{ApiConfig, AppState},
 };
 
-// Import next_plaid_onnx when model feature is enabled
-#[cfg(feature = "model")]
-use next_plaid_onnx;
-
 /// Test fixture that sets up a temporary API server.
 struct TestFixture {
     client: reqwest::Client,
@@ -1759,7 +1755,7 @@ impl ModelTestFixture {
 
         // Export model if it doesn't exist
         if !model_path.join("model.onnx").exists() {
-            Self::export_model(&workspace_root).expect("Failed to export ONNX model");
+            Self::export_model(workspace_root).expect("Failed to export ONNX model");
         }
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -2179,7 +2175,7 @@ async fn test_search_with_encoding() {
     let ai_docs_in_top: usize = ml_result
         .document_ids
         .iter()
-        .filter(|&&id| id >= 5 && id <= 9)
+        .filter(|&&id| (5..=9).contains(&id))
         .count();
     assert!(
         ai_docs_in_top >= 1,

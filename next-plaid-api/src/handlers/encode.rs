@@ -23,6 +23,11 @@ use crate::models::InputType;
 use crate::models::{EncodeRequest, EncodeResponse};
 use crate::state::AppState;
 
+/// Result type for batched encoding operations.
+/// Maps request index to either embeddings (Vec<Vec<Vec<f32>>>) or an error message.
+#[cfg(feature = "model")]
+type BatchEncodeResults = HashMap<usize, Result<Vec<Vec<Vec<f32>>>, String>>;
+
 // --- Batch Configuration ---
 
 /// Maximum number of texts to batch together before processing.
@@ -177,8 +182,7 @@ async fn process_encode_batch(items: Vec<EncodeBatchItem>, state: &Arc<AppState>
     }
 
     // Prepare results storage
-    let mut results: HashMap<usize, Result<Vec<Vec<Vec<f32>>>, String>> =
-        HashMap::with_capacity(num_requests);
+    let mut results: BatchEncodeResults = HashMap::with_capacity(num_requests);
 
     // Process queries batch
     if !query_items.is_empty() {

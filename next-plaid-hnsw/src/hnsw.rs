@@ -16,7 +16,7 @@ use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -45,7 +45,7 @@ impl Default for HnswConfig {
             m,
             m0: m * 2,
             ef_construction: 100,
-            ef_search: 50,
+            ef_search: 512,
             ml: 1.0 / (m as f32).ln(),
             seed: 42,
         }
@@ -488,6 +488,173 @@ impl HnswIndex {
         }
 
         Ok((scores, indices))
+    }
+
+    /// Batched k=1 nearest neighbor search optimized for centroid assignment.
+    ///
+    /// This method is significantly faster than calling `search` with k=1 for large
+    /// numbers of queries because it:
+    /// - Groups queries by their current best node
+    /// - Batch-loads neighbor vectors once per group
+    /// - Uses BLAS matrix multiply for distance computation
+    ///
+    /// # Arguments
+    /// - `queries`: Query vectors of shape (num_queries, dim)
+    ///
+    /// # Returns
+    /// `Array1<usize>` of shape (num_queries,) with the index of the nearest neighbor for each query
+    pub fn search_batch_k1(&self, queries: &Array2<f32>) -> Result<Array1<usize>> {
+        if self.metadata.num_vectors == 0 {
+            return Err(Error::EmptyIndex);
+        }
+
+        let (num_queries, dim) = queries.dim();
+        if dim != self.metadata.dim {
+            return Err(Error::DimensionMismatch {
+                expected: self.metadata.dim,
+                got: dim,
+            });
+        }
+
+        if num_queries == 0 {
+            return Ok(Array1::zeros(0));
+        }
+
+        let entry_point = self
+            .metadata
+            .entry_point
+            .ok_or(Error::CorruptedIndex("No entry point".to_string()))?;
+
+        // Initialize: all queries start at entry point
+        let entry_vec = self.get_vector(entry_point)?;
+        let mut best_nodes = vec![entry_point; num_queries];
+        let mut best_scores: Vec<f32> = queries
+            .axis_iter(Axis(0))
+            .map(|q| q.dot(&entry_vec))
+            .collect();
+
+        // Phase 1: Greedy descent through upper layers (L → 1)
+        for layer in (1..=self.metadata.max_level).rev() {
+            loop {
+                let mut any_improved = false;
+
+                // Group queries by current best node
+                let groups = Self::group_by_node(&best_nodes);
+
+                for (node_id, query_indices) in groups {
+                    let node = self.nodes[node_id].read();
+                    if layer >= node.neighbors.len() || node.neighbors[layer].is_empty() {
+                        continue;
+                    }
+                    let neighbors = &node.neighbors[layer];
+
+                    // Load all neighbor vectors at once
+                    let neighbor_vecs = self.load_vectors_batch(neighbors)?;
+
+                    // Extract queries at this node
+                    let queries_here = Self::stack_rows(queries, &query_indices);
+
+                    // Batch compute: [num_queries_here, num_neighbors]
+                    let scores = queries_here.dot(&neighbor_vecs.t());
+
+                    // Update best node for each query
+                    for (local_idx, &global_idx) in query_indices.iter().enumerate() {
+                        if let Some((best_neighbor_local, &best_score)) =
+                            scores.row(local_idx).iter().enumerate().max_by(|a, b| {
+                                a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                        {
+                            if best_score > best_scores[global_idx] {
+                                best_scores[global_idx] = best_score;
+                                best_nodes[global_idx] = neighbors[best_neighbor_local];
+                                any_improved = true;
+                            }
+                        }
+                    }
+                }
+
+                if !any_improved {
+                    break;
+                }
+            }
+        }
+
+        // Phase 2: Greedy search at layer 0
+        for _iter in 0..100 {
+            // Max iterations to prevent infinite loops
+            let mut any_improved = false;
+
+            let groups = Self::group_by_node(&best_nodes);
+
+            for (node_id, query_indices) in groups {
+                let node = self.nodes[node_id].read();
+                if node.neighbors.is_empty() || node.neighbors[0].is_empty() {
+                    continue;
+                }
+                let neighbors = &node.neighbors[0];
+
+                // Batch load and compute
+                let neighbor_vecs = self.load_vectors_batch(neighbors)?;
+                let queries_here = Self::stack_rows(queries, &query_indices);
+                let scores = queries_here.dot(&neighbor_vecs.t());
+
+                for (local_idx, &global_idx) in query_indices.iter().enumerate() {
+                    if let Some((best_local, &best_score)) =
+                        scores.row(local_idx).iter().enumerate().max_by(|a, b| {
+                            a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                    {
+                        if best_score > best_scores[global_idx] {
+                            best_scores[global_idx] = best_score;
+                            best_nodes[global_idx] = neighbors[best_local];
+                            any_improved = true;
+                        }
+                    }
+                }
+            }
+
+            if !any_improved {
+                break;
+            }
+        }
+
+        Ok(Array1::from_vec(best_nodes))
+    }
+
+    /// Group query indices by their current node.
+    fn group_by_node(nodes: &[usize]) -> HashMap<usize, Vec<usize>> {
+        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (idx, &node) in nodes.iter().enumerate() {
+            groups.entry(node).or_default().push(idx);
+        }
+        groups
+    }
+
+    /// Load multiple vectors by their IDs into a single array.
+    fn load_vectors_batch(&self, ids: &[usize]) -> Result<Array2<f32>> {
+        let dim = self.metadata.dim;
+        let mut result = Array2::zeros((ids.len(), dim));
+        for (i, &id) in ids.iter().enumerate() {
+            if let Some(vec) = self.get_vector_from_mmap(id) {
+                result.row_mut(i).assign(&vec);
+            } else {
+                return Err(Error::CorruptedIndex(format!(
+                    "Failed to read vector {} from hnsw_vectors.bin",
+                    id
+                )));
+            }
+        }
+        Ok(result)
+    }
+
+    /// Stack selected rows from a queries array.
+    fn stack_rows(queries: &Array2<f32>, indices: &[usize]) -> Array2<f32> {
+        let dim = queries.ncols();
+        let mut result = Array2::zeros((indices.len(), dim));
+        for (i, &idx) in indices.iter().enumerate() {
+            result.row_mut(i).assign(&queries.row(idx));
+        }
+        result
     }
 
     /// Get the number of vectors in the index.

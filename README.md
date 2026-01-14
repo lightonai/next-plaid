@@ -147,13 +147,13 @@ results = client.search(
 
 ## Project Structure
 
-| Crate | Description |
-|-------|-------------|
-| [next-plaid](https://crates.io/crates/next-plaid) | Core Rust library for CPU-based PLAID search |
-| [next-plaid-api](https://crates.io/crates/next-plaid-api) | REST API server with Docker support |
-| [next-plaid-onnx](https://crates.io/crates/next-plaid-onnx) | ONNX-based ColBERT encoding in Rust |
-| [next-plaid-client](https://pypi.org/project/next-plaid-client/) | Python client for the API |
-| [pylate-onnx-export](https://pypi.org/project/pylate-onnx-export/) | CLI tool for exporting ColBERT to ONNX |
+| Crate                                                              | Description                                  |
+| ------------------------------------------------------------------ | -------------------------------------------- |
+| [next-plaid](https://crates.io/crates/next-plaid)                  | Core Rust library for CPU-based PLAID search |
+| [next-plaid-api](https://crates.io/crates/next-plaid-api)          | REST API server with Docker support          |
+| [next-plaid-onnx](https://crates.io/crates/next-plaid-onnx)        | ONNX-based ColBERT encoding in Rust          |
+| [next-plaid-client](https://pypi.org/project/next-plaid-client/)   | Python client for the API                    |
+| [pylate-onnx-export](https://pypi.org/project/pylate-onnx-export/) | CLI tool for exporting ColBERT to ONNX       |
 
 &nbsp;
 
@@ -161,9 +161,9 @@ results = client.search(
 
 Both images support model inference for text encoding. The index and search always run on CPU.
 
-| Variant | Image Tag | Description |
-|---------|-----------|-------------|
-| **CPU** | `latest` | Index, search, and model inference on CPU |
+| Variant  | Image Tag     | Description                                     |
+| -------- | ------------- | ----------------------------------------------- |
+| **CPU**  | `latest`      | Index, search, and model inference on CPU       |
 | **CUDA** | `latest-cuda` | Index and search on CPU, model inference on GPU |
 
 &nbsp;

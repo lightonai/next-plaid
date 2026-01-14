@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-model docker-build-cuda docker-up docker-up-model docker-up-cuda docker-down docker-logs kill-api docs-serve docs-build docs-deploy
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-model docker-build-cuda docker-up docker-up-model docker-up-cuda docker-down docker-logs kill-api docs-serve docs-build docs-deploy dump-scifact benchmark-scifact-rust
 
 all: fmt lint test
 
@@ -109,7 +109,7 @@ fmt-python:
 
 # Benchmark SciFact with updates (batch size 800) - compares fast-plaid and next-plaid
 benchmark-scifact-update:
-	cargo build --release --example benchmark_cli
+	cargo build --release --example benchmark_cli --features accelerate
 	cd benchmarks && uv sync --extra eval --extra fast-plaid && uv run python benchmark_scifact_update.py --batch-size 800
 
 # Benchmark SciFact via REST API (uses cached embeddings, with accelerate)
@@ -240,3 +240,17 @@ docs-build:
 docs-deploy:
 	pip install mkdocs-material -q
 	mkdocs gh-deploy --force
+
+# =============================================================================
+# SciFact Rust benchmark targets
+# =============================================================================
+
+# Dump SciFact embeddings to disk for Rust benchmark
+dump-scifact:
+	cd benchmarks && uv sync --extra eval && uv run python dump_scifact.py
+
+# Run Rust SciFact benchmark (index creation + search timing)
+# Requires: make dump-scifact first
+benchmark-scifact-rust:
+	cd next-plaid && cargo run --release --example scifact_benchmark --features npy,accelerate -- \
+		--data-dir ../benchmarks/scifact_benchmark_data
