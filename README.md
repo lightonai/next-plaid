@@ -179,7 +179,7 @@ Both Docker images support model inference. When started with a ColBERT model, y
 docker run -d \
   -p 8080:8080 \
   -v ~/.local/share/next-plaid:/data/indices \
-  -v next-plaid-models:/models \
+  -v ~/.cache/huggingface/next-plaid:/models \
   ghcr.io/lightonai/next-plaid-api:latest \
   --model lightonai/GTE-ModernColBERT-v1-onnx
 
@@ -188,10 +188,12 @@ docker run -d \
   --gpus all \
   -p 8080:8080 \
   -v ~/.local/share/next-plaid:/data/indices \
-  -v next-plaid-models:/models \
+  -v ~/.cache/huggingface/next-plaid:/models \
   ghcr.io/lightonai/next-plaid-api:latest-cuda \
   --model lightonai/GTE-ModernColBERT-v1-onnx
 ```
+
+Models are automatically downloaded from HuggingFace and cached locally at `~/.cache/huggingface/next-plaid`. On subsequent runs, cached models are reused.
 
 ### Upload and Search with Text
 

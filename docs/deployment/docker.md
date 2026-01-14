@@ -50,8 +50,10 @@ services:
     ports:
       - "8080:8080"
     volumes:
+      # Persistent index storage
       - ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}:/data/indices
-      - next-plaid-models:/models
+      # Persistent model cache (downloaded from HuggingFace)
+      - ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}:/models
     environment:
       - RUST_LOG=info
     command:
@@ -80,9 +82,6 @@ services:
           memory: 16G
         reservations:
           memory: 4G
-
-volumes:
-  next-plaid-models:
 ```
 
 ### CUDA (GPU Encoding)
@@ -142,17 +141,21 @@ docker compose down
 
 ### Environment Variables
 
-| Variable   | Default | Description                          |
-| ---------- | ------- | ------------------------------------ |
-| `RUST_LOG` | `info`  | Log level                            |
-| `HF_TOKEN` | -       | HuggingFace token for private models |
+| Variable            | Default                          | Description                                 |
+| ------------------- | -------------------------------- | ------------------------------------------- |
+| `RUST_LOG`          | `info`                           | Log level                                   |
+| `HF_TOKEN`          | -                                | HuggingFace token for private models        |
+| `NEXT_PLAID_DATA`   | `~/.local/share/next-plaid`      | Host path for persistent index storage      |
+| `NEXT_PLAID_MODELS` | `~/.cache/huggingface/next-plaid`| Host path for downloaded model cache        |
 
 ### Volume Mounts
 
-| Container Path  | Purpose                    |
-| --------------- | -------------------------- |
-| `/data/indices` | Index storage (persistent) |
-| `/models`       | Model cache (persistent)   |
+| Container Path  | Default Host Path                   | Purpose                                        |
+| --------------- | ----------------------------------- | ---------------------------------------------- |
+| `/data/indices` | `~/.local/share/next-plaid`         | Index storage (persistent)                     |
+| `/models`       | `~/.cache/huggingface/next-plaid`   | Model cache (auto-downloaded from HuggingFace) |
+
+Models are downloaded once from HuggingFace and cached locally. On subsequent container starts, cached models are reused without re-downloading.
 
 ### Ports
 
