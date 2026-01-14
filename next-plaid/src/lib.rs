@@ -1,4 +1,4 @@
-//! Lategrep: CPU-based PLAID implementation for multi-vector search
+//! Next-Plaid: CPU-based PLAID implementation for multi-vector search
 //!
 //! This crate provides a pure Rust, CPU-only implementation of the PLAID algorithm
 //! for efficient multi-vector search (late interaction retrieval).

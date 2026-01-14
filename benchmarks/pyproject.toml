@@ -23,6 +23,7 @@ eval = [
     "pylate>=1.0.0",
     "fastkmeans>=0.1.0",
     "tqdm>=4.60.0",
+    "httpx>=0.24.0",
 ]
 
 [tool.ruff]
