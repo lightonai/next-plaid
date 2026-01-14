@@ -138,6 +138,8 @@ pub async fn search(
         n_ivf_probe: req.params.n_ivf_probe.unwrap_or(8),
         n_full_scores: req.params.n_full_scores.unwrap_or(4096),
         batch_size: 2000,
+        // Use provided threshold, or default (Some(0.4)) if not specified
+        centroid_score_threshold: req.params.centroid_score_threshold.unwrap_or(Some(0.4)),
         ..Default::default()
     };
 

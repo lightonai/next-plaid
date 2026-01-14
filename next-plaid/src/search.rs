@@ -28,10 +28,20 @@ pub struct SearchParameters {
     /// Only used when num_centroids > centroid_batch_size.
     #[serde(default = "default_centroid_batch_size")]
     pub centroid_batch_size: usize,
+    /// Centroid score threshold (t_cs) for centroid pruning.
+    /// A centroid is only included if its maximum score across all query tokens
+    /// meets or exceeds this threshold. Set to None to disable pruning.
+    /// Default: Some(0.4)
+    #[serde(default = "default_centroid_score_threshold")]
+    pub centroid_score_threshold: Option<f32>,
 }
 
 fn default_centroid_batch_size() -> usize {
     100_000
+}
+
+fn default_centroid_score_threshold() -> Option<f32> {
+    Some(0.4)
 }
 
 impl Default for SearchParameters {
@@ -42,6 +52,7 @@ impl Default for SearchParameters {
             top_k: 10,
             n_ivf_probe: 8,
             centroid_batch_size: default_centroid_batch_size(),
+            centroid_score_threshold: default_centroid_score_threshold(),
         }
     }
 }
@@ -130,11 +141,13 @@ impl Ord for OrdF32 {
 ///
 /// Processes centroids in chunks, keeping only top-k scores per query token in a heap.
 /// Returns the union of top centroids across all query tokens.
+/// If a threshold is provided, filters out centroids where max score < threshold.
 fn ivf_probe_batched(
     query: &Array2<f32>,
     centroids: &CentroidStore,
     n_probe: usize,
     batch_size: usize,
+    centroid_score_threshold: Option<f32>,
 ) -> Vec<usize> {
     let num_centroids = centroids.nrows();
     let num_tokens = query.nrows();
@@ -144,6 +157,9 @@ fn ivf_probe_batched(
     let mut heaps: Vec<BinaryHeap<(Reverse<OrdF32>, usize)>> = (0..num_tokens)
         .map(|_| BinaryHeap::with_capacity(n_probe + 1))
         .collect();
+
+    // Track max score per centroid for threshold filtering
+    let mut max_scores: HashMap<usize, f32> = HashMap::new();
 
     for batch_start in (0..num_centroids).step_by(batch_size) {
         let batch_end = (batch_start + batch_size).min(num_centroids);
@@ -162,10 +178,20 @@ fn ivf_probe_batched(
 
                 if heap.len() < n_probe {
                     heap.push(entry);
+                    // Track max score for threshold filtering
+                    max_scores
+                        .entry(global_c)
+                        .and_modify(|s| *s = s.max(score))
+                        .or_insert(score);
                 } else if let Some(&(Reverse(OrdF32(min_score)), _)) = heap.peek() {
                     if score > min_score {
                         heap.pop();
                         heap.push(entry);
+                        // Track max score for threshold filtering
+                        max_scores
+                            .entry(global_c)
+                            .and_modify(|s| *s = s.max(score))
+                            .or_insert(score);
                     }
                 }
             }
@@ -179,6 +205,12 @@ fn ivf_probe_batched(
             selected.insert(c);
         }
     }
+
+    // Apply centroid score threshold if set
+    if let Some(threshold) = centroid_score_threshold {
+        selected.retain(|c| max_scores.get(c).copied().unwrap_or(f32::NEG_INFINITY) >= threshold);
+    }
+
     selected.into_iter().collect()
 }
 
@@ -271,6 +303,11 @@ pub fn search_one(
             })
             .collect();
 
+        // Apply centroid score threshold if set
+        if let Some(threshold) = params.centroid_score_threshold {
+            centroid_scores.retain(|(_, score)| *score >= threshold);
+        }
+
         centroid_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         centroid_scores
             .iter()
@@ -298,6 +335,18 @@ pub fn search_one(
             for (c, _) in centroid_scores.iter().take(params.n_ivf_probe) {
                 selected_centroids.insert(*c);
             }
+        }
+
+        // Apply centroid score threshold: filter out centroids where max score < threshold
+        // A centroid passes if max(score across all query tokens) >= threshold
+        if let Some(threshold) = params.centroid_score_threshold {
+            selected_centroids.retain(|&c| {
+                let max_score: f32 = (0..num_query_tokens)
+                    .map(|q_idx| query_centroid_scores[[q_idx, c]])
+                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                    .unwrap_or(f32::NEG_INFINITY);
+                max_score >= threshold
+            });
         }
 
         selected_centroids.into_iter().collect()
@@ -530,6 +579,11 @@ pub fn search_one_mmap(
             })
             .collect();
 
+        // Apply centroid score threshold if set
+        if let Some(threshold) = params.centroid_score_threshold {
+            centroid_scores.retain(|(_, score)| *score >= threshold);
+        }
+
         centroid_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         centroid_scores
             .iter()
@@ -550,6 +604,17 @@ pub fn search_one_mmap(
             for (c, _) in centroid_scores.iter().take(params.n_ivf_probe) {
                 selected_centroids.insert(*c);
             }
+        }
+
+        // Apply centroid score threshold: filter out centroids where max score < threshold
+        if let Some(threshold) = params.centroid_score_threshold {
+            selected_centroids.retain(|&c| {
+                let max_score: f32 = (0..num_query_tokens)
+                    .map(|q_idx| query_centroid_scores[[q_idx, c]])
+                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                    .unwrap_or(f32::NEG_INFINITY);
+                max_score >= threshold
+            });
         }
 
         selected_centroids.into_iter().collect()
@@ -653,6 +718,7 @@ fn search_one_mmap_batched(
         &index.codec.centroids,
         params.n_ivf_probe,
         params.centroid_batch_size,
+        params.centroid_score_threshold,
     );
 
     // Step 2: Get candidate documents from IVF
@@ -819,5 +885,6 @@ mod tests {
         assert_eq!(params.n_full_scores, 4096);
         assert_eq!(params.top_k, 10);
         assert_eq!(params.n_ivf_probe, 8);
+        assert_eq!(params.centroid_score_threshold, Some(0.4));
     }
 }

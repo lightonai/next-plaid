@@ -388,6 +388,8 @@ fn test_create_update_delete_update_workflow() {
     let params = SearchParameters {
         top_k: 10,
         n_ivf_probe: 4,
+        // Disable threshold for random embeddings test (random vectors have low similarity)
+        centroid_score_threshold: None,
         ..Default::default()
     };
     let result = index.search(&random_query, &params, None).unwrap();

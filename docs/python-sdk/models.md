@@ -41,6 +41,7 @@ params = SearchParams(
     top_k=10,
     n_ivf_probe=8,
     n_full_scores=4096,
+    centroid_score_threshold=0.4,
 )
 ```
 
@@ -49,12 +50,16 @@ params = SearchParams(
 | `top_k` | `int` | `10` | Number of results to return |
 | `n_ivf_probe` | `int` | `8` | Number of IVF cells to probe |
 | `n_full_scores` | `int` | `4096` | Candidates for exact scoring |
+| `centroid_score_threshold` | `float \| None` | `0.4` | Centroid pruning threshold. Set to `None` to disable |
 
 **Tuning Guidelines:**
 
 - Increase `n_ivf_probe` for better recall (slower)
 - Increase `n_full_scores` for more accurate ranking (slower)
 - Decrease both for faster but less accurate search
+- Increase `centroid_score_threshold` (0.45-0.5) for faster search with smaller k
+- Decrease `centroid_score_threshold` (0.3-0.4) for better recall with larger k
+- Set `centroid_score_threshold=None` to disable pruning (slowest but most accurate)
 
 ---
 

@@ -83,6 +83,7 @@ params = SearchParams(
     top_k=10,
     n_ivf_probe=8,
     n_full_scores=4096,
+    centroid_score_threshold=0.4,
 )
 results = client.search("my_index", queries, params)
 ```
@@ -96,6 +97,7 @@ results = client.search("my_index", queries, params)
 | `n_full_scores` | `int` | `4096` | Candidates for exact scoring |
 | `batch_size` | `int` | `2000` | Documents per scoring batch |
 | `centroid_batch_size` | `int` | `100000` | Batch size for centroid scoring (0 = exhaustive) |
+| `centroid_score_threshold` | `float?` | `0.4` | Centroid pruning threshold. Set to `None` to disable |
 
 ### top_k
 
@@ -127,6 +129,21 @@ Number of candidate documents for exact MaxSim scoring.
 | 4096 | Balanced (default) |
 | 8192+ | High accuracy |
 
+### centroid_score_threshold
+
+Centroid pruning threshold that filters out low-scoring centroids during search.
+
+- Centroids with max score (across all query tokens) below this threshold are filtered
+- Significantly speeds up search with minimal quality impact
+- Set to `None` to disable pruning entirely
+
+| Value | Use Case |
+|-------|----------|
+| `None` | Maximum accuracy, slowest |
+| 0.35-0.4 | High recall for large top_k |
+| 0.4 | Balanced (default) |
+| 0.45-0.5 | Faster for small top_k |
+
 ### Tuning Guidelines
 
 **Maximum quality:**
@@ -136,6 +153,7 @@ SearchParams(
     top_k=100,
     n_ivf_probe=32,
     n_full_scores=16384,
+    centroid_score_threshold=None,  # Disable pruning
 )
 ```
 
@@ -146,6 +164,7 @@ SearchParams(
     top_k=10,
     n_ivf_probe=8,
     n_full_scores=4096,
+    centroid_score_threshold=0.4,
 )
 ```
 
@@ -156,6 +175,7 @@ SearchParams(
     top_k=10,
     n_ivf_probe=4,
     n_full_scores=1024,
+    centroid_score_threshold=0.5,  # Aggressive pruning
 )
 ```
 

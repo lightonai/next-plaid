@@ -23,6 +23,7 @@ Search an index with query embeddings.
 | `params.top_k` | `int` | No | Results per query (default: 10) |
 | `params.n_ivf_probe` | `int` | No | IVF cells to probe (default: 8) |
 | `params.n_full_scores` | `int` | No | Candidates for scoring (default: 4096) |
+| `params.centroid_score_threshold` | `float?` | No | Centroid pruning threshold (default: 0.4). Set to null to disable |
 | `subset` | `array` | No | Limit search to these document IDs |
 
 === "Request"
@@ -293,6 +294,16 @@ Search with text queries and metadata filtering.
 | `n_full_scores` | 4096 | Candidates for exact scoring |
 | `batch_size` | 2000 | Documents per scoring batch |
 | `centroid_batch_size` | 100000 | Batch size for centroid scoring (0 = exhaustive) |
+| `centroid_score_threshold` | 0.4 | Centroid pruning threshold. Set to null to disable |
+
+### Centroid Score Threshold
+
+The `centroid_score_threshold` parameter enables centroid pruning during search. Centroids with a maximum score (across all query tokens) below this threshold are filtered out before scoring. This significantly speeds up search with minimal quality impact.
+
+- **Default (0.4)**: Good balance between speed and quality
+- **Higher values (0.45-0.5)**: Faster, more aggressive pruning (use for smaller k values)
+- **Lower values (0.3-0.4)**: More candidates, better recall (use for larger k values)
+- **null**: Disable pruning entirely (slowest but most accurate)
 
 ### Tuning for Quality vs Speed
 
@@ -303,7 +314,8 @@ Search with text queries and metadata filtering.
   "params": {
     "top_k": 100,
     "n_ivf_probe": 32,
-    "n_full_scores": 8192
+    "n_full_scores": 8192,
+    "centroid_score_threshold": 0.35
   }
 }
 ```
@@ -315,7 +327,8 @@ Search with text queries and metadata filtering.
   "params": {
     "top_k": 10,
     "n_ivf_probe": 4,
-    "n_full_scores": 1024
+    "n_full_scores": 1024,
+    "centroid_score_threshold": 0.5
   }
 }
 ```

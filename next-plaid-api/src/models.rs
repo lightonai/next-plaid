@@ -199,6 +199,12 @@ pub struct SearchParamsRequest {
     #[serde(default)]
     #[schema(example = 4096)]
     pub n_full_scores: Option<usize>,
+    /// Centroid score threshold for centroid pruning (default: 0.4).
+    /// Centroids with max score below this threshold are filtered out.
+    /// Set to null to disable pruning. Lower values = more candidates = slower but more accurate.
+    #[serde(default)]
+    #[schema(example = 0.4)]
+    pub centroid_score_threshold: Option<Option<f32>>,
 }
 
 /// Single query result.

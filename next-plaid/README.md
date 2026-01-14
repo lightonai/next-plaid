@@ -167,6 +167,7 @@ let result = index.search(&query, &params, Some(&subset))?;
 | `top_k` | 10 | Number of results to return |
 | `n_ivf_probe` | 8 | Cluster probes per query token |
 | `centroid_batch_size` | 100000 | Batch size for centroid scoring (0 = exhaustive) |
+| `centroid_score_threshold` | Some(0.4) | Centroid score threshold for pruning. Set to None to disable |
 
 ### UpdateConfig
 

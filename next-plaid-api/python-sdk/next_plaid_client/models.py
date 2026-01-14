@@ -112,18 +112,34 @@ class HealthResponse:
 
 @dataclass
 class SearchParams:
-    """Parameters for search operations."""
+    """Parameters for search operations.
+
+    Attributes:
+        top_k: Number of results to return per query (default: 10)
+        n_ivf_probe: Number of IVF cells to probe (default: 8)
+        n_full_scores: Number of documents for exact re-ranking (default: 4096)
+        centroid_score_threshold: Centroid score threshold for centroid pruning (default: 0.4).
+            Centroids with max score below this threshold are filtered out.
+            Set to None to disable pruning. Lower values = more candidates = slower but more accurate.
+    """
 
     top_k: int = 10
     n_ivf_probe: int = 8
     n_full_scores: int = 4096
+    centroid_score_threshold: Optional[float] = 0.4
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "top_k": self.top_k,
             "n_ivf_probe": self.n_ivf_probe,
             "n_full_scores": self.n_full_scores,
         }
+        # Include threshold - None means disable pruning, float value enables it
+        if self.centroid_score_threshold is not None:
+            result["centroid_score_threshold"] = self.centroid_score_threshold
+        else:
+            result["centroid_score_threshold"] = None
+        return result
 
 
 @dataclass
