@@ -122,6 +122,161 @@ fn approximate_score(query_centroid_scores: &Array2<f32>, doc_codes: &ArrayView1
     score
 }
 
+/// Compute adaptive IVF probe for filtered search.
+///
+/// Ensures enough centroids are probed to cover at least `top_k` candidates from the subset.
+/// This function counts how many subset documents are in each centroid, then greedily
+/// selects centroids (by query similarity) until the cumulative document count reaches `top_k`.
+///
+/// Rules:
+/// - Always probe at least `n_ivf_probe` centroids (unless fewer contain the subset)
+/// - If candidates are concentrated in few centroids, probe `n_ivf_probe` centroids
+/// - If candidates are spread thin (1 per centroid), probe at least `top_k` centroids
+fn compute_adaptive_ivf_probe(
+    query_centroid_scores: &Array2<f32>,
+    doc_codes: &[Array1<usize>],
+    subset: &[i64],
+    top_k: usize,
+    n_ivf_probe: usize,
+    centroid_score_threshold: Option<f32>,
+) -> Vec<usize> {
+    // Count unique docs per centroid for subset
+    let mut centroid_doc_counts: HashMap<usize, HashSet<i64>> = HashMap::new();
+    for &doc_id in subset {
+        if let Some(codes) = doc_codes.get(doc_id as usize) {
+            for &c in codes.iter() {
+                centroid_doc_counts.entry(c).or_default().insert(doc_id);
+            }
+        }
+    }
+
+    if centroid_doc_counts.is_empty() {
+        return vec![];
+    }
+
+    // Score each centroid by max query-centroid similarity
+    let mut scored_centroids: Vec<(usize, f32, usize)> = centroid_doc_counts
+        .into_iter()
+        .map(|(c, docs)| {
+            let max_score: f32 = query_centroid_scores
+                .axis_iter(Axis(0))
+                .map(|q| q[c])
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap_or(0.0);
+            (c, max_score, docs.len())
+        })
+        .collect();
+
+    // Apply threshold if set
+    if let Some(threshold) = centroid_score_threshold {
+        scored_centroids.retain(|(_, score, _)| *score >= threshold);
+    }
+
+    // Sort by score descending
+    scored_centroids.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    // Greedily select centroids until we cover top_k candidates
+    let mut cumulative_docs = 0;
+    let mut n_probe = 0;
+
+    for (_, _, doc_count) in &scored_centroids {
+        cumulative_docs += doc_count;
+        n_probe += 1;
+        // Stop when we have enough coverage AND met minimum probe requirement
+        if cumulative_docs >= top_k && n_probe >= n_ivf_probe {
+            break;
+        }
+    }
+
+    // Ensure at least n_ivf_probe centroids (unless fewer exist)
+    n_probe = n_probe.max(n_ivf_probe.min(scored_centroids.len()));
+
+    scored_centroids
+        .iter()
+        .take(n_probe)
+        .map(|(c, _, _)| *c)
+        .collect()
+}
+
+/// Compute adaptive IVF probe for filtered search on memory-mapped index.
+///
+/// Similar to `compute_adaptive_ivf_probe` but works with MmapIndex data structures.
+#[allow(clippy::too_many_arguments)]
+fn compute_adaptive_ivf_probe_mmap(
+    query_centroid_scores: &Array2<f32>,
+    mmap_codes: &crate::mmap::MmapNpyArray1I64,
+    doc_offsets: &[usize],
+    num_docs: usize,
+    subset: &[i64],
+    top_k: usize,
+    n_ivf_probe: usize,
+    centroid_score_threshold: Option<f32>,
+) -> Vec<usize> {
+    // Count unique docs per centroid for subset
+    let mut centroid_doc_counts: HashMap<usize, HashSet<i64>> = HashMap::new();
+    for &doc_id in subset {
+        let doc_idx = doc_id as usize;
+        if doc_idx < num_docs {
+            let start = doc_offsets[doc_idx];
+            let end = doc_offsets[doc_idx + 1];
+            let codes = mmap_codes.slice(start, end);
+            for &c in codes.iter() {
+                centroid_doc_counts
+                    .entry(c as usize)
+                    .or_default()
+                    .insert(doc_id);
+            }
+        }
+    }
+
+    if centroid_doc_counts.is_empty() {
+        return vec![];
+    }
+
+    // Score each centroid by max query-centroid similarity
+    let mut scored_centroids: Vec<(usize, f32, usize)> = centroid_doc_counts
+        .into_iter()
+        .map(|(c, docs)| {
+            let max_score: f32 = query_centroid_scores
+                .axis_iter(Axis(0))
+                .map(|q| q[c])
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap_or(0.0);
+            (c, max_score, docs.len())
+        })
+        .collect();
+
+    // Apply threshold if set
+    if let Some(threshold) = centroid_score_threshold {
+        scored_centroids.retain(|(_, score, _)| *score >= threshold);
+    }
+
+    // Sort by score descending
+    scored_centroids.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    // Greedily select centroids until we cover top_k candidates
+    let mut cumulative_docs = 0;
+    let mut n_probe = 0;
+
+    for (_, _, doc_count) in &scored_centroids {
+        cumulative_docs += doc_count;
+        n_probe += 1;
+        // Stop when we have enough coverage AND met minimum probe requirement
+        if cumulative_docs >= top_k && n_probe >= n_ivf_probe {
+            break;
+        }
+    }
+
+    // Ensure at least n_ivf_probe centroids (unless fewer exist)
+    n_probe = n_probe.max(n_ivf_probe.min(scored_centroids.len()));
+
+    scored_centroids
+        .iter()
+        .take(n_probe)
+        .map(|(c, _, _)| *c)
+        .collect()
+}
+
 /// Wrapper for f32 to use with BinaryHeap (implements Ord)
 #[derive(Clone, Copy, PartialEq)]
 struct OrdF32(f32);
@@ -281,44 +436,15 @@ pub fn search_one(
 
     // Find top IVF cells to probe
     let cells_to_probe: Vec<usize> = if let Some(subset_docs) = subset {
-        // When filtering by subset, only probe centroids that contain subset documents
-        let mut subset_centroids: Vec<usize> = Vec::new();
-        for &doc_id in subset_docs {
-            if (doc_id as usize) < index.doc_codes.len() {
-                subset_centroids.extend(index.doc_codes[doc_id as usize].iter().copied());
-            }
-        }
-        subset_centroids.sort_unstable();
-        subset_centroids.dedup();
-
-        if subset_centroids.is_empty() {
-            return Ok((vec![], vec![]));
-        }
-
-        // Compute scores for subset centroids and take top-k
-        let mut centroid_scores: Vec<(usize, f32)> = subset_centroids
-            .iter()
-            .map(|&c| {
-                let score: f32 = query_centroid_scores
-                    .axis_iter(Axis(0))
-                    .map(|q| q[c])
-                    .max_by(|a, b| a.partial_cmp(b).unwrap())
-                    .unwrap_or(0.0);
-                (c, score)
-            })
-            .collect();
-
-        // Apply centroid score threshold if set
-        if let Some(threshold) = params.centroid_score_threshold {
-            centroid_scores.retain(|(_, score)| *score >= threshold);
-        }
-
-        centroid_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        centroid_scores
-            .iter()
-            .take(params.n_ivf_probe)
-            .map(|(c, _)| *c)
-            .collect()
+        // Use adaptive IVF probing that ensures enough centroids to cover top_k candidates
+        compute_adaptive_ivf_probe(
+            &query_centroid_scores,
+            &index.doc_codes,
+            subset_docs,
+            params.top_k,
+            params.n_ivf_probe,
+            params.centroid_score_threshold,
+        )
     } else {
         // Standard path: select top-k centroids PER query token, then take union
         // This matches fast-plaid's algorithm: for each query token, find the best centroids
@@ -536,8 +662,6 @@ pub fn search_one_mmap(
     params: &SearchParameters,
     subset: Option<&[i64]>,
 ) -> Result<QueryResult> {
-    use ndarray::Axis;
-
     let num_centroids = index.codec.num_centroids();
     let num_query_tokens = query.nrows();
 
@@ -556,51 +680,17 @@ pub fn search_one_mmap(
 
     // Find top IVF cells to probe
     let cells_to_probe: Vec<usize> = if let Some(subset_docs) = subset {
-        // When filtering by subset, only probe centroids that contain subset documents
-        let mut subset_centroids: Vec<usize> = Vec::new();
-        for &doc_id in subset_docs {
-            if (doc_id as usize) < index.doc_lengths.len() {
-                let start = index.doc_offsets[doc_id as usize];
-                let end = index.doc_offsets[doc_id as usize + 1];
-                let codes = index.mmap_codes.slice(start, end);
-                subset_centroids.extend(codes.iter().map(|&c| c as usize));
-            }
-        }
-        subset_centroids.sort_unstable();
-        subset_centroids.dedup();
-
-        if subset_centroids.is_empty() {
-            return Ok(QueryResult {
-                query_id: 0,
-                passage_ids: vec![],
-                scores: vec![],
-            });
-        }
-
-        // Compute scores for subset centroids and take top-k
-        let mut centroid_scores: Vec<(usize, f32)> = subset_centroids
-            .iter()
-            .map(|&c| {
-                let score: f32 = query_centroid_scores
-                    .axis_iter(Axis(0))
-                    .map(|q| q[c])
-                    .max_by(|a, b| a.partial_cmp(b).unwrap())
-                    .unwrap_or(0.0);
-                (c, score)
-            })
-            .collect();
-
-        // Apply centroid score threshold if set
-        if let Some(threshold) = params.centroid_score_threshold {
-            centroid_scores.retain(|(_, score)| *score >= threshold);
-        }
-
-        centroid_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        centroid_scores
-            .iter()
-            .take(params.n_ivf_probe)
-            .map(|(c, _)| *c)
-            .collect()
+        // Use adaptive IVF probing that ensures enough centroids to cover top_k candidates
+        compute_adaptive_ivf_probe_mmap(
+            &query_centroid_scores,
+            &index.mmap_codes,
+            index.doc_offsets.as_slice().unwrap(),
+            index.doc_lengths.len(),
+            subset_docs,
+            params.top_k,
+            params.n_ivf_probe,
+            params.centroid_score_threshold,
+        )
     } else {
         // Standard path: select top-k centroids per query token
         let mut selected_centroids = HashSet::new();
@@ -909,5 +999,350 @@ mod tests {
         assert_eq!(params.top_k, 10);
         assert_eq!(params.n_ivf_probe, 8);
         assert_eq!(params.centroid_score_threshold, Some(0.4));
+    }
+
+    // ========================================================================
+    // Adaptive IVF Probing Tests
+    // ========================================================================
+
+    /// Helper to create doc_codes for testing adaptive probing.
+    /// Returns doc_codes where each document is assigned to the specified centroids.
+    fn create_test_doc_codes(assignments: &[Vec<usize>]) -> Vec<Array1<usize>> {
+        assignments
+            .iter()
+            .map(|codes| Array1::from_vec(codes.clone()))
+            .collect()
+    }
+
+    /// Helper to create query-centroid scores matrix.
+    /// scores[q][c] = score for query token q and centroid c.
+    fn create_query_centroid_scores(scores: Vec<Vec<f32>>) -> Array2<f32> {
+        let nrows = scores.len();
+        let ncols = scores[0].len();
+        let flat: Vec<f32> = scores.into_iter().flatten().collect();
+        Array2::from_shape_vec((nrows, ncols), flat).unwrap()
+    }
+
+    #[test]
+    fn test_adaptive_probe_empty_subset() {
+        // Empty subset should return empty vec
+        let query_scores = create_query_centroid_scores(vec![vec![0.9, 0.8, 0.7, 0.6]]);
+        let doc_codes = create_test_doc_codes(&[vec![0], vec![1], vec![2]]);
+
+        let result = compute_adaptive_ivf_probe(
+            &query_scores,
+            &doc_codes,
+            &[], // empty subset
+            10,  // top_k
+            2,   // n_ivf_probe
+            None,
+        );
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_adaptive_probe_invalid_doc_ids() {
+        // Subset with invalid doc IDs (out of range) should be skipped
+        let query_scores = create_query_centroid_scores(vec![vec![0.9, 0.8, 0.7, 0.6]]);
+        let doc_codes = create_test_doc_codes(&[vec![0], vec![1], vec![2]]);
+
+        let result = compute_adaptive_ivf_probe(
+            &query_scores,
+            &doc_codes,
+            &[100, 200, 300], // all invalid
+            10,
+            2,
+            None,
+        );
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_adaptive_probe_concentrated_candidates() {
+        // Scenario: 180 docs in centroid 0, 20 docs spread across centroids 1-20
+        // With top_k=100, we should only need to probe n_ivf_probe centroids
+        // because centroid 0 alone has 180 docs (> top_k)
+
+        // Create 200 documents: docs 0-179 in centroid 0, docs 180-199 each in centroids 1-20
+        let mut assignments: Vec<Vec<usize>> = Vec::new();
+        for _ in 0..180 {
+            assignments.push(vec![0]); // docs 0-179 in centroid 0
+        }
+        for i in 0..20 {
+            assignments.push(vec![i + 1]); // docs 180-199 in centroids 1-20
+        }
+        let doc_codes = create_test_doc_codes(&assignments);
+
+        // Query scores: centroid 0 has highest score (0.95), others decreasing
+        let mut scores = vec![0.95]; // centroid 0
+        for i in 1..=20 {
+            scores.push(0.9 - (i as f32 * 0.02)); // centroids 1-20: 0.88, 0.86, ...
+        }
+        let query_scores = create_query_centroid_scores(vec![scores]);
+
+        // Subset includes all 200 docs
+        let subset: Vec<i64> = (0..200).collect();
+
+        let result = compute_adaptive_ivf_probe(
+            &query_scores,
+            &doc_codes,
+            &subset,
+            100, // top_k
+            8,   // n_ivf_probe
+            None,
+        );
+
+        // Should probe exactly n_ivf_probe (8) centroids since centroid 0 alone covers top_k
+        assert_eq!(result.len(), 8);
+        // Centroid 0 should be first (highest score)
+        assert_eq!(result[0], 0);
+    }
+
+    #[test]
+    fn test_adaptive_probe_spread_thin_candidates() {
+        // Scenario: 200 docs, each in a different centroid (1 doc per centroid)
+        // With top_k=100, we need to probe at least 100 centroids
+
+        // Create 200 documents, each in its own centroid
+        let assignments: Vec<Vec<usize>> = (0..200).map(|i| vec![i]).collect();
+        let doc_codes = create_test_doc_codes(&assignments);
+
+        // Query scores: decreasing from 0.99 to 0.01
+        let scores: Vec<f32> = (0..200).map(|i| 0.99 - (i as f32 * 0.005)).collect();
+        let query_scores = create_query_centroid_scores(vec![scores]);
+
+        // Subset includes all 200 docs
+        let subset: Vec<i64> = (0..200).collect();
+
+        let result = compute_adaptive_ivf_probe(
+            &query_scores,
+            &doc_codes,
+            &subset,
+            100, // top_k
+            8,   // n_ivf_probe
+            None,
+        );
+
+        // Should probe at least 100 centroids to cover top_k candidates
+        assert!(result.len() >= 100);
+        // Centroids should be sorted by score (highest first)
+        assert_eq!(result[0], 0); // centroid 0 has highest score
+    }
+
+    #[test]
+    fn test_adaptive_probe_subset_smaller_than_top_k() {
+        // Scenario: subset has only 50 docs, but top_k=100
+        // Should probe all centroids containing subset docs
+
+        // 50 docs spread across 25 centroids (2 per centroid)
+        let mut assignments: Vec<Vec<usize>> = Vec::new();
+        for i in 0..50 {
+            assignments.push(vec![i / 2]); // docs 0-1 in c0, 2-3 in c1, etc.
+        }
+        let doc_codes = create_test_doc_codes(&assignments);
+
+        // Query scores for 25 centroids
+        let scores: Vec<f32> = (0..25).map(|i| 0.9 - (i as f32 * 0.02)).collect();
+        let query_scores = create_query_centroid_scores(vec![scores]);
+
+        let subset: Vec<i64> = (0..50).collect();
+
+        let result = compute_adaptive_ivf_probe(
+            &query_scores,
+            &doc_codes,
+            &subset,
+            100, // top_k > subset size
+            8,   // n_ivf_probe
+            None,
+        );
+
+        // Should probe all 25 centroids (can't reach top_k=100 with only 50 docs)
+        assert_eq!(result.len(), 25);
+    }
+
+    #[test]
+    fn test_adaptive_probe_respects_minimum_n_ivf_probe() {
+        // Scenario: 100 docs in 2 centroids (50 each), top_k=10
+        // Even though 1 centroid covers top_k, we should probe at least n_ivf_probe
+
+        let mut assignments: Vec<Vec<usize>> = Vec::new();
+        for _ in 0..50 {
+            assignments.push(vec![0]); // 50 docs in centroid 0
+        }
+        for _ in 0..50 {
+            assignments.push(vec![1]); // 50 docs in centroid 1
+        }
+        let doc_codes = create_test_doc_codes(&assignments);
+
+        let query_scores = create_query_centroid_scores(vec![vec![0.9, 0.8]]);
+        let subset: Vec<i64> = (0..100).collect();
+
+        let result = compute_adaptive_ivf_probe(
+            &query_scores,
+            &doc_codes,
+            &subset,
+            10, // top_k (just 10)
+            8,  // n_ivf_probe (but only 2 centroids exist)
+            None,
+        );
+
+        // Should probe both centroids (min of n_ivf_probe=8 and available=2)
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_adaptive_probe_threshold_filtering() {
+        // Scenario: threshold filters out low-scoring centroids
+
+        // 3 centroids with 10 docs each
+        let mut assignments: Vec<Vec<usize>> = Vec::new();
+        for i in 0..30 {
+            assignments.push(vec![i / 10]); // 0-9 in c0, 10-19 in c1, 20-29 in c2
+        }
+        let doc_codes = create_test_doc_codes(&assignments);
+
+        // Scores: c0=0.9, c1=0.5, c2=0.3
+        let query_scores = create_query_centroid_scores(vec![vec![0.9, 0.5, 0.3]]);
+        let subset: Vec<i64> = (0..30).collect();
+
+        let result = compute_adaptive_ivf_probe(
+            &query_scores,
+            &doc_codes,
+            &subset,
+            20,        // top_k
+            8,         // n_ivf_probe
+            Some(0.4), // threshold filters out c2 (0.3 < 0.4)
+        );
+
+        // Only centroids 0 and 1 should pass threshold
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&0));
+        assert!(result.contains(&1));
+        assert!(!result.contains(&2)); // filtered out
+    }
+
+    #[test]
+    fn test_adaptive_probe_threshold_filters_all() {
+        // Scenario: threshold filters out ALL centroids
+
+        let assignments: Vec<Vec<usize>> = vec![vec![0], vec![1]];
+        let doc_codes = create_test_doc_codes(&assignments);
+
+        // Both centroids have scores below threshold
+        let query_scores = create_query_centroid_scores(vec![vec![0.3, 0.2]]);
+        let subset: Vec<i64> = vec![0, 1];
+
+        let result = compute_adaptive_ivf_probe(
+            &query_scores,
+            &doc_codes,
+            &subset,
+            10,
+            8,
+            Some(0.5), // threshold higher than all scores
+        );
+
+        // All centroids filtered out
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_adaptive_probe_multi_token_query() {
+        // Scenario: query has multiple tokens, centroid score = max across tokens
+
+        // 4 centroids with 10 docs each
+        let assignments: Vec<Vec<usize>> = (0..40).map(|i| vec![i / 10]).collect();
+        let doc_codes = create_test_doc_codes(&assignments);
+
+        // 2 query tokens with different scores per centroid
+        // Token 0: [0.9, 0.3, 0.5, 0.1]
+        // Token 1: [0.2, 0.8, 0.4, 0.7]
+        // Max per centroid: [0.9, 0.8, 0.5, 0.7]
+        let query_scores =
+            create_query_centroid_scores(vec![vec![0.9, 0.3, 0.5, 0.1], vec![0.2, 0.8, 0.4, 0.7]]);
+        let subset: Vec<i64> = (0..40).collect();
+
+        let result = compute_adaptive_ivf_probe(
+            &query_scores,
+            &doc_codes,
+            &subset,
+            15, // top_k (need 2 centroids minimum)
+            2,  // n_ivf_probe
+            None,
+        );
+
+        // Should select centroids by max score: c0(0.9), c1(0.8) first
+        assert!(result.len() >= 2);
+        // First two should be c0 and c1 (highest max scores)
+        assert!(result[..2].contains(&0));
+        assert!(result[..2].contains(&1));
+    }
+
+    #[test]
+    fn test_adaptive_probe_docs_in_multiple_centroids() {
+        // Scenario: each document spans multiple centroids (like real ColBERT)
+
+        // 10 docs, each in 3 centroids
+        let assignments: Vec<Vec<usize>> = vec![
+            vec![0, 1, 2],
+            vec![0, 1, 3],
+            vec![0, 2, 3],
+            vec![1, 2, 3],
+            vec![0, 1, 4],
+            vec![0, 2, 4],
+            vec![1, 3, 4],
+            vec![2, 3, 4],
+            vec![0, 3, 4],
+            vec![1, 2, 4],
+        ];
+        let doc_codes = create_test_doc_codes(&assignments);
+
+        // 5 centroids with scores
+        let query_scores = create_query_centroid_scores(vec![vec![0.9, 0.85, 0.8, 0.75, 0.7]]);
+        let subset: Vec<i64> = (0..10).collect();
+
+        let result = compute_adaptive_ivf_probe(
+            &query_scores,
+            &doc_codes,
+            &subset,
+            5, // top_k
+            2, // n_ivf_probe
+            None,
+        );
+
+        // Centroid 0 contains docs: 0,1,2,4,5,8 (6 docs) - covers top_k=5
+        // Should still probe at least n_ivf_probe=2
+        assert!(result.len() >= 2);
+        // Centroid 0 should be first (highest score)
+        assert_eq!(result[0], 0);
+    }
+
+    #[test]
+    fn test_adaptive_probe_greedy_selection_order() {
+        // Verify that centroids are selected in score order (greedy by similarity)
+
+        // 5 centroids with 20 docs each
+        let assignments: Vec<Vec<usize>> = (0..100).map(|i| vec![i / 20]).collect();
+        let doc_codes = create_test_doc_codes(&assignments);
+
+        // Scores in non-sequential order: c3 > c0 > c4 > c1 > c2
+        let query_scores = create_query_centroid_scores(vec![vec![0.8, 0.5, 0.4, 0.9, 0.6]]);
+        let subset: Vec<i64> = (0..100).collect();
+
+        let result = compute_adaptive_ivf_probe(
+            &query_scores,
+            &doc_codes,
+            &subset,
+            50, // top_k
+            3,  // n_ivf_probe
+            None,
+        );
+
+        // Should select in score order: c3(0.9), c0(0.8), c4(0.6)
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], 3); // highest score
+        assert_eq!(result[1], 0); // second highest
+        assert_eq!(result[2], 4); // third highest
     }
 }
