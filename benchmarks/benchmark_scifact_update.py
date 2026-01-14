@@ -452,9 +452,10 @@ def get_lategrep_binary() -> Path:
     project_root = Path(__file__).parent.parent
 
     # Use accelerate BLAS on macOS for better performance
-    features = "npy"
     if platform.system() == "Darwin":
-        features = "npy,accelerate"
+        features = "accelerate"
+    else:
+        features = "openblas"
 
     result = subprocess.run(
         ["cargo", "build", "--release", "--features", features, "--example", "benchmark_cli"],
