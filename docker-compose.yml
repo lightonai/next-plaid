@@ -9,12 +9,18 @@
 #   Each index is stored as a subdirectory: <data-dir>/<index-name>/
 #   On container restart, existing indices are automatically loaded.
 #
-#   To customize the storage location:
-#     export NEXT_PLAID_DATA=/path/to/data
+# Model Cache:
+#   Downloaded HuggingFace models are cached at ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}
+#   Models are only downloaded once and reused on subsequent container starts.
+#
+#   To customize the storage locations:
+#     export NEXT_PLAID_DATA=/path/to/indices
+#     export NEXT_PLAID_MODELS=/path/to/models
 #     docker compose up -d
 #
 #   Or create a .env file with:
-#     NEXT_PLAID_DATA=/path/to/data
+#     NEXT_PLAID_DATA=/path/to/indices
+#     NEXT_PLAID_MODELS=/path/to/models
 # =============================================================================
 
 services:
@@ -30,8 +36,10 @@ services:
       # Default: ~/.local/share/next-plaid (XDG standard for user data)
       # Override with NEXT_PLAID_DATA environment variable
       - ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}:/data/indices
-      # Named volume for model cache (auto-downloaded from HuggingFace)
-      - next-plaid-models:/models
+      # Persistent model cache (auto-downloaded from HuggingFace)
+      # Default: ~/.cache/huggingface (standard HF cache location)
+      # Override with NEXT_PLAID_MODELS environment variable
+      - ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}:/models
     environment:
       - RUST_LOG=info
     # Auto-download INT8 model from HuggingFace Hub
@@ -50,5 +58,3 @@ services:
         reservations:
           memory: 4G
 
-volumes:
-  next-plaid-models:

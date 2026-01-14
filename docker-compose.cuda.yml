@@ -5,7 +5,13 @@
 #
 # Vector Database Storage:
 #   Indices are persisted at ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}
-#   Override with: export NEXT_PLAID_DATA=/path/to/data
+#
+# Model Cache:
+#   Downloaded HuggingFace models are cached at ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}
+#
+# Override with:
+#   export NEXT_PLAID_DATA=/path/to/indices
+#   export NEXT_PLAID_MODELS=/path/to/models
 # =============================================================================
 
 services:
@@ -17,8 +23,8 @@ services:
     volumes:
       # Persistent vector database storage (default: ~/.local/share/next-plaid)
       - ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}:/data/indices
-      # Named volume for model cache (auto-downloaded from HuggingFace)
-      - next-plaid-models:/models
+      # Persistent model cache (auto-downloaded from HuggingFace)
+      - ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}:/models
     environment:
       - RUST_LOG=info
       - NVIDIA_VISIBLE_DEVICES=all
@@ -36,6 +42,3 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-
-volumes:
-  next-plaid-models:
