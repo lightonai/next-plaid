@@ -33,7 +33,7 @@ jobs:
       - name: Install OpenBLAS
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
       - name: Clippy (main crate)
-        run: cargo clippy --all-targets --features "npy,filtering,openblas" -- -D warnings
+        run: cargo clippy --all-targets --features "openblas" -- -D warnings
       - name: Clippy (API crate)
         run: cargo clippy --package next-plaid-api --all-targets -- -D warnings
 
@@ -55,11 +55,11 @@ jobs:
 
       - name: Run tests (Linux)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo test --features "npy,filtering,openblas"
+        run: cargo test --features "openblas"
 
       - name: Run tests (macOS)
         if: matrix.os == 'macos-latest'
-        run: cargo test --features "npy,filtering,accelerate"
+        run: cargo test --features "accelerate"
 
       - name: Run API tests
         run: cargo test --package next-plaid-api
@@ -73,7 +73,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install OpenBLAS
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
-      - run: cargo doc --no-deps --features "npy,filtering,openblas"
+      - run: cargo doc --no-deps --features "openblas"
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -86,7 +86,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install OpenBLAS
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
-      - run: cargo bench --no-run --features "npy,filtering,openblas"
+      - run: cargo bench --no-run --features "openblas"
 
   onnx-test:
     name: ONNX Crate Tests
