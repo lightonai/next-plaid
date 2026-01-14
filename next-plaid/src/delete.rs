@@ -239,7 +239,139 @@ pub fn delete_from_index(doc_ids: &[i64], index_path: &str) -> Result<usize> {
         &final_metadata,
     )?;
 
+    // Clean up buffer.npy and embeddings.npy (start-from-scratch files)
+    // These files store raw embeddings by document index, so we need to filter them
+    clean_embeddings_files(index_dir, &ids_to_delete)?;
+
     Ok(docs_actually_deleted)
+}
+
+/// Clean up buffer.npy and embeddings.npy files after deletion.
+///
+/// These files store raw embeddings indexed by document ID. When documents are deleted,
+/// we need to remove their embeddings from these files to prevent them from being
+/// re-added during updates.
+fn clean_embeddings_files(index_dir: &Path, ids_to_delete: &HashSet<i64>) -> Result<()> {
+    use ndarray_npy::{ReadNpyExt, WriteNpyExt};
+
+    // Clean embeddings.npy (start-from-scratch storage)
+    let emb_path = index_dir.join("embeddings.npy");
+    let emb_lengths_path = index_dir.join("embeddings_lengths.json");
+
+    if emb_path.exists() && emb_lengths_path.exists() {
+        let flat: Array2<f32> = Array2::read_npy(File::open(&emb_path)?)?;
+        let lengths: Vec<i64> =
+            serde_json::from_reader(BufReader::new(File::open(&emb_lengths_path)?))?;
+
+        let dim = flat.ncols();
+        let mut new_embeddings: Vec<f32> = Vec::new();
+        let mut new_lengths: Vec<i64> = Vec::new();
+        let mut offset = 0;
+
+        for (doc_id, &len) in lengths.iter().enumerate() {
+            let len_usize = len as usize;
+            if !ids_to_delete.contains(&(doc_id as i64)) {
+                // Keep this document's embeddings
+                for row_idx in offset..offset + len_usize {
+                    if row_idx < flat.nrows() {
+                        new_embeddings.extend(flat.row(row_idx).iter());
+                    }
+                }
+                new_lengths.push(len);
+            }
+            offset += len_usize;
+        }
+
+        if !new_lengths.is_empty() {
+            let new_total_rows = new_embeddings.len() / dim;
+            let new_flat = Array2::from_shape_vec((new_total_rows, dim), new_embeddings)
+                .map_err(|e| Error::Delete(format!("Failed to reshape embeddings: {}", e)))?;
+            new_flat.write_npy(File::create(&emb_path)?)?;
+            serde_json::to_writer(
+                BufWriter::new(File::create(&emb_lengths_path)?),
+                &new_lengths,
+            )?;
+        } else {
+            // No documents left, remove the files
+            std::fs::remove_file(&emb_path).ok();
+            std::fs::remove_file(&emb_lengths_path).ok();
+        }
+    }
+
+    // Clean buffer.npy (pending updates storage)
+    let buffer_path = index_dir.join("buffer.npy");
+    let buffer_lengths_path = index_dir.join("buffer_lengths.json");
+    let buffer_info_path = index_dir.join("buffer_info.json");
+
+    if buffer_path.exists() && buffer_lengths_path.exists() {
+        let flat: Array2<f32> = Array2::read_npy(File::open(&buffer_path)?)?;
+        let lengths: Vec<i64> =
+            serde_json::from_reader(BufReader::new(File::open(&buffer_lengths_path)?))?;
+
+        let dim = flat.ncols();
+        let mut new_embeddings: Vec<f32> = Vec::new();
+        let mut new_lengths: Vec<i64> = Vec::new();
+        let mut offset = 0;
+
+        // Buffer documents are indexed relative to existing documents
+        // We need to check the buffer_info to get the starting doc ID
+        let buffer_start_doc_id = if buffer_info_path.exists() {
+            // Buffer documents start after the main index documents
+            // The metadata.json num_documents tells us how many main docs there are
+            let metadata_path = index_dir.join("metadata.json");
+            if metadata_path.exists() {
+                let meta: serde_json::Value =
+                    serde_json::from_reader(BufReader::new(File::open(&metadata_path)?))?;
+                meta.get("num_documents")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        for (i, &len) in lengths.iter().enumerate() {
+            let len_usize = len as usize;
+            let doc_id = buffer_start_doc_id + i as i64;
+            if !ids_to_delete.contains(&doc_id) {
+                // Keep this document's embeddings
+                for row_idx in offset..offset + len_usize {
+                    if row_idx < flat.nrows() {
+                        new_embeddings.extend(flat.row(row_idx).iter());
+                    }
+                }
+                new_lengths.push(len);
+            }
+            offset += len_usize;
+        }
+
+        if !new_lengths.is_empty() {
+            let new_total_rows = new_embeddings.len() / dim;
+            let new_flat = Array2::from_shape_vec((new_total_rows, dim), new_embeddings)
+                .map_err(|e| Error::Delete(format!("Failed to reshape buffer: {}", e)))?;
+            new_flat.write_npy(File::create(&buffer_path)?)?;
+            serde_json::to_writer(
+                BufWriter::new(File::create(&buffer_lengths_path)?),
+                &new_lengths,
+            )?;
+
+            // Update buffer_info.json
+            let buffer_info = serde_json::json!({ "num_docs": new_lengths.len() });
+            serde_json::to_writer(
+                BufWriter::new(File::create(&buffer_info_path)?),
+                &buffer_info,
+            )?;
+        } else {
+            // No documents left in buffer, remove the files
+            std::fs::remove_file(&buffer_path).ok();
+            std::fs::remove_file(&buffer_lengths_path).ok();
+            std::fs::remove_file(&buffer_info_path).ok();
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -346,6 +346,135 @@ fn test_search_empty_subset() {
 }
 
 #[test]
+fn test_create_update_delete_update_workflow() {
+    let dir = setup_test_dir();
+    let path = dir.path().to_str().unwrap();
+    let embedding_dim = 128;
+    let tokens_per_doc = 10;
+
+    // 1. Create initial documents with metadata
+    let initial_embeddings = random_embeddings(3, tokens_per_doc, embedding_dim);
+    let initial_metadata = vec![
+        json!({"name": "Alice", "category": "A", "join_date": "2023-05-17"}),
+        json!({"name": "Bob", "category": "B", "join_date": "2021-06-21"}),
+        json!({"name": "Alex", "category": "A", "join_date": "2023-08-01"}),
+    ];
+
+    let config = IndexConfig {
+        nbits: 4,
+        batch_size: 100,
+        seed: Some(42),
+        ..Default::default()
+    };
+    let mut index = Index::create_with_kmeans(&initial_embeddings, path, &config).unwrap();
+    let doc_ids: Vec<i64> = (0..3).collect();
+    filtering::create(path, &initial_metadata, &doc_ids).unwrap();
+
+    // Verify 3 documents after initial creation
+    assert_eq!(
+        filtering::count(path).unwrap(),
+        3,
+        "Expected 3 documents after initial creation"
+    );
+    assert_eq!(
+        index.metadata.num_documents, 3,
+        "Expected 3 documents in index after initial creation"
+    );
+
+    // Search should return 3 results
+    let random_query = random_embeddings(1, tokens_per_doc, embedding_dim)
+        .pop()
+        .unwrap();
+    let params = SearchParameters {
+        top_k: 10,
+        n_ivf_probe: 4,
+        ..Default::default()
+    };
+    let result = index.search(&random_query, &params, None).unwrap();
+    assert_eq!(
+        result.passage_ids.len(),
+        3,
+        "Expected 3 search results after initial creation"
+    );
+
+    // 2. Update with 1 new document
+    let new_embeddings = random_embeddings(1, tokens_per_doc, embedding_dim);
+    let new_metadata = vec![json!({"name": "Charlie", "category": "B", "join_date": "2020-03-15"})];
+
+    let update_config = next_plaid::UpdateConfig::default();
+    let new_doc_ids = index.update(&new_embeddings, &update_config).unwrap();
+    filtering::update(path, &new_metadata, &new_doc_ids).unwrap();
+
+    // Verify 4 documents after update
+    assert_eq!(
+        filtering::count(path).unwrap(),
+        4,
+        "Expected 4 documents after update"
+    );
+    assert_eq!(
+        index.metadata.num_documents, 4,
+        "Expected 4 documents in index after update"
+    );
+
+    // Search should return 4 results
+    let result = index.search(&random_query, &params, None).unwrap();
+    assert_eq!(
+        result.passage_ids.len(),
+        4,
+        "Expected 4 search results after update"
+    );
+
+    // 3. Delete document with ID 3
+    let deleted = index.delete(&[3]).unwrap();
+    assert_eq!(deleted, 1, "Expected 1 document to be deleted");
+
+    // Verify 3 documents after deletion
+    assert_eq!(
+        filtering::count(path).unwrap(),
+        3,
+        "Expected 3 documents after deletion"
+    );
+    assert_eq!(
+        index.metadata.num_documents, 3,
+        "Expected 3 documents in index after deletion"
+    );
+
+    // Search should return 3 results
+    let result = index.search(&random_query, &params, None).unwrap();
+    assert_eq!(
+        result.passage_ids.len(),
+        3,
+        "Expected 3 search results after deletion"
+    );
+
+    // 4. Update again with same new document
+    let new_embeddings = random_embeddings(1, tokens_per_doc, embedding_dim);
+    let new_metadata = vec![json!({"name": "Charlie", "category": "B", "join_date": "2020-03-15"})];
+
+    let new_doc_ids = index.update(&new_embeddings, &update_config).unwrap();
+    filtering::update(path, &new_metadata, &new_doc_ids).unwrap();
+
+    // Verify 4 documents after second update
+    assert_eq!(
+        filtering::count(path).unwrap(),
+        4,
+        "Expected 4 documents after second update"
+    );
+    assert_eq!(
+        index.metadata.num_documents, 4,
+        "Expected 4 documents in index after second update"
+    );
+
+    // Search should return 4 results
+    let result = index.search(&random_query, &params, None).unwrap();
+    assert_eq!(
+        result.passage_ids.len(),
+        4,
+        "Expected 4 search results after second update"
+    );
+}
+
+#[test]
 fn test_numeric_range_queries() {
     let dir = setup_test_dir();
     let path = dir.path().to_str().unwrap();
