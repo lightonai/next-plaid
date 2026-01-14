@@ -4,6 +4,11 @@ use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2, Axis};
 
 use crate::error::{Error, Result};
 
+/// Maximum memory (bytes) to allocate for nearest centroid computation in `compress_into_codes`.
+/// This limits the size of the [batch_size, num_centroids] scores matrix to prevent OOM errors
+/// with large centroid counts (e.g., 2.5M centroids).
+const MAX_NEAREST_CENTROID_MEMORY: usize = 4 * 1024 * 1024 * 1024; // 4GB
+
 /// Storage backend for centroids, supporting both owned arrays and memory-mapped files.
 ///
 /// This enum enables `ResidualCodec` to work with centroids stored either:
@@ -239,14 +244,19 @@ impl ResidualCodec {
 
         // Get centroids view once (zero-copy for both owned and mmap)
         let centroids = self.centroids_view();
+        let num_centroids = centroids.nrows();
 
-        // Process in batches to avoid memory issues with large matrices
-        const BATCH_SIZE: usize = 2048;
+        // Dynamic batch size to stay within memory budget.
+        // The scores matrix has shape [batch_size, num_centroids] with f32 elements.
+        // With 2.5M centroids and 4GB budget: batch_size = 4GB / (2.5M * 4) = 400
+        let max_batch_by_memory =
+            MAX_NEAREST_CENTROID_MEMORY / (num_centroids * std::mem::size_of::<f32>());
+        let batch_size = max_batch_by_memory.clamp(1, 2048);
 
         let mut all_codes = Vec::with_capacity(n);
 
-        for start in (0..n).step_by(BATCH_SIZE) {
-            let end = (start + BATCH_SIZE).min(n);
+        for start in (0..n).step_by(batch_size) {
+            let end = (start + batch_size).min(n);
             let batch = embeddings.slice(ndarray::s![start..end, ..]);
 
             // Batch matrix multiplication: [batch, dim] @ [dim, K] -> [batch, K]
