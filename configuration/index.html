@@ -1638,7 +1638,7 @@
 <td><code>nbits</code></td>
 <td><code>int</code></td>
 <td><code>4</code></td>
-<td>Quantization bits for residuals</td>
+<td>Quantization bits for residuals (2 or 4)</td>
 </tr>
 <tr>
 <td><code>batch_size</code></td>
@@ -1649,8 +1649,20 @@
 <tr>
 <td><code>seed</code></td>
 <td><code>int?</code></td>
-<td><code>None</code></td>
+<td><code>42</code></td>
 <td>Random seed for reproducibility</td>
+</tr>
+<tr>
+<td><code>kmeans_niters</code></td>
+<td><code>int</code></td>
+<td><code>4</code></td>
+<td>K-means iterations</td>
+</tr>
+<tr>
+<td><code>max_points_per_centroid</code></td>
+<td><code>int</code></td>
+<td><code>256</code></td>
+<td>Maximum points per centroid for K-means</td>
 </tr>
 <tr>
 <td><code>start_from_scratch</code></td>
@@ -1751,6 +1763,18 @@
 <td><code>int</code></td>
 <td><code>4096</code></td>
 <td>Candidates for exact scoring</td>
+</tr>
+<tr>
+<td><code>batch_size</code></td>
+<td><code>int</code></td>
+<td><code>2000</code></td>
+<td>Documents per scoring batch</td>
+</tr>
+<tr>
+<td><code>centroid_batch_size</code></td>
+<td><code>int</code></td>
+<td><code>100000</code></td>
+<td>Batch size for centroid scoring (0 = exhaustive)</td>
 </tr>
 </tbody>
 </table>

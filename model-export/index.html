@@ -1593,11 +1593,11 @@
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pylate-onnx-export<span class="w"> </span>lightonai/GTE-ModernColBERT-v1
 </span></code></pre></div>
 <p>This creates a directory with:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>GTE-ModernColBERT-v1-onnx/
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>├── model.onnx           # ONNX model
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>├── tokenizer.json       # Tokenizer
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>├── tokenizer_config.json
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>└── config.json          # Model config
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>GTE-ModernColBERT-v1/
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>├── model.onnx                        # FP32 ONNX model
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>├── model_int8.onnx                   # INT8 quantized (with --quantize)
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>├── tokenizer.json                    # Tokenizer
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>└── config_sentence_transformers.json # Model config
 </span></code></pre></div>
 <h3 id="export-with-quantization">Export with Quantization<a class="headerlink" href="#export-with-quantization" title="Permanent link">&para;</a></h3>
 <p>INT8 quantization reduces model size and improves inference speed:</p>

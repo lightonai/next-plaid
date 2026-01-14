@@ -676,10 +676,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#deletedocumentsresponse" class="md-nav__link">
+  <a href="#delete-documents-response" class="md-nav__link">
     <span class="md-ellipsis">
       
-        DeleteDocumentsResponse
+        Delete Documents Response
       
     </span>
   </a>
@@ -1327,10 +1327,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#deletedocumentsresponse" class="md-nav__link">
+  <a href="#delete-documents-response" class="md-nav__link">
     <span class="md-ellipsis">
       
-        DeleteDocumentsResponse
+        Delete Documents Response
       
     </span>
   </a>
@@ -1922,33 +1922,21 @@
 </tbody>
 </table>
 <hr />
-<h3 id="deletedocumentsresponse">DeleteDocumentsResponse<a class="headerlink" href="#deletedocumentsresponse" title="Permanent link">&para;</a></h3>
-<p>Response from document deletion.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">result</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">delete_documents</span><span class="p">(</span><span class="s2">&quot;my_index&quot;</span><span class="p">,</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">])</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">deleted</span><span class="p">)</span>    <span class="c1"># 3</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">remaining</span><span class="p">)</span>  <span class="c1"># 997</span>
+<h3 id="delete-documents-response">Delete Documents Response<a class="headerlink" href="#delete-documents-response" title="Permanent link">&para;</a></h3>
+<p>The delete operation is asynchronous and returns a string message indicating how many documents were queued for deletion.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">result</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">delete_documents</span><span class="p">(</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="s2">&quot;my_index&quot;</span><span class="p">,</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="n">condition</span><span class="o">=</span><span class="s2">&quot;category = ? AND year &lt; ?&quot;</span><span class="p">,</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;outdated&quot;</span><span class="p">,</span> <span class="mi">2020</span><span class="p">]</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="p">)</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>  <span class="c1"># &quot;Delete queued: 15 documents matching condition&quot;</span>
 </span></code></pre></div>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Type</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>deleted</code></td>
-<td><code>int</code></td>
-<td>Documents deleted</td>
-</tr>
-<tr>
-<td><code>remaining</code></td>
-<td><code>int</code></td>
-<td>Documents remaining</td>
-</tr>
-</tbody>
-</table>
+<div class="admonition info">
+<p class="admonition-title">Asynchronous Operation</p>
+<p>The delete endpoint returns HTTP 202 Accepted immediately. The actual deletion
+happens in the background. Use the index info endpoint to verify document counts
+after deletion completes.</p>
+</div>
 <hr />
 <h2 id="input-models">Input Models<a class="headerlink" href="#input-models" title="Permanent link">&para;</a></h2>
 <h3 id="document">Document<a class="headerlink" href="#document" title="Permanent link">&para;</a></h3>
