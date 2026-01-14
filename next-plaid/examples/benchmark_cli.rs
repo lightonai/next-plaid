@@ -8,12 +8,9 @@
 //!     benchmark_cli update --index-dir <path> --data-dir <path>
 //!     benchmark_cli search --index-dir <path> --query-dir <path> [--top-k <n>]
 
-#[cfg(feature = "npy")]
 use std::fs::{self, File};
-#[cfg(feature = "npy")]
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "npy")]
 use next_plaid::index::Index;
 use next_plaid::{IndexConfig, SearchParameters, UpdateConfig};
 
@@ -73,7 +70,6 @@ Search Options:
     );
 }
 
-#[cfg(feature = "npy")]
 fn run_create(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut data_dir: Option<PathBuf> = None;
     let mut index_dir: Option<PathBuf> = None;
@@ -127,12 +123,6 @@ fn run_create(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(not(feature = "npy"))]
-fn run_create(_args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    Err("Index creation requires 'npy' feature".into())
-}
-
-#[cfg(feature = "npy")]
 fn run_update(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut index_dir: Option<PathBuf> = None;
     let mut data_dir: Option<PathBuf> = None;
@@ -182,12 +172,6 @@ fn run_update(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(not(feature = "npy"))]
-fn run_update(_args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    Err("Index update requires 'npy' feature".into())
-}
-
-#[cfg(feature = "npy")]
 fn run_search(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     use next_plaid::MmapIndex;
 
@@ -279,12 +263,6 @@ fn run_search(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(not(feature = "npy"))]
-fn run_search(_args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    Err("Search requires 'npy' feature".into())
-}
-
-#[cfg(feature = "npy")]
 fn load_embeddings(
     data_dir: &Path,
 ) -> Result<Vec<ndarray::Array2<f32>>, Box<dyn std::error::Error>> {
@@ -317,7 +295,6 @@ fn load_embeddings(
     Ok(embeddings)
 }
 
-#[cfg(feature = "npy")]
 fn load_centroids(data_dir: &Path) -> Result<ndarray::Array2<f32>, Box<dyn std::error::Error>> {
     use ndarray::Array2;
     use ndarray_npy::ReadNpyExt;
@@ -328,7 +305,6 @@ fn load_centroids(data_dir: &Path) -> Result<ndarray::Array2<f32>, Box<dyn std::
     Ok(centroids)
 }
 
-#[cfg(feature = "npy")]
 fn load_queries(query_dir: &Path) -> Result<Vec<ndarray::Array2<f32>>, Box<dyn std::error::Error>> {
     use ndarray::Array2;
     use ndarray_npy::ReadNpyExt;

@@ -49,22 +49,18 @@ pub enum Error {
     Delete(String),
 
     /// Error during filtering/metadata operation
-    #[cfg(feature = "filtering")]
     #[error("Filtering error: {0}")]
     Filtering(String),
 
     /// SQLite database error
-    #[cfg(feature = "filtering")]
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
     /// NPY read error
-    #[cfg(feature = "npy")]
     #[error("NPY read error: {0}")]
     NpyRead(#[from] ndarray_npy::ReadNpyError),
 
     /// NPY write error
-    #[cfg(feature = "npy")]
     #[error("NPY write error: {0}")]
     NpyWrite(#[from] ndarray_npy::WriteNpyError),
 }

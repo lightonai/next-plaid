@@ -6,23 +6,15 @@
 //! - IVF full rebuild after deletion
 //! - Metadata synchronization
 
-#[cfg(feature = "npy")]
 use std::collections::{BTreeMap, HashSet};
-#[cfg(feature = "npy")]
 use std::fs::File;
-#[cfg(feature = "npy")]
 use std::io::{BufReader, BufWriter};
-#[cfg(feature = "npy")]
 use std::path::Path;
 
-#[cfg(feature = "npy")]
 use ndarray::{Array1, Array2};
 
-#[cfg(feature = "npy")]
 use crate::error::Error;
-#[cfg(feature = "npy")]
 use crate::error::Result;
-#[cfg(feature = "npy")]
 use crate::index::Metadata;
 
 /// Delete documents from an existing index.
@@ -48,7 +40,6 @@ use crate::index::Metadata;
 /// let deleted = delete_from_index(&[2, 5, 7], "/path/to/index")?;
 /// println!("Deleted {} documents", deleted);
 /// ```
-#[cfg(feature = "npy")]
 pub fn delete_from_index(doc_ids: &[i64], index_path: &str) -> Result<usize> {
     use ndarray_npy::{ReadNpyExt, WriteNpyExt};
 
@@ -257,7 +248,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(feature = "npy")]
     fn test_delete_from_index() {
         use crate::index::{Index, IndexConfig};
         use ndarray::Array2;
@@ -335,7 +325,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "npy")]
     fn test_delete_nonexistent_docs() {
         use crate::index::{Index, IndexConfig};
         use ndarray::Array2;

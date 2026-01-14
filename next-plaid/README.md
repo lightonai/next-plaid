@@ -13,7 +13,7 @@ A CPU-based Rust implementation of the PLAID algorithm for efficient multi-vecto
 - **BLAS Acceleration**: Optional Accelerate (macOS) or OpenBLAS backends for faster matrix operations
 - **Memory Efficient**: Significantly lower memory usage compared to GPU-based solutions
 - **K-means Integration**: Uses [fastkmeans-rs](https://github.com/lightonai/fastkmeans-rs) for centroid computation
-- **Metadata Filtering**: Optional SQLite-based metadata storage for filtered search
+- **Metadata Filtering**: SQLite-based metadata storage for filtered search
 
 ## Installation
 
@@ -24,13 +24,6 @@ Add to your `Cargo.toml`:
 next-plaid = { git = "https://github.com/lightonai/next-plaid" }
 ```
 
-For NPY file support (required for index persistence):
-
-```toml
-[dependencies]
-next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy"] }
-```
-
 ### BLAS Acceleration (Recommended)
 
 For optimal performance, enable BLAS acceleration:
@@ -39,26 +32,17 @@ For optimal performance, enable BLAS acceleration:
 
 ```toml
 [dependencies]
-next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy", "accelerate"] }
+next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["accelerate"] }
 ```
 
 **Linux (OpenBLAS):**
 
 ```toml
 [dependencies]
-next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy", "openblas"] }
+next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["openblas"] }
 ```
 
 Note: OpenBLAS requires the system library to be installed (`apt install libopenblas-dev` on Ubuntu).
-
-### Metadata Filtering (Optional)
-
-For SQLite-based metadata filtering:
-
-```toml
-[dependencies]
-next-plaid = { git = "https://github.com/lightonai/next-plaid", features = ["npy", "filtering"] }
-```
 
 ## Quick Start
 
@@ -126,7 +110,7 @@ let index = Index::update_or_create(
 
 ### Filtered Search with Metadata
 
-The `filtering` feature provides SQLite-based metadata storage for efficient filtered search:
+SQLite-based metadata storage enables efficient filtered search:
 
 ```rust
 use next_plaid::{Index, IndexConfig, SearchParameters, filtering};
@@ -210,8 +194,6 @@ The PLAID (Passage-Level Aligned Interaction with Documents) algorithm works in 
 
 | Feature | Description |
 |---------|-------------|
-| `npy` | Index persistence with ndarray-npy |
-| `filtering` | SQLite-based metadata support |
 | `accelerate` | macOS BLAS acceleration |
 | `openblas` | Linux OpenBLAS acceleration |
 

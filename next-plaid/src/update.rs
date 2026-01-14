@@ -6,33 +6,23 @@
 //! - Centroid expansion for outliers
 //! - Cluster threshold updates
 
-#[cfg(feature = "npy")]
 use std::collections::HashMap;
 use std::fs;
-#[cfg(feature = "npy")]
 use std::fs::File;
-#[cfg(feature = "npy")]
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "npy")]
 use ndarray::{s, Array1, Array2, Axis};
-#[cfg(feature = "npy")]
 use rayon::prelude::*;
 
-#[cfg(feature = "npy")]
 use crate::codec::ResidualCodec;
-#[cfg(feature = "npy")]
 use crate::error::Error;
 use crate::error::Result;
-#[cfg(feature = "npy")]
 use crate::index::Metadata;
-#[cfg(feature = "npy")]
 use crate::kmeans::compute_kmeans;
 use crate::kmeans::ComputeKmeansConfig;
-#[cfg(feature = "npy")]
 use crate::utils::quantile;
 
 /// Default batch size for processing documents (matches fast-plaid).
@@ -92,7 +82,6 @@ impl UpdateConfig {
 ///
 /// Returns an empty vector if buffer.npy doesn't exist.
 /// Uses buffer_lengths.json to split the flattened array back into per-document arrays.
-#[cfg(feature = "npy")]
 pub fn load_buffer(index_path: &Path) -> Result<Vec<Array2<f32>>> {
     use ndarray_npy::ReadNpyExt;
 
@@ -137,7 +126,6 @@ pub fn load_buffer(index_path: &Path) -> Result<Vec<Array2<f32>>> {
 /// Save embeddings to buffer.npy.
 ///
 /// Also saves buffer_info.json with the number of documents for deletion tracking.
-#[cfg(feature = "npy")]
 pub fn save_buffer(index_path: &Path, embeddings: &[Array2<f32>]) -> Result<()> {
     use ndarray_npy::WriteNpyExt;
 
@@ -180,7 +168,6 @@ pub fn save_buffer(index_path: &Path, embeddings: &[Array2<f32>]) -> Result<()> 
 /// Load buffer info (number of buffered documents).
 ///
 /// Returns 0 if buffer_info.json doesn't exist.
-#[cfg(feature = "npy")]
 pub fn load_buffer_info(index_path: &Path) -> Result<usize> {
     let info_path = index_path.join("buffer_info.json");
     if !info_path.exists() {
@@ -215,7 +202,6 @@ pub fn clear_buffer(index_path: &Path) -> Result<()> {
 ///
 /// This function loads raw embeddings that were saved for start-from-scratch rebuilds.
 /// The embeddings are stored in a flat 2D array with a separate lengths file.
-#[cfg(feature = "npy")]
 pub fn load_embeddings_npy(index_path: &Path) -> Result<Vec<Array2<f32>>> {
     use ndarray_npy::ReadNpyExt;
 
@@ -259,7 +245,6 @@ pub fn load_embeddings_npy(index_path: &Path) -> Result<Vec<Array2<f32>>> {
 /// Stores embeddings in embeddings.npy (flat array) + embeddings_lengths.json.
 /// This matches fast-plaid's behavior of storing raw embeddings when the index
 /// is below the start_from_scratch threshold.
-#[cfg(feature = "npy")]
 pub fn save_embeddings_npy(index_path: &Path, embeddings: &[Array2<f32>]) -> Result<()> {
     use ndarray_npy::WriteNpyExt;
 
@@ -316,7 +301,6 @@ pub fn embeddings_npy_exists(index_path: &Path) -> bool {
 // ============================================================================
 
 /// Load cluster threshold from cluster_threshold.npy.
-#[cfg(feature = "npy")]
 pub fn load_cluster_threshold(index_path: &Path) -> Result<f32> {
     use ndarray_npy::ReadNpyExt;
 
@@ -330,7 +314,6 @@ pub fn load_cluster_threshold(index_path: &Path) -> Result<f32> {
 }
 
 /// Update cluster_threshold.npy with weighted average.
-#[cfg(feature = "npy")]
 pub fn update_cluster_threshold(
     index_path: &Path,
     new_residual_norms: &Array1<f32>,
@@ -368,7 +351,6 @@ pub fn update_cluster_threshold(
 /// Find outlier embeddings that are far from all existing centroids.
 ///
 /// Returns indices of embeddings where min L2² distance > threshold².
-#[cfg(feature = "npy")]
 fn find_outliers(
     flat_embeddings: &Array2<f32>,
     centroids: &Array2<f32>,
@@ -411,7 +393,6 @@ fn find_outliers(
 /// 6. Update metadata.json num_partitions
 ///
 /// Returns the number of new centroids added.
-#[cfg(feature = "npy")]
 pub fn update_centroids(
     index_path: &Path,
     new_embeddings: &[Array2<f32>],
@@ -543,7 +524,6 @@ pub fn update_centroids(
 /// # Returns
 ///
 /// The number of new documents added
-#[cfg(feature = "npy")]
 pub fn update_index(
     embeddings: &[Array2<f32>],
     index_path: &str,
@@ -878,7 +858,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "npy")]
     fn test_find_outliers() {
         // Create centroids at (0,0), (1,1)
         let centroids = Array2::from_shape_vec((2, 2), vec![0.0, 0.0, 1.0, 1.0]).unwrap();
@@ -896,7 +875,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "npy")]
     fn test_buffer_roundtrip() {
         use tempfile::TempDir;
 
@@ -927,7 +905,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "npy")]
     fn test_buffer_info_matches_buffer_len() {
         use tempfile::TempDir;
 

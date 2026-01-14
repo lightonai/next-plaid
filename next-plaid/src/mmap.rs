@@ -7,15 +7,11 @@
 //! - Custom raw binary format (legacy): 8-byte header with shape, then raw data
 //! - NPY format: Standard NumPy format with header, used for index files
 
-use std::fs::File;
-use std::path::Path;
-
-#[cfg(feature = "npy")]
 use std::collections::HashMap;
-#[cfg(feature = "npy")]
 use std::fs;
-#[cfg(feature = "npy")]
+use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
+use std::path::Path;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use memmap2::Mmap;
@@ -741,7 +737,6 @@ impl MmapNpyArray2U8 {
 // ============================================================================
 
 /// Manifest entry for tracking chunk files
-#[cfg(feature = "npy")]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChunkManifestEntry {
     pub rows: usize,
@@ -749,11 +744,9 @@ pub struct ChunkManifestEntry {
 }
 
 /// Manifest for merged files
-#[cfg(feature = "npy")]
 pub type ChunkManifest = HashMap<String, ChunkManifestEntry>;
 
 /// Load manifest from disk if it exists
-#[cfg(feature = "npy")]
 fn load_manifest(manifest_path: &Path) -> Option<ChunkManifest> {
     if manifest_path.exists() {
         if let Ok(file) = File::open(manifest_path) {
@@ -766,7 +759,6 @@ fn load_manifest(manifest_path: &Path) -> Option<ChunkManifest> {
 }
 
 /// Save manifest to disk
-#[cfg(feature = "npy")]
 fn save_manifest(manifest_path: &Path, manifest: &ChunkManifest) -> Result<()> {
     let file = File::create(manifest_path)
         .map_err(|e| Error::IndexLoad(format!("Failed to create manifest: {}", e)))?;
@@ -776,7 +768,6 @@ fn save_manifest(manifest_path: &Path, manifest: &ChunkManifest) -> Result<()> {
 }
 
 /// Get file modification time as f64 seconds since epoch
-#[cfg(feature = "npy")]
 fn get_mtime(path: &Path) -> Result<f64> {
     let metadata = fs::metadata(path)
         .map_err(|e| Error::IndexLoad(format!("Failed to get metadata for {:?}: {}", path, e)))?;
@@ -790,7 +781,6 @@ fn get_mtime(path: &Path) -> Result<f64> {
 }
 
 /// Write NPY header for a 1D array
-#[cfg(feature = "npy")]
 fn write_npy_header_1d(writer: &mut impl Write, len: usize, dtype: &str) -> Result<usize> {
     // Build header dict
     let header_dict = format!(
@@ -826,7 +816,6 @@ fn write_npy_header_1d(writer: &mut impl Write, len: usize, dtype: &str) -> Resu
 }
 
 /// Write NPY header for a 2D array
-#[cfg(feature = "npy")]
 fn write_npy_header_2d(
     writer: &mut impl Write,
     nrows: usize,
@@ -867,21 +856,17 @@ fn write_npy_header_2d(
 }
 
 /// Information about a chunk file for merging
-#[cfg(feature = "npy")]
 struct ChunkInfo {
     path: std::path::PathBuf,
     filename: String,
     rows: usize,
     mtime: f64,
-    #[allow(dead_code)]
-    needs_write: bool,
 }
 
 /// Merge chunked codes NPY files into a single merged file.
 ///
 /// Uses incremental persistence with manifest tracking to skip unchanged chunks.
 /// Returns the path to the merged file.
-#[cfg(feature = "npy")]
 pub fn merge_codes_chunks(
     index_path: &Path,
     num_chunks: usize,
@@ -924,19 +909,15 @@ pub fn merge_codes_chunks(
                     false
                 };
 
-                let needs_write = if chain_broken || !is_clean {
+                if !is_clean {
                     chain_broken = true;
-                    true
-                } else {
-                    false
-                };
+                }
 
                 chunks.push(ChunkInfo {
                     path,
                     filename,
                     rows,
                     mtime,
-                    needs_write,
                 });
             }
         }
@@ -993,7 +974,6 @@ pub fn merge_codes_chunks(
 }
 
 /// Merge chunked residuals NPY files into a single merged file.
-#[cfg(feature = "npy")]
 pub fn merge_residuals_chunks(
     index_path: &Path,
     num_chunks: usize,
@@ -1037,19 +1017,15 @@ pub fn merge_residuals_chunks(
                     false
                 };
 
-                let needs_write = if chain_broken || !is_clean {
+                if !is_clean {
                     chain_broken = true;
-                    true
-                } else {
-                    false
-                };
+                }
 
                 chunks.push(ChunkInfo {
                     path,
                     filename,
                     rows,
                     mtime,
-                    needs_write,
                 });
             }
         }

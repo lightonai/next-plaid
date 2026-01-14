@@ -21,9 +21,9 @@ test-release:
 # Run linting (clippy + format check)
 lint: fmt-check clippy
 
-# Run clippy (using cross-platform features only)
+# Run clippy
 clippy:
-	cargo clippy --all-targets --features npy,filtering -- -D warnings
+	cargo clippy --all-targets -- -D warnings
 
 # Check formatting
 fmt-check:
@@ -45,13 +45,13 @@ bench:
 bench-check:
 	cargo bench --no-run
 
-# Build documentation (using cross-platform features only)
+# Build documentation
 doc:
-	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features npy,filtering
+	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
 # Open documentation in browser
 doc-open:
-	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features npy,filtering --open
+	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --open
 
 # Clean build artifacts
 clean:
@@ -109,7 +109,7 @@ fmt-python:
 
 # Benchmark SciFact with updates (batch size 800) - compares fast-plaid and next-plaid
 benchmark-scifact-update:
-	cargo build --release --features npy --example benchmark_cli
+	cargo build --release --example benchmark_cli
 	cd benchmarks && uv sync --extra eval --extra fast-plaid && uv run python benchmark_scifact_update.py --batch-size 800
 
 # Benchmark SciFact via REST API (uses cached embeddings, with accelerate)

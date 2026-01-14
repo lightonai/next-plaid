@@ -388,7 +388,7 @@ async fn main() {
     let mut port: u16 = 8080;
     let mut index_dir = PathBuf::from("./indices");
     let mut model_path: Option<PathBuf> = None;
-    let mut use_cuda = false;
+    let mut _use_cuda = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -433,7 +433,7 @@ async fn main() {
                 }
             }
             "--cuda" => {
-                use_cuda = true;
+                _use_cuda = true;
                 i += 1;
             }
             "--help" => {
@@ -478,8 +478,6 @@ Examples:
     let config = ApiConfig {
         index_dir,
         default_top_k: 10,
-        model_path: model_path.clone(),
-        use_cuda,
     };
 
     tracing::info!("Starting Next-Plaid API server");
@@ -490,7 +488,7 @@ Examples:
     #[cfg(feature = "model")]
     let model = if let Some(ref model_path) = model_path {
         tracing::info!("Loading ONNX model from: {:?}", model_path);
-        let execution_provider = if use_cuda {
+        let execution_provider = if _use_cuda {
             tracing::info!("Using CUDA execution provider");
             next_plaid_onnx::ExecutionProvider::Cuda
         } else {

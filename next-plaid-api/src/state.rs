@@ -20,12 +20,6 @@ pub struct ApiConfig {
     pub index_dir: PathBuf,
     /// Default number of results to return
     pub default_top_k: usize,
-    /// Path to ONNX model directory (optional, only used with "model" feature)
-    #[allow(dead_code)]
-    pub model_path: Option<PathBuf>,
-    /// Whether to use CUDA execution provider for model inference (only used with "model" feature)
-    #[allow(dead_code)]
-    pub use_cuda: bool,
 }
 
 impl Default for ApiConfig {
@@ -33,8 +27,6 @@ impl Default for ApiConfig {
         Self {
             index_dir: PathBuf::from("./indices"),
             default_top_k: 10,
-            model_path: None,
-            use_cuda: false,
         }
     }
 }
@@ -131,12 +123,6 @@ impl AppState {
             .ok_or_else(|| ApiError::IndexNotFound(name.to_string()))
     }
 
-    /// Check if an index is currently loaded.
-    #[allow(dead_code)]
-    pub fn is_loaded(&self, name: &str) -> bool {
-        self.indices.read().contains_key(name)
-    }
-
     /// Register a new index (after creation).
     pub fn register_index(&self, name: &str, index: MmapIndex) {
         let mut indices = self.indices.write();
@@ -153,12 +139,6 @@ impl AppState {
     pub fn reload_index(&self, name: &str) -> ApiResult<()> {
         self.unload_index(name);
         self.load_index(name)
-    }
-
-    /// List all loaded indices.
-    #[allow(dead_code)]
-    pub fn list_loaded(&self) -> Vec<String> {
-        self.indices.read().keys().cloned().collect()
     }
 
     /// List all indices (on disk).

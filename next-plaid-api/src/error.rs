@@ -30,11 +30,6 @@ pub enum ApiError {
     #[error("Invalid request: {0}")]
     BadRequest(String),
 
-    /// Document not found
-    #[error("Document not found: {0}")]
-    #[allow(dead_code)]
-    DocumentNotFound(String),
-
     /// Embedding dimension mismatch
     #[error("Embedding dimension mismatch: expected {expected}, got {actual}")]
     DimensionMismatch { expected: usize, actual: usize },
@@ -42,21 +37,6 @@ pub enum ApiError {
     /// Metadata database not found
     #[error("Metadata database not found for index: {0}")]
     MetadataNotFound(String),
-
-    /// Search error
-    #[error("Search failed: {0}")]
-    #[allow(dead_code)]
-    SearchError(String),
-
-    /// Index creation error
-    #[error("Index creation failed: {0}")]
-    #[allow(dead_code)]
-    IndexCreationError(String),
-
-    /// Update error
-    #[error("Update failed: {0}")]
-    #[allow(dead_code)]
-    UpdateError(String),
 
     /// Internal server error
     #[error("Internal error: {0}")]
@@ -108,9 +88,6 @@ impl IntoResponse for ApiError {
                 ),
             ),
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
-            ApiError::DocumentNotFound(msg) => {
-                (StatusCode::NOT_FOUND, "DOCUMENT_NOT_FOUND", msg.clone())
-            }
             ApiError::DimensionMismatch { expected, actual } => (
                 StatusCode::BAD_REQUEST,
                 "DIMENSION_MISMATCH",
@@ -119,21 +96,6 @@ impl IntoResponse for ApiError {
             ApiError::MetadataNotFound(msg) => {
                 (StatusCode::NOT_FOUND, "METADATA_NOT_FOUND", msg.clone())
             }
-            ApiError::SearchError(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "SEARCH_ERROR",
-                msg.clone(),
-            ),
-            ApiError::IndexCreationError(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INDEX_CREATION_ERROR",
-                msg.clone(),
-            ),
-            ApiError::UpdateError(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "UPDATE_ERROR",
-                msg.clone(),
-            ),
             ApiError::Internal(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",

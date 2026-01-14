@@ -43,8 +43,6 @@ impl TestFixture {
         let config = ApiConfig {
             index_dir: temp_dir.path().to_path_buf(),
             default_top_k: 10,
-            model_path: None,
-            use_cuda: false,
         };
 
         #[cfg(feature = "model")]
@@ -363,8 +361,6 @@ impl RateLimitedTestFixture {
         let config = ApiConfig {
             index_dir: temp_dir.path().to_path_buf(),
             default_top_k: 10,
-            model_path: None,
-            use_cuda: false,
         };
 
         #[cfg(feature = "model")]
@@ -1763,8 +1759,6 @@ impl ModelTestFixture {
         let config = ApiConfig {
             index_dir: temp_dir.path().to_path_buf(),
             default_top_k: 10,
-            model_path: Some(model_path.clone()),
-            use_cuda: false,
         };
 
         // Load the model

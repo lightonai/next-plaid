@@ -25,14 +25,14 @@ num-traits = "0.2"
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-ndarray-npy = { version = "0.9.1", optional = true }
+ndarray-npy = "0.9.1"
 fastkmeans-rs = "0.1.4"
 indicatif = "0.18.3"
 memmap2 = "0.9"
 half = "2.4"
 byteorder = "1.5"
-rusqlite = { version = "0.38", optional = true, features = ["bundled"] }
-regex = { version = "1.11", optional = true }
+rusqlite = { version = "0.38", features = ["bundled"] }
+regex = "1.11"
 
 [dev-dependencies]
 criterion = { version = "0.8.1", features = ["html_reports"] }
@@ -41,8 +41,6 @@ tempfile = "3.10"
 
 [features]
 default = []
-npy = ["ndarray-npy"]
-filtering = ["rusqlite", "regex"]
 accelerate = ["blas-src", "accelerate-src", "ndarray/blas", "fastkmeans-rs/accelerate"]
 openblas = ["blas-src", "openblas-src", "ndarray/blas", "fastkmeans-rs/openblas"]
 

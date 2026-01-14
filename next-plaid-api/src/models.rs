@@ -535,12 +535,13 @@ pub enum InputType {
 
 /// Request to encode texts into embeddings.
 #[derive(Debug, Deserialize, ToSchema)]
-#[allow(dead_code)]
 pub struct EncodeRequest {
     /// List of texts to encode (only used with "model" feature)
+    #[allow(dead_code)]
     #[schema(example = json!(["Paris is the capital of France.", "What is machine learning?"]))]
     pub texts: Vec<String>,
     /// Type of input (query or document, only used with "model" feature)
+    #[allow(dead_code)]
     #[schema(example = "document")]
     pub input_type: InputType,
 }

@@ -1,17 +1,13 @@
 //! Search functionality for PLAID
 
-#[cfg(feature = "npy")]
 use std::cmp::Reverse;
-#[cfg(feature = "npy")]
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
-#[cfg(feature = "npy")]
 use ndarray::Array1;
 use ndarray::{Array2, ArrayView1, ArrayView2, Axis};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "npy")]
 use crate::codec::CentroidStore;
 use crate::error::Result;
 use crate::index::Index;
@@ -111,21 +107,17 @@ fn approximate_score(query_centroid_scores: &Array2<f32>, doc_codes: &ArrayView1
 }
 
 /// Wrapper for f32 to use with BinaryHeap (implements Ord)
-#[cfg(feature = "npy")]
 #[derive(Clone, Copy, PartialEq)]
 struct OrdF32(f32);
 
-#[cfg(feature = "npy")]
 impl Eq for OrdF32 {}
 
-#[cfg(feature = "npy")]
 impl PartialOrd for OrdF32 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-#[cfg(feature = "npy")]
 impl Ord for OrdF32 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0
@@ -138,7 +130,6 @@ impl Ord for OrdF32 {
 ///
 /// Processes centroids in chunks, keeping only top-k scores per query token in a heap.
 /// Returns the union of top centroids across all query tokens.
-#[cfg(feature = "npy")]
 fn ivf_probe_batched(
     query: &Array2<f32>,
     centroids: &CentroidStore,
@@ -194,7 +185,6 @@ fn ivf_probe_batched(
 /// Build sparse centroid scores for a set of centroid IDs.
 ///
 /// Returns a HashMap mapping centroid_id -> query scores array.
-#[cfg(feature = "npy")]
 fn build_sparse_centroid_scores(
     query: &Array2<f32>,
     centroids: &CentroidStore,
@@ -211,7 +201,6 @@ fn build_sparse_centroid_scores(
 }
 
 /// Compute approximate scores using sparse centroid score lookup.
-#[cfg(feature = "npy")]
 fn approximate_score_sparse(
     sparse_scores: &HashMap<usize, Array1<f32>>,
     doc_codes: &[usize],
@@ -459,7 +448,6 @@ impl Index {
 // ============================================================================
 
 /// Compute approximate scores for mmap index using code lookups.
-#[cfg(feature = "npy")]
 fn approximate_score_mmap(query_centroid_scores: &Array2<f32>, doc_codes: &[i64]) -> f32 {
     let mut score = 0.0;
 
@@ -482,7 +470,6 @@ fn approximate_score_mmap(query_centroid_scores: &Array2<f32>, doc_codes: &[i64]
 }
 
 /// Search a memory-mapped index for a single query.
-#[cfg(feature = "npy")]
 pub fn search_one_mmap(
     index: &crate::index::MmapIndex,
     query: &Array2<f32>,
@@ -653,7 +640,6 @@ pub fn search_one_mmap(
 /// Memory-efficient batched search for MmapIndex with large centroid counts.
 ///
 /// Uses batched IVF probing and sparse centroid scoring to minimize memory usage.
-#[cfg(feature = "npy")]
 fn search_one_mmap_batched(
     index: &crate::index::MmapIndex,
     query: &Array2<f32>,
@@ -762,7 +748,6 @@ fn search_one_mmap_batched(
 }
 
 /// Search a memory-mapped index for multiple queries.
-#[cfg(feature = "npy")]
 pub fn search_many_mmap(
     index: &crate::index::MmapIndex,
     queries: &[Array2<f32>],

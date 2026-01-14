@@ -25,7 +25,6 @@
 //! }
 //! ```
 
-#[cfg(feature = "npy")]
 use ndarray::Array1;
 use ndarray::Array2;
 use rayon::prelude::*;
@@ -54,7 +53,6 @@ use crate::error::{Error, Result};
 /// let index = MmapIndex::load("/path/to/index")?;
 /// let embeddings = embeddings::reconstruct_embeddings(&index, &[0, 1, 2])?;
 /// ```
-#[cfg(feature = "npy")]
 pub fn reconstruct_embeddings(
     index: &crate::index::MmapIndex,
     doc_ids: &[i64],
@@ -115,7 +113,6 @@ pub fn reconstruct_embeddings(
 /// # Returns
 ///
 /// A 2D array with shape `[num_tokens, dim]`.
-#[cfg(feature = "npy")]
 pub fn reconstruct_single(index: &crate::index::MmapIndex, doc_id: i64) -> Result<Array2<f32>> {
     let results = reconstruct_embeddings(index, &[doc_id])?;
     Ok(results.into_iter().next().unwrap())

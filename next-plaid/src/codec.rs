@@ -13,7 +13,6 @@ pub enum CentroidStore {
     /// Centroids stored as an owned ndarray (loaded into RAM)
     Owned(Array2<f32>),
     /// Centroids stored as a memory-mapped NPY file (OS-managed paging)
-    #[cfg(feature = "npy")]
     Mmap(crate::mmap::MmapNpyArray2F32),
 }
 
@@ -24,7 +23,6 @@ impl CentroidStore {
     pub fn view(&self) -> ArrayView2<'_, f32> {
         match self {
             CentroidStore::Owned(arr) => arr.view(),
-            #[cfg(feature = "npy")]
             CentroidStore::Mmap(mmap) => mmap.view(),
         }
     }
@@ -33,7 +31,6 @@ impl CentroidStore {
     pub fn nrows(&self) -> usize {
         match self {
             CentroidStore::Owned(arr) => arr.nrows(),
-            #[cfg(feature = "npy")]
             CentroidStore::Mmap(mmap) => mmap.nrows(),
         }
     }
@@ -42,7 +39,6 @@ impl CentroidStore {
     pub fn ncols(&self) -> usize {
         match self {
             CentroidStore::Owned(arr) => arr.ncols(),
-            #[cfg(feature = "npy")]
             CentroidStore::Mmap(mmap) => mmap.ncols(),
         }
     }
@@ -51,7 +47,6 @@ impl CentroidStore {
     pub fn row(&self, idx: usize) -> ArrayView1<'_, f32> {
         match self {
             CentroidStore::Owned(arr) => arr.row(idx),
-            #[cfg(feature = "npy")]
             CentroidStore::Mmap(mmap) => mmap.row(idx),
         }
     }
@@ -62,7 +57,6 @@ impl CentroidStore {
     pub fn slice_rows(&self, start: usize, end: usize) -> ArrayView2<'_, f32> {
         match self {
             CentroidStore::Owned(arr) => arr.slice(s![start..end, ..]),
-            #[cfg(feature = "npy")]
             CentroidStore::Mmap(mmap) => mmap.slice_rows(start, end),
         }
     }
@@ -74,7 +68,6 @@ impl Clone for CentroidStore {
             // For owned, just clone the array
             CentroidStore::Owned(arr) => CentroidStore::Owned(arr.clone()),
             // For mmap, we need to convert to owned since Mmap isn't Clone
-            #[cfg(feature = "npy")]
             CentroidStore::Mmap(mmap) => CentroidStore::Owned(mmap.to_owned()),
         }
     }
@@ -406,7 +399,6 @@ impl ResidualCodec {
     }
 
     /// Load codec from index directory
-    #[cfg(feature = "npy")]
     pub fn load_from_dir(index_path: &std::path::Path) -> Result<Self> {
         use ndarray_npy::ReadNpyExt;
         use std::fs::File;
@@ -482,7 +474,6 @@ impl ResidualCodec {
     /// etc.) are still loaded into memory as they are negligible in size.
     ///
     /// Use this when loading for `MmapIndex` to minimize memory footprint.
-    #[cfg(feature = "npy")]
     pub fn load_mmap_from_dir(index_path: &std::path::Path) -> Result<Self> {
         use ndarray_npy::ReadNpyExt;
         use std::fs::File;

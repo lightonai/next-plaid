@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::codec::ResidualCodec;
 use crate::error::{Error, Result};
-#[cfg(feature = "npy")]
 use crate::kmeans::{compute_kmeans, ComputeKmeansConfig};
 use crate::utils::{quantile, quantiles};
 
@@ -113,7 +112,6 @@ pub struct ChunkMetadata {
 /// # Returns
 ///
 /// Metadata about the created index
-#[cfg(feature = "npy")]
 pub fn create_index_files(
     embeddings: &[Array2<f32>],
     centroids: Array2<f32>,
@@ -422,7 +420,6 @@ pub fn create_index_files(
 /// # Returns
 ///
 /// Metadata about the created index
-#[cfg(feature = "npy")]
 pub fn create_index_with_kmeans_files(
     embeddings: &[Array2<f32>],
     index_path: &str,
@@ -604,7 +601,6 @@ impl Index {
         )?;
 
         // Save codec components
-        #[cfg(feature = "npy")]
         {
             use ndarray_npy::WriteNpyExt;
 
@@ -729,7 +725,6 @@ impl Index {
             let doclens_path = index_dir.join(format!("doclens.{}.json", chunk_idx));
             serde_json::to_writer(BufWriter::new(File::create(&doclens_path)?), &chunk_doclens)?;
 
-            #[cfg(feature = "npy")]
             {
                 use ndarray_npy::WriteNpyExt;
 
@@ -798,7 +793,6 @@ impl Index {
             ivf_offsets[i + 1] = ivf_offsets[i] + ivf_lengths[i] as i64;
         }
 
-        #[cfg(feature = "npy")]
         {
             use ndarray_npy::WriteNpyExt;
 
@@ -848,7 +842,6 @@ impl Index {
     /// # Returns
     ///
     /// The created index
-    #[cfg(feature = "npy")]
     pub fn create_with_kmeans(
         embeddings: &[Array2<f32>],
         index_path: &str,
@@ -862,7 +855,6 @@ impl Index {
     }
 
     /// Load an existing index from disk.
-    #[cfg(feature = "npy")]
     pub fn load(index_path: &str) -> Result<Self> {
         use ndarray_npy::ReadNpyExt;
 
@@ -1062,7 +1054,6 @@ impl Index {
     /// # Returns
     ///
     /// Vector of document IDs assigned to the new embeddings, with self reloaded to reflect changes.
-    #[cfg(feature = "npy")]
     pub fn update(
         &mut self,
         embeddings: &[Array2<f32>],
@@ -1217,7 +1208,6 @@ impl Index {
     /// # Returns
     ///
     /// Vector of document IDs assigned to the new embeddings.
-    #[cfg(all(feature = "npy", feature = "filtering"))]
     pub fn update_with_metadata(
         &mut self,
         embeddings: &[Array2<f32>],
@@ -1282,7 +1272,6 @@ impl Index {
     ///     &update_config,
     /// )?;
     /// ```
-    #[cfg(feature = "npy")]
     pub fn update_or_create(
         embeddings: &[Array2<f32>],
         index_path: &str,
@@ -1310,7 +1299,6 @@ impl Index {
     ///
     /// This directly adds documents to the index without centroid expansion
     /// or buffer management. Useful for testing or when you want full control.
-    #[cfg(feature = "npy")]
     pub fn update_simple(
         &mut self,
         embeddings: &[Array2<f32>],
@@ -1345,7 +1333,6 @@ impl Index {
     /// let deleted = index.delete(&[2, 5, 7])?;
     /// println!("Deleted {} documents", deleted);
     /// ```
-    #[cfg(feature = "npy")]
     pub fn delete(&mut self, doc_ids: &[i64]) -> Result<usize> {
         self.delete_with_options(doc_ids, true)
     }
@@ -1363,16 +1350,10 @@ impl Index {
     /// # Returns
     ///
     /// The number of documents actually deleted.
-    #[cfg(feature = "npy")]
-    pub fn delete_with_options(
-        &mut self,
-        doc_ids: &[i64],
-        #[allow(unused_variables)] delete_metadata: bool,
-    ) -> Result<usize> {
+    pub fn delete_with_options(&mut self, doc_ids: &[i64], delete_metadata: bool) -> Result<usize> {
         let deleted = crate::delete::delete_from_index(doc_ids, &self.path)?;
 
         // Delete from metadata database if it exists and requested
-        #[cfg(feature = "filtering")]
         if delete_metadata && crate::filtering::exists(&self.path) {
             crate::filtering::delete(&self.path, doc_ids)?;
         }
@@ -1407,7 +1388,6 @@ impl Index {
 /// let index = MmapIndex::load("/path/to/index")?;
 /// let results = index.search(&query, &params, None)?;
 /// ```
-#[cfg(feature = "npy")]
 pub struct MmapIndex {
     /// Path to the index directory
     pub path: String,
@@ -1431,7 +1411,6 @@ pub struct MmapIndex {
     pub mmap_residuals: crate::mmap::MmapNpyArray2U8,
 }
 
-#[cfg(feature = "npy")]
 impl MmapIndex {
     /// Load a memory-mapped index from disk.
     ///
@@ -1812,7 +1791,6 @@ impl MmapIndex {
     /// # Returns
     ///
     /// Vector of document IDs assigned to the new embeddings
-    #[cfg(feature = "filtering")]
     pub fn update_with_metadata(
         &mut self,
         embeddings: &[Array2<f32>],
@@ -1891,11 +1869,7 @@ impl MmapIndex {
     /// # Returns
     ///
     /// The number of documents actually deleted
-    pub fn delete_with_options(
-        &mut self,
-        doc_ids: &[i64],
-        #[allow(unused_variables)] delete_metadata: bool,
-    ) -> Result<usize> {
+    pub fn delete_with_options(&mut self, doc_ids: &[i64], delete_metadata: bool) -> Result<usize> {
         let path = self.path.clone();
 
         // Load as regular Index for mutation
@@ -1924,7 +1898,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "npy")]
     fn test_update_or_create_new_index() {
         use ndarray::Array2;
         use tempfile::tempdir;
@@ -1974,7 +1947,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "npy")]
     fn test_update_or_create_existing_index() {
         use ndarray::Array2;
         use tempfile::tempdir;

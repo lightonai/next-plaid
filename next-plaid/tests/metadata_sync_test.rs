@@ -3,8 +3,6 @@
 //! These tests verify that metadata.json writes are properly flushed and synced to disk,
 //! ensuring that concurrent readers see updated document counts immediately.
 
-#![cfg(all(feature = "npy", feature = "filtering"))]
-
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;

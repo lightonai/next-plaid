@@ -1,7 +1,5 @@
 //! Integration tests for filtering with index operations.
 
-#![cfg(all(feature = "npy", feature = "filtering"))]
-
 use ndarray::Array2;
 use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;

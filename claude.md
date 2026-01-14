@@ -33,8 +33,6 @@ next-plaid/
 ```toml
 [features]
 default = []
-npy = ["ndarray-npy"]                              # Index persistence (required for most use)
-filtering = ["rusqlite", "regex"]                  # SQLite metadata support
 accelerate = ["ndarray/blas", "fastkmeans-rs/accelerate"]  # macOS BLAS
 openblas = ["ndarray/blas", "fastkmeans-rs/openblas"]      # Linux BLAS
 ```
@@ -137,13 +135,13 @@ max_points_per_centroid: 256
 
 ```bash
 # Build with all features
-cargo build --release --features "npy,filtering,accelerate"
+cargo build --release --features "accelerate"
 
 # Run tests
-cargo test --features "npy,filtering"
+cargo test
 
 # Run benchmarks
-cargo run --release --example benchmark_cli --features npy -- --help
+cargo run --release --example benchmark_cli -- --help
 
 # CI checks
 make ci

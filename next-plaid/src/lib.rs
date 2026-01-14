@@ -14,7 +14,6 @@ pub mod codec;
 pub mod delete;
 pub mod embeddings;
 pub mod error;
-#[cfg(feature = "filtering")]
 pub mod filtering;
 pub mod index;
 pub mod kmeans;
@@ -24,10 +23,8 @@ pub mod update;
 pub mod utils;
 
 pub use codec::ResidualCodec;
-#[cfg(feature = "npy")]
 pub use delete::delete_from_index;
 pub use error::{Error, Result};
-#[cfg(feature = "npy")]
 pub use index::MmapIndex;
 pub use index::{IndexConfig, Metadata};
 pub use kmeans::{

@@ -7,7 +7,7 @@ license = "Apache-2.0"
 
 [dependencies]
 # Core next-plaid library
-next-plaid = { path = "../next-plaid", features = ["npy", "filtering"] }
+next-plaid = { path = "../next-plaid" }
 
 # Web framework
 axum = { version = "0.8", features = ["macros"] }
