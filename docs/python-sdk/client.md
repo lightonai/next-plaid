@@ -152,57 +152,27 @@ client.update_index_config("my_index", max_documents=10000)
 
 ## Document Management
 
-### `add_documents(index_name, documents, metadata=None)`
+### `add(index_name, documents, metadata=None)`
 
-Add documents to an index.
+Add documents to an index. Automatically detects input type.
 
-```python
-documents = [
-    {"embeddings": [[0.1, 0.2], [0.3, 0.4]]},
-    {"embeddings": [[0.5, 0.6], [0.7, 0.8]]},
-]
-metadata = [
-    {"title": "Doc 1"},
-    {"title": "Doc 2"},
-]
-client.add_documents("my_index", documents, metadata)
-```
+This method accepts either:
 
-**Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `index_name` | `str` | Index name |
-| `documents` | `List[Document | Dict]` | Documents with embeddings |
-| `metadata` | `List[Dict]` | Metadata for each document (optional) |
-
-**Returns:** `str` (status message)
-
-**Raises:** `IndexNotFoundError`, `ValidationError`
-
----
-
-### `update_documents(index_name, documents, metadata=None)`
-
-Update index by adding documents (batched).
+- **Text documents** (`List[str]`): Server encodes them (requires model)
+- **Embeddings** (`List[Dict]` or `List[Document]`): Pre-computed embeddings
 
 ```python
-client.update_documents("my_index", documents, metadata)
-```
+# Add text documents (requires model on server)
+client.add("my_index", ["Document 1 text", "Document 2 text"])
 
-Same parameters as `add_documents`.
+# Add documents with pre-computed embeddings
+client.add("my_index", [{"embeddings": [[0.1, 0.2], [0.3, 0.4]]}])
 
----
-
-### `update_documents_with_encoding(index_name, documents, metadata=None)`
-
-Add documents using text (requires model).
-
-```python
-client.update_documents_with_encoding(
+# Add with metadata
+client.add(
     "my_index",
-    documents=["Text of document 1", "Text of document 2"],
-    metadata=[{"title": "Doc 1"}, {"title": "Doc 2"}]
+    ["Paris is in France", "Berlin is in Germany"],
+    metadata=[{"country": "France"}, {"country": "Germany"}]
 )
 ```
 
@@ -211,45 +181,87 @@ client.update_documents_with_encoding(
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `index_name` | `str` | Index name |
-| `documents` | `List[str]` | Document texts |
-| `metadata` | `List[Dict]` | Metadata (optional) |
+| `documents` | `List[str]` or `List[Dict]` | Text strings or embedding dicts |
+| `metadata` | `List[Dict]` | Metadata for each document (optional) |
 
-**Raises:** `ModelNotLoadedError`
+**Returns:** `str` (status message)
+
+**Raises:** `IndexNotFoundError`, `ModelNotLoadedError` (for text input), `ValidationError`
 
 ---
 
-### `delete_documents(index_name, document_ids)`
+### `delete_documents(index_name, condition, parameters=None)`
 
-Delete documents by ID.
+Delete documents by metadata filter. The operation is asynchronous and returns immediately.
 
 ```python
-result = client.delete_documents("my_index", [0, 1, 2])
-print(result.deleted)    # 3
-print(result.remaining)  # 997
+# Delete documents matching a condition
+result = client.delete_documents(
+    "my_index",
+    condition="category = ? AND year < ?",
+    parameters=["outdated", 2020]
+)
+print(result)  # "Delete queued: 15 documents matching condition"
+
+# Delete all documents in a category
+result = client.delete_documents(
+    "my_index",
+    condition="category = ?",
+    parameters=["archived"]
+)
 ```
 
-**Returns:** [`DeleteDocumentsResponse`](models.md#deletedocumentsresponse)
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `index_name` | `str` | Index name |
+| `condition` | `str` | SQL WHERE condition for selecting documents to delete |
+| `parameters` | `List[Any]` | Parameters for the condition (optional) |
+
+**Returns:** `str` (status message indicating queued deletion count)
+
+**Raises:** `IndexNotFoundError`, `MetadataNotFoundError`, `ValidationError`
 
 ---
 
 ## Search Operations
 
-### `search(index_name, queries, params=None, subset=None)`
+### `search(index_name, queries, params=None, filter_condition=None, filter_parameters=None, subset=None)`
 
-Search with query embeddings.
+Search an index. Automatically detects query input type.
+
+This method accepts either:
+
+- **Text queries** (`List[str]`): Server encodes them (requires model)
+- **Embedding queries** (`List[List[List[float]]]`): Pre-computed embeddings
 
 ```python
 from next_plaid_client import SearchParams
 
+# Search with text queries (requires model on server)
+results = client.search("my_index", ["What is AI?"])
+
+# Search with pre-computed embeddings
+results = client.search("my_index", [[[0.1, 0.2], [0.3, 0.4]]])
+
+# Search with metadata filter
 results = client.search(
     "my_index",
-    queries=[[[0.1, 0.2], [0.3, 0.4]]],
-    params=SearchParams(top_k=10),
+    ["machine learning"],
+    filter_condition="category = ? AND year >= ?",
+    filter_parameters=["science", 2020]
 )
 
-for result in results.results:
-    for doc_id, score in zip(result.document_ids, result.scores):
-        print(f"Doc {doc_id}: {score:.4f}")
+# Search with parameters
+results = client.search(
+    "my_index",
+    ["query text"],
+    params=SearchParams(top_k=5, n_ivf_probe=16)
+)
+
+# Search within a subset of documents
+results = client.search("my_index", ["query"], subset=[0, 5, 10])
 ```
 
 **Parameters:**
@@ -257,67 +269,15 @@ for result in results.results:
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `index_name` | `str` | Index name |
-| `queries` | `List[List[List[float]]]` | Query embeddings |
-| `params` | [`SearchParams`](models.md#searchparams) | Search parameters |
-| `subset` | `List[int]` | Limit search to these doc IDs |
+| `queries` | `List[str]` or `List[List[List[float]]]` | Text or embedding queries |
+| `params` | [`SearchParams`](models.md#searchparams) | Search parameters (optional) |
+| `filter_condition` | `str` | SQL WHERE condition for filtering (optional) |
+| `filter_parameters` | `List[Any]` | Parameters for filter condition (optional) |
+| `subset` | `List[int]` | Limit search to these doc IDs (optional) |
 
 **Returns:** [`SearchResult`](models.md#searchresult)
 
----
-
-### `search_filtered(index_name, queries, filter_condition, filter_parameters=None, params=None)`
-
-Search with metadata filtering.
-
-```python
-results = client.search_filtered(
-    "my_index",
-    queries=[query],
-    filter_condition="category = ? AND year >= ?",
-    filter_parameters=["science", 2020],
-    params=SearchParams(top_k=10),
-)
-```
-
-**Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `filter_condition` | `str` | SQL WHERE condition |
-| `filter_parameters` | `List[Any]` | Condition parameters |
-
-**Returns:** [`SearchResult`](models.md#searchresult)
-
----
-
-### `search_with_encoding(index_name, queries, params=None, subset=None)`
-
-Search using text queries (requires model).
-
-```python
-results = client.search_with_encoding(
-    "my_index",
-    queries=["What is machine learning?"],
-    params=SearchParams(top_k=5),
-)
-```
-
-**Raises:** `ModelNotLoadedError`
-
----
-
-### `search_filtered_with_encoding(index_name, queries, filter_condition, filter_parameters=None, params=None)`
-
-Search with text and metadata filter (requires model).
-
-```python
-results = client.search_filtered_with_encoding(
-    "my_index",
-    queries=["capital city"],
-    filter_condition="country = ?",
-    filter_parameters=["France"],
-)
-```
+**Raises:** `IndexNotFoundError`, `ModelNotLoadedError` (for text queries)
 
 ---
 

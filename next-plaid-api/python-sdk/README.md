@@ -29,42 +29,26 @@ print(f"Server status: {health.status}")
 # Create an index
 client.create_index("my_index", IndexConfig(nbits=4))
 
-# Add documents with pre-computed embeddings
-documents = [{"embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]}]
-metadata = [{"title": "Document 1", "category": "science"}]
-client.add_documents("my_index", documents, metadata)
-
-# Search with embeddings
-results = client.search(
+# Add documents (text - requires model on server)
+client.add(
     "my_index",
-    queries=[[[0.1, 0.2, 0.3]]],
-    params=SearchParams(top_k=10)
+    ["Paris is the capital of France.", "Berlin is in Germany."],
+    metadata=[{"country": "France"}, {"country": "Germany"}]
 )
+
+# Or add documents with pre-computed embeddings
+client.add("my_index", [{"embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]}])
+
+# Search with text queries (requires model on server)
+results = client.search("my_index", ["What is the capital of France?"])
+
+# Or search with pre-computed embeddings
+results = client.search("my_index", [[[0.1, 0.2, 0.3]]])
 
 # Print results
 for result in results.results:
-    for doc_id, score, meta in zip(result.document_ids, result.scores, result.metadata):
-        print(f"Document {doc_id}: {score:.4f} - {meta}")
-```
-
-### Text Encoding (requires model on server)
-
-When the API server is started with `--model`, you can use text directly:
-
-```python
-# Add documents using text
-client.update_documents_with_encoding(
-    "my_index",
-    documents=["Paris is the capital of France."],
-    metadata=[{"title": "Geography"}]
-)
-
-# Search with text queries
-results = client.search_with_encoding(
-    "my_index",
-    queries=["What is the capital of France?"],
-    params=SearchParams(top_k=5)
-)
+    for doc_id, score in zip(result.document_ids, result.scores):
+        print(f"Document {doc_id}: {score:.4f}")
 ```
 
 ## API Reference
@@ -98,24 +82,28 @@ client.update_index_config("my_index", max_documents=5000)
 client.delete_index("my_index")
 ```
 
-### Document Management
+### Adding Documents
+
+The `add()` method automatically detects input type:
 
 ```python
-# Add documents with embeddings
-client.add_documents("my_index", documents, metadata)
+# Add text documents (requires model on server)
+client.add("my_index", ["Document 1 text", "Document 2 text"])
 
-# Add documents with text encoding (requires model)
-client.update_documents_with_encoding(
+# Add documents with pre-computed embeddings
+client.add("my_index", [{"embeddings": [[0.1, 0.2], [0.3, 0.4]]}])
+
+# Add with metadata
+client.add(
     "my_index",
-    documents=["Text to encode..."],
-    metadata=[{"title": "Doc"}]
+    ["Paris is in France", "Berlin is in Germany"],
+    metadata=[{"country": "France"}, {"country": "Germany"}]
 )
-
-# Delete documents
-client.delete_documents("my_index", document_ids=[5, 10, 15])
 ```
 
-### Search Operations
+### Searching
+
+The `search()` method automatically detects query type:
 
 ```python
 params = SearchParams(
@@ -124,22 +112,35 @@ params = SearchParams(
     n_full_scores=4096  # Documents for re-ranking
 )
 
-# Search with embeddings
-results = client.search("my_index", queries=[...], params=params)
+# Search with text queries (requires model on server)
+results = client.search("my_index", ["What is AI?"], params=params)
 
-# Search within a subset of documents
-results = client.search("my_index", queries=[...], subset=[0, 5, 10])
+# Search with pre-computed embeddings
+results = client.search("my_index", [[[0.1, 0.2], [0.3, 0.4]]], params=params)
 
 # Search with metadata filter
-results = client.search_filtered(
+results = client.search(
     "my_index",
-    queries=[...],
+    ["machine learning"],
     filter_condition="category = ? AND year > ?",
     filter_parameters=["science", 2020]
 )
 
-# Search with text queries (requires model)
-results = client.search_with_encoding("my_index", queries=["query text"])
+# Search within a subset of documents
+results = client.search("my_index", ["query"], subset=[0, 5, 10])
+```
+
+### Deleting Documents
+
+Delete documents by metadata filter:
+
+```python
+# Delete documents matching a condition
+client.delete_documents(
+    "my_index",
+    condition="category = ? AND year < ?",
+    parameters=["outdated", 2020]
+)
 ```
 
 ### Metadata Operations
@@ -162,7 +163,7 @@ metadata = client.get_metadata_by_ids("my_index", document_ids=[0, 5])
 ### Text Encoding
 
 ```python
-# Encode texts to embeddings (requires model)
+# Encode texts to embeddings (requires model on server)
 result = client.encode(
     texts=["Hello world", "Test document"],
     input_type="document"  # or "query"
@@ -206,9 +207,17 @@ async def main():
 
         await client.create_index("my_index", IndexConfig(nbits=4))
 
-        results = await client.search_with_encoding(
+        # Add documents
+        await client.add(
             "my_index",
-            queries=["What is the capital of France?"],
+            ["Paris is the capital of France."],
+            metadata=[{"country": "France"}]
+        )
+
+        # Search
+        results = await client.search(
+            "my_index",
+            ["What is the capital of France?"],
             params=SearchParams(top_k=5)
         )
 

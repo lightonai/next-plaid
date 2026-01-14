@@ -5,7 +5,7 @@ Synchronous client for the Next Plaid API.
 import httpx
 from typing import Optional, List, Dict, Any, Union
 
-from ._base import BaseNextPlaidClient
+from ._base import BaseNextPlaidClient, _is_text_input
 from .exceptions import ConnectionError as NextPlaidConnectionError
 from .models import (
     IndexConfig,
@@ -190,18 +190,22 @@ class NextPlaidClient(BaseNextPlaidClient):
 
     # ==================== Document Management ====================
 
-    def add_documents(
+    def add(
         self,
         index_name: str,
-        documents: List[Union[Document, Dict[str, List[List[float]]]]],
+        documents: Union[List[str], List[Union[Document, Dict[str, List[List[float]]]]]],
         metadata: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """
-        Add documents to an index (async, returns immediately).
+        Add documents to an index. Automatically detects input type.
+
+        This method accepts either:
+        - Text documents (List[str]): Server encodes them (requires model)
+        - Embeddings (List[Document] or List[Dict]): Pre-computed embeddings
 
         Args:
             index_name: Name of the index.
-            documents: List of documents with embeddings.
+            documents: Either list of text strings or list of embedding dicts/Documents.
             metadata: Optional list of metadata dicts for each document.
 
         Returns:
@@ -209,63 +213,35 @@ class NextPlaidClient(BaseNextPlaidClient):
 
         Raises:
             IndexNotFoundError: If the index does not exist.
+            ModelNotLoadedError: If text input is provided but no model is loaded.
             ValidationError: If the documents are invalid.
+
+        Examples:
+            # Add text documents (requires model on server)
+            client.add("my_index", ["Document 1 text", "Document 2 text"])
+
+            # Add documents with pre-computed embeddings
+            client.add("my_index", [{"embeddings": [[0.1, 0.2], [0.3, 0.4]]}])
+
+            # Add with metadata
+            client.add(
+                "my_index",
+                ["Paris is in France"],
+                metadata=[{"country": "France"}]
+            )
         """
-        payload = self._prepare_documents_payload(documents, metadata)
-        return self._request("POST", f"/indices/{index_name}/documents", json=payload)
-
-    def update_documents(
-        self,
-        index_name: str,
-        documents: List[Union[Document, Dict[str, List[List[float]]]]],
-        metadata: Optional[List[Dict[str, Any]]] = None,
-    ) -> str:
-        """
-        Update index by adding documents (batched, async).
-
-        Args:
-            index_name: Name of the index.
-            documents: List of documents with embeddings.
-            metadata: Optional list of metadata dicts for each document.
-
-        Returns:
-            Status message confirming the update was queued.
-
-        Raises:
-            IndexNotFoundError: If the index does not exist.
-        """
-        payload = self._prepare_documents_payload(documents, metadata)
-        return self._request("POST", f"/indices/{index_name}/update", json=payload)
-
-    def update_documents_with_encoding(
-        self,
-        index_name: str,
-        documents: List[str],
-        metadata: Optional[List[Dict[str, Any]]] = None,
-    ) -> str:
-        """
-        Update index with document texts (requires model to be loaded).
-
-        The server will encode the texts and add them to the index.
-
-        Args:
-            index_name: Name of the index.
-            documents: List of document texts to encode and add.
-            metadata: Optional list of metadata dicts for each document.
-
-        Returns:
-            Status message confirming the update was queued.
-
-        Raises:
-            IndexNotFoundError: If the index does not exist.
-            ModelNotLoadedError: If no model is loaded on the server.
-        """
-        payload: Dict[str, Any] = {"documents": documents}
-        if metadata:
-            payload["metadata"] = metadata
-        return self._request(
-            "POST", f"/indices/{index_name}/update_with_encoding", json=payload
-        )
+        if _is_text_input(documents):
+            # Text input - use encoding endpoint
+            payload: Dict[str, Any] = {"documents": documents}
+            if metadata:
+                payload["metadata"] = metadata
+            return self._request(
+                "POST", f"/indices/{index_name}/update_with_encoding", json=payload
+            )
+        else:
+            # Embeddings input - use regular update endpoint
+            payload = self._prepare_documents_payload(documents, metadata)  # type: ignore
+            return self._request("POST", f"/indices/{index_name}/update", json=payload)
 
     def delete_documents(
         self,
@@ -307,17 +283,25 @@ class NextPlaidClient(BaseNextPlaidClient):
     def search(
         self,
         index_name: str,
-        queries: List[Union[Dict[str, List[List[float]]], List[List[float]]]],
+        queries: Union[List[str], List[Union[Dict[str, List[List[float]]], List[List[float]]]]],
         params: Optional[SearchParams] = None,
+        filter_condition: Optional[str] = None,
+        filter_parameters: Optional[List[Any]] = None,
         subset: Optional[List[int]] = None,
     ) -> SearchResult:
         """
-        Search an index with query embeddings.
+        Search an index. Automatically detects query input type.
+
+        This method accepts either:
+        - Text queries (List[str]): Server encodes them (requires model)
+        - Embedding queries (List[List[List[float]]]): Pre-computed embeddings
 
         Args:
             index_name: Name of the index to search.
-            queries: List of query embeddings (each is a list of token embeddings).
+            queries: Either list of text strings or list of embedding arrays.
             params: Search parameters (optional).
+            filter_condition: SQL WHERE condition for metadata filtering (optional).
+            filter_parameters: Parameters for the filter condition (optional).
             subset: Optional list of document IDs to search within.
 
         Returns:
@@ -325,115 +309,64 @@ class NextPlaidClient(BaseNextPlaidClient):
 
         Raises:
             IndexNotFoundError: If the index does not exist.
+            ModelNotLoadedError: If text queries are provided but no model is loaded.
+
+        Examples:
+            # Search with text queries (requires model on server)
+            results = client.search("my_index", ["What is AI?"])
+
+            # Search with pre-computed embeddings
+            results = client.search("my_index", [[[0.1, 0.2], [0.3, 0.4]]])
+
+            # Search with metadata filter
+            results = client.search(
+                "my_index",
+                ["machine learning"],
+                filter_condition="category = ?",
+                filter_parameters=["science"]
+            )
+
+            # Search with parameters
+            results = client.search(
+                "my_index",
+                ["query text"],
+                params=SearchParams(top_k=5, n_ivf_probe=16)
+            )
         """
-        payload = self._prepare_search_payload(queries, params, subset)
-        data = self._request("POST", f"/indices/{index_name}/search", json=payload)
-        return SearchResult.from_dict(data)
+        is_text = _is_text_input(queries)
+        has_filter = filter_condition is not None
 
-    def search_filtered(
-        self,
-        index_name: str,
-        queries: List[Union[Dict[str, List[List[float]]], List[List[float]]]],
-        filter_condition: str,
-        filter_parameters: Optional[List[Any]] = None,
-        params: Optional[SearchParams] = None,
-    ) -> SearchResult:
-        """
-        Search an index with metadata filtering.
+        if is_text:
+            # Text queries - use encoding endpoints
+            payload: Dict[str, Any] = {"queries": queries}
+            if params:
+                payload["params"] = params.to_dict()
 
-        Args:
-            index_name: Name of the index to search.
-            queries: List of query embeddings.
-            filter_condition: SQL WHERE condition for filtering.
-            filter_parameters: Parameters for the filter condition.
-            params: Search parameters (optional).
+            if has_filter:
+                payload["filter_condition"] = filter_condition
+                if filter_parameters:
+                    payload["filter_parameters"] = filter_parameters
+                endpoint = f"/indices/{index_name}/search/filtered_with_encoding"
+            else:
+                if subset:
+                    payload["subset"] = subset
+                endpoint = f"/indices/{index_name}/search_with_encoding"
 
-        Returns:
-            SearchResult with filtered results.
+            data = self._request("POST", endpoint, json=payload)
+            return SearchResult.from_dict(data)
+        else:
+            # Embedding queries - use regular endpoints
+            if has_filter:
+                payload = self._prepare_filtered_search_payload(
+                    queries, filter_condition, filter_parameters, params  # type: ignore
+                )
+                endpoint = f"/indices/{index_name}/search/filtered"
+            else:
+                payload = self._prepare_search_payload(queries, params, subset)  # type: ignore
+                endpoint = f"/indices/{index_name}/search"
 
-        Raises:
-            IndexNotFoundError: If the index does not exist.
-        """
-        payload = self._prepare_filtered_search_payload(
-            queries, filter_condition, filter_parameters, params
-        )
-        data = self._request(
-            "POST", f"/indices/{index_name}/search/filtered", json=payload
-        )
-        return SearchResult.from_dict(data)
-
-    def search_with_encoding(
-        self,
-        index_name: str,
-        queries: List[str],
-        params: Optional[SearchParams] = None,
-        subset: Optional[List[int]] = None,
-    ) -> SearchResult:
-        """
-        Search an index using text queries (requires model to be loaded).
-
-        Args:
-            index_name: Name of the index to search.
-            queries: List of text queries to encode and search.
-            params: Search parameters (optional).
-            subset: Optional list of document IDs to search within.
-
-        Returns:
-            SearchResult with results for each query.
-
-        Raises:
-            IndexNotFoundError: If the index does not exist.
-            ModelNotLoadedError: If no model is loaded on the server.
-        """
-        payload: Dict[str, Any] = {"queries": queries}
-        if params:
-            payload["params"] = params.to_dict()
-        if subset:
-            payload["subset"] = subset
-
-        data = self._request(
-            "POST", f"/indices/{index_name}/search_with_encoding", json=payload
-        )
-        return SearchResult.from_dict(data)
-
-    def search_filtered_with_encoding(
-        self,
-        index_name: str,
-        queries: List[str],
-        filter_condition: str,
-        filter_parameters: Optional[List[Any]] = None,
-        params: Optional[SearchParams] = None,
-    ) -> SearchResult:
-        """
-        Search with text queries and metadata filtering (requires model).
-
-        Args:
-            index_name: Name of the index to search.
-            queries: List of text queries.
-            filter_condition: SQL WHERE condition for filtering.
-            filter_parameters: Parameters for the filter condition.
-            params: Search parameters (optional).
-
-        Returns:
-            SearchResult with filtered results.
-
-        Raises:
-            IndexNotFoundError: If the index does not exist.
-            ModelNotLoadedError: If no model is loaded on the server.
-        """
-        payload: Dict[str, Any] = {
-            "queries": queries,
-            "filter_condition": filter_condition,
-        }
-        if filter_parameters:
-            payload["filter_parameters"] = filter_parameters
-        if params:
-            payload["params"] = params.to_dict()
-
-        data = self._request(
-            "POST", f"/indices/{index_name}/search/filtered_with_encoding", json=payload
-        )
-        return SearchResult.from_dict(data)
+            data = self._request("POST", endpoint, json=payload)
+            return SearchResult.from_dict(data)
 
     # ==================== Metadata Management ====================
 

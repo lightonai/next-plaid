@@ -18,6 +18,29 @@ from .exceptions import (
 from .models import Document, SearchParams
 
 
+def _is_text_input(items: List[Any]) -> bool:
+    """Check if the input list contains text strings (for encoding) or embeddings."""
+    if not items:
+        return False
+    first = items[0]
+    return isinstance(first, str)
+
+
+def _is_embedding_input(items: List[Any]) -> bool:
+    """Check if the input list contains embeddings (dicts or Document objects)."""
+    if not items:
+        return False
+    first = items[0]
+    # It's embeddings if it's a Document, a dict with 'embeddings', or a nested list
+    if isinstance(first, Document):
+        return True
+    if isinstance(first, dict) and "embeddings" in first:
+        return True
+    if isinstance(first, list) and first and isinstance(first[0], list):
+        return True
+    return False
+
+
 class BaseNextPlaidClient:
     """
     Base class with shared logic for Next Plaid API clients.

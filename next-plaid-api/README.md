@@ -5,9 +5,9 @@ A REST API for deploying and querying next-plaid multi-vector search indices.
 ## Features
 
 - **Index Management**: Declare, update, load, and delete indices
-- **Document Upload**: Add documents with embeddings and metadata
+- **Document Upload**: Add documents with text or embeddings, with metadata
 - **Search**: Single and batch query search with optional metadata filtering
-- **Text Encoding**: Optional built-in ColBERT model for encoding text to embeddings
+- **Text Encoding**: Built-in ColBERT model for encoding text to embeddings
 - **Auto-Download Models**: Automatically download models from HuggingFace Hub
 - **CUDA Support**: GPU acceleration for encoding
 - **Metadata**: SQLite-based metadata storage with SQL query support
@@ -19,9 +19,13 @@ A REST API for deploying and querying next-plaid multi-vector search indices.
 ### Using Docker (Recommended)
 
 ```bash
-# Pull and run the latest image
-docker pull ghcr.io/lightonai/next-plaid-api:latest
-docker run -d -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices ghcr.io/lightonai/next-plaid-api:latest
+# Pull and run with a model (auto-downloads from HuggingFace)
+docker run -d \
+  -p 8080:8080 \
+  -v ~/.local/share/next-plaid:/data/indices \
+  -v next-plaid-models:/models \
+  ghcr.io/lightonai/next-plaid-api:latest \
+  --model lightonai/GTE-ModernColBERT-v1-onnx
 
 # Verify it's running
 curl http://localhost:8080/health
@@ -41,14 +45,14 @@ docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d
 
 ```bash
 # macOS
-cargo build --release -p next-plaid-api --features accelerate
+cargo build --release -p next-plaid-api --features accelerate,model
 
 # Linux
 sudo apt install libopenblas-dev
-cargo build --release -p next-plaid-api --features openblas
+cargo build --release -p next-plaid-api --features openblas,model
 
-# Run
-./target/release/next-plaid-api -p 8080 -d ./indices
+# Run with a model
+./target/release/next-plaid-api -p 8080 -d ./indices --model lightonai/GTE-ModernColBERT-v1-onnx
 ```
 
 ## Docker Variants
@@ -60,17 +64,9 @@ cargo build --release -p next-plaid-api --features openblas
 
 Both variants include model support. Use the `--model` flag to enable text encoding.
 
-### Running with a Model
+### Running with CUDA
 
 ```bash
-# CPU encoding with auto-downloaded model
-docker run -d \
-  -p 8080:8080 \
-  -v ~/.local/share/next-plaid:/data/indices \
-  -v next-plaid-models:/models \
-  ghcr.io/lightonai/next-plaid-api:model \
-  --model lightonai/GTE-ModernColBERT-v1-onnx
-
 # CUDA encoding (requires NVIDIA Container Toolkit)
 docker run -d \
   -p 8080:8080 \
@@ -81,7 +77,7 @@ docker run -d \
   --model lightonai/GTE-ModernColBERT-v1-onnx --int8 --cuda
 ```
 
-## API Endpoints
+## API Examples
 
 ### Health Check
 
@@ -97,37 +93,51 @@ curl -X POST http://localhost:8080/indices \
   -d '{"name": "my_index", "config": {"nbits": 4}}'
 ```
 
-### Add Documents
+### Add Documents (Text)
+
+When running with `--model`, add documents using plain text:
 
 ```bash
-curl -X POST http://localhost:8080/indices/my_index/update \
+curl -X POST http://localhost:8080/indices/my_index/update_with_encoding \
   -H "Content-Type: application/json" \
   -d '{
-    "documents": [{"embeddings": [[0.1, 0.2, ...], [0.3, 0.4, ...]]}],
-    "metadata": [{"title": "Doc 1", "category": "science"}]
+    "documents": [
+      "Paris is the capital of France.",
+      "Berlin is the capital of Germany.",
+      "Rome is the capital of Italy."
+    ],
+    "metadata": [
+      {"city": "Paris", "country": "France"},
+      {"city": "Berlin", "country": "Germany"},
+      {"city": "Rome", "country": "Italy"}
+    ]
   }'
 ```
 
-### Search
+### Search (Text)
+
+Search using natural language queries:
 
 ```bash
-curl -X POST http://localhost:8080/indices/my_index/search \
+curl -X POST http://localhost:8080/indices/my_index/search_with_encoding \
   -H "Content-Type: application/json" \
   -d '{
-    "queries": [{"embeddings": [[0.1, 0.2, ...]]}],
+    "queries": ["What is the capital of France?"],
     "params": {"top_k": 10}
   }'
 ```
 
-### Filtered Search
+### Filtered Search (Text)
+
+Search with metadata filtering:
 
 ```bash
-curl -X POST http://localhost:8080/indices/my_index/search/filtered \
+curl -X POST http://localhost:8080/indices/my_index/search/filtered_with_encoding \
   -H "Content-Type: application/json" \
   -d '{
-    "queries": [{"embeddings": [[...]]}],
-    "filter_condition": "category = ?",
-    "filter_parameters": ["science"],
+    "queries": ["European capitals"],
+    "filter_condition": "country IN (?, ?)",
+    "filter_parameters": ["France", "Italy"],
     "params": {"top_k": 10}
   }'
 ```
@@ -140,17 +150,62 @@ Delete documents matching a SQL WHERE condition (async, returns 202 Accepted):
 curl -X DELETE http://localhost:8080/indices/my_index/documents \
   -H "Content-Type: application/json" \
   -d '{
-    "condition": "category = ? AND year < ?",
-    "parameters": ["outdated", 2020]
+    "condition": "country = ?",
+    "parameters": ["Germany"]
   }'
 ```
 
-### Text Encoding (requires `--model`)
+### Encode Text
+
+Get embeddings for text without adding to an index:
 
 ```bash
 curl -X POST http://localhost:8080/encode \
   -H "Content-Type: application/json" \
   -d '{"texts": ["Hello world"], "input_type": "document"}'
+```
+
+## Python SDK
+
+Install the Python client for easier integration:
+
+```bash
+pip install next-plaid-client
+```
+
+```python
+from next_plaid_client import NextPlaidClient, IndexConfig, SearchParams
+
+client = NextPlaidClient("http://localhost:8080")
+
+# Create an index
+client.create_index("my_index", IndexConfig(nbits=4))
+
+# Add documents (text - requires model on server)
+client.add(
+    "my_index",
+    ["Paris is the capital of France.", "Berlin is the capital of Germany."],
+    metadata=[{"country": "France"}, {"country": "Germany"}]
+)
+
+# Search with text
+results = client.search(
+    "my_index",
+    ["What is the capital of France?"],
+    params=SearchParams(top_k=5)
+)
+
+# Search with filter
+results = client.search(
+    "my_index",
+    ["European capitals"],
+    filter_condition="country = ?",
+    filter_parameters=["France"]
+)
+
+# Print results
+for doc_id, score in zip(results.results[0].document_ids, results.results[0].scores):
+    print(f"Document {doc_id}: {score:.4f}")
 ```
 
 ## Configuration Options
@@ -162,8 +217,9 @@ curl -X POST http://localhost:8080/encode \
 | `-h, --host` | `0.0.0.0` | Host to bind to |
 | `-p, --port` | `8080` | Port to bind to |
 | `-d, --index-dir` | `./indices` | Directory for storing indices |
-| `-m, --model` | none | Path to ONNX model directory for encoding |
+| `-m, --model` | none | HuggingFace model ID or path to ONNX model |
 | `--cuda` | false | Use CUDA for model inference |
+| `--int8` | false | Use INT8 quantization for faster inference |
 
 ### Index Configuration
 
@@ -206,19 +262,18 @@ curl -X POST http://localhost:8080/encode \
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/indices/{name}/update` | Add documents (creates index on first call) |
-| `POST` | `/indices/{name}/documents` | Add documents to existing index |
-| `DELETE` | `/indices/{name}/documents` | Delete documents by metadata filter (async, returns 202) |
-| `POST` | `/indices/{name}/update_with_encoding` | Add text documents (requires model) |
+| `POST` | `/indices/{name}/update_with_encoding` | Add documents with text (requires model) |
+| `POST` | `/indices/{name}/update` | Add documents with embeddings |
+| `DELETE` | `/indices/{name}/documents` | Delete documents by metadata filter |
 
 ### Search
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/indices/{name}/search` | Search with embeddings |
-| `POST` | `/indices/{name}/search/filtered` | Search with metadata filter |
 | `POST` | `/indices/{name}/search_with_encoding` | Search with text (requires model) |
-| `POST` | `/indices/{name}/search/filtered_with_encoding` | Filtered search with text |
+| `POST` | `/indices/{name}/search/filtered_with_encoding` | Search with text + metadata filter |
+| `POST` | `/indices/{name}/search` | Search with embeddings |
+| `POST` | `/indices/{name}/search/filtered` | Search with embeddings + metadata filter |
 
 ### Metadata
 

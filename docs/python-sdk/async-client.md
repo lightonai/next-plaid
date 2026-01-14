@@ -16,11 +16,11 @@ client = AsyncNextPlaidClient(
 
 **Parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `base_url` | `str` | `"http://localhost:8080"` | API server URL |
-| `timeout` | `float` | `30.0` | Request timeout in seconds |
-| `headers` | `Dict[str, str]` | `None` | Custom headers for all requests |
+| Parameter  | Type             | Default                   | Description                     |
+| ---------- | ---------------- | ------------------------- | ------------------------------- |
+| `base_url` | `str`            | `"http://localhost:8080"` | API server URL                  |
+| `timeout`  | `float`          | `30.0`                    | Request timeout in seconds      |
+| `headers`  | `Dict[str, str]` | `None`                    | Custom headers for all requests |
 
 ## Async Context Manager
 
@@ -47,14 +47,20 @@ async def main():
         # Create index
         await client.create_index("async_index", IndexConfig(nbits=4))
 
-        # Add documents
-        documents = [{"embeddings": [[0.1, 0.2], [0.3, 0.4]]}]
-        await client.add_documents("async_index", documents)
+        # Add documents (text - requires model on server)
+        await client.add(
+            "async_index",
+            ["Paris is the capital of France."],
+            metadata=[{"country": "France"}]
+        )
 
-        # Search
+        # Or add with embeddings
+        await client.add("async_index", [{"embeddings": [[0.1, 0.2], [0.3, 0.4]]}])
+
+        # Search with text
         results = await client.search(
             "async_index",
-            queries=[[[0.1, 0.2]]],
+            ["What is the capital of France?"],
             params=SearchParams(top_k=5)
         )
         print(f"Found: {results.num_queries} queries processed")
@@ -66,7 +72,7 @@ asyncio.run(main())
 
 ## Concurrent Operations
 
-The async client excels at concurrent operations:
+The async client can perform concurrent operations:
 
 ```python
 async def search_multiple_indices(client, queries):
@@ -81,7 +87,7 @@ async def search_multiple_indices(client, queries):
 async def batch_add_documents(client, index_name, document_batches):
     """Add multiple document batches concurrently."""
     tasks = [
-        client.add_documents(index_name, batch)
+        client.add(index_name, batch)
         for batch in document_batches
     ]
     await asyncio.gather(*tasks)
@@ -112,19 +118,39 @@ await client.update_index_config("my_index", max_documents=1000)
 ### Document Management
 
 ```python
-await client.add_documents("my_index", documents, metadata)
-await client.update_documents("my_index", documents, metadata)
-await client.update_documents_with_encoding("my_index", texts, metadata)
-result = await client.delete_documents("my_index", [0, 1, 2])
+# Add documents (auto-detects text vs embeddings)
+await client.add("my_index", ["Document text"])  # text (requires model)
+await client.add("my_index", [{"embeddings": [[0.1, 0.2]]}])  # embeddings
+
+# Delete documents by metadata filter (async, returns 202 Accepted)
+result = await client.delete_documents(
+    "my_index",
+    condition="category = ? AND year < ?",
+    parameters=["outdated", 2020]
+)
 ```
 
 ### Search Operations
 
 ```python
-results = await client.search("my_index", queries, params)
-results = await client.search_filtered("my_index", queries, condition, params)
-results = await client.search_with_encoding("my_index", text_queries, params)
-results = await client.search_filtered_with_encoding("my_index", text_queries, condition)
+# Search (auto-detects text vs embeddings)
+results = await client.search("my_index", ["query text"])  # text
+results = await client.search("my_index", [[[0.1, 0.2]]])  # embeddings
+
+# Search with filter
+results = await client.search(
+    "my_index",
+    ["machine learning"],
+    filter_condition="category = ?",
+    filter_parameters=["science"]
+)
+
+# Search with parameters
+results = await client.search(
+    "my_index",
+    ["query"],
+    params=SearchParams(top_k=10, n_ivf_probe=16)
+)
 ```
 
 ### Metadata Management
@@ -169,10 +195,10 @@ async def shutdown():
 
 @app.post("/search")
 async def search(query: str):
-    # First encode the query (if model available)
-    results = await client.search_with_encoding(
+    # Search with text (requires model on server)
+    results = await client.search(
         "my_index",
-        queries=[query],
+        [query],
         params=SearchParams(top_k=10)
     )
     return results.results[0].document_ids
@@ -196,7 +222,7 @@ async def init_app():
 
 async def search_handler(request):
     client = request.app["plaid_client"]
-    results = await client.search("my_index", queries=[...])
+    results = await client.search("my_index", ["query text"])
     return web.json_response({"results": results.results})
 ```
 
@@ -242,10 +268,10 @@ async def main():
         if "demo" not in indices:
             await client.create_index("demo", IndexConfig(nbits=4))
 
-        # Add documents with text encoding
-        await client.update_documents_with_encoding(
+        # Add documents with text (requires model on server)
+        await client.add(
             "demo",
-            documents=[
+            [
                 "The Eiffel Tower is in Paris, France.",
                 "The Great Wall is in China.",
                 "The Colosseum is in Rome, Italy.",
@@ -257,10 +283,10 @@ async def main():
             ]
         )
 
-        # Search
-        results = await client.search_with_encoding(
+        # Search with text
+        results = await client.search(
             "demo",
-            queries=["Famous landmarks in Europe"],
+            ["Famous landmarks in Europe"],
             params=SearchParams(top_k=3)
         )
 

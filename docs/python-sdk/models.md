@@ -223,20 +223,23 @@ print(response.embeddings)   # [[[0.1, 0.2, ...], [0.3, 0.4, ...]]]
 
 ---
 
-### DeleteDocumentsResponse
+### Delete Documents Response
 
-Response from document deletion.
+The delete operation is asynchronous and returns a string message indicating how many documents were queued for deletion.
 
 ```python
-result = client.delete_documents("my_index", [0, 1, 2])
-print(result.deleted)    # 3
-print(result.remaining)  # 997
+result = client.delete_documents(
+    "my_index",
+    condition="category = ? AND year < ?",
+    parameters=["outdated", 2020]
+)
+print(result)  # "Delete queued: 15 documents matching condition"
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `deleted` | `int` | Documents deleted |
-| `remaining` | `int` | Documents remaining |
+!!! info "Asynchronous Operation"
+    The delete endpoint returns HTTP 202 Accepted immediately. The actual deletion
+    happens in the background. Use the index info endpoint to verify document counts
+    after deletion completes.
 
 ---
 

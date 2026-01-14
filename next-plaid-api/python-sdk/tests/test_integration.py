@@ -131,7 +131,7 @@ def create_index_with_documents(client, index_name, num_docs=3, config=None):
     ]
     metadata = [{"doc_id": i, "title": f"Document {i}"} for i in range(num_docs)]
 
-    client.update_documents(index_name, documents, metadata)
+    client.add(index_name, documents, metadata)
     time.sleep(1)  # Wait for async processing
 
     return documents, metadata
@@ -253,7 +253,7 @@ class TestIndexManagement:
 
             documents = [Document(embeddings=[random_embedding(seed=42)])]
             metadata = [{"title": "Test doc"}]
-            await async_client.update_documents(unique_index_name, documents, metadata)
+            await async_client.add(unique_index_name, documents, metadata)
 
             await asyncio.sleep(1)
 
@@ -286,7 +286,7 @@ class TestDocumentsAndSearch:
         # Create index with documents
         client.create_index(unique_index_name, IndexConfig(nbits=2))
 
-        # Add documents
+        # Add documents using unified add() method
         documents = [
             Document(embeddings=[random_embedding(seed=100), random_embedding(seed=101)]),
             Document(embeddings=[random_embedding(seed=200)]),
@@ -298,7 +298,7 @@ class TestDocumentsAndSearch:
             {"title": "Document 3", "category": "science"},
         ]
 
-        result = client.update_documents(unique_index_name, documents, metadata)
+        result = client.add(unique_index_name, documents, metadata)
         assert "queued" in result.lower() or "update" in result.lower()
 
         time.sleep(2)  # Wait for async processing
@@ -307,7 +307,7 @@ class TestDocumentsAndSearch:
         info = client.get_index(unique_index_name)
         assert info.num_documents == 3
 
-        # Search with a query embedding
+        # Search with a query embedding using unified search() method
         query_embedding = [random_embedding(seed=100)]  # Similar to doc 1
         results = client.search(
             unique_index_name,
@@ -331,10 +331,10 @@ class TestDocumentsAndSearch:
             for i in range(5)
         ]
         metadata = [{"doc_id": i} for i in range(5)]
-        client.update_documents(unique_index_name, documents, metadata)
+        client.add(unique_index_name, documents, metadata)
         time.sleep(2)
 
-        # Search only in subset [0, 2, 4]
+        # Search only in subset [0, 2, 4] using unified search() method
         query = [random_embedding(seed=2)]  # Similar to doc 2
         results = client.search(
             unique_index_name,
@@ -364,12 +364,12 @@ class TestDocumentsAndSearch:
             {"category": "A", "score": 30},
             {"category": "B", "score": 40},
         ]
-        client.update_documents(unique_index_name, documents, metadata)
+        client.add(unique_index_name, documents, metadata)
         time.sleep(2)
 
-        # Search with filter for category A
+        # Search with filter for category A using unified search() method
         query = [random_embedding(seed=0)]
-        results = client.search_filtered(
+        results = client.search(
             unique_index_name,
             queries=[query],
             filter_condition="category = ?",
@@ -397,7 +397,7 @@ class TestDocumentsAndSearch:
             {"doc_id": 2, "category": "A"},
             {"doc_id": 3, "category": "B"},
         ]
-        client.update_documents(unique_index_name, documents, metadata)
+        client.add(unique_index_name, documents, metadata)
         time.sleep(2)
 
         info = client.get_index(unique_index_name)
@@ -438,7 +438,7 @@ class TestDocumentsAndSearch:
             for i in range(2)
         ]
         metadata = [{"category": "existing"} for _ in range(2)]
-        client.update_documents(unique_index_name, documents, metadata)
+        client.add(unique_index_name, documents, metadata)
         time.sleep(2)
 
         # Delete with condition that matches nothing
@@ -471,7 +471,7 @@ class TestDocumentsAndSearch:
             {"year": 2020, "score": 30},
             {"year": 2023, "score": 200},
         ]
-        client.update_documents(unique_index_name, documents, metadata)
+        client.add(unique_index_name, documents, metadata)
         time.sleep(2)
 
         # Delete documents where year < 2022 AND score < 100
@@ -542,7 +542,7 @@ class TestMetadata:
             {"category": "tech", "priority": 3},
             {"category": "science", "priority": 4},
         ]
-        client.update_documents(unique_index_name, documents, metadata)
+        client.add(unique_index_name, documents, metadata)
         time.sleep(1)
 
         # Query for tech category
@@ -591,15 +591,15 @@ class TestEncoding:
         assert len(result.embeddings) == 1
 
     def test_search_with_encoding(self, client, unique_index_name, cleanup_index):
-        """Test end-to-end search with text encoding."""
+        """Test end-to-end search with text encoding using unified add/search methods."""
         cleanup_index(unique_index_name)
 
         client.create_index(unique_index_name, IndexConfig(nbits=2))
 
-        # Add documents with text encoding
-        client.update_documents_with_encoding(
+        # Add documents with text using unified add() method
+        client.add(
             unique_index_name,
-            documents=[
+            [
                 "Paris is the capital of France and is known for the Eiffel Tower.",
                 "Berlin is the capital of Germany and has a rich history.",
                 "Tokyo is the capital of Japan and is known for its technology.",
@@ -613,8 +613,8 @@ class TestEncoding:
 
         time.sleep(3)  # Wait for encoding and indexing
 
-        # Search with text query
-        results = client.search_with_encoding(
+        # Search with text query using unified search() method
+        results = client.search(
             unique_index_name,
             queries=["What is the capital of France?"],
             params=SearchParams(top_k=3)
@@ -626,14 +626,15 @@ class TestEncoding:
         assert results.results[0].scores[0] > 0
 
     def test_search_filtered_with_encoding(self, client, unique_index_name, cleanup_index):
-        """Test filtered search with text encoding."""
+        """Test filtered search with text encoding using unified add/search methods."""
         cleanup_index(unique_index_name)
 
         client.create_index(unique_index_name, IndexConfig(nbits=2))
 
-        client.update_documents_with_encoding(
+        # Add documents with text using unified add() method
+        client.add(
             unique_index_name,
-            documents=[
+            [
                 "The Eiffel Tower is a famous landmark in Paris.",
                 "The Brandenburg Gate is a famous landmark in Berlin.",
                 "Mount Fuji is a famous natural site near Tokyo.",
@@ -647,8 +648,8 @@ class TestEncoding:
 
         time.sleep(3)
 
-        # Search for landmarks only
-        results = client.search_filtered_with_encoding(
+        # Search for landmarks only using unified search() method with filter
+        results = client.search(
             unique_index_name,
             queries=["Famous structures in Europe"],
             filter_condition="type = ?",

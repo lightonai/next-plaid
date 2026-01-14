@@ -159,11 +159,12 @@ Add documents using text. The server encodes the text using the loaded model.
 
 <span class="api-method delete">DELETE</span> `/indices/{name}/documents`
 
-Delete documents by their IDs.
+Delete documents by metadata filter. The operation is asynchronous and returns immediately with HTTP 202.
 
-!!! warning "Document IDs"
-    Document IDs are assigned sequentially starting from 0 when documents are added.
-    After deletion, IDs are not reused.
+!!! info "Asynchronous Operation"
+    This endpoint returns immediately with a 202 Accepted status. The deletion is processed
+    in the background. Documents matching the SQL WHERE condition will be deleted from both
+    the index and the metadata database.
 
 ### Path Parameters
 
@@ -175,37 +176,47 @@ Delete documents by their IDs.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `document_ids` | `array` | Yes | List of document IDs to delete |
+| `condition` | `string` | Yes | SQL WHERE condition for selecting documents to delete |
+| `parameters` | `array` | No | Parameters for the condition (default: `[]`) |
+
+### SQL Condition Examples
+
+| Condition | Parameters | Description |
+|-----------|------------|-------------|
+| `category = ?` | `["science"]` | Delete all documents in the "science" category |
+| `year < ?` | `[2020]` | Delete documents older than 2020 |
+| `category = ? AND year < ?` | `["outdated", 2020]` | Combine multiple conditions |
+| `status IN (?, ?)` | `["archived", "deleted"]` | Delete documents with multiple status values |
 
 === "Request"
 
     ```bash
     curl -X DELETE http://localhost:8080/indices/my_index/documents \
       -H "Content-Type: application/json" \
-      -d '{"document_ids": [0, 1, 5, 10]}'
+      -d '{
+        "condition": "category = ? AND year < ?",
+        "parameters": ["outdated", 2020]
+      }'
     ```
 
 === "Response"
 
     ```json
-    {
-      "deleted": 4,
-      "remaining": 996
-    }
+    "Delete queued: 15 documents matching condition"
     ```
 
-### Response Fields
+### Response
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `deleted` | `int` | Number of documents deleted |
-| `remaining` | `int` | Documents remaining in index |
+The endpoint returns a string message indicating how many documents matched the condition and were queued for deletion.
 
 ### Errors
 
 | Status | Code | Description |
 |--------|------|-------------|
+| 400 | `BAD_REQUEST` | Empty condition or invalid SQL syntax |
 | 404 | `INDEX_NOT_FOUND` | Index does not exist |
+| 404 | `METADATA_NOT_FOUND` | Metadata database not found for this index |
+| 503 | `SERVICE_UNAVAILABLE` | Delete queue full, retry later |
 
 ---
 
