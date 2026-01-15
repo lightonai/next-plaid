@@ -195,6 +195,7 @@ class NextPlaidClient(BaseNextPlaidClient):
         index_name: str,
         documents: Union[List[str], List[Union[Document, Dict[str, List[List[float]]]]]],
         metadata: Optional[List[Dict[str, Any]]] = None,
+        pool_factor: Optional[int] = None,
     ) -> str:
         """
         Add documents to an index. Automatically detects input type.
@@ -207,6 +208,9 @@ class NextPlaidClient(BaseNextPlaidClient):
             index_name: Name of the index.
             documents: Either list of text strings or list of embedding dicts/Documents.
             metadata: Optional list of metadata dicts for each document.
+            pool_factor: Optional factor for reducing document embeddings via hierarchical
+                clustering. Only applies to text input. E.g., pool_factor=2 reduces
+                ~100 tokens to ~50 embeddings.
 
         Returns:
             Status message confirming the update was queued.
@@ -219,6 +223,9 @@ class NextPlaidClient(BaseNextPlaidClient):
         Examples:
             # Add text documents (requires model on server)
             client.add("my_index", ["Document 1 text", "Document 2 text"])
+
+            # Add with token pooling (2x reduction)
+            client.add("my_index", ["Long document..."], pool_factor=2)
 
             # Add documents with pre-computed embeddings
             client.add("my_index", [{"embeddings": [[0.1, 0.2], [0.3, 0.4]]}])
@@ -235,6 +242,8 @@ class NextPlaidClient(BaseNextPlaidClient):
             payload: Dict[str, Any] = {"documents": documents}
             if metadata:
                 payload["metadata"] = metadata
+            if pool_factor is not None:
+                payload["pool_factor"] = pool_factor
             return self._request(
                 "POST", f"/indices/{index_name}/update_with_encoding", json=payload
             )
@@ -516,6 +525,7 @@ class NextPlaidClient(BaseNextPlaidClient):
         self,
         texts: List[str],
         input_type: str = "document",
+        pool_factor: Optional[int] = None,
     ) -> EncodeResponse:
         """
         Encode texts into ColBERT embeddings (requires model to be loaded).
@@ -523,6 +533,9 @@ class NextPlaidClient(BaseNextPlaidClient):
         Args:
             texts: List of texts to encode.
             input_type: Either "document" or "query".
+            pool_factor: Optional factor for reducing document embeddings via hierarchical
+                clustering. Only applies to document encoding. E.g., pool_factor=2 reduces
+                ~100 tokens to ~50 embeddings.
 
         Returns:
             EncodeResponse with embeddings for each text.
@@ -531,11 +544,10 @@ class NextPlaidClient(BaseNextPlaidClient):
             ModelNotLoadedError: If no model is loaded on the server.
             ValidationError: If input_type is invalid.
         """
-        data = self._request(
-            "POST",
-            "/encode",
-            json={"texts": texts, "input_type": input_type},
-        )
+        payload: Dict[str, Any] = {"texts": texts, "input_type": input_type}
+        if pool_factor is not None:
+            payload["pool_factor"] = pool_factor
+        data = self._request("POST", "/encode", json=payload)
         return EncodeResponse.from_dict(data)
 
     # ==================== Utility Methods ====================

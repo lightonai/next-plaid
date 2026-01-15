@@ -42,8 +42,8 @@ SDK_PATH = Path(__file__).parent.parent / "next-plaid-api" / "python-sdk"
 sys.path.insert(0, str(SDK_PATH))
 
 from next_plaid_client import NextPlaidClient  # noqa: E402
-from next_plaid_client.exceptions import NextPlaidError  # noqa: E402
 from next_plaid_client.exceptions import ConnectionError as NextPlaidConnectionError  # noqa: E402
+from next_plaid_client.exceptions import NextPlaidError  # noqa: E402
 from next_plaid_client.models import IndexConfig, SearchParams  # noqa: E402
 
 
@@ -330,7 +330,9 @@ def run_api_benchmark(
                     break
             if index_info is None:
                 raise RuntimeError(f"Index '{index_name}' not found. Cannot use --query-only mode.")
-            print(f"    Found index: {index_info.num_documents} docs, {index_info.num_embeddings} embeddings")
+            print(
+                f"    Found index: {index_info.num_documents} docs, {index_info.num_embeddings} embeddings"
+            )
         except NextPlaidError as e:
             raise RuntimeError(f"Failed to verify index '{index_name}': {e}")
         index_time = 0.0
@@ -369,7 +371,12 @@ def run_api_benchmark(
             indexed = 0
             for batch_idx in tqdm(range(num_batches), desc="    Indexing"):
                 # Use SDK's add() method with text documents (auto-detects text input)
-                client.add(index_name, batches[batch_idx], metadata=batch_metadata[batch_idx])
+                client.add(
+                    index_name,
+                    batches[batch_idx],
+                    metadata=batch_metadata[batch_idx],
+                    pool_factor=2,
+                )
                 indexed += len(batches[batch_idx])
                 # Wait for this batch to complete
                 while True:
@@ -396,13 +403,18 @@ def run_api_benchmark(
                     for attempt in range(max_retries):
                         try:
                             return thread_client.add(
-                                index_name, batches[batch_idx], metadata=batch_metadata[batch_idx]
+                                index_name,
+                                batches[batch_idx],
+                                metadata=batch_metadata[batch_idx],
+                                pool_factor=2,
                             )
                         except NextPlaidConnectionError as e:
                             # Handle timeout errors with exponential backoff
                             if e.code == "TIMEOUT_ERROR":
                                 wait_time = min(30, 5 * (2 ** min(attempt, 3)))
-                                print(f"\n    Batch {batch_idx} timed out (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                                print(
+                                    f"\n    Batch {batch_idx} timed out (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s..."
+                                )
                                 time.sleep(wait_time)
                                 continue
                             raise
@@ -412,7 +424,10 @@ def run_api_benchmark(
                                 continue
                             raise
                     return thread_client.add(
-                        index_name, batches[batch_idx], metadata=batch_metadata[batch_idx]
+                        index_name,
+                        batches[batch_idx],
+                        metadata=batch_metadata[batch_idx],
+                        pool_factor=2,
                     )
                 finally:
                     thread_client.close()
@@ -674,7 +689,7 @@ def main():
             print(f"    Indexing:      {docs_per_second:.1f} docs/s")
         else:
             docs_per_second = None
-            print(f"    Indexing:      N/A (query-only mode)")
+            print("    Indexing:      N/A (query-only mode)")
         print(f"    Search:        {queries_per_second:.1f} queries/s")
 
         # Save results

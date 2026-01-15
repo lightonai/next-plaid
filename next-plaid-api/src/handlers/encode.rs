@@ -52,6 +52,8 @@ struct EncodeBatchItem {
     texts: Vec<String>,
     /// Input type (query or document)
     input_type: InputType,
+    /// Optional pool factor for document encoding
+    pool_factor: Option<usize>,
     /// Channel to send results back to the client
     response_tx: oneshot::Sender<EncodeResult>,
 }
@@ -156,7 +158,7 @@ async fn encode_batch_worker(mut receiver: mpsc::Receiver<EncodeBatchItem>, stat
 
 /// Process a batch of encode requests.
 ///
-/// Groups items by input_type, encodes them in one batch per type,
+/// Groups items by input_type and pool_factor, encodes them in batches,
 /// then distributes results back to waiting clients.
 #[cfg(feature = "model")]
 async fn process_encode_batch(items: Vec<EncodeBatchItem>, state: &Arc<AppState>) {
@@ -169,28 +171,36 @@ async fn process_encode_batch(items: Vec<EncodeBatchItem>, state: &Arc<AppState>
         "Processing encode batch"
     );
 
-    // Group items by input type
+    // Group items by input type and pool_factor
     let mut query_items: Vec<(usize, &EncodeBatchItem)> = Vec::new();
-    let mut document_items: Vec<(usize, &EncodeBatchItem)> = Vec::new();
+    // Group documents by pool_factor: (pool_factor, items)
+    let mut document_groups: HashMap<Option<usize>, Vec<(usize, &EncodeBatchItem)>> =
+        HashMap::new();
 
     for (idx, item) in items.iter().enumerate() {
         match item.input_type {
             InputType::Query => query_items.push((idx, item)),
-            InputType::Document => document_items.push((idx, item)),
+            InputType::Document => {
+                document_groups
+                    .entry(item.pool_factor)
+                    .or_default()
+                    .push((idx, item));
+            }
         }
     }
 
     // Prepare results storage
     let mut results: HashMap<usize, EncodeResult> = HashMap::with_capacity(num_requests);
 
-    // Process queries batch
+    // Process queries batch (no pool_factor for queries)
     if !query_items.is_empty() {
         let all_query_texts: Vec<String> = query_items
             .iter()
             .flat_map(|(_, item)| item.texts.clone())
             .collect();
 
-        let query_results = encode_texts_batch(state, &all_query_texts, InputType::Query).await;
+        let query_results =
+            encode_texts_batch(state, &all_query_texts, InputType::Query, None).await;
 
         match query_results {
             Ok(embeddings) => {
@@ -213,20 +223,21 @@ async fn process_encode_batch(items: Vec<EncodeBatchItem>, state: &Arc<AppState>
         }
     }
 
-    // Process documents batch
-    if !document_items.is_empty() {
-        let all_doc_texts: Vec<String> = document_items
+    // Process documents grouped by pool_factor
+    for (pool_factor, doc_items) in document_groups {
+        let all_doc_texts: Vec<String> = doc_items
             .iter()
             .flat_map(|(_, item)| item.texts.clone())
             .collect();
 
-        let doc_results = encode_texts_batch(state, &all_doc_texts, InputType::Document).await;
+        let doc_results =
+            encode_texts_batch(state, &all_doc_texts, InputType::Document, pool_factor).await;
 
         match doc_results {
             Ok(embeddings) => {
                 // Distribute embeddings back to each request
                 let mut offset = 0;
-                for (idx, item) in &document_items {
+                for (idx, item) in &doc_items {
                     let count = item.texts.len();
                     let item_embeddings: Vec<Vec<Vec<f32>>> =
                         embeddings[offset..offset + count].to_vec();
@@ -235,8 +246,8 @@ async fn process_encode_batch(items: Vec<EncodeBatchItem>, state: &Arc<AppState>
                 }
             }
             Err(e) => {
-                // Send error to all document requests
-                for (idx, _) in &document_items {
+                // Send error to all document requests in this group
+                for (idx, _) in &doc_items {
                     results.insert(*idx, Err(e.clone()));
                 }
             }
@@ -265,6 +276,7 @@ async fn encode_texts_batch(
     state: &Arc<AppState>,
     texts: &[String],
     input_type: InputType,
+    pool_factor: Option<usize>,
 ) -> Result<Vec<Vec<Vec<f32>>>, String> {
     let state_clone = state.clone();
     let texts_owned: Vec<String> = texts.to_vec();
@@ -276,7 +288,7 @@ async fn encode_texts_batch(
             .as_ref()
             .ok_or_else(|| "Model not loaded".to_string())?;
 
-        let mut model = model_mutex
+        let model = model_mutex
             .lock()
             .map_err(|_| "Model lock poisoned".to_string())?;
 
@@ -284,7 +296,7 @@ async fn encode_texts_batch(
 
         let embeddings_result = match input_type {
             InputType::Query => model.encode_queries(&texts_ref),
-            InputType::Document => model.encode_documents(&texts_ref),
+            InputType::Document => model.encode_documents(&texts_ref, pool_factor),
         };
 
         let embeddings = embeddings_result.map_err(|e| e.to_string())?;
@@ -341,6 +353,7 @@ pub async fn encode(
     let batch_item = EncodeBatchItem {
         texts: request.texts,
         input_type: request.input_type,
+        pool_factor: request.pool_factor,
         response_tx,
     };
 
@@ -397,7 +410,7 @@ pub fn encode_queries_internal(
 ) -> ApiResult<Vec<ndarray::Array2<f32>>> {
     let model_mutex = state.model.as_ref().ok_or(ApiError::ModelNotLoaded)?;
 
-    let mut model = model_mutex
+    let model = model_mutex
         .lock()
         .map_err(|_| ApiError::Internal("Model lock poisoned".to_string()))?;
 
@@ -422,17 +435,18 @@ pub fn encode_queries_internal(
 pub fn encode_documents_internal(
     state: &AppState,
     documents: &[String],
+    pool_factor: Option<usize>,
 ) -> ApiResult<Vec<ndarray::Array2<f32>>> {
     let model_mutex = state.model.as_ref().ok_or(ApiError::ModelNotLoaded)?;
 
-    let mut model = model_mutex
+    let model = model_mutex
         .lock()
         .map_err(|_| ApiError::Internal("Model lock poisoned".to_string()))?;
 
     let texts: Vec<&str> = documents.iter().map(|s| s.as_str()).collect();
 
     model
-        .encode_documents(&texts)
+        .encode_documents(&texts, pool_factor)
         .map_err(|e| ApiError::ModelError(e.to_string()))
 }
 
@@ -441,6 +455,7 @@ pub fn encode_documents_internal(
 pub fn encode_documents_internal(
     _state: &AppState,
     _documents: &[String],
+    _pool_factor: Option<usize>,
 ) -> ApiResult<Vec<ndarray::Array2<f32>>> {
     Err(ApiError::ModelNotLoaded)
 }

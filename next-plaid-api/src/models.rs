@@ -550,6 +550,14 @@ pub struct EncodeRequest {
     #[allow(dead_code)]
     #[schema(example = "document")]
     pub input_type: InputType,
+    /// Optional pool factor for reducing document embeddings via hierarchical clustering.
+    /// Only applies to document encoding (ignored for queries).
+    /// When set, token embeddings are clustered and mean-pooled, reducing count by this factor.
+    /// E.g., pool_factor=2 reduces ~100 tokens to ~50 embeddings.
+    #[allow(dead_code)]
+    #[serde(default)]
+    #[schema(example = 2)]
+    pub pool_factor: Option<usize>,
 }
 
 /// Response containing embeddings for encoded texts.
@@ -605,6 +613,12 @@ pub struct UpdateWithEncodingRequest {
     /// Metadata for each document (must match documents length)
     #[schema(example = json!([{"title": "Geography"}, {"title": "Computer Science"}]))]
     pub metadata: Vec<serde_json::Value>,
+    /// Optional pool factor for reducing document embeddings via hierarchical clustering.
+    /// When set, token embeddings are clustered and mean-pooled, reducing count by this factor.
+    /// E.g., pool_factor=2 reduces ~100 tokens to ~50 embeddings.
+    #[serde(default)]
+    #[schema(example = 2)]
+    pub pool_factor: Option<usize>,
 }
 
 // =============================================================================

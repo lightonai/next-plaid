@@ -1016,7 +1016,7 @@ pub async fn update_index_with_encoding(
     }
 
     // Encode documents using the model
-    let embeddings = encode_documents_internal(&state, &req.documents)?;
+    let embeddings = encode_documents_internal(&state, &req.documents, req.pool_factor)?;
 
     let doc_count = embeddings.len();
 

@@ -1762,8 +1762,7 @@ impl ModelTestFixture {
         };
 
         // Load the model
-        let model = next_plaid_onnx::Colbert::from_pretrained(&model_path)
-            .expect("Failed to load ONNX model");
+        let model = next_plaid_onnx::Colbert::new(&model_path).expect("Failed to load ONNX model");
 
         let state = Arc::new(AppState::with_model(config, Some(model)));
 

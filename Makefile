@@ -200,7 +200,7 @@ onnx-fmt:
 # Benchmark SciFact via Docker container with server-side encoding
 # Uses next-plaid SDK, starts docker compose, runs benchmark, then stops container
 benchmark-scifact-docker:
-	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_docker.py --batch-size 100
+	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_docker.py --batch-size 300
 
 # Benchmark SciFact via Docker container (keeps container running after)
 benchmark-scifact-docker-keep:
