@@ -626,10 +626,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#delete_documentsindex_name-condition-parametersnone" class="md-nav__link">
+  <a href="#deleteindex_name-condition-parametersnone" class="md-nav__link">
     <span class="md-ellipsis">
       
-        delete_documents(index_name, condition, parameters=None)
+        delete(index_name, condition, parameters=None)
       
     </span>
   </a>
@@ -1373,10 +1373,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#delete_documentsindex_name-condition-parametersnone" class="md-nav__link">
+  <a href="#deleteindex_name-condition-parametersnone" class="md-nav__link">
     <span class="md-ellipsis">
       
-        delete_documents(index_name, condition, parameters=None)
+        delete(index_name, condition, parameters=None)
       
     </span>
   </a>
@@ -1781,10 +1781,10 @@
 <p><strong>Returns:</strong> <code>str</code> (status message)</p>
 <p><strong>Raises:</strong> <code>IndexNotFoundError</code>, <code>ModelNotLoadedError</code> (for text input), <code>ValidationError</code></p>
 <hr />
-<h3 id="delete_documentsindex_name-condition-parametersnone"><code>delete_documents(index_name, condition, parameters=None)</code><a class="headerlink" href="#delete_documentsindex_name-condition-parametersnone" title="Permanent link">&para;</a></h3>
+<h3 id="deleteindex_name-condition-parametersnone"><code>delete(index_name, condition, parameters=None)</code><a class="headerlink" href="#deleteindex_name-condition-parametersnone" title="Permanent link">&para;</a></h3>
 <p>Delete documents by metadata filter. The operation is asynchronous and returns immediately.</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Delete documents matching a condition</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">result</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">delete_documents</span><span class="p">(</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">result</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span>
 </span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    <span class="s2">&quot;my_index&quot;</span><span class="p">,</span>
 </span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="n">condition</span><span class="o">=</span><span class="s2">&quot;category = ? AND year &lt; ?&quot;</span><span class="p">,</span>
 </span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    <span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;outdated&quot;</span><span class="p">,</span> <span class="mi">2020</span><span class="p">]</span>
@@ -1792,7 +1792,7 @@
 </span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>  <span class="c1"># &quot;Delete queued: 15 documents matching condition&quot;</span>
 </span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>
 </span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="c1"># Delete all documents in a category</span>
-</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="n">result</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">delete_documents</span><span class="p">(</span>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="n">result</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span>
 </span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>    <span class="s2">&quot;my_index&quot;</span><span class="p">,</span>
 </span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>    <span class="n">condition</span><span class="o">=</span><span class="s2">&quot;category = ?&quot;</span><span class="p">,</span>
 </span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>    <span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;archived&quot;</span><span class="p">]</span>

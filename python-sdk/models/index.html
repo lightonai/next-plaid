@@ -1934,7 +1934,7 @@
 <hr />
 <h3 id="delete-documents-response">Delete Documents Response<a class="headerlink" href="#delete-documents-response" title="Permanent link">&para;</a></h3>
 <p>The delete operation is asynchronous and returns a string message indicating how many documents were queued for deletion.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">result</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">delete_documents</span><span class="p">(</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">result</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span>
 </span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="s2">&quot;my_index&quot;</span><span class="p">,</span>
 </span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="n">condition</span><span class="o">=</span><span class="s2">&quot;category = ? AND year &lt; ?&quot;</span><span class="p">,</span>
 </span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;outdated&quot;</span><span class="p">,</span> <span class="mi">2020</span><span class="p">]</span>
