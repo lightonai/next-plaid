@@ -1128,33 +1128,283 @@ fn pool_embeddings_hierarchical(
 mod tests {
     use super::*;
 
+    // =========================================================================
+    // ColbertConfig tests
+    // =========================================================================
+
     #[test]
     fn test_default_config() {
         let config = ColbertConfig::default();
         assert_eq!(config.query_length, 48);
         assert_eq!(config.document_length, 300);
         assert!(config.do_query_expansion);
+        assert_eq!(config.embedding_dim, 128);
+        assert_eq!(config.mask_token_id, 103);
+        assert_eq!(config.pad_token_id, 0);
+        assert!(config.uses_token_type_ids);
+        assert_eq!(config.query_prefix, "[Q] ");
+        assert_eq!(config.document_prefix, "[D] ");
+        assert!(config.skiplist_words.is_empty());
     }
 
     #[test]
-    fn test_config_serialization() {
+    fn test_config_serialization_roundtrip() {
         let config = ColbertConfig::default();
         let json = serde_json::to_string(&config).unwrap();
         let parsed: ColbertConfig = serde_json::from_str(&json).unwrap();
+
         assert_eq!(parsed.query_length, config.query_length);
+        assert_eq!(parsed.document_length, config.document_length);
+        assert_eq!(parsed.do_query_expansion, config.do_query_expansion);
+        assert_eq!(parsed.embedding_dim, config.embedding_dim);
+        assert_eq!(parsed.mask_token_id, config.mask_token_id);
+        assert_eq!(parsed.pad_token_id, config.pad_token_id);
+        assert_eq!(parsed.uses_token_type_ids, config.uses_token_type_ids);
     }
+
+    #[test]
+    fn test_config_deserialization_with_custom_values() {
+        let json = r#"{
+            "query_length": 64,
+            "document_length": 512,
+            "do_query_expansion": false,
+            "embedding_dim": 256,
+            "mask_token_id": 4,
+            "pad_token_id": 1,
+            "uses_token_type_ids": false,
+            "query_prefix": "[query]",
+            "document_prefix": "[doc]",
+            "skiplist_words": ["the", "a", "an"]
+        }"#;
+
+        let config: ColbertConfig = serde_json::from_str(json).unwrap();
+
+        assert_eq!(config.query_length, 64);
+        assert_eq!(config.document_length, 512);
+        assert!(!config.do_query_expansion);
+        assert_eq!(config.embedding_dim, 256);
+        assert_eq!(config.mask_token_id, 4);
+        assert_eq!(config.pad_token_id, 1);
+        assert!(!config.uses_token_type_ids);
+        assert_eq!(config.query_prefix, "[query]");
+        assert_eq!(config.document_prefix, "[doc]");
+        assert_eq!(config.skiplist_words, vec!["the", "a", "an"]);
+    }
+
+    #[test]
+    fn test_config_deserialization_with_defaults() {
+        // Empty JSON should use all defaults
+        let json = "{}";
+        let config: ColbertConfig = serde_json::from_str(json).unwrap();
+
+        assert_eq!(config.query_length, 48);
+        assert_eq!(config.document_length, 300);
+        assert!(config.do_query_expansion);
+    }
+
+    // =========================================================================
+    // ColbertBuilder tests
+    // =========================================================================
 
     #[test]
     fn test_builder_defaults() {
         let builder = ColbertBuilder::new("test_model");
+
         assert_eq!(builder.num_sessions, 1);
         assert!(!builder.quantized);
+        assert!(builder.batch_size.is_none());
+        assert_eq!(builder.execution_provider, ExecutionProvider::Auto);
     }
 
     #[test]
-    fn test_builder_parallel() {
+    fn test_builder_with_parallel() {
         let builder = ColbertBuilder::new("test_model").with_parallel(25);
+
         assert_eq!(builder.num_sessions, 25);
+        assert_eq!(builder.threads_per_session, 1); // Auto-set to 1 for parallel
+    }
+
+    #[test]
+    fn test_builder_with_parallel_minimum() {
+        // with_parallel(0) should be clamped to 1
+        let builder = ColbertBuilder::new("test_model").with_parallel(0);
+
+        assert_eq!(builder.num_sessions, 1);
+    }
+
+    #[test]
+    fn test_builder_with_threads() {
+        let builder = ColbertBuilder::new("test_model").with_threads(8);
+
+        assert_eq!(builder.threads_per_session, 8);
+    }
+
+    #[test]
+    fn test_builder_with_batch_size() {
+        let builder = ColbertBuilder::new("test_model").with_batch_size(64);
+
+        assert_eq!(builder.batch_size, Some(64));
+    }
+
+    #[test]
+    fn test_builder_with_quantized() {
+        let builder = ColbertBuilder::new("test_model").with_quantized(true);
+
+        assert!(builder.quantized);
+    }
+
+    #[test]
+    fn test_builder_with_execution_provider() {
+        let builder =
+            ColbertBuilder::new("test_model").with_execution_provider(ExecutionProvider::Cpu);
+
+        assert_eq!(builder.execution_provider, ExecutionProvider::Cpu);
+    }
+
+    #[test]
+    fn test_builder_chained_configuration() {
+        let builder = ColbertBuilder::new("test_model")
+            .with_quantized(true)
+            .with_parallel(16)
+            .with_batch_size(4)
+            .with_execution_provider(ExecutionProvider::Cuda);
+
+        assert!(builder.quantized);
+        assert_eq!(builder.num_sessions, 16);
         assert_eq!(builder.threads_per_session, 1);
+        assert_eq!(builder.batch_size, Some(4));
+        assert_eq!(builder.execution_provider, ExecutionProvider::Cuda);
+    }
+
+    // =========================================================================
+    // ExecutionProvider tests
+    // =========================================================================
+
+    #[test]
+    fn test_execution_provider_default() {
+        let provider = ExecutionProvider::default();
+        assert_eq!(provider, ExecutionProvider::Auto);
+    }
+
+    #[test]
+    fn test_execution_provider_variants() {
+        // Ensure all variants are distinct
+        assert_ne!(ExecutionProvider::Auto, ExecutionProvider::Cpu);
+        assert_ne!(ExecutionProvider::Cpu, ExecutionProvider::Cuda);
+        assert_ne!(ExecutionProvider::Cuda, ExecutionProvider::TensorRT);
+        assert_ne!(ExecutionProvider::TensorRT, ExecutionProvider::CoreML);
+        assert_ne!(ExecutionProvider::CoreML, ExecutionProvider::DirectML);
+    }
+
+    #[test]
+    fn test_execution_provider_clone() {
+        let provider = ExecutionProvider::Cuda;
+        let cloned = provider;
+        assert_eq!(provider, cloned);
+    }
+
+    #[test]
+    fn test_execution_provider_debug() {
+        let provider = ExecutionProvider::Cuda;
+        let debug_str = format!("{:?}", provider);
+        assert_eq!(debug_str, "Cuda");
+    }
+
+    // =========================================================================
+    // Pool embeddings tests
+    // =========================================================================
+
+    #[test]
+    fn test_pool_embeddings_no_pooling() {
+        // Create a small embedding matrix
+        let embeddings = Array2::from_shape_vec(
+            (5, 4),
+            vec![
+                1.0, 0.0, 0.0, 0.0, // token 0 (protected)
+                0.0, 1.0, 0.0, 0.0, // token 1
+                0.0, 0.0, 1.0, 0.0, // token 2
+                0.0, 0.0, 0.0, 1.0, // token 3
+                0.5, 0.5, 0.0, 0.0, // token 4
+            ],
+        )
+        .unwrap();
+
+        // pool_factor=1 should not pool
+        let result = pool_embeddings_hierarchical(embeddings.clone(), 1, 1);
+        assert_eq!(result.dim(), embeddings.dim());
+    }
+
+    #[test]
+    fn test_pool_embeddings_with_pooling() {
+        // Create embeddings that will cluster together
+        let embeddings = Array2::from_shape_vec(
+            (5, 4),
+            vec![
+                1.0, 0.0, 0.0, 0.0, // token 0 (protected CLS)
+                0.9, 0.1, 0.0, 0.0, // token 1 - similar to token 2
+                0.85, 0.15, 0.0, 0.0, // token 2 - similar to token 1
+                0.0, 0.0, 1.0, 0.0, // token 3 - different
+                0.0, 0.0, 0.9, 0.1, // token 4 - similar to token 3
+            ],
+        )
+        .unwrap();
+
+        // pool_factor=2 should reduce 4 tokens to ~2 clusters + 1 protected
+        let result = pool_embeddings_hierarchical(embeddings, 2, 1);
+
+        // Should have fewer tokens than original
+        assert!(result.nrows() < 5);
+        // Protected token should be preserved
+        assert!(result.nrows() >= 1);
+        // Feature dimension should be preserved
+        assert_eq!(result.ncols(), 4);
+    }
+
+    #[test]
+    fn test_pool_embeddings_too_few_tokens() {
+        // Only 2 tokens - too few to pool
+        let embeddings = Array2::from_shape_vec(
+            (2, 4),
+            vec![
+                1.0, 0.0, 0.0, 0.0, // protected
+                0.0, 1.0, 0.0, 0.0, // single token
+            ],
+        )
+        .unwrap();
+
+        let result = pool_embeddings_hierarchical(embeddings.clone(), 2, 1);
+
+        // Should return unchanged
+        assert_eq!(result.dim(), embeddings.dim());
+    }
+
+    #[test]
+    fn test_pool_embeddings_all_protected() {
+        // All tokens protected
+        let embeddings = Array2::from_shape_vec(
+            (3, 4),
+            vec![
+                1.0, 0.0, 0.0, 0.0, //
+                0.0, 1.0, 0.0, 0.0, //
+                0.0, 0.0, 1.0, 0.0, //
+            ],
+        )
+        .unwrap();
+
+        // With 3 protected tokens, nothing to pool
+        let result = pool_embeddings_hierarchical(embeddings.clone(), 2, 3);
+
+        // Should return unchanged
+        assert_eq!(result.dim(), embeddings.dim());
+    }
+
+    // =========================================================================
+    // Batch size defaults tests
+    // =========================================================================
+
+    #[test]
+    fn test_default_batch_sizes() {
+        assert_eq!(DEFAULT_CPU_BATCH_SIZE, 32);
+        assert_eq!(DEFAULT_GPU_BATCH_SIZE, 64);
     }
 }
