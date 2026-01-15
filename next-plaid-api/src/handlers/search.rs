@@ -142,8 +142,8 @@ pub async fn search(
         // The Option<Option<f32>> allows distinguishing "not provided" from "explicitly null".
         // None (not provided) -> Some(0.4), Some(None) (explicit null) -> None, Some(Some(x)) -> Some(x)
         centroid_score_threshold: match req.params.centroid_score_threshold {
-            Some(inner) => inner,        // Explicit value or null -> use as-is
-            None => Some(0.4),           // Not provided -> default to 0.4
+            Some(inner) => inner, // Explicit value or null -> use as-is
+            None => Some(0.4),    // Not provided -> default to 0.4
         },
         ..Default::default()
     };
