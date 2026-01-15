@@ -405,42 +405,11 @@ impl ColbertConfig {
         if config_path.exists() {
             Self::from_file(&config_path)
         } else {
-            Ok(Self::default())
+            anyhow::bail!(
+                "config_sentence_transformers.json not found in {:?}. This file is required for ColBERT model configuration.",
+                model_dir.as_ref()
+            )
         }
-    }
-
-    fn from_tokenizer(tokenizer: &Tokenizer) -> Self {
-        let mut config = Self::default();
-
-        if let Some(mask_id) = tokenizer.token_to_id("[MASK]") {
-            config.mask_token_id = mask_id;
-        } else if let Some(mask_id) = tokenizer.token_to_id("<mask>") {
-            config.mask_token_id = mask_id;
-        }
-
-        if let Some(pad_id) = tokenizer.token_to_id("[PAD]") {
-            config.pad_token_id = pad_id;
-        } else if let Some(pad_id) = tokenizer.token_to_id("<pad>") {
-            config.pad_token_id = pad_id;
-        }
-
-        if let Some(q_id) = tokenizer.token_to_id("[Q] ") {
-            config.query_prefix_id = Some(q_id);
-            config.query_prefix = "[Q] ".to_string();
-        } else if let Some(q_id) = tokenizer.token_to_id("[unused0]") {
-            config.query_prefix_id = Some(q_id);
-            config.query_prefix = "[unused0]".to_string();
-        }
-
-        if let Some(d_id) = tokenizer.token_to_id("[D] ") {
-            config.document_prefix_id = Some(d_id);
-            config.document_prefix = "[D] ".to_string();
-        } else if let Some(d_id) = tokenizer.token_to_id("[unused1]") {
-            config.document_prefix_id = Some(d_id);
-            config.document_prefix = "[unused1]".to_string();
-        }
-
-        config
     }
 }
 
@@ -586,8 +555,7 @@ impl ColbertBuilder {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
 
-        let mut config = ColbertConfig::from_model_dir(model_dir)
-            .unwrap_or_else(|_| ColbertConfig::from_tokenizer(&tokenizer));
+        let mut config = ColbertConfig::from_model_dir(model_dir)?;
 
         update_token_ids(&mut config, &tokenizer);
         let skiplist_ids = build_skiplist(&config, &tokenizer);

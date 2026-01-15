@@ -240,10 +240,24 @@ jobs:
 
             ### Docker
             ```bash
-            # CPU with model support (default)
-            docker pull ghcr.io/lightonai/next-plaid-api:${{ steps.version.outputs.VERSION }}
+            # Pull images
+            docker pull ghcr.io/lightonai/next-plaid-api:${{ steps.version.outputs.VERSION }}       # CPU
+            docker pull ghcr.io/lightonai/next-plaid-api:${{ steps.version.outputs.VERSION }}-cuda  # CUDA
 
-            # GPU with CUDA support
-            docker pull ghcr.io/lightonai/next-plaid-api:${{ steps.version.outputs.VERSION }}-cuda
+            # Run CPU (optimized for throughput)
+            docker run -d -p 8080:8080 \
+              -v ~/.local/share/next-plaid:/data/indices \
+              -v ~/.cache/huggingface/next-plaid:/models \
+              ghcr.io/lightonai/next-plaid-api:${{ steps.version.outputs.VERSION }} \
+              --host 0.0.0.0 --port 8080 --index-dir /data/indices \
+              --model lightonai/GTE-ModernColBERT-v1-onnx --int8 --parallel 8 --batch-size 4
+
+            # Run CUDA (GPU-accelerated)
+            docker run -d --gpus all -p 8080:8080 \
+              -v ~/.local/share/next-plaid:/data/indices \
+              -v ~/.cache/huggingface/next-plaid:/models \
+              ghcr.io/lightonai/next-plaid-api:${{ steps.version.outputs.VERSION }}-cuda \
+              --host 0.0.0.0 --port 8080 --index-dir /data/indices \
+              --model lightonai/GTE-ModernColBERT-v1-onnx --cuda --batch-size 64
             ```
           generate_release_notes: true

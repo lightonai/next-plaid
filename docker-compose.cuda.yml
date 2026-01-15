@@ -9,9 +9,13 @@
 # Model Cache:
 #   Downloaded HuggingFace models are cached at ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}
 #
-# Override with:
-#   export NEXT_PLAID_DATA=/path/to/indices
-#   export NEXT_PLAID_MODELS=/path/to/models
+# CUDA Defaults (optimized for GPU):
+#   --model lightonai/GTE-ModernColBERT-v1-onnx --cuda --batch-size 64
+#   (no --int8: GPU is fast enough with FP32, no --parallel: GPU handles parallelism)
+#
+# Override with docker-compose.override.yml or run directly:
+#   docker run -p 8080:8080 --gpus all -v ~/.local/share/next-plaid:/data/indices \
+#     next-plaid-api:cuda --model my-org/my-model --cuda --batch-size 128
 # =============================================================================
 
 services:
@@ -28,8 +32,19 @@ services:
     environment:
       - RUST_LOG=info
       - NVIDIA_VISIBLE_DEVICES=all
-    # Auto-download model from HuggingFace Hub
-    command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "lightonai/GTE-ModernColBERT-v1-onnx", "--cuda"]
+    # CUDA defaults: FP32 model (GPU is fast), large batches, single session
+    command:
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --index-dir
+      - /data/indices
+      - --model
+      - lightonai/GTE-ModernColBERT-v1-onnx
+      - --cuda
+      - --batch-size
+      - "64"
     healthcheck:
       start_period: 120s  # Longer start period for model download + CUDA initialization
     deploy:

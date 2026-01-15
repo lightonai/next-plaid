@@ -62,20 +62,6 @@ docker run -d \
 curl http://localhost:8080/health
 ```
 
-### Using Docker Compose
-
-```bash
-# Clone the repository
-git clone https://github.com/lightonai/next-plaid.git
-cd next-plaid
-
-# Start the API (CPU)
-docker compose up -d
-
-# Or with CUDA support (requires NVIDIA Container Toolkit)
-docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d
-```
-
 &nbsp;
 
 ## Python SDK
@@ -169,13 +155,13 @@ client.delete_index("my_documents")
 
 ## Project Structure
 
-| Crate | Description |
-|-------|-------------|
-| [next-plaid](https://crates.io/crates/next-plaid) | Core Rust library for CPU-based PLAID search |
-| [next-plaid-api](https://crates.io/crates/next-plaid-api) | REST API server with Docker support |
-| [next-plaid-onnx](https://crates.io/crates/next-plaid-onnx) | ONNX-based ColBERT encoding in Rust |
-| [next-plaid-client](https://pypi.org/project/next-plaid-client/) | Python client for the API |
-| [pylate-onnx-export](https://pypi.org/project/pylate-onnx-export/) | CLI tool for exporting ColBERT to ONNX |
+| Crate                                                              | Description                                  |
+| ------------------------------------------------------------------ | -------------------------------------------- |
+| [next-plaid](https://crates.io/crates/next-plaid)                  | Core Rust library for CPU-based PLAID search |
+| [next-plaid-api](https://crates.io/crates/next-plaid-api)          | REST API server with Docker support          |
+| [next-plaid-onnx](https://crates.io/crates/next-plaid-onnx)        | ONNX-based ColBERT encoding in Rust          |
+| [next-plaid-client](https://pypi.org/project/next-plaid-client/)   | Python client for the API                    |
+| [pylate-onnx-export](https://pypi.org/project/pylate-onnx-export/) | CLI tool for exporting ColBERT to ONNX       |
 
 &nbsp;
 
@@ -183,9 +169,9 @@ client.delete_index("my_documents")
 
 Both images support model inference for text encoding. The index and search always run on CPU.
 
-| Variant | Image Tag | Description |
-|---------|-----------|-------------|
-| **CPU** | `latest` | Index, search, and model inference on CPU |
+| Variant  | Image Tag     | Description                                     |
+| -------- | ------------- | ----------------------------------------------- |
+| **CPU**  | `latest`      | Index, search, and model inference on CPU       |
 | **CUDA** | `latest-cuda` | Index and search on CPU, model inference on GPU |
 
 &nbsp;
@@ -197,23 +183,48 @@ Both Docker images support model inference. When started with a ColBERT model, y
 ### Start the API with a Model
 
 ```bash
-# CPU image (model inference on CPU)
+# CPU image (optimized for throughput)
+# --int8: ~2x faster inference on CPU
+# --parallel 8: 8 parallel ONNX sessions for concurrent requests
+# --batch-size 4: small batches optimal for parallel sessions
 docker run -d \
   -p 8080:8080 \
   -v ~/.local/share/next-plaid:/data/indices \
   -v ~/.cache/huggingface/next-plaid:/models \
   ghcr.io/lightonai/next-plaid-api:latest \
-  --model lightonai/GTE-ModernColBERT-v1-onnx
+  --host 0.0.0.0 --port 8080 --index-dir /data/indices \
+  --model lightonai/GTE-ModernColBERT-v1-onnx \
+  --int8 \
+  --parallel 8 \
+  --batch-size 4
 
-# CUDA image (model inference on GPU)
+# CUDA image (GPU-accelerated inference)
+# --cuda: use GPU for model inference
+# --batch-size 64: large batches for GPU efficiency
+# No --int8: GPU is fast enough with FP32
+# No --parallel: GPU handles parallelism internally
 docker run -d \
   --gpus all \
   -p 8080:8080 \
   -v ~/.local/share/next-plaid:/data/indices \
   -v ~/.cache/huggingface/next-plaid:/models \
   ghcr.io/lightonai/next-plaid-api:latest-cuda \
-  --model lightonai/GTE-ModernColBERT-v1-onnx
+  --host 0.0.0.0 --port 8080 --index-dir /data/indices \
+  --model lightonai/GTE-ModernColBERT-v1-onnx \
+  --cuda \
+  --batch-size 64
 ```
+
+#### Model Configuration Options
+
+| Option | Description | CPU Default | CUDA Default |
+|--------|-------------|-------------|--------------|
+| `--model <id>` | HuggingFace model ID or local path | Required | Required |
+| `--int8` | Use INT8 quantized model (~2x faster on CPU) | Yes | No |
+| `--cuda` | Use GPU for inference | No | Yes |
+| `--parallel <N>` | Number of parallel ONNX sessions | 8 | 1 |
+| `--batch-size <N>` | Batch size per session | 4 | 64 |
+| `--threads <N>` | Threads per session (auto when parallel) | Auto | Auto |
 
 Models are automatically downloaded from HuggingFace and cached locally at `~/.cache/huggingface/next-plaid`. On subsequent runs, cached models are reused.
 

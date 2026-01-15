@@ -13,14 +13,29 @@
 #   Downloaded HuggingFace models are cached at ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}
 #   Models are only downloaded once and reused on subsequent container starts.
 #
-#   To customize the storage locations:
-#     export NEXT_PLAID_DATA=/path/to/indices
-#     export NEXT_PLAID_MODELS=/path/to/models
-#     docker compose up -d
+# Model Configuration (via command arguments):
+#   --model <id>        HuggingFace model ID or local path
+#   --int8              Use INT8 quantized model (~2x faster on CPU)
+#   --parallel <N>      Number of parallel ONNX sessions
+#   --batch-size <N>    Batch size per session
+#   --threads <N>       Threads per session
+#   --cuda              Use CUDA (for GPU builds)
 #
-#   Or create a .env file with:
-#     NEXT_PLAID_DATA=/path/to/indices
-#     NEXT_PLAID_MODELS=/path/to/models
+# CPU Defaults (optimized for throughput):
+#   --model lightonai/GTE-ModernColBERT-v1-onnx --int8 --parallel 8 --batch-size 4
+#
+# Examples:
+#   # Default configuration
+#   docker compose up -d
+#
+#   # Custom model with different parallel config (override command in docker-compose.override.yml)
+#   # Or run directly:
+#   docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices -v ~/.cache/huggingface/next-plaid:/models \
+#     next-plaid-api --model my-org/my-model --parallel 16 --batch-size 2
+#
+# To customize storage locations, create a .env file with:
+#   NEXT_PLAID_DATA=/path/to/indices
+#   NEXT_PLAID_MODELS=/path/to/models
 # =============================================================================
 
 services:
@@ -42,8 +57,21 @@ services:
       - ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}:/models
     environment:
       - RUST_LOG=info
-    # Auto-download INT8 model from HuggingFace Hub
-    command: ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--model", "lightonai/GTE-ModernColBERT-v1-onnx", "--int8"]
+    # CPU defaults: INT8 for ~2x speedup, 8 parallel sessions, batch size 4
+    command:
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --index-dir
+      - /data/indices
+      - --model
+      - lightonai/GTE-ModernColBERT-v1-onnx
+      - --int8
+      - --parallel
+      - "8"
+      - --batch-size
+      - "4"
     healthcheck:
       test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
       interval: 15s

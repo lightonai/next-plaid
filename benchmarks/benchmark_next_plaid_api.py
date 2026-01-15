@@ -57,7 +57,7 @@ DATASET_CONFIG = {
     },
 }
 
-MODEL_NAME = "answerdotai/answerai-colbert-small-v1"
+MODEL_NAME = "lightonai/GTE-ModernColBERT-v1"
 
 
 def load_beir_dataset(dataset_name: str, split: str = "test"):
@@ -117,6 +117,7 @@ def load_or_compute_embeddings(
         model_name_or_path=MODEL_NAME,
         query_length=dataset_config.get("query_length", 48),
         document_length=dataset_config.get("document_length", 300),
+        do_query_expansion=False,
     )
 
     # Encode documents
