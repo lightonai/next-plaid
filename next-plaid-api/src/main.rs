@@ -38,7 +38,7 @@ use std::time::Duration;
 use axum::{
     extract::DefaultBodyLimit,
     http::StatusCode,
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use tower::limit::ConcurrencyLimitLayer;
@@ -254,6 +254,24 @@ fn build_router(state: Arc<AppState>) -> Router {
         ))
         .with_state(state.clone());
 
+    // Index info/list endpoints - exempt from rate limiting for polling during async operations
+    let index_info_router = Router::new()
+        .without_v07_checks()
+        .route("/indices", get(handlers::list_indices))
+        .route("/indices/{name}", get(handlers::get_index_info))
+        .layer(TraceLayer::new_for_http())
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(30),
+        ))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
+        .with_state(state.clone());
+
     // Update endpoint - exempt from rate limiting (has per-index semaphore protection)
     let update_router = Router::new()
         .without_v07_checks()
@@ -299,15 +317,9 @@ fn build_router(state: Arc<AppState>) -> Router {
     let api_router = Router::new()
         .without_v07_checks()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
-        // Index routes
-        .route(
-            "/indices",
-            get(handlers::list_indices).post(handlers::create_index),
-        )
-        .route(
-            "/indices/{name}",
-            get(handlers::get_index_info).delete(handlers::delete_index),
-        )
+        // Index routes (GET routes are in index_info_router, exempt from rate limiting)
+        .route("/indices", post(handlers::create_index))
+        .route("/indices/{name}", delete(handlers::delete_index))
         .route(
             "/indices/{name}/documents",
             post(handlers::add_documents).delete(handlers::delete_documents),
@@ -362,9 +374,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
         .with_state(state);
 
-    // Merge routers: health first (takes precedence), then update/encode (no rate limit), then API
+    // Merge routers: health first (takes precedence), then index info (no rate limit),
+    // then update/encode (no rate limit), then API (with rate limit)
     Router::new()
         .merge(health_router)
+        .merge(index_info_router)
         .merge(update_router)
         .merge(encode_router)
         .merge(api_router)
@@ -544,7 +558,7 @@ Examples:
     tracing::info!("Listening on http://{}", addr);
     tracing::info!("Swagger UI available at http://{}/swagger-ui", addr);
     tracing::info!(
-        "Rate limiting: 50 req/sec sustained, 100 burst (health, update, encode exempt)"
+        "Rate limiting: 50 req/sec sustained, 100 burst (health, index info, update, encode exempt)"
     );
     tracing::info!("Concurrency limit: 100 in-flight requests");
     tracing::info!("Update queue limit: 10 pending tasks per index");
