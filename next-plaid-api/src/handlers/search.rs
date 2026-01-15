@@ -138,8 +138,14 @@ pub async fn search(
         n_ivf_probe: req.params.n_ivf_probe.unwrap_or(8),
         n_full_scores: req.params.n_full_scores.unwrap_or(4096),
         batch_size: 2000,
-        // Use provided threshold, or default (Some(0.4)) if not specified
-        centroid_score_threshold: req.params.centroid_score_threshold.unwrap_or(Some(0.4)),
+        // Use provided threshold, or default (Some(0.4)) if not specified.
+        // The Option<Option<f32>> allows distinguishing "not provided" from "explicitly null".
+        // None (not provided) -> Some(0.4), Some(None) (explicit null) -> None, Some(Some(x)) -> Some(x)
+        centroid_score_threshold: req
+            .params
+            .centroid_score_threshold
+            .map(|opt| opt)
+            .unwrap_or(Some(0.4)),
         ..Default::default()
     };
 

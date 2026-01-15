@@ -375,7 +375,8 @@ class TestSearch:
             f"{api_client}/indices/{TEST_INDEX_NAME}/search",
             json={
                 "queries": [{"embeddings": query_embeddings}],
-                "params": {"top_k": 5, "n_ivf_probe": 4, "n_full_scores": 256},
+                # Disable centroid_score_threshold for random embeddings (threshold would filter all)
+                "params": {"top_k": 5, "n_ivf_probe": 4, "n_full_scores": 256, "centroid_score_threshold": None},
             },
         )
         assert response.status_code == 200
@@ -399,7 +400,7 @@ class TestSearch:
 
         response = requests.post(
             f"{api_client}/indices/{TEST_INDEX_NAME}/search",
-            json={"queries": queries, "params": {"top_k": 3}},
+            json={"queries": queries, "params": {"top_k": 3, "centroid_score_threshold": None}},
         )
         assert response.status_code == 200
         data = response.json()
@@ -421,7 +422,7 @@ class TestSearch:
             f"{api_client}/indices/{TEST_INDEX_NAME}/search",
             json={
                 "queries": [{"embeddings": query_embeddings}],
-                "params": {"top_k": 3},
+                "params": {"top_k": 3, "centroid_score_threshold": None},
                 "subset": subset,
             },
         )
@@ -442,7 +443,7 @@ class TestSearch:
             f"{api_client}/indices/{TEST_INDEX_NAME}/search",
             json={
                 "queries": [{"embeddings": query_embeddings}],
-                "params": {"top_k": 100},  # More than NUM_DOCUMENTS
+                "params": {"top_k": 100, "centroid_score_threshold": None},  # More than NUM_DOCUMENTS
             },
         )
         assert response.status_code == 200
@@ -611,7 +612,7 @@ class TestFilteredSearch:
                 "queries": [{"embeddings": query_embeddings}],
                 "filter_condition": "category = ?",
                 "filter_parameters": ["physics"],
-                "params": {"top_k": 5},
+                "params": {"top_k": 5, "centroid_score_threshold": None},
             },
         )
         assert response.status_code == 200
@@ -634,7 +635,7 @@ class TestFilteredSearch:
                 "queries": [{"embeddings": query_embeddings}],
                 "filter_condition": "year >= ? AND category = ?",
                 "filter_parameters": [2023, "computer_science"],
-                "params": {"top_k": 5},
+                "params": {"top_k": 5, "centroid_score_threshold": None},
             },
         )
         assert response.status_code == 200
@@ -657,7 +658,7 @@ class TestFilteredSearch:
                 "queries": [{"embeddings": query_embeddings}],
                 "filter_condition": "is_open_access = ?",
                 "filter_parameters": [True],
-                "params": {"top_k": 10},
+                "params": {"top_k": 10, "centroid_score_threshold": None},
             },
         )
         assert response.status_code == 200
@@ -680,7 +681,7 @@ class TestFilteredSearch:
                 "queries": [{"embeddings": query_embeddings}],
                 "filter_condition": "citations >= ?",
                 "filter_parameters": [150],
-                "params": {"top_k": 10},
+                "params": {"top_k": 10, "centroid_score_threshold": None},
             },
         )
         assert response.status_code == 200
@@ -703,7 +704,7 @@ class TestFilteredSearch:
                 "queries": queries,
                 "filter_condition": "category IN (?, ?)",
                 "filter_parameters": ["physics", "math"],
-                "params": {"top_k": 3},
+                "params": {"top_k": 3, "centroid_score_threshold": None},
             },
         )
         assert response.status_code == 200
@@ -726,7 +727,7 @@ class TestFilteredSearch:
                 "queries": [{"embeddings": query_embeddings}],
                 "filter_condition": "category = ?",
                 "filter_parameters": ["nonexistent_category"],
-                "params": {"top_k": 5},
+                "params": {"top_k": 5, "centroid_score_threshold": None},
             },
         )
         assert response.status_code == 200
@@ -746,7 +747,7 @@ class TestFilteredSearch:
                 "queries": [{"embeddings": query_embeddings}],
                 "filter_condition": "journal LIKE ?",
                 "filter_parameters": ["%Nature%"],
-                "params": {"top_k": 10},
+                "params": {"top_k": 10, "centroid_score_threshold": None},
             },
         )
         assert response.status_code == 200
@@ -1161,7 +1162,7 @@ class TestEdgeCases:
             f"{api_client}/indices/{TEST_INDEX_NAME}/search",
             json={
                 "queries": [{"embeddings": query_embeddings}],
-                "params": {"top_k": 5},
+                "params": {"top_k": 5, "centroid_score_threshold": None},
             },
         )
         assert response.status_code == 200
@@ -1191,7 +1192,7 @@ class TestEdgeCases:
                 "queries": [{"embeddings": query_embeddings}],
                 "filter_condition": "citations > ?",
                 "filter_parameters": [10000],  # No paper has this many citations
-                "params": {"top_k": 5},
+                "params": {"top_k": 5, "centroid_score_threshold": None},
             },
         )
         assert response.status_code == 200
@@ -1208,7 +1209,7 @@ class TestEdgeCases:
                 f"{api_client}/indices/{TEST_INDEX_NAME}/search",
                 json={
                     "queries": [{"embeddings": query_embeddings}],
-                    "params": {"top_k": k},
+                    "params": {"top_k": k, "centroid_score_threshold": None},
                 },
             )
             assert response.status_code == 200
@@ -1259,7 +1260,7 @@ class TestIntegration:
         query = generate_normalized_embeddings(8)
         response = requests.post(
             f"{api_client}/indices/{index_name}/search",
-            json={"queries": [{"embeddings": query}], "params": {"top_k": 3}},
+            json={"queries": [{"embeddings": query}], "params": {"top_k": 3, "centroid_score_threshold": None}},
         )
         assert response.status_code == 200
         assert len(response.json()["results"][0]["document_ids"]) == 3
@@ -1271,7 +1272,7 @@ class TestIntegration:
                 "queries": [{"embeddings": query}],
                 "filter_condition": "category = ?",
                 "filter_parameters": ["A"],
-                "params": {"top_k": 5},
+                "params": {"top_k": 5, "centroid_score_threshold": None},
             },
         )
         assert response.status_code == 200
@@ -1312,7 +1313,7 @@ class TestIntegration:
             query = generate_normalized_embeddings(8)
             response = requests.post(
                 f"{api_client}/indices/{TEST_INDEX_NAME}/search",
-                json={"queries": [{"embeddings": query}], "params": {"top_k": 5}},
+                json={"queries": [{"embeddings": query}], "params": {"top_k": 5, "centroid_score_threshold": None}},
             )
             return response.status_code, query_id
 
