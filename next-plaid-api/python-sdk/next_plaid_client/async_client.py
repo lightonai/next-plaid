@@ -239,7 +239,7 @@ class AsyncNextPlaidClient(BaseNextPlaidClient):
             payload = self._prepare_documents_payload(documents, metadata)  # type: ignore
             return await self._request("POST", f"/indices/{index_name}/update", json=payload)
 
-    async def delete_documents(
+    async def delete(
         self,
         index_name: str,
         condition: str,

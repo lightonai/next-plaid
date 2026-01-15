@@ -404,7 +404,7 @@ class TestDocumentsAndSearch:
         assert info.num_documents == 4
 
         # Delete documents with category A (async - returns message)
-        result = client.delete_documents(
+        result = client.delete(
             unique_index_name,
             condition="category = ?",
             parameters=["A"]
@@ -442,7 +442,7 @@ class TestDocumentsAndSearch:
         time.sleep(2)
 
         # Delete with condition that matches nothing
-        result = client.delete_documents(
+        result = client.delete(
             unique_index_name,
             condition="category = ?",
             parameters=["nonexistent"]
@@ -476,7 +476,7 @@ class TestDocumentsAndSearch:
 
         # Delete documents where year < 2022 AND score < 100
         # This should match: doc 0 (2020, 50) and doc 3 (2020, 30)
-        result = client.delete_documents(
+        result = client.delete(
             unique_index_name,
             condition="year < ? AND score < ?",
             parameters=[2022, 100]

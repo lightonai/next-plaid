@@ -243,7 +243,7 @@ class NextPlaidClient(BaseNextPlaidClient):
             payload = self._prepare_documents_payload(documents, metadata)  # type: ignore
             return self._request("POST", f"/indices/{index_name}/update", json=payload)
 
-    def delete_documents(
+    def delete(
         self,
         index_name: str,
         condition: str,

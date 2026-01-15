@@ -22,7 +22,7 @@ client.create_index("my_index", IndexConfig(nbits=4))
 # Add documents with embeddings
 documents = [{"embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]}]
 metadata = [{"title": "Document 1"}]
-client.add_documents("my_index", documents, metadata)
+client.add("my_index", documents, metadata)
 
 # Search
 results = client.search(
@@ -113,10 +113,10 @@ metadata = [
     {"title": "Doc 1", "category": "science", "year": 2023},
     {"title": "Doc 2", "category": "history", "year": 2022},
 ]
-client.add_documents("my_index", documents, metadata)
+client.add("my_index", documents, metadata)
 
 # Search with SQL-like filter
-results = client.search_filtered(
+results = client.search(
     "my_index",
     queries=[query],
     filter_condition="category = ? AND year >= ?",
@@ -126,18 +126,18 @@ results = client.search_filtered(
 
 ### Text Encoding (Requires Model)
 
-If the server is running with a model loaded:
+If the server is running with a model loaded, the `add` and `search` methods automatically detect text input:
 
 ```python
-# Add documents from text
-client.update_documents_with_encoding(
+# Add documents from text (auto-detected)
+client.add(
     "my_index",
-    documents=["Paris is the capital of France."],
+    ["Paris is the capital of France."],
     metadata=[{"country": "France"}]
 )
 
-# Search with text queries
-results = client.search_with_encoding(
+# Search with text queries (auto-detected)
+results = client.search(
     "my_index",
     queries=["What is the capital of France?"],
 )

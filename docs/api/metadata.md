@@ -88,7 +88,7 @@ Add or update metadata entries.
 
 - Include `_id` to update existing metadata
 - Omit `_id` when adding new metadata (auto-assigned based on document order)
-- Metadata is typically added with documents via `add_documents`
+- Metadata is typically added with documents via `add`
 
 ---
 

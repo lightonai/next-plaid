@@ -233,7 +233,7 @@ print(response.embeddings)   # [[[0.1, 0.2, ...], [0.3, 0.4, ...]]]
 The delete operation is asynchronous and returns a string message indicating how many documents were queued for deletion.
 
 ```python
-result = client.delete_documents(
+result = client.delete(
     "my_index",
     condition="category = ? AND year < ?",
     parameters=["outdated", 2020]

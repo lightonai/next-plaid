@@ -136,7 +136,7 @@ Delete documents by metadata filter:
 
 ```python
 # Delete documents matching a condition
-client.delete_documents(
+client.delete(
     "my_index",
     condition="category = ? AND year < ?",
     parameters=["outdated", 2020]

@@ -190,13 +190,13 @@ client.add(
 
 ---
 
-### `delete_documents(index_name, condition, parameters=None)`
+### `delete(index_name, condition, parameters=None)`
 
 Delete documents by metadata filter. The operation is asynchronous and returns immediately.
 
 ```python
 # Delete documents matching a condition
-result = client.delete_documents(
+result = client.delete(
     "my_index",
     condition="category = ? AND year < ?",
     parameters=["outdated", 2020]
@@ -204,7 +204,7 @@ result = client.delete_documents(
 print(result)  # "Delete queued: 15 documents matching condition"
 
 # Delete all documents in a category
-result = client.delete_documents(
+result = client.delete(
     "my_index",
     condition="category = ?",
     parameters=["archived"]

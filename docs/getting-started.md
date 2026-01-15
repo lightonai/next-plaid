@@ -84,7 +84,7 @@ for i in range(10):
 metadata = [{"title": f"Document {i}", "category": "example"} for i in range(10)]
 
 # Add to index
-client.add_documents("my_index", documents, metadata)
+client.add("my_index", documents, metadata)
 
 # Check the index
 info = client.get_index("my_index")
@@ -137,18 +137,18 @@ docker run -d \
   --model lightonai/GTE-ModernColBERT-v1-onnx
 ```
 
-Then use text-based methods:
+Then use text input directly (the `add` and `search` methods auto-detect text vs embeddings):
 
 ```python
-# Add documents with text
-client.update_documents_with_encoding(
+# Add documents with text (auto-detected)
+client.add(
     "my_index",
-    documents=["Paris is the capital of France.", "Berlin is in Germany."],
+    ["Paris is the capital of France.", "Berlin is in Germany."],
     metadata=[{"country": "France"}, {"country": "Germany"}]
 )
 
-# Search with text
-results = client.search_with_encoding(
+# Search with text (auto-detected)
+results = client.search(
     "my_index",
     queries=["What is the capital of France?"],
     params=SearchParams(top_k=5)

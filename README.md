@@ -86,6 +86,12 @@ Install the Python client to interact with the Next-Plaid API.
 pip install next-plaid-client
 ```
 
+Or install from source:
+
+```bash
+pip install git+https://github.com/lightonai/next-plaid.git#subdirectory=next-plaid-api/python-sdk
+```
+
 ### Upload and Search with Embeddings
 
 ```python
@@ -107,7 +113,7 @@ metadata = [
     {"title": "Document 1", "category": "science"},
     {"title": "Document 2", "category": "history"}
 ]
-client.add_documents("my_documents", documents, metadata)
+client.add("my_documents", documents, metadata)
 
 # Search with query embeddings
 results = client.search(
@@ -126,7 +132,7 @@ for result in results.results:
 
 ```python
 # Search with metadata filter (SQL-like conditions)
-results = client.search_filtered(
+results = client.search(
     "my_documents",
     queries=[[[0.1, 0.2, ...]]],
     filter_condition="category = ? AND year >= ?",
@@ -141,6 +147,22 @@ results = client.search(
     subset=[0, 5, 10, 15],  # Only search these document IDs
     params=SearchParams(top_k=10)
 )
+```
+
+### Delete Documents
+
+Delete documents from an index using metadata filters:
+
+```python
+# Delete documents matching a SQL condition
+client.delete(
+    "my_documents",
+    condition="category = ? AND year < ?",
+    parameters=["outdated", 2020]
+)
+
+# Delete an entire index
+client.delete_index("my_documents")
 ```
 
 &nbsp;
@@ -199,14 +221,14 @@ Models are automatically downloaded from HuggingFace and cached locally at `~/.c
 
 ```python
 # Add documents using text (model encodes them automatically)
-client.update_documents_with_encoding(
+client.add(
     "my_documents",
-    documents=["Paris is the capital of France.", "Machine learning is..."],
+    ["Paris is the capital of France.", "Machine learning is..."],
     metadata=[{"title": "Geography"}, {"title": "AI"}]
 )
 
 # Search with text queries
-results = client.search_with_encoding(
+results = client.search(
     "my_documents",
     queries=["What is the capital of France?"],
     params=SearchParams(top_k=5)

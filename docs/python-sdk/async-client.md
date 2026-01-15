@@ -123,7 +123,7 @@ await client.add("my_index", ["Document text"])  # text (requires model)
 await client.add("my_index", [{"embeddings": [[0.1, 0.2]]}])  # embeddings
 
 # Delete documents by metadata filter (async, returns 202 Accepted)
-result = await client.delete_documents(
+result = await client.delete(
     "my_index",
     condition="category = ? AND year < ?",
     parameters=["outdated", 2020]

@@ -44,7 +44,7 @@ If you want retrieval running in Python and optimized for GPU, you can rely on [
         {"title": "Document 1", "category": "science"},
         {"title": "Document 2", "category": "history"}
     ]
-    client.add_documents("my_documents", documents, metadata)
+    client.add("my_documents", documents, metadata)
 
     # Search
     results = client.search(

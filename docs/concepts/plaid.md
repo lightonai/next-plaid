@@ -246,7 +246,7 @@ On SciFact benchmark:
 NextPlaid supports adding documents to existing indices:
 
 ```python
-client.add_documents("my_index", new_documents)
+client.add("my_index", new_documents)
 ```
 
 ### Update Process

@@ -142,8 +142,8 @@ client = NextPlaidClient("http://localhost:8080")
 response = client.encode(["Hello world"], input_type="document")
 print(response.embeddings)
 
-# Search with text
-results = client.search_with_encoding(
+# Search with text (auto-detected)
+results = client.search(
     "my_index",
     queries=["What is machine learning?"]
 )
