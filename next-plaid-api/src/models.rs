@@ -426,6 +426,57 @@ pub struct HealthResponse {
     pub memory_usage_bytes: u64,
     /// List of available indices with their configuration
     pub indices: Vec<IndexSummary>,
+    /// Model information (only present when --model is specified)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelHealthInfo>,
+}
+
+/// Model information for health endpoint.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ModelHealthInfo {
+    /// Model name (from config)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "GTE-ModernColBERT-v1")]
+    pub name: Option<String>,
+    /// Path to the model directory
+    #[schema(example = "/models/GTE-ModernColBERT-v1")]
+    pub path: String,
+    /// Whether INT8 quantization is enabled
+    #[schema(example = false)]
+    pub quantized: bool,
+    /// Embedding dimension
+    #[schema(example = 128)]
+    pub embedding_dim: usize,
+    /// Batch size used for encoding
+    #[schema(example = 32)]
+    pub batch_size: usize,
+    /// Number of parallel ONNX sessions
+    #[schema(example = 1)]
+    pub num_sessions: usize,
+    /// Query prefix token
+    #[schema(example = "[Q] ")]
+    pub query_prefix: String,
+    /// Document prefix token
+    #[schema(example = "[D] ")]
+    pub document_prefix: String,
+    /// Maximum query length
+    #[schema(example = 48)]
+    pub query_length: usize,
+    /// Maximum document length
+    #[schema(example = 300)]
+    pub document_length: usize,
+    /// Whether query expansion is enabled
+    #[schema(example = true)]
+    pub do_query_expansion: bool,
+    /// Whether the model uses token_type_ids
+    #[schema(example = false)]
+    pub uses_token_type_ids: bool,
+    /// MASK token ID for query expansion
+    #[schema(example = 103)]
+    pub mask_token_id: u32,
+    /// PAD token ID
+    #[schema(example = 0)]
+    pub pad_token_id: u32,
 }
 
 /// Summary information about an index.

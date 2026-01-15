@@ -105,6 +105,7 @@ use state::{ApiConfig, AppState};
     ),
     components(schemas(
         models::HealthResponse,
+        models::ModelHealthInfo,
         models::IndexSummary,
         models::ErrorResponse,
         models::CreateIndexRequest,
@@ -177,6 +178,35 @@ async fn health(state: axum::extract::State<Arc<AppState>>) -> Json<HealthRespon
         }
     };
 
+    // Get model info if model is loaded
+    #[cfg(feature = "model")]
+    let model_info = state.model.as_ref().map(|model_mutex| {
+        let model = model_mutex.lock().unwrap();
+        let config = model.config();
+        let stored_model_info = state.model_info.as_ref();
+        models::ModelHealthInfo {
+            name: config.model_name().map(|s| s.to_string()),
+            path: stored_model_info
+                .map(|i| i.path.clone())
+                .unwrap_or_default(),
+            quantized: stored_model_info.map(|i| i.quantized).unwrap_or(false),
+            embedding_dim: model.embedding_dim(),
+            batch_size: model.batch_size(),
+            num_sessions: model.num_sessions(),
+            query_prefix: config.query_prefix.clone(),
+            document_prefix: config.document_prefix.clone(),
+            query_length: config.query_length,
+            document_length: config.document_length,
+            do_query_expansion: config.do_query_expansion,
+            uses_token_type_ids: config.uses_token_type_ids,
+            mask_token_id: config.mask_token_id,
+            pad_token_id: config.pad_token_id,
+        }
+    });
+
+    #[cfg(not(feature = "model"))]
+    let model_info: Option<models::ModelHealthInfo> = None;
+
     Json(HealthResponse {
         status: "healthy".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -184,6 +214,7 @@ async fn health(state: axum::extract::State<Arc<AppState>>) -> Json<HealthRespon
         index_dir: state.config.index_dir.to_string_lossy().to_string(),
         memory_usage_bytes,
         indices: state.get_all_index_summaries(),
+        model: model_info,
     })
 }
 
@@ -567,6 +598,8 @@ Examples:
 
         if _use_int8 {
             tracing::info!("Using INT8 quantized model");
+        } else {
+            tracing::info!("Using non-quantized model (FP32)");
         }
 
         let mut builder = next_plaid_onnx::Colbert::builder(model_path)
@@ -589,12 +622,22 @@ Examples:
 
         match builder.build() {
             Ok(model) => {
-                tracing::info!(
-                    "Model loaded successfully (embedding_dim: {}, batch_size: {}, sessions: {})",
-                    model.embedding_dim(),
-                    model.batch_size(),
-                    model.num_sessions()
-                );
+                let config = model.config();
+                tracing::info!("Model loaded successfully");
+                if let Some(name) = config.model_name() {
+                    tracing::info!("  Model name: {}", name);
+                }
+                tracing::info!("  Embedding dimension: {}", model.embedding_dim());
+                tracing::info!("  Batch size: {}", model.batch_size());
+                tracing::info!("  Parallel sessions: {}", model.num_sessions());
+                tracing::info!("  Query prefix: {:?}", config.query_prefix);
+                tracing::info!("  Document prefix: {:?}", config.document_prefix);
+                tracing::info!("  Query length: {}", config.query_length);
+                tracing::info!("  Document length: {}", config.document_length);
+                tracing::info!("  Query expansion: {}", config.do_query_expansion);
+                tracing::info!("  Uses token_type_ids: {}", config.uses_token_type_ids);
+                tracing::info!("  Mask token ID: {}", config.mask_token_id);
+                tracing::info!("  Pad token ID: {}", config.pad_token_id);
                 Some(model)
             }
             Err(e) => {

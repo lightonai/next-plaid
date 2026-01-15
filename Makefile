@@ -255,3 +255,9 @@ docs-build:
 docs-deploy:
 	pip install mkdocs-material -q
 	mkdocs gh-deploy --force
+
+start-cpu-docker-build:
+	docker build -t next-plaid-api -f next-plaid-api/Dockerfile --target runtime-cpu .
+
+start-cuda-docker-build:
+	docker build -t next-plaid-api:cuda -f next-plaid-api/Dockerfile --target runtime-cuda .

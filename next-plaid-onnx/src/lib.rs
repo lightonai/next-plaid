@@ -411,6 +411,11 @@ impl ColbertConfig {
             )
         }
     }
+
+    /// Get the model name (if specified in config).
+    pub fn model_name(&self) -> Option<&str> {
+        self.model_name.as_deref()
+    }
 }
 
 // =============================================================================
