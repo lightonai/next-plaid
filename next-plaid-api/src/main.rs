@@ -403,6 +403,7 @@ async fn main() {
     let mut index_dir = PathBuf::from("./indices");
     let mut model_path: Option<PathBuf> = None;
     let mut _use_cuda = false;
+    let mut _use_int8 = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -450,6 +451,10 @@ async fn main() {
                 _use_cuda = true;
                 i += 1;
             }
+            "--int8" => {
+                _use_int8 = true;
+                i += 1;
+            }
             "--help" => {
                 println!(
                     r#"Next-Plaid API Server
@@ -462,6 +467,7 @@ Options:
   -d, --index-dir <DIR>    Directory for storing indices (default: ./indices)
   -m, --model <PATH>       Path to ONNX model directory for encoding (optional)
   --cuda                   Use CUDA for model inference (requires --model)
+  --int8                   Use INT8 quantized model for faster inference (requires --model)
   --help                   Show this help message
 
 Environment Variables:
@@ -475,6 +481,7 @@ Examples:
   next-plaid-api -p 3000 -d /data/indices                 # Custom port and directory
   next-plaid-api --model ./models/colbert                 # Enable text encoding
   next-plaid-api --model ./models/colbert --cuda          # Enable encoding with CUDA
+  next-plaid-api --model ./models/colbert --int8          # Enable encoding with INT8 quantization
   RUST_LOG=debug next-plaid-api                           # Debug logging
 "#
                 );
@@ -510,15 +517,15 @@ Examples:
             next_plaid_onnx::ExecutionProvider::Cpu
         };
 
-        let num_threads = std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(4);
+        if _use_int8 {
+            tracing::info!("Using INT8 quantized model");
+        }
 
-        match next_plaid_onnx::Colbert::from_pretrained_with_options(
-            model_path,
-            num_threads,
-            execution_provider,
-        ) {
+        match next_plaid_onnx::Colbert::builder(model_path)
+            .with_execution_provider(execution_provider)
+            .with_quantized(_use_int8)
+            .build()
+        {
             Ok(model) => {
                 tracing::info!(
                     "Model loaded successfully (embedding_dim: {}, batch_size: {})",

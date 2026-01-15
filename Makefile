@@ -147,7 +147,7 @@ benchmark-api-encoding:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
 	rm -rf next-plaid-api/indices
 	cargo build --release -p next-plaid-api --features model,cuda
-	./target/release/next-plaid-api -h 127.0.0.1 -p 8080 -d ./next-plaid-api/indices --model ./next-plaid-onnx/models/GTE-ModernColBERT-v1 & \
+	./target/release/next-plaid-api -h 127.0.0.1 -p 8080 -d ./next-plaid-api/indices --model lightonai/GTE-ModernColBERT-v1-onnx --int8 & \
 	API_PID=$$!; \
 	sleep 3; \
 	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_api_encoding.py --batch-size 100; \
