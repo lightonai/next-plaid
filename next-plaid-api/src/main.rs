@@ -404,6 +404,9 @@ async fn main() {
     let mut model_path: Option<PathBuf> = None;
     let mut _use_cuda = false;
     let mut _use_int8 = false;
+    let mut _parallel_sessions: Option<usize> = None;
+    let mut _batch_size: Option<usize> = None;
+    let mut _threads: Option<usize> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -455,6 +458,42 @@ async fn main() {
                 _use_int8 = true;
                 i += 1;
             }
+            "--parallel" => {
+                if i + 1 < args.len() {
+                    _parallel_sessions = Some(args[i + 1].parse().unwrap_or_else(|_| {
+                        eprintln!("Error: Invalid number of parallel sessions");
+                        std::process::exit(1);
+                    }));
+                    i += 2;
+                } else {
+                    eprintln!("Error: --parallel requires a value");
+                    std::process::exit(1);
+                }
+            }
+            "--batch-size" => {
+                if i + 1 < args.len() {
+                    _batch_size = Some(args[i + 1].parse().unwrap_or_else(|_| {
+                        eprintln!("Error: Invalid batch size");
+                        std::process::exit(1);
+                    }));
+                    i += 2;
+                } else {
+                    eprintln!("Error: --batch-size requires a value");
+                    std::process::exit(1);
+                }
+            }
+            "--threads" => {
+                if i + 1 < args.len() {
+                    _threads = Some(args[i + 1].parse().unwrap_or_else(|_| {
+                        eprintln!("Error: Invalid number of threads");
+                        std::process::exit(1);
+                    }));
+                    i += 2;
+                } else {
+                    eprintln!("Error: --threads requires a value");
+                    std::process::exit(1);
+                }
+            }
             "--help" => {
                 println!(
                     r#"Next-Plaid API Server
@@ -468,6 +507,13 @@ Options:
   -m, --model <PATH>       Path to ONNX model directory for encoding (optional)
   --cuda                   Use CUDA for model inference (requires --model)
   --int8                   Use INT8 quantized model for faster inference (requires --model)
+  --parallel <N>           Number of parallel ONNX sessions (default: 1)
+                           More sessions = more parallelism but also more memory.
+                           Recommended: 8-25 for high throughput scenarios.
+  --batch-size <N>         Batch size per ONNX session (default: 32 CPU, 64 GPU, 2 parallel)
+                           Smaller batches are better for parallel sessions.
+  --threads <N>            Threads per ONNX session (default: auto-detected)
+                           Auto-set to 1 when using --parallel.
   --help                   Show this help message
 
 Environment Variables:
@@ -482,6 +528,8 @@ Examples:
   next-plaid-api --model ./models/colbert                 # Enable text encoding
   next-plaid-api --model ./models/colbert --cuda          # Enable encoding with CUDA
   next-plaid-api --model ./models/colbert --int8          # Enable encoding with INT8 quantization
+  next-plaid-api --model ./models/colbert --parallel 16   # 16 parallel sessions for high throughput
+  next-plaid-api --model ./models/colbert --parallel 8 --batch-size 4  # Fine-tuned parallel config
   RUST_LOG=debug next-plaid-api                           # Debug logging
 "#
                 );
@@ -521,16 +569,31 @@ Examples:
             tracing::info!("Using INT8 quantized model");
         }
 
-        match next_plaid_onnx::Colbert::builder(model_path)
+        let mut builder = next_plaid_onnx::Colbert::builder(model_path)
             .with_execution_provider(execution_provider)
-            .with_quantized(_use_int8)
-            .build()
-        {
+            .with_quantized(_use_int8);
+
+        // Apply optional model configuration
+        if let Some(parallel) = _parallel_sessions {
+            tracing::info!("Using {} parallel ONNX sessions", parallel);
+            builder = builder.with_parallel(parallel);
+        }
+        if let Some(batch_size) = _batch_size {
+            tracing::info!("Using batch size: {}", batch_size);
+            builder = builder.with_batch_size(batch_size);
+        }
+        if let Some(threads) = _threads {
+            tracing::info!("Using {} threads per session", threads);
+            builder = builder.with_threads(threads);
+        }
+
+        match builder.build() {
             Ok(model) => {
                 tracing::info!(
-                    "Model loaded successfully (embedding_dim: {}, batch_size: {})",
+                    "Model loaded successfully (embedding_dim: {}, batch_size: {}, sessions: {})",
                     model.embedding_dim(),
-                    model.batch_size()
+                    model.batch_size(),
+                    model.num_sessions()
                 );
                 Some(model)
             }
@@ -547,7 +610,13 @@ Examples:
 
     // Create state
     #[cfg(feature = "model")]
-    let state = Arc::new(AppState::with_model(config, model));
+    let state = {
+        let model_info = model_path.as_ref().map(|path| state::ModelInfo {
+            path: path.to_string_lossy().to_string(),
+            quantized: _use_int8,
+        });
+        Arc::new(AppState::with_model(config, model, model_info))
+    };
 
     #[cfg(not(feature = "model"))]
     let state = {

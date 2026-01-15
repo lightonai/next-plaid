@@ -280,6 +280,7 @@ async fn encode_texts_batch(
 ) -> Result<Vec<Vec<Vec<f32>>>, String> {
     let state_clone = state.clone();
     let texts_owned: Vec<String> = texts.to_vec();
+    let num_texts = texts.len();
 
     // Run encoding in blocking thread to avoid blocking async runtime
     tokio::task::spawn_blocking(move || {
@@ -291,6 +292,25 @@ async fn encode_texts_batch(
         let model = model_mutex
             .lock()
             .map_err(|_| "Model lock poisoned".to_string())?;
+
+        // Log encoding parameters and model info
+        let (model_path, model_quantized) = state_clone
+            .model_info
+            .as_ref()
+            .map(|info| (info.path.as_str(), info.quantized))
+            .unwrap_or(("unknown", false));
+
+        tracing::info!(
+            input_type = ?input_type,
+            num_texts = num_texts,
+            pool_factor = ?pool_factor,
+            model_path = model_path,
+            model_quantized = model_quantized,
+            embedding_dim = model.embedding_dim(),
+            model_batch_size = model.batch_size(),
+            model_num_sessions = model.num_sessions(),
+            "Encoding texts with model"
+        );
 
         let texts_ref: Vec<&str> = texts_owned.iter().map(|s| s.as_str()).collect();
 
@@ -414,6 +434,24 @@ pub fn encode_queries_internal(
         .lock()
         .map_err(|_| ApiError::Internal("Model lock poisoned".to_string()))?;
 
+    // Log query encoding parameters and model info
+    let (model_path, model_quantized) = state
+        .model_info
+        .as_ref()
+        .map(|info| (info.path.as_str(), info.quantized))
+        .unwrap_or(("unknown", false));
+
+    tracing::info!(
+        input_type = "query",
+        num_queries = queries.len(),
+        model_path = model_path,
+        model_quantized = model_quantized,
+        embedding_dim = model.embedding_dim(),
+        model_batch_size = model.batch_size(),
+        model_num_sessions = model.num_sessions(),
+        "Encoding queries with model"
+    );
+
     let texts: Vec<&str> = queries.iter().map(|s| s.as_str()).collect();
 
     model
@@ -442,6 +480,25 @@ pub fn encode_documents_internal(
     let model = model_mutex
         .lock()
         .map_err(|_| ApiError::Internal("Model lock poisoned".to_string()))?;
+
+    // Log document encoding parameters and model info
+    let (model_path, model_quantized) = state
+        .model_info
+        .as_ref()
+        .map(|info| (info.path.as_str(), info.quantized))
+        .unwrap_or(("unknown", false));
+
+    tracing::info!(
+        input_type = "document",
+        num_documents = documents.len(),
+        pool_factor = ?pool_factor,
+        model_path = model_path,
+        model_quantized = model_quantized,
+        embedding_dim = model.embedding_dim(),
+        model_batch_size = model.batch_size(),
+        model_num_sessions = model.num_sessions(),
+        "Encoding documents with model"
+    );
 
     let texts: Vec<&str> = documents.iter().map(|s| s.as_str()).collect();
 

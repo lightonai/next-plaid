@@ -46,7 +46,7 @@ impl TestFixture {
         };
 
         #[cfg(feature = "model")]
-        let state = Arc::new(AppState::with_model(config, None));
+        let state = Arc::new(AppState::with_model(config, None, None));
         #[cfg(not(feature = "model"))]
         let state = Arc::new(AppState::new(config));
 
@@ -364,7 +364,7 @@ impl RateLimitedTestFixture {
         };
 
         #[cfg(feature = "model")]
-        let state = Arc::new(AppState::with_model(config, None));
+        let state = Arc::new(AppState::with_model(config, None, None));
         #[cfg(not(feature = "model"))]
         let state = Arc::new(AppState::new(config));
 
@@ -1764,7 +1764,11 @@ impl ModelTestFixture {
         // Load the model
         let model = next_plaid_onnx::Colbert::new(&model_path).expect("Failed to load ONNX model");
 
-        let state = Arc::new(AppState::with_model(config, Some(model)));
+        let model_info = Some(next_plaid_api::state::ModelInfo {
+            path: model_path.to_string_lossy().to_string(),
+            quantized: false,
+        });
+        let state = Arc::new(AppState::with_model(config, Some(model), model_info));
 
         // Build router with encoding routes
         let app = build_model_test_router(state);

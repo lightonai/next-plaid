@@ -31,6 +31,16 @@ impl Default for ApiConfig {
     }
 }
 
+/// Model configuration info for logging purposes.
+#[cfg(feature = "model")]
+#[derive(Debug, Clone)]
+pub struct ModelInfo {
+    /// Path to the model directory
+    pub path: String,
+    /// Whether the model is INT8 quantized
+    pub quantized: bool,
+}
+
 /// Application state containing loaded indices.
 ///
 /// All indices are stored as MmapIndex for efficient memory usage.
@@ -42,6 +52,9 @@ pub struct AppState {
     /// Optional ONNX model for encoding texts
     #[cfg(feature = "model")]
     pub model: Option<Mutex<next_plaid_onnx::Colbert>>,
+    /// Model configuration info (path, quantization status)
+    #[cfg(feature = "model")]
+    pub model_info: Option<ModelInfo>,
 }
 
 impl AppState {
@@ -61,7 +74,11 @@ impl AppState {
 
     /// Create a new application state with an optional model.
     #[cfg(feature = "model")]
-    pub fn with_model(config: ApiConfig, model: Option<next_plaid_onnx::Colbert>) -> Self {
+    pub fn with_model(
+        config: ApiConfig,
+        model: Option<next_plaid_onnx::Colbert>,
+        model_info: Option<ModelInfo>,
+    ) -> Self {
         // Ensure index directory exists
         if !config.index_dir.exists() {
             std::fs::create_dir_all(&config.index_dir).ok();
@@ -71,6 +88,7 @@ impl AppState {
             config,
             indices: RwLock::new(HashMap::new()),
             model: model.map(Mutex::new),
+            model_info,
         }
     }
 
