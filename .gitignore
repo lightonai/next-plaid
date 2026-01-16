@@ -47,6 +47,7 @@ evaluation_datasets/
 api/target/
 onnx/target/
 onnx/models/
+next-plaid-onnx/models/
 onnx/ort_gpu/
 *.ipynb
 
