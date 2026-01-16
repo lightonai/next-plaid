@@ -1048,17 +1048,6 @@
   
 </li>
         
-          <li class="md-nav__item">
-  <a href="#tuning-trade-offs" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tuning Trade-offs
-      
-    </span>
-  </a>
-  
-</li>
-        
       </ul>
     </nav>
   
@@ -1343,19 +1332,6 @@
 </tr>
 </tbody>
 </table>
-<h3 id="tuning-trade-offs">Tuning Trade-offs<a class="headerlink" href="#tuning-trade-offs" title="Permanent link">&para;</a></h3>
-<p><strong>Higher accuracy (slower):</strong></p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">SearchParams</span><span class="p">(</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="n">n_ivf_probe</span><span class="o">=</span><span class="mi">32</span><span class="p">,</span>     <span class="c1"># More partitions</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="n">n_full_scores</span><span class="o">=</span><span class="mi">8192</span>  <span class="c1"># More candidates</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="p">)</span>
-</span></code></pre></div>
-<p><strong>Faster (lower accuracy):</strong></p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">SearchParams</span><span class="p">(</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>    <span class="n">n_ivf_probe</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>      <span class="c1"># Fewer partitions</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    <span class="n">n_full_scores</span><span class="o">=</span><span class="mi">1024</span>  <span class="c1"># Fewer candidates</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="p">)</span>
-</span></code></pre></div>
 <hr />
 <h2 id="compression-analysis">Compression Analysis<a class="headerlink" href="#compression-analysis" title="Permanent link">&para;</a></h2>
 <h3 id="storage-breakdown">Storage Breakdown<a class="headerlink" href="#storage-breakdown" title="Permanent link">&para;</a></h3>
@@ -1400,7 +1376,7 @@
 <p><strong>Compression ratio: ~8x</strong></p>
 <h3 id="memory-mapping">Memory Mapping<a class="headerlink" href="#memory-mapping" title="Permanent link">&para;</a></h3>
 <p>NextPlaid supports memory-mapped indices:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">index</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">MmapIndex</span><span class="p">::</span><span class="n">load</span><span class="p">(</span><span class="s">&quot;path/to/index&quot;</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">index</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">MmapIndex</span><span class="p">::</span><span class="n">load</span><span class="p">(</span><span class="s">&quot;path/to/index&quot;</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
 </span></code></pre></div>
 <p>Benefits:</p>
 <ul>
@@ -1411,7 +1387,7 @@
 <hr />
 <h2 id="decompression">Decompression<a class="headerlink" href="#decompression" title="Permanent link">&para;</a></h2>
 <p>When exact scoring is needed, embeddings are reconstructed:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>embedding = centroid[code] + dequantize(residual)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>embedding = centroid[code] + dequantize(residual)
 </span></code></pre></div>
 <p>The reconstruction error depends on:</p>
 <ul>
@@ -1449,7 +1425,7 @@
 <hr />
 <h2 id="incremental-updates">Incremental Updates<a class="headerlink" href="#incremental-updates" title="Permanent link">&para;</a></h2>
 <p>NextPlaid supports adding documents to existing indices:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">client</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;my_index&quot;</span><span class="p">,</span> <span class="n">new_documents</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">client</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s2">&quot;my_index&quot;</span><span class="p">,</span> <span class="n">new_documents</span><span class="p">)</span>
 </span></code></pre></div>
 <h3 id="update-process">Update Process<a class="headerlink" href="#update-process" title="Permanent link">&para;</a></h3>
 <ol>
@@ -1460,10 +1436,10 @@
 </ol>
 <h3 id="centroid-expansion">Centroid Expansion<a class="headerlink" href="#centroid-expansion" title="Permanent link">&para;</a></h3>
 <p>When documents differ significantly from existing centroids:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>UpdateConfig(
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>    buffer_size=100,           # Docs before expansion check
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>    max_points_per_centroid=256  # Expansion threshold
-</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>)
+<div class="language-text highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>UpdateConfig(
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>    buffer_size=100,           # Docs before expansion check
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>    max_points_per_centroid=256  # Expansion threshold
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>)
 </span></code></pre></div>
 <hr />
 <h2 id="further-reading">Further Reading<a class="headerlink" href="#further-reading" title="Permanent link">&para;</a></h2>
