@@ -460,8 +460,14 @@ pub fn search_one(
                 .map(|c| (c, query_centroid_scores[[q_idx, c]]))
                 .collect();
 
-            // Sort by score descending and take top n_ivf_probe
-            centroid_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            // Partial selection: O(K) average instead of O(K log K) for full sort
+            // After this, the top n_ivf_probe elements are in positions 0..n_ivf_probe
+            // (but not sorted among themselves - which is fine since we use a HashSet)
+            if centroid_scores.len() > params.n_ivf_probe {
+                centroid_scores.select_nth_unstable_by(params.n_ivf_probe - 1, |a, b| {
+                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
 
             for (c, _) in centroid_scores.iter().take(params.n_ivf_probe) {
                 selected_centroids.insert(*c);
@@ -700,7 +706,14 @@ pub fn search_one_mmap(
                 .map(|c| (c, query_centroid_scores[[q_idx, c]]))
                 .collect();
 
-            centroid_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            // Partial selection: O(K) average instead of O(K log K) for full sort
+            // After this, the top n_ivf_probe elements are in positions 0..n_ivf_probe
+            // (but not sorted among themselves - which is fine since we use a HashSet)
+            if centroid_scores.len() > params.n_ivf_probe {
+                centroid_scores.select_nth_unstable_by(params.n_ivf_probe - 1, |a, b| {
+                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
 
             for (c, _) in centroid_scores.iter().take(params.n_ivf_probe) {
                 selected_centroids.insert(*c);
