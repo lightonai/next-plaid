@@ -147,38 +147,18 @@ Enables fast lookup of documents containing tokens near a query token.
 
 ### Index Configuration
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `nbits` | 4 | Quantization bits (2 or 4) |
-| `batch_size` | 50000 | Tokens per indexing batch |
+| Parameter    | Default | Description                |
+| ------------ | ------- | -------------------------- |
+| `nbits`      | 4       | Quantization bits (2 or 4) |
+| `batch_size` | 50000   | Tokens per indexing batch  |
 
 ### Search Parameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `n_ivf_probe` | 8 | Partitions to search |
-| `n_full_scores` | 4096 | Candidates for exact scoring |
-| `top_k` | 10 | Results to return |
-
-### Tuning Trade-offs
-
-**Higher accuracy (slower):**
-
-```python
-SearchParams(
-    n_ivf_probe=32,     # More partitions
-    n_full_scores=8192  # More candidates
-)
-```
-
-**Faster (lower accuracy):**
-
-```python
-SearchParams(
-    n_ivf_probe=4,      # Fewer partitions
-    n_full_scores=1024  # Fewer candidates
-)
-```
+| Parameter       | Default | Description                  |
+| --------------- | ------- | ---------------------------- |
+| `n_ivf_probe`   | 8       | Partitions to search         |
+| `n_full_scores` | 4096    | Candidates for exact scoring |
+| `top_k`         | 10      | Results to return            |
 
 ---
 
@@ -188,13 +168,13 @@ SearchParams(
 
 For 1M documents with 15 tokens/doc and 128 dimensions:
 
-| Component | Size | Description |
-|-----------|------|-------------|
-| Codes | 30 MB | 1M × 15 × 2 bytes |
+| Component         | Size   | Description               |
+| ----------------- | ------ | ------------------------- |
+| Codes             | 30 MB  | 1M × 15 × 2 bytes         |
 | Residuals (4-bit) | 960 MB | 1M × 15 × 128 × 0.5 bytes |
-| Centroids | 32 MB | 16K × 128 × 4 bytes |
-| IVF | ~20 MB | Inverted lists |
-| **Total** | ~1 GB | |
+| Centroids         | 32 MB  | 16K × 128 × 4 bytes       |
+| IVF               | ~20 MB | Inverted lists            |
+| **Total**         | ~1 GB  |                           |
 
 Compare to uncompressed: 1M × 15 × 128 × 4 bytes = **7.7 GB**
 
@@ -234,10 +214,10 @@ The reconstruction error depends on:
 On SciFact benchmark:
 
 | Configuration | MAP Score | vs. Uncompressed |
-|---------------|-----------|------------------|
-| 4-bit | 0.708 | -0.5% |
-| 2-bit | 0.695 | -2.3% |
-| Uncompressed | 0.712 | baseline |
+| ------------- | --------- | ---------------- |
+| 4-bit         | 0.708     | -0.5%            |
+| 2-bit         | 0.695     | -2.3%            |
+| Uncompressed  | 0.712     | baseline         |
 
 ---
 

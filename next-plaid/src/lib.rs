@@ -33,6 +33,3 @@ pub use kmeans::{
 };
 pub use search::{QueryResult, SearchParameters};
 pub use update::UpdateConfig;
-
-// Note: Index struct is kept internal for use by MmapIndex mutation operations
-// CentroidStore is also internal - codec abstraction handles it

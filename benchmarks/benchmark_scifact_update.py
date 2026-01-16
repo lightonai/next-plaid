@@ -177,7 +177,7 @@ class BenchmarkConfig:
     initial_docs: int = 800  # Start with first batch
     top_k: int = 100
     n_ivf_probe: int = 8
-    n_full_scores: int = 8192
+    n_full_scores: int = 4096
     nbits: int = 4
     seed: int = 42
     # Tolerance for metric comparison

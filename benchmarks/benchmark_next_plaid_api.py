@@ -43,7 +43,7 @@ class BenchmarkConfig:
     encode_batch_size: int = 32  # Texts per encode API call
     top_k: int = 100
     n_ivf_probe: int = 8
-    n_full_scores: int = 8192
+    n_full_scores: int = 4096
     nbits: int = 4
     port: int = 8080
     host: str = "127.0.0.1"
@@ -491,7 +491,9 @@ def run_benchmark(
     try:
         meta_count = client.metadata_count(index_name)
         if meta_count != info["num_documents"]:
-            print(f"    WARNING: Metadata count ({meta_count}) != document count ({info['num_documents']})")
+            print(
+                f"    WARNING: Metadata count ({meta_count}) != document count ({info['num_documents']})"
+            )
     except Exception as e:
         print(f"    WARNING: Could not verify metadata count: {e}")
 
@@ -520,12 +522,14 @@ def run_benchmark(
 
         for i, result in enumerate(resp["results"]):
             query_idx = start_idx + i
-            search_results.append({
-                "query_id": query_idx,
-                "passage_ids": result["document_ids"],
-                "scores": result["scores"],
-                "metadata": result["metadata"],
-            })
+            search_results.append(
+                {
+                    "query_id": query_idx,
+                    "passage_ids": result["document_ids"],
+                    "scores": result["scores"],
+                    "metadata": result["metadata"],
+                }
+            )
 
         if batch_idx < num_search_batches - 1:
             time.sleep(0.5)
@@ -604,6 +608,7 @@ def main():
     except Exception as e:
         print(f"    ERROR: {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

@@ -46,7 +46,7 @@ impl TestFixture {
         };
 
         #[cfg(feature = "model")]
-        let state = Arc::new(AppState::with_model(config, None, None));
+        let state = Arc::new(AppState::with_model(config, None, None, None));
         #[cfg(not(feature = "model"))]
         let state = Arc::new(AppState::new(config));
 
@@ -364,7 +364,7 @@ impl RateLimitedTestFixture {
         };
 
         #[cfg(feature = "model")]
-        let state = Arc::new(AppState::with_model(config, None, None));
+        let state = Arc::new(AppState::with_model(config, None, None, None));
         #[cfg(not(feature = "model"))]
         let state = Arc::new(AppState::new(config));
 
@@ -1768,7 +1768,7 @@ impl ModelTestFixture {
             path: model_path.to_string_lossy().to_string(),
             quantized: false,
         });
-        let state = Arc::new(AppState::with_model(config, Some(model), model_info));
+        let state = Arc::new(AppState::with_model(config, Some(model), model_info, None));
 
         // Build router with encoding routes
         let app = build_model_test_router(state);

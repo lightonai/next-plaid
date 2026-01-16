@@ -54,7 +54,7 @@ class BenchmarkConfig:
     batch_size: int = 10  # Documents per API call (lower for encoding)
     top_k: int = 100
     n_ivf_probe: int = 8
-    n_full_scores: int = 8192
+    n_full_scores: int = 4096
     nbits: int = 4
     port: int = 8080
     host: str = "127.0.0.1"

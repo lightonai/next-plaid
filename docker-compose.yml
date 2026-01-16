@@ -70,9 +70,9 @@ services:
       - --model
       - lightonai/GTE-ModernColBERT-v1-onnx
       - --parallel
-      - "8"
+      - "4"
       - --batch-size
-      - "1"
+      - "12"
       - --query-length
       - "48"
       - --document-length

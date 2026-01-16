@@ -356,46 +356,25 @@ pub async fn encode(
     State(state): State<Arc<AppState>>,
     Json(request): Json<EncodeRequest>,
 ) -> ApiResult<Json<EncodeResponse>> {
-    // Check if model is loaded
-    if state.model.is_none() {
-        return Err(ApiError::ModelNotLoaded);
-    }
-
     // Validate request
     if request.texts.is_empty() {
         return Err(ApiError::BadRequest("No texts provided".to_string()));
     }
 
-    // Create oneshot channel for receiving results
-    let (response_tx, response_rx) = oneshot::channel();
+    // Use the single internal encoding function
+    let embeddings_arr = encode_texts_internal(
+        state,
+        &request.texts,
+        request.input_type,
+        request.pool_factor,
+    )
+    .await?;
 
-    // Create batch item
-    let batch_item = EncodeBatchItem {
-        texts: request.texts,
-        input_type: request.input_type,
-        pool_factor: request.pool_factor,
-        response_tx,
-    };
-
-    // Get or create the batch queue
-    let sender = get_or_create_encode_queue(state);
-
-    // Send to batch queue
-    sender.try_send(batch_item).map_err(|e| match e {
-        mpsc::error::TrySendError::Full(_) => ApiError::ServiceUnavailable(
-            "Encode queue full. Too many concurrent requests. Retry later.".to_string(),
-        ),
-        mpsc::error::TrySendError::Closed(_) => {
-            ApiError::Internal("Encode batch worker is not running".to_string())
-        }
-    })?;
-
-    // Wait for result from batch worker
-    let result = response_rx
-        .await
-        .map_err(|_| ApiError::Internal("Batch worker dropped response channel".to_string()))?;
-
-    let embeddings = result.map_err(ApiError::ModelError)?;
+    // Convert Array2<f32> to Vec<Vec<Vec<f32>>> for JSON response
+    let embeddings: Vec<Vec<Vec<f32>>> = embeddings_arr
+        .into_iter()
+        .map(|arr| arr.rows().into_iter().map(|row| row.to_vec()).collect())
+        .collect();
     let num_texts = embeddings.len();
 
     Ok(Json(EncodeResponse {
@@ -422,96 +401,71 @@ pub async fn encode(
     Err(ApiError::ModelNotLoaded)
 }
 
-/// Helper function to encode queries internally (used by search handlers).
+/// Internal function to encode texts (queries or documents).
+/// This is async and uses the batch queue mechanism to avoid blocking.
+/// All encoding in the API goes through this single function.
 #[cfg(feature = "model")]
-pub fn encode_queries_internal(
-    state: &AppState,
-    queries: &[String],
-) -> ApiResult<Vec<ndarray::Array2<f32>>> {
-    let model_mutex = state.model.as_ref().ok_or(ApiError::ModelNotLoaded)?;
-
-    let model = model_mutex
-        .lock()
-        .map_err(|_| ApiError::Internal("Model lock poisoned".to_string()))?;
-
-    // Log query encoding parameters and model info
-    let (model_path, model_quantized) = state
-        .model_info
-        .as_ref()
-        .map(|info| (info.path.as_str(), info.quantized))
-        .unwrap_or(("unknown", false));
-
-    tracing::info!(
-        input_type = "query",
-        num_queries = queries.len(),
-        model_path = model_path,
-        model_quantized = model_quantized,
-        embedding_dim = model.embedding_dim(),
-        model_batch_size = model.batch_size(),
-        model_num_sessions = model.num_sessions(),
-        "Encoding queries with model"
-    );
-
-    let texts: Vec<&str> = queries.iter().map(|s| s.as_str()).collect();
-
-    model
-        .encode_queries(&texts)
-        .map_err(|e| ApiError::ModelError(e.to_string()))
-}
-
-/// Stub for encode_queries_internal when model feature is not enabled.
-#[cfg(not(feature = "model"))]
-pub fn encode_queries_internal(
-    _state: &AppState,
-    _queries: &[String],
-) -> ApiResult<Vec<ndarray::Array2<f32>>> {
-    Err(ApiError::ModelNotLoaded)
-}
-
-/// Helper function to encode documents internally (used by update handlers).
-#[cfg(feature = "model")]
-pub fn encode_documents_internal(
-    state: &AppState,
-    documents: &[String],
+pub async fn encode_texts_internal(
+    state: Arc<AppState>,
+    texts: &[String],
+    input_type: InputType,
     pool_factor: Option<usize>,
 ) -> ApiResult<Vec<ndarray::Array2<f32>>> {
-    let model_mutex = state.model.as_ref().ok_or(ApiError::ModelNotLoaded)?;
+    if state.model.is_none() {
+        return Err(ApiError::ModelNotLoaded);
+    }
 
-    let model = model_mutex
-        .lock()
-        .map_err(|_| ApiError::Internal("Model lock poisoned".to_string()))?;
+    // Create oneshot channel for receiving results
+    let (response_tx, response_rx) = oneshot::channel();
 
-    // Log document encoding parameters and model info
-    let (model_path, model_quantized) = state
-        .model_info
-        .as_ref()
-        .map(|info| (info.path.as_str(), info.quantized))
-        .unwrap_or(("unknown", false));
+    // Create batch item
+    let batch_item = EncodeBatchItem {
+        texts: texts.to_vec(),
+        input_type,
+        pool_factor,
+        response_tx,
+    };
 
-    tracing::info!(
-        input_type = "document",
-        num_documents = documents.len(),
-        pool_factor = ?pool_factor,
-        model_path = model_path,
-        model_quantized = model_quantized,
-        embedding_dim = model.embedding_dim(),
-        model_batch_size = model.batch_size(),
-        model_num_sessions = model.num_sessions(),
-        "Encoding documents with model"
-    );
+    // Get or create the batch queue
+    let sender = get_or_create_encode_queue(state);
 
-    let texts: Vec<&str> = documents.iter().map(|s| s.as_str()).collect();
+    // Send to batch queue
+    sender.try_send(batch_item).map_err(|e| match e {
+        mpsc::error::TrySendError::Full(_) => ApiError::ServiceUnavailable(
+            "Encode queue full. Too many concurrent requests. Retry later.".to_string(),
+        ),
+        mpsc::error::TrySendError::Closed(_) => {
+            ApiError::Internal("Encode batch worker is not running".to_string())
+        }
+    })?;
 
-    model
-        .encode_documents(&texts, pool_factor)
-        .map_err(|e| ApiError::ModelError(e.to_string()))
+    // Wait for result from batch worker
+    let result = response_rx
+        .await
+        .map_err(|_| ApiError::Internal("Batch worker dropped response channel".to_string()))?;
+
+    let embeddings_3d = result.map_err(ApiError::ModelError)?;
+
+    // Convert Vec<Vec<Vec<f32>>> back to Vec<Array2<f32>>
+    let embeddings: Vec<ndarray::Array2<f32>> = embeddings_3d
+        .into_iter()
+        .map(|doc| {
+            let rows = doc.len();
+            let cols = if rows > 0 { doc[0].len() } else { 0 };
+            let flat: Vec<f32> = doc.into_iter().flatten().collect();
+            ndarray::Array2::from_shape_vec((rows, cols), flat).unwrap()
+        })
+        .collect();
+
+    Ok(embeddings)
 }
 
-/// Stub for encode_documents_internal when model feature is not enabled.
+/// Stub for encode_texts_internal when model feature is not enabled.
 #[cfg(not(feature = "model"))]
-pub fn encode_documents_internal(
-    _state: &AppState,
-    _documents: &[String],
+pub async fn encode_texts_internal(
+    _state: Arc<AppState>,
+    _texts: &[String],
+    _input_type: crate::models::InputType,
     _pool_factor: Option<usize>,
 ) -> ApiResult<Vec<ndarray::Array2<f32>>> {
     Err(ApiError::ModelNotLoaded)

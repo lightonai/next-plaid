@@ -23,24 +23,24 @@ client.create_index("my_index", config)
 
 ### Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `nbits` | `int` | `4` | Quantization bits for residuals (2 or 4) |
-| `batch_size` | `int` | `50000` | Tokens per batch during indexing |
-| `seed` | `int?` | `42` | Random seed for reproducibility |
-| `kmeans_niters` | `int` | `4` | K-means iterations |
-| `max_points_per_centroid` | `int` | `256` | Maximum points per centroid for K-means |
-| `start_from_scratch` | `int` | `999` | Rebuild threshold for small indices |
-| `max_documents` | `int?` | `None` | Maximum documents allowed |
+| Parameter                 | Type   | Default | Description                              |
+| ------------------------- | ------ | ------- | ---------------------------------------- |
+| `nbits`                   | `int`  | `4`     | Quantization bits for residuals (2 or 4) |
+| `batch_size`              | `int`  | `50000` | Tokens per batch during indexing         |
+| `seed`                    | `int?` | `42`    | Random seed for reproducibility          |
+| `kmeans_niters`           | `int`  | `4`     | K-means iterations                       |
+| `max_points_per_centroid` | `int`  | `256`   | Maximum points per centroid for K-means  |
+| `start_from_scratch`      | `int`  | `999`   | Rebuild threshold for small indices      |
+| `max_documents`           | `int?` | `None`  | Maximum documents allowed                |
 
 ### nbits
 
 Controls the precision of residual quantization:
 
-| Value | Levels | Storage | Quality |
-|-------|--------|---------|---------|
-| `4` | 16 | 0.5 bytes/dim | Higher |
-| `2` | 4 | 0.25 bytes/dim | Lower |
+| Value | Levels | Storage        | Quality |
+| ----- | ------ | -------------- | ------- |
+| `4`   | 16     | 0.5 bytes/dim  | Higher  |
+| `2`   | 4      | 0.25 bytes/dim | Lower   |
 
 **Recommendation**: Use `4` unless storage is critical.
 
@@ -90,14 +90,14 @@ results = client.search("my_index", queries, params)
 
 ### Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `top_k` | `int` | `10` | Number of results to return |
-| `n_ivf_probe` | `int` | `8` | IVF partitions to search |
-| `n_full_scores` | `int` | `4096` | Candidates for exact scoring |
-| `batch_size` | `int` | `2000` | Documents per scoring batch |
-| `centroid_batch_size` | `int` | `100000` | Batch size for centroid scoring (0 = exhaustive) |
-| `centroid_score_threshold` | `float?` | `0.4` | Centroid pruning threshold. Set to `None` to disable |
+| Parameter                  | Type     | Default  | Description                                          |
+| -------------------------- | -------- | -------- | ---------------------------------------------------- |
+| `top_k`                    | `int`    | `10`     | Number of results to return                          |
+| `n_ivf_probe`              | `int`    | `8`      | IVF partitions to search                             |
+| `n_full_scores`            | `int`    | `4096`   | Candidates for exact scoring                         |
+| `batch_size`               | `int`    | `2000`   | Documents per scoring batch                          |
+| `centroid_batch_size`      | `int`    | `100000` | Batch size for centroid scoring (0 = exhaustive)     |
+| `centroid_score_threshold` | `float?` | `0.4`    | Centroid pruning threshold. Set to `None` to disable |
 
 ### top_k
 
@@ -110,11 +110,11 @@ Number of IVF partitions (centroids) to search.
 - **Higher**: Better recall, slower
 - **Lower**: Faster, may miss relevant documents
 
-| Value | Use Case |
-|-------|----------|
-| 4 | Fast, lower recall |
-| 8 | Balanced (default) |
-| 16-32 | High recall |
+| Value | Use Case           |
+| ----- | ------------------ |
+| 4     | Fast, lower recall |
+| 8     | Balanced (default) |
+| 16-32 | High recall        |
 
 ### n_full_scores
 
@@ -123,11 +123,10 @@ Number of candidate documents for exact MaxSim scoring.
 - **Higher**: Better ranking accuracy, slower
 - **Lower**: Faster, may have ranking errors
 
-| Value | Use Case |
-|-------|----------|
-| 1024 | Fast, good for small top_k |
-| 4096 | Balanced (default) |
-| 8192+ | High accuracy |
+| Value | Use Case                   |
+| ----- | -------------------------- |
+| 1024  | Fast, good for small top_k |
+| 4096  | Balanced (default)         |
 
 ### centroid_score_threshold
 
@@ -137,12 +136,12 @@ Centroid pruning threshold that filters out low-scoring centroids during search.
 - Significantly speeds up search with minimal quality impact
 - Set to `None` to disable pruning entirely
 
-| Value | Use Case |
-|-------|----------|
-| `None` | Maximum accuracy, slowest |
+| Value    | Use Case                    |
+| -------- | --------------------------- |
+| `None`   | Maximum accuracy, slowest   |
 | 0.35-0.4 | High recall for large top_k |
-| 0.4 | Balanced (default) |
-| 0.45-0.5 | Faster for small top_k |
+| 0.4      | Balanced (default)          |
+| 0.45-0.5 | Faster for small top_k      |
 
 ### Tuning Guidelines
 
@@ -187,20 +186,20 @@ Configure the API server via environment variables.
 
 ### Server Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RUST_LOG` | `info` | Log level (trace, debug, info, warn, error) |
-| `INDEX_DIR` | `/data/indices` | Index storage directory |
-| `HOST` | `0.0.0.0` | Bind address |
-| `PORT` | `8080` | Server port |
+| Variable    | Default         | Description                                 |
+| ----------- | --------------- | ------------------------------------------- |
+| `RUST_LOG`  | `info`          | Log level (trace, debug, info, warn, error) |
+| `INDEX_DIR` | `/data/indices` | Index storage directory                     |
+| `HOST`      | `0.0.0.0`       | Bind address                                |
+| `PORT`      | `8080`          | Server port                                 |
 
 ### Model Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MODEL` | `None` | Model path or HuggingFace ID |
-| `MODELS_DIR` | `/models` | Model storage directory |
-| `HF_TOKEN` | `None` | HuggingFace API token |
+| Variable     | Default   | Description                  |
+| ------------ | --------- | ---------------------------- |
+| `MODEL`      | `None`    | Model path or HuggingFace ID |
+| `MODELS_DIR` | `/models` | Model storage directory      |
+| `HF_TOKEN`   | `None`    | HuggingFace API token        |
 
 ### Example
 
@@ -244,10 +243,10 @@ OPTIONS:
 
 The API implements token bucket rate limiting:
 
-| Setting | Value |
-|---------|-------|
+| Setting        | Value              |
+| -------------- | ------------------ |
 | Sustained rate | 50 requests/second |
-| Burst limit | 100 requests |
+| Burst limit    | 100 requests       |
 
 When rate limited, the API returns `429 Too Many Requests`.
 
@@ -295,10 +294,10 @@ For large indices, NextPlaid supports memory mapping:
 
 ### Volume Mounts
 
-| Path | Purpose |
-|------|---------|
+| Path            | Purpose       |
+| --------------- | ------------- |
 | `/data/indices` | Index storage |
-| `/models` | Model cache |
+| `/models`       | Model cache   |
 
 ### Resource Limits
 

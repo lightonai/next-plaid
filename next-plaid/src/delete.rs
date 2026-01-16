@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_delete_from_index() {
-        use crate::index::{Index, IndexConfig};
+        use crate::index::{IndexConfig, MmapIndex};
         use ndarray::Array2;
         use tempfile::tempdir;
 
@@ -447,7 +447,7 @@ mod tests {
             start_from_scratch: 999,
         };
 
-        let index = Index::create_with_kmeans(&embeddings, index_path, &config).unwrap();
+        let index = MmapIndex::create_with_kmeans(&embeddings, index_path, &config).unwrap();
         let original_num_docs = index.metadata.num_documents;
         assert_eq!(original_num_docs, 10);
 
@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(deleted, 3);
 
         // Reload and verify
-        let index_after = Index::load(index_path).unwrap();
+        let index_after = MmapIndex::load(index_path).unwrap();
         assert_eq!(index_after.metadata.num_documents, 7);
 
         // After deletion, documents are renumbered 0-6
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn test_delete_nonexistent_docs() {
-        use crate::index::{Index, IndexConfig};
+        use crate::index::{IndexConfig, MmapIndex};
         use ndarray::Array2;
         use tempfile::tempdir;
 
@@ -520,7 +520,7 @@ mod tests {
             start_from_scratch: 999,
         };
 
-        Index::create_with_kmeans(&embeddings, index_path, &config).unwrap();
+        MmapIndex::create_with_kmeans(&embeddings, index_path, &config).unwrap();
 
         // Try to delete document IDs that don't exist (100, 200)
         // and one that does exist (2)
@@ -530,7 +530,7 @@ mod tests {
         assert_eq!(deleted, 1);
 
         // Verify document count
-        let index_after = Index::load(index_path).unwrap();
+        let index_after = MmapIndex::load(index_path).unwrap();
         assert_eq!(index_after.metadata.num_documents, 4);
     }
 }

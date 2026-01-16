@@ -10,21 +10,21 @@ Search an index with query embeddings.
 
 ### Path Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `name` | `string` | Index name |
+| Parameter | Type     | Description |
+| --------- | -------- | ----------- |
+| `name`    | `string` | Index name  |
 
 ### Request Body
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `queries` | `array` | Yes | List of query embeddings |
-| `params` | `object` | No | Search parameters |
-| `params.top_k` | `int` | No | Results per query (default: 10) |
-| `params.n_ivf_probe` | `int` | No | IVF cells to probe (default: 8) |
-| `params.n_full_scores` | `int` | No | Candidates for scoring (default: 4096) |
-| `params.centroid_score_threshold` | `float?` | No | Centroid pruning threshold (default: 0.4). Set to null to disable |
-| `subset` | `array` | No | Limit search to these document IDs |
+| Field                             | Type     | Required | Description                                                       |
+| --------------------------------- | -------- | -------- | ----------------------------------------------------------------- |
+| `queries`                         | `array`  | Yes      | List of query embeddings                                          |
+| `params`                          | `object` | No       | Search parameters                                                 |
+| `params.top_k`                    | `int`    | No       | Results per query (default: 10)                                   |
+| `params.n_ivf_probe`              | `int`    | No       | IVF cells to probe (default: 8)                                   |
+| `params.n_full_scores`            | `int`    | No       | Candidates for scoring (default: 4096)                            |
+| `params.centroid_score_threshold` | `float?` | No       | Centroid pruning threshold (default: 0.4). Set to null to disable |
+| `subset`                          | `array`  | No       | Limit search to these document IDs                                |
 
 === "Request"
 
@@ -66,20 +66,20 @@ Search an index with query embeddings.
 
 ### Response Fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `results` | `array` | Results for each query |
-| `results[].query_id` | `int` | Query index |
-| `results[].document_ids` | `array` | Matching document IDs |
-| `results[].scores` | `array` | Relevance scores (higher = better) |
-| `results[].metadata` | `array?` | Document metadata (if available) |
-| `num_queries` | `int` | Number of queries processed |
+| Field                    | Type     | Description                        |
+| ------------------------ | -------- | ---------------------------------- |
+| `results`                | `array`  | Results for each query             |
+| `results[].query_id`     | `int`    | Query index                        |
+| `results[].document_ids` | `array`  | Matching document IDs              |
+| `results[].scores`       | `array`  | Relevance scores (higher = better) |
+| `results[].metadata`     | `array?` | Document metadata (if available)   |
+| `num_queries`            | `int`    | Number of queries processed        |
 
 ### Errors
 
-| Status | Code | Description |
-|--------|------|-------------|
-| 404 | `INDEX_NOT_FOUND` | Index does not exist |
+| Status | Code              | Description          |
+| ------ | ----------------- | -------------------- |
+| 404    | `INDEX_NOT_FOUND` | Index does not exist |
 
 ---
 
@@ -91,18 +91,18 @@ Search with metadata filtering using SQL-like conditions.
 
 ### Path Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `name` | `string` | Index name |
+| Parameter | Type     | Description |
+| --------- | -------- | ----------- |
+| `name`    | `string` | Index name  |
 
 ### Request Body
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `queries` | `array` | Yes | List of query embeddings |
-| `filter_condition` | `string` | Yes | SQL WHERE condition |
-| `filter_parameters` | `array` | No | Parameters for placeholders |
-| `params` | `object` | No | Search parameters |
+| Field               | Type     | Required | Description                 |
+| ------------------- | -------- | -------- | --------------------------- |
+| `queries`           | `array`  | Yes      | List of query embeddings    |
+| `filter_condition`  | `string` | Yes      | SQL WHERE condition         |
+| `filter_parameters` | `array`  | No       | Parameters for placeholders |
+| `params`            | `object` | No       | Search parameters           |
 
 === "Request"
 
@@ -171,21 +171,21 @@ category IN (?, ?, ?)
 Search using text queries. The server encodes queries using the loaded model.
 
 !!! note "Requires Model"
-    This endpoint requires the server to be started with a model loaded.
+This endpoint requires the server to be started with a model loaded.
 
 ### Path Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `name` | `string` | Index name |
+| Parameter | Type     | Description |
+| --------- | -------- | ----------- |
+| `name`    | `string` | Index name  |
 
 ### Request Body
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `queries` | `array` | Yes | List of text queries |
-| `params` | `object` | No | Search parameters |
-| `subset` | `array` | No | Limit to these document IDs |
+| Field     | Type     | Required | Description                 |
+| --------- | -------- | -------- | --------------------------- |
+| `queries` | `array`  | Yes      | List of text queries        |
+| `params`  | `object` | No       | Search parameters           |
+| `subset`  | `array`  | No       | Limit to these document IDs |
 
 === "Request"
 
@@ -220,10 +220,10 @@ Search using text queries. The server encodes queries using the loaded model.
 
 ### Errors
 
-| Status | Code | Description |
-|--------|------|-------------|
-| 503 | `MODEL_NOT_LOADED` | No model loaded |
-| 404 | `INDEX_NOT_FOUND` | Index does not exist |
+| Status | Code               | Description          |
+| ------ | ------------------ | -------------------- |
+| 503    | `MODEL_NOT_LOADED` | No model loaded      |
+| 404    | `INDEX_NOT_FOUND`  | Index does not exist |
 
 ---
 
@@ -234,22 +234,22 @@ Search using text queries. The server encodes queries using the loaded model.
 Search with text queries and metadata filtering.
 
 !!! note "Requires Model"
-    This endpoint requires the server to be started with a model loaded.
+This endpoint requires the server to be started with a model loaded.
 
 ### Path Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `name` | `string` | Index name |
+| Parameter | Type     | Description |
+| --------- | -------- | ----------- |
+| `name`    | `string` | Index name  |
 
 ### Request Body
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `queries` | `array` | Yes | List of text queries |
-| `filter_condition` | `string` | Yes | SQL WHERE condition |
-| `filter_parameters` | `array` | No | Parameters for placeholders |
-| `params` | `object` | No | Search parameters |
+| Field               | Type     | Required | Description                 |
+| ------------------- | -------- | -------- | --------------------------- |
+| `queries`           | `array`  | Yes      | List of text queries        |
+| `filter_condition`  | `string` | Yes      | SQL WHERE condition         |
+| `filter_parameters` | `array`  | No       | Parameters for placeholders |
+| `params`            | `object` | No       | Search parameters           |
 
 === "Request"
 
@@ -287,14 +287,14 @@ Search with text queries and metadata filtering.
 
 ## Search Parameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `top_k` | 10 | Number of results to return per query |
-| `n_ivf_probe` | 8 | Number of IVF partitions to search |
-| `n_full_scores` | 4096 | Candidates for exact scoring |
-| `batch_size` | 2000 | Documents per scoring batch |
-| `centroid_batch_size` | 100000 | Batch size for centroid scoring (0 = exhaustive) |
-| `centroid_score_threshold` | 0.4 | Centroid pruning threshold. Set to null to disable |
+| Parameter                  | Default | Description                                        |
+| -------------------------- | ------- | -------------------------------------------------- |
+| `top_k`                    | 10      | Number of results to return per query              |
+| `n_ivf_probe`              | 8       | Number of IVF partitions to search                 |
+| `n_full_scores`            | 4096    | Candidates for exact scoring                       |
+| `batch_size`               | 2000    | Documents per scoring batch                        |
+| `centroid_batch_size`      | 100000  | Batch size for centroid scoring (0 = exhaustive)   |
+| `centroid_score_threshold` | 0.4     | Centroid pruning threshold. Set to null to disable |
 
 ### Centroid Score Threshold
 
@@ -304,34 +304,6 @@ The `centroid_score_threshold` parameter enables centroid pruning during search.
 - **Higher values (0.45-0.5)**: Faster, more aggressive pruning (use for smaller k values)
 - **Lower values (0.3-0.4)**: More candidates, better recall (use for larger k values)
 - **null**: Disable pruning entirely (slowest but most accurate)
-
-### Tuning for Quality vs Speed
-
-**Higher quality (slower):**
-
-```json
-{
-  "params": {
-    "top_k": 100,
-    "n_ivf_probe": 32,
-    "n_full_scores": 8192,
-    "centroid_score_threshold": 0.35
-  }
-}
-```
-
-**Faster (lower quality):**
-
-```json
-{
-  "params": {
-    "top_k": 10,
-    "n_ivf_probe": 4,
-    "n_full_scores": 1024,
-    "centroid_score_threshold": 0.5
-  }
-}
-```
 
 ---
 

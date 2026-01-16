@@ -831,40 +831,32 @@ impl Colbert {
 // Helper functions
 // =============================================================================
 
-fn find_onnx_file<P: AsRef<Path>>(model_dir: P) -> Result<std::path::PathBuf> {
-    let model_dir = model_dir.as_ref();
-
-    if model_dir.join("model.onnx").exists() {
-        return Ok(model_dir.join("model.onnx"));
-    }
-
-    let entries = fs::read_dir(model_dir)?;
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "onnx") {
-            return Ok(path);
-        }
-    }
-
-    Err(anyhow::anyhow!("No ONNX model found in {:?}", model_dir))
-}
-
 fn select_onnx_file<P: AsRef<Path>>(model_dir: P, quantized: bool) -> Result<std::path::PathBuf> {
     let model_dir = model_dir.as_ref();
 
     if quantized {
+        // When --int8 IS provided, always load model_int8.onnx specifically.
         let q_path = model_dir.join("model_int8.onnx");
         if q_path.exists() {
             Ok(q_path)
         } else {
             anyhow::bail!(
-                "Quantized model not found at {:?}. Export with --quantize first.",
+                "INT8 quantized model not found at {:?}. Remove --int8 flag to load model.onnx instead.",
                 q_path
             )
         }
     } else {
-        find_onnx_file(model_dir)
+        // When --int8 is NOT provided, always load model.onnx specifically.
+        // This prevents accidentally loading model_int8.onnx when model.onnx is missing.
+        let model_path = model_dir.join("model.onnx");
+        if model_path.exists() {
+            Ok(model_path)
+        } else {
+            anyhow::bail!(
+                "Model not found at {:?}. Use --int8 flag to load model_int8.onnx instead.",
+                model_path
+            )
+        }
     }
 }
 

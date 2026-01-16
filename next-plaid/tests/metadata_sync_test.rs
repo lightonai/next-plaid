@@ -12,7 +12,7 @@ use std::thread;
 use ndarray::Array2;
 use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;
-use next_plaid::index::Index;
+use next_plaid::index::MmapIndex;
 use next_plaid::{IndexConfig, UpdateConfig};
 use tempfile::TempDir;
 
@@ -64,7 +64,7 @@ fn test_metadata_sync_after_create() {
     };
 
     // Create the index
-    let index = Index::create_with_kmeans(&embeddings, path, &config).unwrap();
+    let index = MmapIndex::create_with_kmeans(&embeddings, path, &config).unwrap();
 
     // Immediately read metadata.json from disk (simulating what health endpoint does)
     let num_docs = read_num_documents_from_file(path).expect("metadata.json should exist");
@@ -89,7 +89,7 @@ fn test_metadata_sync_after_update() {
         ..Default::default()
     };
 
-    let mut index = Index::create_with_kmeans(&initial_embeddings, path, &config).unwrap();
+    let mut index = MmapIndex::create_with_kmeans(&initial_embeddings, path, &config).unwrap();
     assert_eq!(read_num_documents_from_file(path).unwrap(), 5);
 
     // Update with 5 more documents
@@ -130,7 +130,7 @@ fn test_metadata_sync_sequential_updates() {
 
     // Create with 3 docs
     let emb1 = random_embeddings(3, 8, 64);
-    let mut index = Index::create_with_kmeans(&emb1, path, &config).unwrap();
+    let mut index = MmapIndex::create_with_kmeans(&emb1, path, &config).unwrap();
     assert_eq!(read_num_documents_from_file(path).unwrap(), 3);
 
     // Update 1: +2 docs = 5 total (still in start-from-scratch mode)
@@ -178,7 +178,7 @@ fn test_metadata_sync_update_or_create_new() {
 
     // update_or_create on non-existent index should create it
     let (index, doc_ids) =
-        Index::update_or_create(&embeddings, path, &index_config, &update_config).unwrap();
+        MmapIndex::update_or_create(&embeddings, path, &index_config, &update_config).unwrap();
 
     // Verify metadata.json is synced
     let num_docs = read_num_documents_from_file(path).expect("metadata.json should exist");
@@ -204,14 +204,14 @@ fn test_metadata_sync_update_or_create_existing() {
     // Create initial index
     let emb1 = random_embeddings(5, 8, 64);
     let (_index, doc_ids1) =
-        Index::update_or_create(&emb1, path, &index_config, &update_config).unwrap();
+        MmapIndex::update_or_create(&emb1, path, &index_config, &update_config).unwrap();
     assert_eq!(read_num_documents_from_file(path).unwrap(), 5);
     assert_eq!(doc_ids1, vec![0, 1, 2, 3, 4]);
 
     // Update existing index
     let emb2 = random_embeddings(5, 8, 64);
     let (index, doc_ids2) =
-        Index::update_or_create(&emb2, path, &index_config, &update_config).unwrap();
+        MmapIndex::update_or_create(&emb2, path, &index_config, &update_config).unwrap();
 
     // Verify metadata.json is synced
     let num_docs = read_num_documents_from_file(path).expect("metadata.json should exist");
@@ -238,7 +238,7 @@ fn test_metadata_sync_cross_thread_visibility() {
         ..Default::default()
     };
 
-    let mut index = Index::create_with_kmeans(&embeddings, &path, &config).unwrap();
+    let mut index = MmapIndex::create_with_kmeans(&embeddings, &path, &config).unwrap();
 
     // Use a barrier to coordinate threads
     let barrier = Arc::new(Barrier::new(2));
@@ -289,7 +289,7 @@ fn test_metadata_sync_after_delete() {
         ..Default::default()
     };
 
-    let mut index = Index::create_with_kmeans(&embeddings, path, &config).unwrap();
+    let mut index = MmapIndex::create_with_kmeans(&embeddings, path, &config).unwrap();
     assert_eq!(read_num_documents_from_file(path).unwrap(), 10);
 
     // Delete 3 documents

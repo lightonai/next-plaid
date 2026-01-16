@@ -178,31 +178,27 @@ async fn health(state: axum::extract::State<Arc<AppState>>) -> Json<HealthRespon
         }
     };
 
-    // Get model info if model is loaded
+    // Get model info from cached data (no lock required)
     #[cfg(feature = "model")]
-    let model_info = state.model.as_ref().map(|model_mutex| {
-        let model = model_mutex.lock().unwrap();
-        let config = model.config();
-        let stored_model_info = state.model_info.as_ref();
-        models::ModelHealthInfo {
-            name: config.model_name().map(|s| s.to_string()),
-            path: stored_model_info
-                .map(|i| i.path.clone())
-                .unwrap_or_default(),
-            quantized: stored_model_info.map(|i| i.quantized).unwrap_or(false),
-            embedding_dim: model.embedding_dim(),
-            batch_size: model.batch_size(),
-            num_sessions: model.num_sessions(),
-            query_prefix: config.query_prefix.clone(),
-            document_prefix: config.document_prefix.clone(),
-            query_length: config.query_length,
-            document_length: config.document_length,
-            do_query_expansion: config.do_query_expansion,
-            uses_token_type_ids: config.uses_token_type_ids,
-            mask_token_id: config.mask_token_id,
-            pad_token_id: config.pad_token_id,
-        }
-    });
+    let model_info = state
+        .cached_model_info
+        .as_ref()
+        .map(|info| models::ModelHealthInfo {
+            name: info.name.clone(),
+            path: info.path.clone(),
+            quantized: info.quantized,
+            embedding_dim: info.embedding_dim,
+            batch_size: info.batch_size,
+            num_sessions: info.num_sessions,
+            query_prefix: info.query_prefix.clone(),
+            document_prefix: info.document_prefix.clone(),
+            query_length: info.query_length,
+            document_length: info.document_length,
+            do_query_expansion: info.do_query_expansion,
+            uses_token_type_ids: info.uses_token_type_ids,
+            mask_token_id: info.mask_token_id,
+            pad_token_id: info.pad_token_id,
+        });
 
     #[cfg(not(feature = "model"))]
     let model_info: Option<models::ModelHealthInfo> = None;
@@ -274,7 +270,8 @@ fn build_router(state: Arc<AppState>) -> Router {
 
     let governor_layer = GovernorLayer::new(governor_conf).error_handler(rate_limit_error);
 
-    // Health endpoints - exempt from rate limiting to ensure monitoring always works
+    // Health endpoint - exempt from rate limiting to ensure monitoring always works
+    // Uses cached model info so it never blocks on model operations
     let health_router = Router::new()
         .route("/health", get(health))
         .route("/", get(health))
@@ -696,7 +693,35 @@ Examples:
             path: path.to_string_lossy().to_string(),
             quantized: _use_int8,
         });
-        Arc::new(AppState::with_model(config, model, model_info))
+        // Create cached model info for lock-free health endpoint access
+        let cached_model_info = model.as_ref().map(|m| {
+            let config = m.config();
+            state::CachedModelInfo {
+                name: config.model_name().map(|s| s.to_string()),
+                path: model_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                quantized: _use_int8,
+                embedding_dim: m.embedding_dim(),
+                batch_size: m.batch_size(),
+                num_sessions: m.num_sessions(),
+                query_prefix: config.query_prefix.clone(),
+                document_prefix: config.document_prefix.clone(),
+                query_length: config.query_length,
+                document_length: config.document_length,
+                do_query_expansion: config.do_query_expansion,
+                uses_token_type_ids: config.uses_token_type_ids,
+                mask_token_id: config.mask_token_id,
+                pad_token_id: config.pad_token_id,
+            }
+        });
+        Arc::new(AppState::with_model(
+            config,
+            model,
+            model_info,
+            cached_model_info,
+        ))
     };
 
     #[cfg(not(feature = "model"))]

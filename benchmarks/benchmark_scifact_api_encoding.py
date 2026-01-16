@@ -42,7 +42,7 @@ class BenchmarkConfig:
     batch_size: int = 10  # Documents per API call
     top_k: int = 100
     n_ivf_probe: int = 8
-    n_full_scores: int = 8192
+    n_full_scores: int = 4096
     nbits: int = 4
     seed: int = 42
     port: int = 8080
@@ -528,7 +528,7 @@ def main():
     print(f"  Queries: {len(queries)}")
 
     # Show sample document
-    print(f"\n  Sample document (first 200 chars):")
+    print("\n  Sample document (first 200 chars):")
     print(f"    {documents[0]['text'][:200]}...")
 
     num_api_calls = (len(documents) + config.batch_size - 1) // config.batch_size

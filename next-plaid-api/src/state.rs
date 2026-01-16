@@ -41,6 +41,41 @@ pub struct ModelInfo {
     pub quantized: bool,
 }
 
+/// Cached model information that doesn't require locking.
+/// This information is immutable after model initialization.
+#[cfg(feature = "model")]
+#[derive(Debug, Clone)]
+pub struct CachedModelInfo {
+    /// Model name (from config)
+    pub name: Option<String>,
+    /// Path to the model directory
+    pub path: String,
+    /// Whether INT8 quantization is enabled
+    pub quantized: bool,
+    /// Embedding dimension
+    pub embedding_dim: usize,
+    /// Batch size used for encoding
+    pub batch_size: usize,
+    /// Number of parallel ONNX sessions
+    pub num_sessions: usize,
+    /// Query prefix token
+    pub query_prefix: String,
+    /// Document prefix token
+    pub document_prefix: String,
+    /// Maximum query length
+    pub query_length: usize,
+    /// Maximum document length
+    pub document_length: usize,
+    /// Whether query expansion is enabled
+    pub do_query_expansion: bool,
+    /// Whether the model uses token_type_ids
+    pub uses_token_type_ids: bool,
+    /// MASK token ID for query expansion
+    pub mask_token_id: u32,
+    /// PAD token ID
+    pub pad_token_id: u32,
+}
+
 /// Application state containing loaded indices.
 ///
 /// All indices are stored as MmapIndex for efficient memory usage.
@@ -55,6 +90,9 @@ pub struct AppState {
     /// Model configuration info (path, quantization status)
     #[cfg(feature = "model")]
     pub model_info: Option<ModelInfo>,
+    /// Cached model info for lock-free access (immutable after init)
+    #[cfg(feature = "model")]
+    pub cached_model_info: Option<CachedModelInfo>,
 }
 
 impl AppState {
@@ -78,6 +116,7 @@ impl AppState {
         config: ApiConfig,
         model: Option<next_plaid_onnx::Colbert>,
         model_info: Option<ModelInfo>,
+        cached_model_info: Option<CachedModelInfo>,
     ) -> Self {
         // Ensure index directory exists
         if !config.index_dir.exists() {
@@ -89,6 +128,7 @@ impl AppState {
             indices: RwLock::new(HashMap::new()),
             model: model.map(Mutex::new),
             model_info,
+            cached_model_info,
         }
     }
 

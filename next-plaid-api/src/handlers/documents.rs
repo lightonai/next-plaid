@@ -20,11 +20,11 @@ use tokio::time::Instant;
 use next_plaid::{filtering, IndexConfig, MmapIndex, UpdateConfig};
 
 use crate::error::{ApiError, ApiResult};
-use crate::handlers::encode::encode_documents_internal;
+use crate::handlers::encode::encode_texts_internal;
 use crate::models::{
     AddDocumentsRequest, CreateIndexRequest, CreateIndexResponse, DeleteDocumentsRequest,
     DeleteIndexResponse, DocumentEmbeddings, ErrorResponse, IndexConfigStored, IndexInfoResponse,
-    UpdateIndexConfigRequest, UpdateIndexConfigResponse, UpdateIndexRequest,
+    InputType, UpdateIndexConfigRequest, UpdateIndexConfigResponse, UpdateIndexRequest,
     UpdateWithEncodingRequest,
 };
 use crate::state::AppState;
@@ -1015,8 +1015,14 @@ pub async fn update_index_with_encoding(
         )));
     }
 
-    // Encode documents using the model
-    let embeddings = encode_documents_internal(&state, &req.documents, req.pool_factor)?;
+    // Encode documents using the model (async, uses batch queue)
+    let embeddings = encode_texts_internal(
+        state.clone(),
+        &req.documents,
+        InputType::Document,
+        req.pool_factor,
+    )
+    .await?;
 
     let doc_count = embeddings.len();
 

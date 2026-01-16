@@ -14,10 +14,10 @@ use ndarray::Array2;
 use next_plaid::{filtering, SearchParameters};
 
 use crate::error::{ApiError, ApiResult};
-use crate::handlers::encode::encode_queries_internal;
+use crate::handlers::encode::encode_texts_internal;
 use crate::models::{
-    ErrorResponse, FilteredSearchRequest, FilteredSearchWithEncodingRequest, QueryEmbeddings,
-    QueryResultResponse, SearchRequest, SearchResponse, SearchWithEncodingRequest,
+    ErrorResponse, FilteredSearchRequest, FilteredSearchWithEncodingRequest, InputType,
+    QueryEmbeddings, QueryResultResponse, SearchRequest, SearchResponse, SearchWithEncodingRequest,
 };
 use crate::state::AppState;
 
@@ -280,8 +280,9 @@ pub async fn search_with_encoding(
         return Err(ApiError::BadRequest("No queries provided".to_string()));
     }
 
-    // Encode the text queries
-    let query_embeddings = encode_queries_internal(&state, &req.queries)?;
+    // Encode the text queries (async, uses batch queue)
+    let query_embeddings =
+        encode_texts_internal(state.clone(), &req.queries, InputType::Query, None).await?;
 
     // Convert to QueryEmbeddings format
     let queries: Vec<QueryEmbeddings> = query_embeddings
@@ -329,8 +330,9 @@ pub async fn search_filtered_with_encoding(
         return Err(ApiError::BadRequest("No queries provided".to_string()));
     }
 
-    // Encode the text queries
-    let query_embeddings = encode_queries_internal(&state, &req.queries)?;
+    // Encode the text queries (async, uses batch queue)
+    let query_embeddings =
+        encode_texts_internal(state.clone(), &req.queries, InputType::Query, None).await?;
 
     // Convert to QueryEmbeddings format
     let queries: Vec<QueryEmbeddings> = query_embeddings

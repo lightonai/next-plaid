@@ -3,7 +3,7 @@
 use ndarray::Array2;
 use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;
-use next_plaid::index::Index;
+use next_plaid::index::MmapIndex;
 use next_plaid::{filtering, IndexConfig, SearchParameters};
 use serde_json::json;
 use tempfile::TempDir;
@@ -53,7 +53,7 @@ fn test_create_index_with_metadata() {
         seed: Some(42),
         ..Default::default()
     };
-    let index = Index::create_with_kmeans(&embeddings, path, &config).unwrap();
+    let index = MmapIndex::create_with_kmeans(&embeddings, path, &config).unwrap();
 
     // Create metadata database with explicit doc_ids
     let doc_ids: Vec<i64> = (0..5).collect();
@@ -91,7 +91,7 @@ fn test_search_with_subset_filter() {
         seed: Some(42),
         ..Default::default()
     };
-    let index = Index::create_with_kmeans(&embeddings, path, &config).unwrap();
+    let index = MmapIndex::create_with_kmeans(&embeddings, path, &config).unwrap();
     let doc_ids: Vec<i64> = (0..10).collect();
     filtering::create(path, &metadata, &doc_ids).unwrap();
 
@@ -140,7 +140,7 @@ fn test_delete_with_metadata() {
         seed: Some(42),
         ..Default::default()
     };
-    let mut index = Index::create_with_kmeans(&embeddings, path, &config).unwrap();
+    let mut index = MmapIndex::create_with_kmeans(&embeddings, path, &config).unwrap();
     let doc_ids: Vec<i64> = (0..5).collect();
     filtering::create(path, &metadata, &doc_ids).unwrap();
 
@@ -194,7 +194,7 @@ fn test_complex_filter_query() {
         seed: Some(42),
         ..Default::default()
     };
-    Index::create_with_kmeans(&embeddings, path, &config).unwrap();
+    MmapIndex::create_with_kmeans(&embeddings, path, &config).unwrap();
     let doc_ids: Vec<i64> = (0..10).collect();
     filtering::create(path, &metadata, &doc_ids).unwrap();
 
@@ -249,7 +249,7 @@ fn test_get_metadata_by_subset() {
         seed: Some(42),
         ..Default::default()
     };
-    Index::create_with_kmeans(&embeddings, path, &config).unwrap();
+    MmapIndex::create_with_kmeans(&embeddings, path, &config).unwrap();
     let doc_ids: Vec<i64> = (0..5).collect();
     filtering::create(path, &metadata, &doc_ids).unwrap();
 
@@ -281,7 +281,7 @@ fn test_update_with_new_metadata() {
         seed: Some(42),
         ..Default::default()
     };
-    let mut index = Index::create_with_kmeans(&embeddings, path, &config).unwrap();
+    let mut index = MmapIndex::create_with_kmeans(&embeddings, path, &config).unwrap();
     let doc_ids: Vec<i64> = (0..3).collect();
     filtering::create(path, &metadata, &doc_ids).unwrap();
 
@@ -328,7 +328,7 @@ fn test_search_empty_subset() {
         seed: Some(42),
         ..Default::default()
     };
-    let index = Index::create_with_kmeans(&embeddings, path, &config).unwrap();
+    let index = MmapIndex::create_with_kmeans(&embeddings, path, &config).unwrap();
 
     // Create query
     let query = embeddings[0].clone();
@@ -366,7 +366,7 @@ fn test_create_update_delete_update_workflow() {
         seed: Some(42),
         ..Default::default()
     };
-    let mut index = Index::create_with_kmeans(&initial_embeddings, path, &config).unwrap();
+    let mut index = MmapIndex::create_with_kmeans(&initial_embeddings, path, &config).unwrap();
     let doc_ids: Vec<i64> = (0..3).collect();
     filtering::create(path, &initial_metadata, &doc_ids).unwrap();
 
@@ -502,7 +502,7 @@ fn test_numeric_range_queries() {
         seed: Some(42),
         ..Default::default()
     };
-    Index::create_with_kmeans(&embeddings, path, &config).unwrap();
+    MmapIndex::create_with_kmeans(&embeddings, path, &config).unwrap();
     let doc_ids: Vec<i64> = (0..10).collect();
     filtering::create(path, &metadata, &doc_ids).unwrap();
 
