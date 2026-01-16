@@ -45,6 +45,10 @@ services:
       - --cuda
       - --batch-size
       - "64"
+      - --query-length
+      - "48"
+      - --document-length
+      - "300"
     healthcheck:
       start_period: 120s  # Longer start period for model download + CUDA initialization
     deploy:

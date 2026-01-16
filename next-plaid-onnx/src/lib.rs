@@ -484,6 +484,8 @@ pub struct ColbertBuilder {
     batch_size: Option<usize>,
     execution_provider: ExecutionProvider,
     quantized: bool,
+    query_length: usize,
+    document_length: usize,
 }
 
 impl ColbertBuilder {
@@ -504,6 +506,8 @@ impl ColbertBuilder {
             batch_size: None,
             execution_provider: ExecutionProvider::Auto,
             quantized: false,
+            query_length: default_query_length(),
+            document_length: default_document_length(),
         }
     }
 
@@ -549,6 +553,24 @@ impl ColbertBuilder {
         self
     }
 
+    /// Set the maximum query length (default: 48).
+    ///
+    /// This overrides the value from the model's config file.
+    /// Queries longer than this will be truncated.
+    pub fn with_query_length(mut self, query_length: usize) -> Self {
+        self.query_length = query_length;
+        self
+    }
+
+    /// Set the maximum document length (default: 300).
+    ///
+    /// This overrides the value from the model's config file.
+    /// Documents longer than this will be truncated.
+    pub fn with_document_length(mut self, document_length: usize) -> Self {
+        self.document_length = document_length;
+        self
+    }
+
     /// Build the Colbert model.
     pub fn build(self) -> Result<Colbert> {
         init_ort_runtime();
@@ -561,6 +583,11 @@ impl ColbertBuilder {
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
 
         let mut config = ColbertConfig::from_model_dir(model_dir)?;
+
+        // Override query_length and document_length with builder values
+        // (these always use defaults or user-specified values, never from config file)
+        config.query_length = self.query_length;
+        config.document_length = self.document_length;
 
         update_token_ids(&mut config, &tokenizer);
         let skiplist_ids = build_skiplist(&config, &tokenizer);
@@ -869,6 +896,13 @@ fn build_skiplist(config: &ColbertConfig, tokenizer: &Tokenizer) -> HashSet<u32>
 }
 
 /// Internal function to encode a batch using a specific session.
+///
+/// This function matches PyLate's tokenization approach:
+/// 1. Tokenize text WITHOUT the prefix (max_length - 1 tokens)
+/// 2. Insert the prefix token ID after [CLS] (position 1)
+///
+/// This ensures that long documents get the same number of content tokens
+/// as PyLate, where the prefix is inserted after initial tokenization.
 fn encode_batch_with_session(
     session: &mut Session,
     tokenizer: &Tokenizer,
@@ -882,20 +916,42 @@ fn encode_batch_with_session(
         return Ok(Vec::new());
     }
 
-    let (prefix, max_length) = if is_query {
-        (&config.query_prefix, config.query_length)
+    let (prefix_str, prefix_token_id_opt, max_length) = if is_query {
+        (
+            &config.query_prefix,
+            config.query_prefix_id,
+            config.query_length,
+        )
     } else {
-        (&config.document_prefix, config.document_length)
+        (
+            &config.document_prefix,
+            config.document_prefix_id,
+            config.document_length,
+        )
     };
 
-    let texts_with_prefix: Vec<String> = texts.iter().map(|t| format!("{}{}", prefix, t)).collect();
+    // Get the prefix token ID, either from config or by looking it up in the tokenizer
+    let prefix_token_id: u32 = match prefix_token_id_opt {
+        Some(id) => id,
+        None => tokenizer.token_to_id(prefix_str).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Prefix token '{}' not found in tokenizer vocabulary",
+                prefix_str
+            )
+        })?,
+    };
 
+    // Tokenize texts WITHOUT the prefix first (matching PyLate's approach)
+    // PyLate tokenizes with max_length - 1 to reserve space for the prefix token
     let batch_encodings = tokenizer
-        .encode_batch(texts_with_prefix.iter().map(|s| s.as_str()).collect(), true)
+        .encode_batch(texts.to_vec(), true)
         .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
 
     let mut encodings: Vec<BatchEncoding> = Vec::with_capacity(texts.len());
     let mut batch_max_len = 0usize;
+
+    // Truncate limit is max_length - 1 to leave room for prefix token insertion
+    let truncate_limit = max_length - 1;
 
     for encoding in batch_encodings {
         let token_ids: Vec<u32> = encoding.get_ids().to_vec();
@@ -909,12 +965,20 @@ fn encode_batch_with_session(
             encoding.get_type_ids().iter().map(|&x| x as i64).collect();
         let mut token_ids_vec = token_ids;
 
-        if input_ids.len() > max_length {
-            input_ids.truncate(max_length);
-            attention_mask.truncate(max_length);
-            token_type_ids.truncate(max_length);
-            token_ids_vec.truncate(max_length);
+        // Truncate to max_length - 1 to leave room for prefix token
+        if input_ids.len() > truncate_limit {
+            input_ids.truncate(truncate_limit);
+            attention_mask.truncate(truncate_limit);
+            token_type_ids.truncate(truncate_limit);
+            token_ids_vec.truncate(truncate_limit);
         }
+
+        // Insert prefix token after [CLS] (position 1), matching PyLate's insert_prefix_token
+        // PyLate does: torch.cat([input_ids[:, :1], prefix_tensor, input_ids[:, 1:]], dim=1)
+        input_ids.insert(1, prefix_token_id as i64);
+        attention_mask.insert(1, 1);
+        token_type_ids.insert(1, 0);
+        token_ids_vec.insert(1, prefix_token_id);
 
         batch_max_len = batch_max_len.max(input_ids.len());
         encodings.push((input_ids, attention_mask, token_type_ids, token_ids_vec));
@@ -1187,6 +1251,8 @@ mod tests {
         assert!(!builder.quantized);
         assert!(builder.batch_size.is_none());
         assert_eq!(builder.execution_provider, ExecutionProvider::Auto);
+        assert_eq!(builder.query_length, 48);
+        assert_eq!(builder.document_length, 300);
     }
 
     #[test]
@@ -1235,18 +1301,36 @@ mod tests {
     }
 
     #[test]
+    fn test_builder_with_query_length() {
+        let builder = ColbertBuilder::new("test_model").with_query_length(64);
+
+        assert_eq!(builder.query_length, 64);
+    }
+
+    #[test]
+    fn test_builder_with_document_length() {
+        let builder = ColbertBuilder::new("test_model").with_document_length(512);
+
+        assert_eq!(builder.document_length, 512);
+    }
+
+    #[test]
     fn test_builder_chained_configuration() {
         let builder = ColbertBuilder::new("test_model")
             .with_quantized(true)
             .with_parallel(16)
             .with_batch_size(4)
-            .with_execution_provider(ExecutionProvider::Cuda);
+            .with_execution_provider(ExecutionProvider::Cuda)
+            .with_query_length(64)
+            .with_document_length(512);
 
         assert!(builder.quantized);
         assert_eq!(builder.num_sessions, 16);
         assert_eq!(builder.threads_per_session, 1);
         assert_eq!(builder.batch_size, Some(4));
         assert_eq!(builder.execution_provider, ExecutionProvider::Cuda);
+        assert_eq!(builder.query_length, 64);
+        assert_eq!(builder.document_length, 512);
     }
 
     // =========================================================================

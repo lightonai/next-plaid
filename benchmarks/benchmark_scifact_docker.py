@@ -375,7 +375,6 @@ def run_api_benchmark(
                     index_name,
                     batches[batch_idx],
                     metadata=batch_metadata[batch_idx],
-                    pool_factor=2,
                 )
                 indexed += len(batches[batch_idx])
                 # Wait for this batch to complete
@@ -406,7 +405,6 @@ def run_api_benchmark(
                                 index_name,
                                 batches[batch_idx],
                                 metadata=batch_metadata[batch_idx],
-                                pool_factor=2,
                             )
                         except NextPlaidConnectionError as e:
                             # Handle timeout errors with exponential backoff
@@ -427,7 +425,6 @@ def run_api_benchmark(
                         index_name,
                         batches[batch_idx],
                         metadata=batch_metadata[batch_idx],
-                        pool_factor=2,
                     )
                 finally:
                     thread_client.close()

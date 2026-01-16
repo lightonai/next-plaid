@@ -72,19 +72,23 @@ let model = Colbert::builder("models/GTE-ModernColBERT-v1")
     .with_quantized(true)                              // INT8 model (~2x faster)
     .with_parallel(25)                                 // 25 parallel sessions
     .with_batch_size(2)                                // Batch size per session
+    .with_query_length(48)                             // Max query tokens
+    .with_document_length(300)                         // Max document tokens
     .with_execution_provider(ExecutionProvider::Cuda)  // Force CUDA
     .build()?;
 ```
 
 ### Builder Options
 
-| Method                       | Default | Description                               |
-| ---------------------------- | ------- | ----------------------------------------- |
-| `with_quantized(bool)`       | `false` | Use INT8 model for ~2x speedup            |
-| `with_parallel(n)`           | `1`     | Number of parallel ONNX sessions          |
-| `with_threads(n)`            | auto    | Threads per session (single-session mode) |
-| `with_batch_size(n)`         | auto    | Documents per inference call              |
-| `with_execution_provider(p)` | `Auto`  | Hardware acceleration                     |
+| Method                       | Default | Description                                              |
+| ---------------------------- | ------- | -------------------------------------------------------- |
+| `with_quantized(bool)`       | `false` | Use INT8 model for ~2x speedup                           |
+| `with_parallel(n)`           | `1`     | Number of parallel ONNX sessions                         |
+| `with_threads(n)`            | auto    | Threads per session (single-session mode)                |
+| `with_batch_size(n)`         | auto    | Documents per inference call                             |
+| `with_query_length(n)`       | `48`    | Max query length in tokens (overrides config file)       |
+| `with_document_length(n)`    | `300`   | Max document length in tokens (overrides config file)    |
+| `with_execution_provider(p)` | `Auto`  | Hardware acceleration                                    |
 
 ## Token Pooling
 

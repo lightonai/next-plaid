@@ -438,6 +438,8 @@ async fn main() {
     let mut _parallel_sessions: Option<usize> = None;
     let mut _batch_size: Option<usize> = None;
     let mut _threads: Option<usize> = None;
+    let mut _query_length: Option<usize> = None;
+    let mut _document_length: Option<usize> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -525,6 +527,30 @@ async fn main() {
                     std::process::exit(1);
                 }
             }
+            "--query-length" => {
+                if i + 1 < args.len() {
+                    _query_length = Some(args[i + 1].parse().unwrap_or_else(|_| {
+                        eprintln!("Error: Invalid query length");
+                        std::process::exit(1);
+                    }));
+                    i += 2;
+                } else {
+                    eprintln!("Error: --query-length requires a value");
+                    std::process::exit(1);
+                }
+            }
+            "--document-length" => {
+                if i + 1 < args.len() {
+                    _document_length = Some(args[i + 1].parse().unwrap_or_else(|_| {
+                        eprintln!("Error: Invalid document length");
+                        std::process::exit(1);
+                    }));
+                    i += 2;
+                } else {
+                    eprintln!("Error: --document-length requires a value");
+                    std::process::exit(1);
+                }
+            }
             "--help" => {
                 println!(
                     r#"Next-Plaid API Server
@@ -545,6 +571,10 @@ Options:
                            Smaller batches are better for parallel sessions.
   --threads <N>            Threads per ONNX session (default: auto-detected)
                            Auto-set to 1 when using --parallel.
+  --query-length <N>       Maximum query length in tokens (default: 48)
+                           Overrides value from model config file.
+  --document-length <N>    Maximum document length in tokens (default: 300)
+                           Overrides value from model config file.
   --help                   Show this help message
 
 Environment Variables:
@@ -618,6 +648,14 @@ Examples:
         if let Some(threads) = _threads {
             tracing::info!("Using {} threads per session", threads);
             builder = builder.with_threads(threads);
+        }
+        if let Some(query_length) = _query_length {
+            tracing::info!("Using query length: {}", query_length);
+            builder = builder.with_query_length(query_length);
+        }
+        if let Some(document_length) = _document_length {
+            tracing::info!("Using document length: {}", document_length);
+            builder = builder.with_document_length(document_length);
         }
 
         match builder.build() {

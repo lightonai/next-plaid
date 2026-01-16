@@ -16,6 +16,8 @@
 #   --parallel <N>              Number of parallel ONNX sessions
 #   --batch-size <N>            Batch size per session
 #   --threads <N>               Threads per session
+#   --query-length <N>          Max query length in tokens (default: 48)
+#   --document-length <N>       Max document length in tokens (default: 300)
 #
 # Examples:
 #   docker-entrypoint.sh --model /models/my-model --parallel 8
