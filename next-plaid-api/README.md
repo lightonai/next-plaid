@@ -18,6 +18,29 @@ A REST API for deploying and querying next-plaid multi-vector search indices.
 
 ### Using Docker (Recommended)
 
+#### Pulling the Docker Image
+
+The Docker images are published to GitHub Container Registry (GHCR). Pull the image with:
+
+```bash
+# Pull the latest CPU image
+docker pull ghcr.io/lightonai/next-plaid-api:latest
+
+# Or pull a specific version
+docker pull ghcr.io/lightonai/next-plaid-api:0.1.0
+
+# Or pull the CUDA variant for GPU support
+docker pull ghcr.io/lightonai/next-plaid-api:latest-cuda
+```
+
+Available tags:
+- `latest`, `latest-cpu` - Latest CPU version
+- `latest-cuda` - Latest CUDA/GPU version
+- `<version>`, `<version>-cpu` - Specific CPU version (e.g., `0.1.0`)
+- `<version>-cuda` - Specific CUDA version (e.g., `0.1.0-cuda`)
+
+#### Running the Container
+
 ```bash
 # Pull and run with a model (auto-downloads from HuggingFace)
 docker run -d \
@@ -29,6 +52,9 @@ docker run -d \
 
 # Verify it's running
 curl http://localhost:8080/health
+
+# Access the Swagger UI for interactive API documentation
+# Open in browser: http://localhost:8080/swagger-ui/
 ```
 
 ### Using Docker Compose
@@ -76,6 +102,20 @@ docker run -d \
   ghcr.io/lightonai/next-plaid-api:cuda \
   --model lightonai/GTE-ModernColBERT-v1-onnx --int8 --cuda
 ```
+
+## API Documentation
+
+Interactive API documentation is available via Swagger UI at:
+
+```
+http://localhost:8080/swagger-ui/
+```
+
+The Swagger UI provides:
+- Full API reference with all endpoints
+- Interactive "Try it out" functionality to test endpoints directly
+- Request/response schemas and examples
+- Authentication configuration (if applicable)
 
 ## API Examples
 
