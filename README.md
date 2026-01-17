@@ -20,7 +20,9 @@
 
 ## Overview
 
-**NextPlaid** is identical to [FastPlaid](https://github.com/lightonai/fast-plaid) but designed for **production deployments**. While FastPlaid is optimized for GPU-accelerated research and experimentation, NextPlaid provides:
+**NextPlaid** is designed for deploying **late-interaction models** in production. It is compatible with every [PyLate model available on HuggingFace](https://huggingface.co/models?other=PyLate) after converting them to ONNX format (see [Export ColBERT Models to ONNX](#export-colbert-models-to-onnx)).
+
+NextPlaid is identical to [FastPlaid](https://github.com/lightonai/fast-plaid) but designed for **production deployments**. While FastPlaid is optimized for GPU-accelerated research and experimentation, NextPlaid provides:
 
 - **Pure Rust Implementation**: No Python or PyTorch dependencies in production
 - **CPU-Optimized Indexing & Search**: The PLAID index always runs on CPU using ndarray with BLAS acceleration
@@ -43,12 +45,14 @@ Full documentation is available at **[lightonai.github.io/next-plaid](https://li
 
 ## Quick Start with Docker
 
-The fastest way to get started is using our pre-built Docker images.
+Get started using the pre-built Docker images.
 
 ### Pull and Run
 
+#### CPU Image
+
 ```bash
-# Pull the latest image
+# Pull the CPU image
 docker pull ghcr.io/lightonai/next-plaid-api:latest
 
 # Run with persistent storage
@@ -62,6 +66,24 @@ docker run -d \
 curl http://localhost:8080/health
 ```
 
+#### CUDA Image
+
+```bash
+# Pull the CUDA image (GPU-accelerated model inference)
+docker pull ghcr.io/lightonai/next-plaid-api:latest-cuda
+
+# Run with GPU support
+docker run -d \
+  --gpus all \
+  --name next-plaid-api \
+  -p 8080:8080 \
+  -v ~/.local/share/next-plaid:/data/indices \
+  ghcr.io/lightonai/next-plaid-api:latest-cuda
+
+# Verify it's running
+curl http://localhost:8080/health
+```
+
 &nbsp;
 
 ## Python SDK
@@ -70,12 +92,6 @@ Install the Python client to interact with the Next-Plaid API.
 
 ```bash
 pip install next-plaid-client
-```
-
-Or install from source:
-
-```bash
-pip install git+https://github.com/lightonai/next-plaid.git#subdirectory=next-plaid-api/python-sdk
 ```
 
 ### Upload and Search with Embeddings
@@ -217,14 +233,14 @@ docker run -d \
 
 #### Model Configuration Options
 
-| Option | Description | CPU Default | CUDA Default |
-|--------|-------------|-------------|--------------|
-| `--model <id>` | HuggingFace model ID or local path | Required | Required |
-| `--int8` | Use INT8 quantized model (~2x faster on CPU) | Yes | No |
-| `--cuda` | Use GPU for inference | No | Yes |
-| `--parallel <N>` | Number of parallel ONNX sessions | 8 | 1 |
-| `--batch-size <N>` | Batch size per session | 4 | 64 |
-| `--threads <N>` | Threads per session (auto when parallel) | Auto | Auto |
+| Option             | Description                                  | CPU Default | CUDA Default |
+| ------------------ | -------------------------------------------- | ----------- | ------------ |
+| `--model <id>`     | HuggingFace model ID or local path           | Required    | Required     |
+| `--int8`           | Use INT8 quantized model (~2x faster on CPU) | Yes         | No           |
+| `--cuda`           | Use GPU for inference                        | No          | Yes          |
+| `--parallel <N>`   | Number of parallel ONNX sessions             | 8           | 1            |
+| `--batch-size <N>` | Batch size per session                       | 4           | 64           |
+| `--threads <N>`    | Threads per session (auto when parallel)     | Auto        | Auto         |
 
 Models are automatically downloaded from HuggingFace and cached locally at `~/.cache/huggingface/next-plaid`. On subsequent runs, cached models are reused.
 
