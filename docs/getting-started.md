@@ -9,7 +9,7 @@ Get NextPlaid running in under 5 minutes with Docker.
 
 ## Step 1: Start the Server
 
-The fastest way to get started is using our pre-built Docker image:
+Start the server using the pre-built Docker image:
 
 ```bash
 # Pull and run the latest image

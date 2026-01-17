@@ -4,7 +4,7 @@ Choose the installation method that best fits your use case.
 
 ## Docker (Recommended)
 
-The easiest way to run NextPlaid in production. Both images support model inference for text encoding. The PLAID index and search always run on CPU, while model inference runs on CPU or GPU depending on the image.
+Run NextPlaid in production using Docker containers. Both images support model inference for text encoding. The PLAID index and search always run on CPU, while model inference runs on CPU or GPU depending on the image.
 
 ### Pre-built Images
 
