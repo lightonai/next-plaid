@@ -112,6 +112,31 @@ jobs:
         working-directory: next-plaid-onnx
         run: cargo clippy --all-targets -- -D warnings
 
+  cli-fmt:
+    name: CLI Crate Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format check (CLI crate)
+        working-directory: next-plaid-cli
+        run: cargo fmt --all -- --check
+
+  cli-clippy:
+    name: CLI Crate Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (CLI crate)
+        working-directory: next-plaid-cli
+        run: cargo clippy --all-targets -- -D warnings
+
   # TODO: Re-enable after fixing search with random embeddings issue
   # The centroid_score_threshold (default 0.4) filters out centroids when using
   # random normalized embeddings, causing 0 search results.
