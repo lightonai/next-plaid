@@ -1,4 +1,4 @@
-# Python SDK
+# 🐍 Python SDK
 
 The official Python client for the NextPlaid API.
 
@@ -8,7 +8,7 @@ The official Python client for the NextPlaid API.
 pip install next-plaid-client
 ```
 
-## Quick Start
+## ⚡ Quick Start
 
 ```python
 from next_plaid_client import NextPlaidClient, IndexConfig, SearchParams
@@ -46,7 +46,7 @@ NextPlaid provides two client implementations:
 
 Both clients have identical APIs, differing only in sync vs async methods.
 
-## Basic Usage Patterns
+## 📖 Basic Usage Patterns
 
 ### Context Manager
 

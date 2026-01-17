@@ -10,18 +10,18 @@ theme:
   logo: logo.png
   favicon: logo.png
   palette:
-    - scheme: slate
-      primary: indigo
-      accent: teal
-      toggle:
-        icon: material/brightness-7
-        name: Switch to light mode
     - scheme: default
       primary: indigo
       accent: teal
       toggle:
         icon: material/brightness-4
         name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to light mode
   features:
     - navigation.instant
     - navigation.tracking

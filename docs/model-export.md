@@ -1,4 +1,4 @@
-# Model Export
+# 📤 Model Export
 
 Export ColBERT models to ONNX format for use with NextPlaid.
 
@@ -88,7 +88,7 @@ pylate-onnx-export lightonai/GTE-ModernColBERT-v1 \
 
 ---
 
-## Supported Models
+## ✅ Supported Models
 
 Any PyLate-compatible ColBERT model should work. Tested models:
 
@@ -176,7 +176,7 @@ colbert-quantize ./model.onnx -o ./model_int8.onnx
 
 ---
 
-## Troubleshooting
+## 🔧 Troubleshooting
 
 ### Export Fails
 
@@ -224,7 +224,7 @@ docker run -d \
 
 ---
 
-## Performance Tips
+## 🚀 Performance Tips
 
 ### ONNX Runtime Optimization
 

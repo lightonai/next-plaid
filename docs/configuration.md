@@ -1,8 +1,8 @@
-# Configuration
+# ⚙️ Configuration
 
 Complete reference for configuring NextPlaid indices and search.
 
-## Index Configuration
+## 🗂️ Index Configuration
 
 Configuration used when creating a new index.
 
@@ -70,7 +70,7 @@ Set to `None` for unlimited.
 
 ---
 
-## Search Parameters
+## 🔎 Search Parameters
 
 Configuration for search operations.
 
@@ -180,7 +180,7 @@ SearchParams(
 
 ---
 
-## Environment Variables
+## 🌍 Environment Variables
 
 Configure the API server via environment variables.
 
@@ -252,7 +252,7 @@ When rate limited, the API returns `429 Too Many Requests`.
 
 ---
 
-## Memory Configuration
+## 💾 Memory Configuration
 
 ### Estimating Memory Usage
 

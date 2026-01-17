@@ -10,7 +10,7 @@
 
 ---
 
-## What is NextPlaid?
+## 🔍 What is NextPlaid?
 
 **NextPlaid** is a production-ready implementation of the [PLAID algorithm](concepts/plaid.md) for efficient [multi-vector search](concepts/multi-vector.md). It enables semantic search using late-interaction models like ColBERT, where both documents and queries are represented as multiple vectors (one per token).
 
@@ -22,7 +22,7 @@ If you want retrieval running in Python and optimized for GPU, you can rely on [
 
 ---
 
-## Quick Example
+## ⚡ Quick Example
 
 === "Python"
 
@@ -75,7 +75,7 @@ If you want retrieval running in Python and optimized for GPU, you can rely on [
 
 ---
 
-## Project Structure
+## 📦 Project Structure
 
 | Component | Description |
 |-----------|-------------|
@@ -87,13 +87,13 @@ If you want retrieval running in Python and optimized for GPU, you can rely on [
 
 ---
 
-## License
+## 📄 License
 
 NextPlaid is licensed under [Apache-2.0](https://github.com/lightonai/next-plaid/blob/main/LICENSE).
 
 ---
 
-## Citation
+## 📚 Citation
 
 ```bibtex
 @software{next-plaid,

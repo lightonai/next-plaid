@@ -11,7 +11,9 @@ docker run -d \
   --name next-plaid-api \
   -p 8080:8080 \
   -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid-api:latest
+  -v ~/.cache/huggingface/next-plaid:/models \
+  ghcr.io/lightonai/next-plaid-api:latest \
+  --model lightonai/GTE-ModernColBERT-v1-onnx
 ```
 
 Verify:
@@ -35,9 +37,47 @@ The PLAID index and search always run on CPU. Model inference for text encoding 
 
 ---
 
+## Building from Source
+
+The Dockerfile supports two build targets:
+
+```bash
+# CPU build (default)
+docker build -t next-plaid-api -f next-plaid-api/Dockerfile .
+
+# CUDA build (GPU encoding)
+docker build -t next-plaid-api:cuda -f next-plaid-api/Dockerfile --target runtime-cuda .
+```
+
+---
+
+## CLI Options
+
+The API accepts the following command-line options:
+
+| Option              | Default                              | Description                               |
+| ------------------- | ------------------------------------ | ----------------------------------------- |
+| `--model <path>`    | -                                    | HuggingFace model ID or local path        |
+| `--int8`            | `false`                              | Use INT8 quantized model (~2x faster CPU) |
+| `--cuda`            | `false`                              | Use CUDA for inference (GPU builds only)  |
+| `--parallel <N>`    | `1`                                  | Number of parallel ONNX sessions          |
+| `--batch-size <N>`  | `1`                                  | Batch size per session                    |
+| `--threads <N>`     | auto                                 | Threads per ONNX session                  |
+| `--query-length`    | `48`                                 | Max query length in tokens                |
+| `--document-length` | `300`                                | Max document length in tokens             |
+| `--host`            | `127.0.0.1`                          | Host to bind                              |
+| `--port`            | `8080`                               | Port to bind                              |
+| `--index-dir`       | `/data/indices`                      | Directory for index storage               |
+
+### Model Download
+
+When `--model` contains a HuggingFace model ID (e.g., `lightonai/GTE-ModernColBERT-v1-onnx`), the entrypoint script automatically downloads the model to `/models/`. Set `HF_TOKEN` for private models.
+
+---
+
 ## Docker Compose
 
-### CPU with Model Support (Default)
+### CPU Configuration
 
 ```yaml
 # docker-compose.yml
@@ -57,20 +97,24 @@ services:
     environment:
       - RUST_LOG=info
     command:
-      [
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8080",
-        "--index-dir",
-        "/data/indices",
-        "--model",
-        "lightonai/GTE-ModernColBERT-v1-onnx",
-        "--int8",
-      ]
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --index-dir
+      - /data/indices
+      - --model
+      - lightonai/GTE-ModernColBERT-v1-onnx
+      - --parallel
+      - "4"
+      - --batch-size
+      - "12"
+      - --query-length
+      - "48"
+      - --document-length
+      - "300"
     healthcheck:
-      test:
-        ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
       interval: 15s
       timeout: 5s
       retries: 2
@@ -84,7 +128,7 @@ services:
           memory: 4G
 ```
 
-### CUDA (GPU Encoding)
+### CUDA Configuration (GPU Encoding)
 
 Use as an overlay with `docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d`:
 
@@ -93,29 +137,49 @@ Use as an overlay with `docker compose -f docker-compose.yml -f docker-compose.c
 services:
   next-plaid-api:
     build:
+      context: .
+      dockerfile: next-plaid-api/Dockerfile
       target: runtime-cuda
+    volumes:
+      - ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}:/data/indices
+      - ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}:/models
     environment:
+      - RUST_LOG=info
       - NVIDIA_VISIBLE_DEVICES=all
     command:
-      [
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8080",
-        "--index-dir",
-        "/data/indices",
-        "--model",
-        "lightonai/GTE-ModernColBERT-v1-onnx",
-        "--cuda",
-      ]
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --index-dir
+      - /data/indices
+      - --model
+      - lightonai/GTE-ModernColBERT-v1-onnx
+      - --cuda
+      - --batch-size
+      - "64"
+      - --query-length
+      - "48"
+      - --document-length
+      - "300"
+    healthcheck:
+      start_period: 120s
     deploy:
       resources:
+        limits:
+          memory: 16G
         reservations:
+          memory: 4G
           devices:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
 ```
+
+**CPU vs CUDA defaults:**
+
+- **CPU**: `--parallel 4 --batch-size 12` (multiple parallel sessions for throughput)
+- **CUDA**: `--cuda --batch-size 64` (single session, GPU handles parallelism with large batches)
 
 ---
 
@@ -141,19 +205,20 @@ docker compose down
 
 ### Environment Variables
 
-| Variable            | Default                          | Description                                 |
-| ------------------- | -------------------------------- | ------------------------------------------- |
-| `RUST_LOG`          | `info`                           | Log level                                   |
-| `HF_TOKEN`          | -                                | HuggingFace token for private models        |
-| `NEXT_PLAID_DATA`   | `~/.local/share/next-plaid`      | Host path for persistent index storage      |
-| `NEXT_PLAID_MODELS` | `~/.cache/huggingface/next-plaid`| Host path for downloaded model cache        |
+| Variable            | Default                           | Description                          |
+| ------------------- | --------------------------------- | ------------------------------------ |
+| `RUST_LOG`          | `info`                            | Log level                            |
+| `HF_TOKEN`          | -                                 | HuggingFace token for private models |
+| `NEXT_PLAID_DATA`   | `~/.local/share/next-plaid`       | Host path for persistent index storage |
+| `NEXT_PLAID_MODELS` | `~/.cache/huggingface/next-plaid` | Host path for downloaded model cache |
+| `MODELS_DIR`        | `/models`                         | Container path for models            |
 
 ### Volume Mounts
 
-| Container Path  | Default Host Path                   | Purpose                                        |
-| --------------- | ----------------------------------- | ---------------------------------------------- |
-| `/data/indices` | `~/.local/share/next-plaid`         | Index storage (persistent)                     |
-| `/models`       | `~/.cache/huggingface/next-plaid`   | Model cache (auto-downloaded from HuggingFace) |
+| Container Path  | Default Host Path                 | Purpose                                        |
+| --------------- | --------------------------------- | ---------------------------------------------- |
+| `/data/indices` | `~/.local/share/next-plaid`       | Index storage (persistent)                     |
+| `/models`       | `~/.cache/huggingface/next-plaid` | Model cache (auto-downloaded from HuggingFace) |
 
 Models are downloaded once from HuggingFace and cached locally. On subsequent container starts, cached models are reused without re-downloading.
 
@@ -175,8 +240,9 @@ For most use cases, a single container is sufficient:
 deploy:
   resources:
     limits:
-      memory: 8G
-      cpus: "4"
+      memory: 16G
+    reservations:
+      memory: 4G
 ```
 
 ### Multiple Instances (Load Balancing)
@@ -203,7 +269,7 @@ services:
 ```
 
 !!! warning "Replicas and Index Updates"
-When running multiple replicas, **do not update the index** as NextPlaid does not currently handle replica synchronization. Each replica should either:
+    When running multiple replicas, **do not update the index** as NextPlaid does not currently handle replica synchronization. Each replica should either:
 
     - Point to a **read-only** shared index (as shown above)
     - Point to a **distinct index** if write operations are required
@@ -217,8 +283,8 @@ When running multiple replicas, **do not update the index** as NextPlaid does no
 The container includes a health check:
 
 ```dockerfile
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8080/health || exit 1
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=2 \
+  CMD curl -f --max-time 5 http://localhost:8080/health || exit 1
 ```
 
 ### Kubernetes Probes
@@ -228,15 +294,15 @@ livenessProbe:
   httpGet:
     path: /health
     port: 8080
-  initialDelaySeconds: 5
-  periodSeconds: 30
+  initialDelaySeconds: 10
+  periodSeconds: 15
 
 readinessProbe:
   httpGet:
     path: /health
     port: 8080
-  initialDelaySeconds: 5
-  periodSeconds: 10
+  initialDelaySeconds: 10
+  periodSeconds: 15
 ```
 
 ---

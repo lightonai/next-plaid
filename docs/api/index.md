@@ -1,4 +1,4 @@
-# REST API
+# 🌐 REST API
 
 NextPlaid provides a RESTful HTTP API for all operations.
 
@@ -50,7 +50,7 @@ When the server is running, interactive documentation is available at:
 
 ---
 
-## Endpoints Overview
+## 📋 Endpoints Overview
 
 ### Health
 
@@ -145,7 +145,7 @@ Check server health and get status information.
 
 ---
 
-## Error Codes
+## ❌ Error Codes
 
 | Code | HTTP Status | Description |
 |------|-------------|-------------|

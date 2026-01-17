@@ -1,8 +1,8 @@
-# Installation
+# 📥 Installation
 
 Choose the installation method that best fits your use case.
 
-## Docker (Recommended)
+## 🐳 Docker (Recommended)
 
 Run NextPlaid in production using Docker containers. Both images support model inference for text encoding. The PLAID index and search always run on CPU, while model inference runs on CPU or GPU depending on the image.
 
@@ -65,7 +65,7 @@ The index and search always run on CPU. Model inference runs on CPU or GPU depen
 
 ---
 
-## Python SDK
+## 🐍 Python SDK
 
 Install the Python client library:
 
@@ -89,7 +89,7 @@ print(client.health())
 
 ---
 
-## Rust Crate
+## 🦀 Rust Crate
 
 For Rust developers who want to embed NextPlaid directly:
 
@@ -168,7 +168,7 @@ See [Model Export](model-export.md) for usage details.
 
 ---
 
-## Building from Source
+## 🔧 Building from Source
 
 ### Prerequisites
 

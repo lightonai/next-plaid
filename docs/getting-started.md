@@ -1,4 +1,4 @@
-# Getting Started
+# 🚀 Getting Started
 
 Get NextPlaid running in under 5 minutes with Docker.
 
@@ -115,7 +115,7 @@ for result in results.results:
         print(f"  Doc {doc_id}: {score:.4f}")
 ```
 
-## Next Steps
+## 📖 Next Steps
 
 - [Installation](installation.md) - More installation options
 - [Python SDK](python-sdk/index.md) - Full SDK reference
@@ -123,7 +123,7 @@ for result in results.results:
 - [Concepts](concepts/multi-vector.md) - Learn about multi-vector search
 - [Model Export](model-export.md) - Use real ColBERT models
 
-## Using Text Queries
+## 💬 Using Text Queries
 
 Both CPU and CUDA Docker images support model inference. To encode text directly instead of providing embeddings, start the server with a model:
 
