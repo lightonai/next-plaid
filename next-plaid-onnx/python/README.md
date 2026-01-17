@@ -115,7 +115,7 @@ docker run -d \
   -p 8080:8080 \
   -v ~/.local/share/next-plaid:/data/indices \
   -v ./models:/models:ro \
-  ghcr.io/lightonai/next-plaid-api:model \
+  ghcr.io/lightonai/next-plaid-api:latest \
   --model /models/GTE-ModernColBERT-v1
 ```
 
@@ -126,7 +126,7 @@ docker run -d \
   -p 8080:8080 \
   -v ~/.local/share/next-plaid:/data/indices \
   -v next-plaid-models:/models \
-  ghcr.io/lightonai/next-plaid-api:model \
+  ghcr.io/lightonai/next-plaid-api:latest \
   --model lightonai/GTE-ModernColBERT-v1-onnx
 ```
 
