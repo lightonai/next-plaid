@@ -34,6 +34,7 @@ docker pull ghcr.io/lightonai/next-plaid-api:latest-cuda
 ```
 
 Available tags:
+
 - `latest`, `latest-cpu` - Latest CPU version
 - `latest-cuda` - Latest CUDA/GPU version
 - `<version>`, `<version>-cpu` - Specific CPU version (e.g., `0.1.0`)
@@ -83,10 +84,10 @@ cargo build --release -p next-plaid-api --features openblas,model
 
 ## Docker Variants
 
-| Variant | Target | Use Case |
-|---------|--------|----------|
-| **CPU** | `runtime-cpu` (default) | Search API with model support on CPU |
-| **CUDA** | `runtime-cuda` | GPU-accelerated model encoding |
+| Variant  | Target                  | Use Case                             |
+| -------- | ----------------------- | ------------------------------------ |
+| **CPU**  | `runtime-cpu` (default) | Search API with model support on CPU |
+| **CUDA** | `runtime-cuda`          | GPU-accelerated model encoding       |
 
 Both variants include model support. Use the `--model` flag to enable text encoding.
 
@@ -112,6 +113,7 @@ http://localhost:8080/swagger-ui/
 ```
 
 The Swagger UI provides:
+
 - Full API reference with all endpoints
 - Interactive "Try it out" functionality to test endpoints directly
 - Request/response schemas and examples
@@ -252,94 +254,90 @@ for doc_id, score in zip(results.results[0].document_ids, results.results[0].sco
 
 ### Server Options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-h, --host` | `0.0.0.0` | Host to bind to |
-| `-p, --port` | `8080` | Port to bind to |
-| `-d, --index-dir` | `./indices` | Directory for storing indices |
-| `-m, --model` | none | HuggingFace model ID or path to ONNX model |
-| `--cuda` | false | Use CUDA for model inference |
-| `--int8` | false | Use INT8 quantization for faster inference |
+| Option            | Default     | Description                                |
+| ----------------- | ----------- | ------------------------------------------ |
+| `-h, --host`      | `0.0.0.0`   | Host to bind to                            |
+| `-p, --port`      | `8080`      | Port to bind to                            |
+| `-d, --index-dir` | `./indices` | Directory for storing indices              |
+| `-m, --model`     | none        | HuggingFace model ID or path to ONNX model |
+| `--cuda`          | false       | Use CUDA for model inference               |
+| `--int8`          | false       | Use INT8 quantization for faster inference |
 
 ### Index Configuration
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `nbits` | 4 | Quantization bits (2 or 4) |
-| `batch_size` | 50000 | Tokens per batch during indexing |
-| `start_from_scratch` | 999 | Rebuild threshold for small indices |
-| `max_documents` | none | Optional limit (oldest docs evicted when exceeded) |
+| Parameter            | Default | Description                                        |
+| -------------------- | ------- | -------------------------------------------------- |
+| `nbits`              | 4       | Quantization bits (2 or 4)                         |
+| `batch_size`         | 50000   | Tokens per batch during indexing                   |
+| `start_from_scratch` | 999     | Rebuild threshold for small indices                |
+| `max_documents`      | none    | Optional limit (oldest docs evicted when exceeded) |
 
 ### Search Parameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `top_k` | 10 | Number of results per query |
-| `n_ivf_probe` | 8 | IVF cells to probe |
-| `n_full_scores` | 4096 | Documents for re-ranking |
+| Parameter       | Default | Description                 |
+| --------------- | ------- | --------------------------- |
+| `top_k`         | 10      | Number of results per query |
+| `n_ivf_probe`   | 8       | IVF cells to probe          |
+| `n_full_scores` | 4096    | Documents for re-ranking    |
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `NEXT_PLAID_DATA` | `~/.local/share/next-plaid` | Local directory for index storage |
-| `RUST_LOG` | `info` | Log level (debug, info, warn, error) |
-| `HF_TOKEN` | - | HuggingFace token for private models |
+| Variable          | Default                     | Description                          |
+| ----------------- | --------------------------- | ------------------------------------ |
+| `NEXT_PLAID_DATA` | `~/.local/share/next-plaid` | Local directory for index storage    |
+| `RUST_LOG`        | `info`                      | Log level (debug, info, warn, error) |
+| `HF_TOKEN`        | -                           | HuggingFace token for private models |
 
 ## Full API Reference
 
 ### Index Management
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/indices` | List all indices |
-| `POST` | `/indices` | Declare a new index |
-| `GET` | `/indices/{name}` | Get index info |
-| `DELETE` | `/indices/{name}` | Delete an index |
-| `PUT` | `/indices/{name}/config` | Update index configuration |
+| Method   | Endpoint                 | Description                |
+| -------- | ------------------------ | -------------------------- |
+| `GET`    | `/indices`               | List all indices           |
+| `POST`   | `/indices`               | Declare a new index        |
+| `GET`    | `/indices/{name}`        | Get index info             |
+| `DELETE` | `/indices/{name}`        | Delete an index            |
+| `PUT`    | `/indices/{name}/config` | Update index configuration |
 
 ### Documents
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/indices/{name}/update_with_encoding` | Add documents with text (requires model) |
-| `POST` | `/indices/{name}/update` | Add documents with embeddings |
-| `DELETE` | `/indices/{name}/documents` | Delete documents by metadata filter |
+| Method   | Endpoint                               | Description                              |
+| -------- | -------------------------------------- | ---------------------------------------- |
+| `POST`   | `/indices/{name}/update_with_encoding` | Add documents with text (requires model) |
+| `POST`   | `/indices/{name}/update`               | Add documents with embeddings            |
+| `DELETE` | `/indices/{name}/documents`            | Delete documents by metadata filter      |
 
 ### Search
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/indices/{name}/search_with_encoding` | Search with text (requires model) |
-| `POST` | `/indices/{name}/search/filtered_with_encoding` | Search with text + metadata filter |
-| `POST` | `/indices/{name}/search` | Search with embeddings |
-| `POST` | `/indices/{name}/search/filtered` | Search with embeddings + metadata filter |
+| Method | Endpoint                                        | Description                              |
+| ------ | ----------------------------------------------- | ---------------------------------------- |
+| `POST` | `/indices/{name}/search_with_encoding`          | Search with text (requires model)        |
+| `POST` | `/indices/{name}/search/filtered_with_encoding` | Search with text + metadata filter       |
+| `POST` | `/indices/{name}/search`                        | Search with embeddings                   |
+| `POST` | `/indices/{name}/search/filtered`               | Search with embeddings + metadata filter |
 
 ### Metadata
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/indices/{name}/metadata` | Get all metadata |
-| `POST` | `/indices/{name}/metadata` | Add metadata |
-| `GET` | `/indices/{name}/metadata/count` | Get metadata count |
+| Method | Endpoint                         | Description                       |
+| ------ | -------------------------------- | --------------------------------- |
+| `GET`  | `/indices/{name}/metadata`       | Get all metadata                  |
+| `POST` | `/indices/{name}/metadata`       | Add metadata                      |
+| `GET`  | `/indices/{name}/metadata/count` | Get metadata count                |
 | `POST` | `/indices/{name}/metadata/query` | Query metadata with SQL condition |
-| `POST` | `/indices/{name}/metadata/get` | Get specific metadata by IDs |
+| `POST` | `/indices/{name}/metadata/get`   | Get specific metadata by IDs      |
 
 ### Encoding
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
+| Method | Endpoint  | Description                                 |
+| ------ | --------- | ------------------------------------------- |
 | `POST` | `/encode` | Encode texts to embeddings (requires model) |
 
 ## Feature Flags
 
-| Feature | Description |
-|---------|-------------|
-| `openblas` | Enable OpenBLAS for faster matrix operations (Linux) |
-| `accelerate` | Enable Apple Accelerate framework (macOS) |
-| `model` | Enable text encoding with ColBERT ONNX model |
-| `cuda` | Enable CUDA support for GPU-accelerated encoding |
-
-## License
-
-Apache-2.0
+| Feature      | Description                                          |
+| ------------ | ---------------------------------------------------- |
+| `openblas`   | Enable OpenBLAS for faster matrix operations (Linux) |
+| `accelerate` | Enable Apple Accelerate framework (macOS)            |
+| `model`      | Enable text encoding with ColBERT ONNX model         |
+| `cuda`       | Enable CUDA support for GPU-accelerated encoding     |

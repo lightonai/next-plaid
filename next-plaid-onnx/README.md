@@ -1,14 +1,9 @@
 # next-plaid-onnx
 
-Fast ColBERT multi-vector encoding in Rust using ONNX Runtime.
+[![Crates.io](https://img.shields.io/crates/v/next-plaid-onnx.svg)](https://crates.io/crates/next-plaid-onnx)
+[![Documentation](https://docs.rs/next-plaid-onnx/badge.svg)](https://docs.rs/next-plaid-onnx)
 
-## Features
-
-- **Simple API**: One struct, two methods: `encode_documents()` and `encode_queries()`
-- **High Performance**: Parallel sessions with INT8 quantization for maximum throughput
-- **Token Pooling**: Reduce embedding size with hierarchical clustering
-- **Hardware Acceleration**: CUDA, TensorRT, CoreML, and DirectML support
-- **Cross-platform**: Works on Linux, macOS, and Windows
+Fast ColBERT multi-vector encoding using ONNX Runtime with automatic hardware acceleration (CUDA, TensorRT, CoreML, DirectML, or CPU).
 
 ## Installation
 
@@ -16,23 +11,45 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-next-plaid-onnx = { git = "https://github.com/lightonai/next-plaid.git", subdirectory = "next-plaid-onnx" }
+next-plaid-onnx = "0.2"
 ```
 
-### GPU Acceleration (Optional)
+### Hardware Acceleration
+
+Enable GPU support with feature flags:
 
 ```toml
 # NVIDIA CUDA
-next-plaid-onnx = { ..., features = ["cuda"] }
+next-plaid-onnx = { version = "0.2", features = ["cuda"] }
 
-# NVIDIA TensorRT (recommended for NVIDIA GPUs)
-next-plaid-onnx = { ..., features = ["tensorrt"] }
+# NVIDIA TensorRT (optimized CUDA)
+next-plaid-onnx = { version = "0.2", features = ["tensorrt"] }
 
-# Apple CoreML
-next-plaid-onnx = { ..., features = ["coreml"] }
+# Apple Silicon / CoreML
+next-plaid-onnx = { version = "0.2", features = ["coreml"] }
 
 # Windows DirectML
-next-plaid-onnx = { ..., features = ["directml"] }
+next-plaid-onnx = { version = "0.2", features = ["directml"] }
+```
+
+### ONNX Runtime
+
+This crate uses dynamic linking and requires ONNX Runtime to be installed. The easiest way is via pip:
+
+```bash
+# CPU only
+pip install onnxruntime
+
+# With CUDA support
+pip install onnxruntime-gpu
+```
+
+Alternatively, download from [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases) and set the path:
+
+```bash
+export ORT_DYLIB_PATH=/path/to/libonnxruntime.so  # Linux
+export ORT_DYLIB_PATH=/path/to/libonnxruntime.dylib  # macOS
+set ORT_DYLIB_PATH=C:\path\to\onnxruntime.dll  # Windows
 ```
 
 ## Quick Start
@@ -40,108 +57,122 @@ next-plaid-onnx = { ..., features = ["directml"] }
 ```rust
 use next_plaid_onnx::Colbert;
 
-fn main() -> anyhow::Result<()> {
-    // Load the model
-    let model = Colbert::new("models/GTE-ModernColBERT-v1")?;
+// Load model (auto-detects best available hardware)
+let model = Colbert::new("lightonai/GTE-ModernColBERT-v1-onnx")?;
 
-    // Encode documents
-    let doc_embeddings = model.encode_documents(&[
-        "Paris is the capital of France.",
-        "Rust is a systems programming language.",
-    ], None)?;
+// Encode documents - returns Vec<Array2<f32>> with shape [num_tokens, embedding_dim]
+let doc_embeddings = model.encode_documents(&["Paris is the capital of France."], None)?;
 
-    // Encode queries
-    let query_embeddings = model.encode_queries(&["What is the capital of France?"])?;
-
-    // Each embedding is [num_tokens, embedding_dim]
-    println!("Document shape: {:?}", doc_embeddings[0].dim());
-    println!("Query shape: {:?}", query_embeddings[0].dim());
-
-    Ok(())
-}
+// Encode queries (with MASK token expansion)
+let query_embeddings = model.encode_queries(&["What is the capital of France?"])?;
 ```
 
-## Configuration
+## API Overview
 
-Use the builder for advanced settings:
+### Model Loading
 
 ```rust
-use next_plaid_onnx::{Colbert, ExecutionProvider};
+use next_plaid_onnx::{Colbert, ColbertBuilder, ExecutionProvider};
 
-let model = Colbert::builder("models/GTE-ModernColBERT-v1")
-    .with_quantized(true)                              // INT8 model (~2x faster)
-    .with_parallel(25)                                 // 25 parallel sessions
-    .with_batch_size(2)                                // Batch size per session
-    .with_query_length(48)                             // Max query tokens
-    .with_document_length(300)                         // Max document tokens
-    .with_execution_provider(ExecutionProvider::Cuda)  // Force CUDA
+// Simple loading with defaults
+let model = Colbert::new("path/to/model")?;
+
+// Advanced configuration with builder
+let model = Colbert::builder("path/to/model")
+    // .with_quantized(true)                          // Use INT8 model (speedup on CPU)
+    .with_execution_provider(ExecutionProvider::Cuda)
+    .with_batch_size(64)
+    .with_parallel(4)                              // 4 parallel ONNX sessions
+    .with_threads(1)                               // Threads per session
+    .with_query_length(32)
+    .with_document_length(512)
     .build()?;
 ```
 
-### Builder Options
-
-| Method                       | Default | Description                                              |
-| ---------------------------- | ------- | -------------------------------------------------------- |
-| `with_quantized(bool)`       | `false` | Use INT8 model for ~2x speedup                           |
-| `with_parallel(n)`           | `1`     | Number of parallel ONNX sessions                         |
-| `with_threads(n)`            | auto    | Threads per session (single-session mode)                |
-| `with_batch_size(n)`         | auto    | Documents per inference call                             |
-| `with_query_length(n)`       | `48`    | Max query length in tokens (overrides config file)       |
-| `with_document_length(n)`    | `300`   | Max document length in tokens (overrides config file)    |
-| `with_execution_provider(p)` | `Auto`  | Hardware acceleration                                    |
-
-## Token Pooling
-
-Reduce embedding size with hierarchical clustering:
+### Encoding
 
 ```rust
-// Full embeddings (~100 tokens -> 100 embeddings)
-let full = model.encode_documents(&["A long document..."], None)?;
+// Encode documents
+let embeddings = model.encode_documents(&texts, None)?;
 
-// 2x pooling (~100 tokens -> ~50 embeddings)
-let pooled = model.encode_documents(&["A long document..."], Some(2))?;
+// Encode documents with token pooling (reduces tokens by factor)
+let embeddings = model.encode_documents(&texts, Some(2))?; // Keep ~50% tokens
 
-// 4x pooling (~100 tokens -> ~25 embeddings)
-let compact = model.encode_documents(&["A long document..."], Some(4))?;
+// Encode queries
+let embeddings = model.encode_queries(&queries)?;
 ```
 
-The first token (CLS) is always preserved. Remaining tokens are clustered using Ward's method with cosine distance.
+### Configuration Access
 
-## Hardware Acceleration
+```rust
+let config = model.config();
+let dim = model.embedding_dim();    // e.g., 128
+let batch = model.batch_size();     // e.g., 32
+let sessions = model.num_sessions();
+```
 
-| Provider   | Feature    | Platform      | Requirements             |
-| ---------- | ---------- | ------------- | ------------------------ |
-| `Cpu`      | (default)  | All           | None                     |
-| `Cuda`     | `cuda`     | Linux/Windows | CUDA 12.x, cuDNN 9.x     |
-| `TensorRT` | `tensorrt` | Linux/Windows | CUDA 12.x, TensorRT 10.x |
-| `CoreML`   | `coreml`   | macOS         | Apple Silicon or Intel   |
-| `DirectML` | `directml` | Windows       | DirectX 12 GPU           |
+## Model Export
 
-## Model Setup
+The `pylate-onnx-export` Python package converts HuggingFace ColBERT models to ONNX format.
 
-### Export from HuggingFace
+### Installation
 
 ```bash
-# Install export tool
-pip install "pylate-onnx-export @ git+https://github.com/lightonai/next-plaid.git#subdirectory=next-plaid-onnx/python"
+pip install pylate-onnx-export
+```
 
-# Export model
+### Usage
+
+```bash
+# Export a model from HuggingFace
 pylate-onnx-export lightonai/GTE-ModernColBERT-v1
 
-# Export with INT8 quantization
+# Export with INT8 quantization (faster inference)
 pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --quantize
+
+# Export to a custom directory
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
+
+# Export and push to HuggingFace Hub
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --quantize --push-to-hub myorg/my-onnx-model
 ```
 
-Creates:
+### Output Structure
 
 ```
-lightonai/GTE-ModernColBERT-v1-onnx/
-├── model.onnx
-├── model_int8.onnx        # with --quantize
-├── tokenizer.json
-└── config_sentence_transformers.json
+models/<model-name>/
+├── model.onnx                        # FP32 ONNX model
+├── model_int8.onnx                   # INT8 quantized (with --quantize)
+├── tokenizer.json                    # Tokenizer configuration
+└── config_sentence_transformers.json # Model metadata
 ```
 
-## License
+## Configuration Guide
 
-Apache-2.0
+### Execution Providers
+
+| Provider | Feature    | Platform      | Notes                      |
+| -------- | ---------- | ------------- | -------------------------- |
+| CPU      | default    | All           | Always available           |
+| CUDA     | `cuda`     | Linux/Windows | Requires CUDA toolkit      |
+| TensorRT | `tensorrt` | Linux/Windows | Optimized for NVIDIA GPUs  |
+| CoreML   | `coreml`   | macOS         | Apple Silicon acceleration |
+| DirectML | `directml` | Windows       | DirectX 12 GPUs            |
+
+Use `ExecutionProvider::Auto` to automatically select the best available provider.
+
+### Batch Size Defaults
+
+- **CPU**: 32
+- **GPU (single session)**: 64
+- **GPU (parallel mode)**: 2 per session
+
+### ONNX Runtime Discovery
+
+The library searches for ONNX Runtime in:
+
+1. `ORT_DYLIB_PATH` environment variable
+2. Virtual environment (`venv/`, `.venv/`)
+3. Conda environment
+4. UV cache
+5. System paths

@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-scifact-docker benchmark-scifact-docker-keep benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 benchmark-onnx-vs-pylate ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-cuda docker-up docker-up-cuda docker-down docker-logs kill-api docs-serve docs-build docs-deploy
+.PHONY: all build test lint fmt check clean doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-scifact-docker benchmark-scifact-docker-keep benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 benchmark-onnx-vs-pylate ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-cuda docker-up docker-up-cuda docker-down docker-logs kill-api docs-serve docs-build docs-deploy
 
 all: fmt lint test
 
@@ -37,14 +37,6 @@ fmt:
 check:
 	cargo check
 
-# Run benchmarks
-bench:
-	cargo bench
-
-# Compile benchmarks without running
-bench-check:
-	cargo bench --no-run
-
 # Build documentation
 doc:
 	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
@@ -62,7 +54,7 @@ example:
 	cargo run --example basic --release
 
 # Run all CI checks locally
-ci: fmt-check clippy test doc bench-check ci-api ci-onnx
+ci: doc ci-index ci-api ci-onnx lint-python
 	@echo "All CI checks passed!"
 
 # Kill any existing API process on port 8080
@@ -72,6 +64,11 @@ kill-api:
 		kill -9 $$(lsof -t -i:8080) 2>/dev/null || true; \
 		sleep 2; \
 	fi
+
+ci-index:
+	cd next-plaid && cargo fmt --all -- --check
+	cd next-plaid && cargo clippy --all-targets -- -D warnings
+	cd next-plaid && cargo test
 
 # Run CI checks for api crate (using cross-platform features only)
 ci-api:
@@ -107,53 +104,6 @@ lint-python:
 fmt-python:
 	cd benchmarks && uv run --extra dev ruff format .
 
-# Benchmark SciFact with updates (batch size 800) - compares fast-plaid and next-plaid
-benchmark-scifact-update:
-	cargo build --release --example benchmark_cli
-	cd benchmarks && uv sync --extra eval --extra fast-plaid && uv run python benchmark_scifact_update.py --batch-size 800
-
-# Benchmark SciFact via REST API (uses cached embeddings, with accelerate)
-# Starts the server in background, runs benchmark, then stops server
-benchmark-scifact-api:
-	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
-	rm -rf next-plaid-api/indices
-	cargo build --release -p next-plaid-api  --features accelerate
-	./target/release/next-plaid-api -h 127.0.0.1 -p 8080 -d ./next-plaid-api/indices & \
-	API_PID=$$!; \
-	sleep 2; \
-	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_api.py --batch-size 80; \
-	EXIT_CODE=$$?; \
-	kill $$API_PID 2>/dev/null || true; \
-	exit $$EXIT_CODE
-
-# Benchmark Next-Plaid API (uses cached embeddings, with accelerate)
-# Starts the server in background, runs benchmark, then stops server
-# Benchmark also the delete operations
-benchmark-next-plaid-api:
-	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
-	rm -rf next-plaid-api/indices
-	cargo build --release -p next-plaid-api  --features accelerate
-	./target/release/next-plaid-api -h 127.0.0.1 -p 8080 -d ./next-plaid-api/indices & \
-	API_PID=$$!; \
-	sleep 2; \
-	cd benchmarks && uv sync --extra eval && uv run python benchmark_next_plaid_api.py --batch-size 80; \
-	EXIT_CODE=$$?; \
-	kill $$API_PID 2>/dev/null || true; \
-	exit $$EXIT_CODE
-
-# Benchmark SciFact with server-side encoding (API encodes text internally)
-# Requires model feature and a downloaded ONNX model
-benchmark-api-encoding:
-	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
-	rm -rf next-plaid-api/indices
-	cargo build --release -p next-plaid-api --features model,cuda
-	./target/release/next-plaid-api -h 127.0.0.1 -p 8080 -d ./next-plaid-api/indices --model lightonai/GTE-ModernColBERT-v1-onnx --int8 & \
-	API_PID=$$!; \
-	sleep 3; \
-	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_api_encoding.py --batch-size 100; \
-	EXIT_CODE=$$?; \
-	kill $$API_PID 2>/dev/null || true; \
-	exit $$EXIT_CODE
 
 launch-api-debug:
 	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
@@ -176,19 +126,6 @@ onnx-export:
 onnx-export-all:
 	cd next-plaid-onnx/python && uv run python export_onnx.py --all
 
-# Run Python benchmark (PyLate vs ONNX-Python)
-onnx-benchmark:
-	cd next-plaid-onnx/python && uv run python generate_reference.py --benchmark
-
-# Run Rust ONNX benchmark (compares against PyLate)
-onnx-benchmark-rust: onnx-benchmark
-	cd next-plaid-onnx && cargo run --release --bin benchmark_encoding -- --model-dir models/GTE-ModernColBERT-v1
-
-# Compare Rust ONNX embeddings against PyLate reference
-onnx-compare:
-	cd next-plaid-onnx/python && uv run python generate_reference.py
-	cd next-plaid-onnx && cargo run --release --bin compare_pylate
-
 # Lint ONNX Python code
 onnx-lint:
 	cd next-plaid-onnx/python && uv run --extra dev ruff check .
@@ -206,19 +143,6 @@ benchmark-scifact-docker:
 benchmark-scifact-docker-keep:
 	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_docker.py --batch-size 30 --keep-running
 
-# Benchmark ONNX vs PyLate embeddings (asserts equivalence)
-# Compares embeddings from Rust ONNX against PyLate for the same texts
-benchmark-onnx-vs-pylate:
-	-kill -9 $$(lsof -t -i:8080) 2>/dev/null || true
-	rm -rf next-plaid-api/indices
-	cargo build --release -p next-plaid-api --features model
-	./target/release/next-plaid-api -h 127.0.0.1 -p 8080 -d ./next-plaid-api/indices --model lightonai/GTE-ModernColBERT-v1-onnx & \
-	API_PID=$$!; \
-	sleep 3; \
-	cd benchmarks && uv sync --extra eval && uv run python benchmark_onnx_vs_pylate.py --batch-size 10; \
-	EXIT_CODE=$$?; \
-	kill $$API_PID 2>/dev/null || true; \
-	exit $$EXIT_CODE
 
 # =============================================================================
 # Docker targets

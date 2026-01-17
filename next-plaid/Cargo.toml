@@ -44,6 +44,3 @@ default = []
 accelerate = ["blas-src", "accelerate-src", "ndarray/blas", "fastkmeans-rs/accelerate"]
 openblas = ["blas-src", "openblas-src", "ndarray/blas", "fastkmeans-rs/openblas"]
 
-[[bench]]
-name = "plaid_benchmark"
-harness = false
