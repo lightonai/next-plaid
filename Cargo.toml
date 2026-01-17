@@ -1,5 +1,5 @@
 [workspace]
-members = ["next-plaid", "next-plaid-api", "next-plaid-onnx"]
+members = ["next-plaid", "next-plaid-api", "next-plaid-onnx", "next-plaid-cli"]
 resolver = "2"
 
 [workspace.package]

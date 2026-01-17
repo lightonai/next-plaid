@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-scifact-docker benchmark-scifact-docker-keep benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 benchmark-onnx-vs-pylate ci-api ci-onnx test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-cuda docker-up docker-up-cuda docker-down docker-logs kill-api docs-serve docs-build docs-deploy
+.PHONY: all build test lint fmt check clean doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-scifact-docker benchmark-scifact-docker-keep benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 benchmark-onnx-vs-pylate ci-api ci-onnx ci-cli test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-cuda docker-up docker-up-cuda docker-down docker-logs kill-api docs-serve docs-build docs-deploy
 
 all: fmt lint test
 
@@ -54,7 +54,7 @@ example:
 	cargo run --example basic --release
 
 # Run all CI checks locally
-ci: doc ci-index ci-api ci-onnx lint-python
+ci: doc ci-index ci-api ci-onnx ci-cli lint-python
 	@echo "All CI checks passed!"
 
 # Kill any existing API process on port 8080
@@ -83,6 +83,11 @@ ci-onnx:
 	cd next-plaid-onnx && cargo test
 	cd next-plaid-onnx/python && uv run --extra dev ruff check .
 	cd next-plaid-onnx/python && uv run --extra dev python -m pytest tests/
+
+# Run CI checks for cli crate
+ci-cli:
+	cd next-plaid-cli && cargo fmt --all -- --check
+	cd next-plaid-cli && cargo clippy --all-targets -- -D warnings
 
 # Run API integration tests (starts server, runs Python tests, cleans up)
 test-api-integration:
