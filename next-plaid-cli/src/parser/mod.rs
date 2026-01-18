@@ -150,14 +150,14 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
     units
 }
 
-/// Extract units from text files (markdown, txt, rst)
+/// Extract units from text files (markdown, txt, rst, config files, etc.)
 fn extract_text_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit> {
     let lines: Vec<&str> = source.lines().collect();
 
     match lang {
         Language::Markdown => extract_markdown_units(path, source, &lines),
-        Language::Text => extract_plain_text_units(path, source, &lines),
-        _ => Vec::new(),
+        // All other text formats: treat as plain text documents
+        _ => extract_plain_text_units(path, source, &lines, lang),
     }
 }
 
@@ -186,7 +186,12 @@ fn extract_markdown_units(path: &Path, _source: &str, lines: &[&str]) -> Vec<Cod
 }
 
 /// Extract units from plain text files - one unit per file
-fn extract_plain_text_units(path: &Path, _source: &str, lines: &[&str]) -> Vec<CodeUnit> {
+fn extract_plain_text_units(
+    path: &Path,
+    _source: &str,
+    lines: &[&str],
+    lang: Language,
+) -> Vec<CodeUnit> {
     if lines.is_empty() || lines.iter().all(|l| l.trim().is_empty()) {
         return Vec::new();
     }
@@ -197,7 +202,7 @@ fn extract_plain_text_units(path: &Path, _source: &str, lines: &[&str]) -> Vec<C
         .unwrap_or("document")
         .to_string();
 
-    let unit = create_text_unit(path, &title, 1, Language::Text, UnitType::Document, lines);
+    let unit = create_text_unit(path, &title, 1, lang, UnitType::Document, lines);
 
     vec![unit]
 }
