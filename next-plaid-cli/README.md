@@ -9,6 +9,7 @@ Semantic code search powered by ColBERT multi-vector embeddings and the PLAID al
 - **Grep-like Flags**: Familiar `-r`, `--include`, `-l` flags for filtering results
 - **Selective Indexing**: When using filters, only matching files are indexed
 - **5-Layer Code Analysis**: Rich embeddings from AST, call graph, control flow, data flow, and dependencies
+- **File Path Aware**: Shortened file paths are included in embeddings for path-based semantic search
 - **18 Languages**: Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Swift, Scala, PHP, Lua, Elixir, Haskell, OCaml
 - **Config & Docs**: Also indexes YAML, TOML, JSON, Markdown, Dockerfile, Makefile, shell scripts
 - **Incremental Updates**: Only re-indexes changed files using content hashing
@@ -18,9 +19,53 @@ Semantic code search powered by ColBERT multi-vector embeddings and the PLAID al
 
 ## Installation
 
+### Pre-built Binaries (Recommended)
+
+**macOS / Linux:**
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/next-plaid-cli-installer.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+powershell -c "irm https://github.com/lightonai/next-plaid/releases/latest/download/next-plaid-cli-installer.ps1 | iex"
+```
+
+### Using Cargo
+
+If you have Rust installed:
+
+```bash
+cargo install next-plaid-cli
+```
+
+### Installing Rust
+
+If you don't have Rust installed, install it first:
+
+**macOS / Linux:**
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+**Windows:**
+
+Download and run [rustup-init.exe](https://win.rustup.rs/x86_64) or use PowerShell:
+
+```powershell
+winget install Rustlang.Rustup
+```
+
+After installation, restart your terminal and verify with `rustc --version`.
+
 ### From Source
 
 ```bash
+git clone https://github.com/lightonai/next-plaid.git
+cd next-plaid/next-plaid-cli
 cargo install --path .
 ```
 
@@ -48,16 +93,19 @@ pip install onnxruntime-gpu
 
 ```bash
 # Search in current directory (auto-indexes if needed)
-plaid search "error handling in API"
+plaid "error handling in API"
 
 # Search in specific directory
-plaid search "database connection" /path/to/project
+plaid "database connection" /path/to/project
 
 # Limit results
-plaid search "authentication" -k 5
+plaid "authentication" -k 5
 
 # JSON output
-plaid search "parse config" --json
+plaid "parse config" --json
+
+# Explicit subcommand (same behavior)
+plaid search "query"
 ```
 
 ### Grep-like Filtering
@@ -66,17 +114,17 @@ Filter search results using familiar grep-style flags:
 
 ```bash
 # -r: Recursive search (default behavior, for grep compatibility)
-plaid search -r "database" .
+plaid -r "database" .
 
 # --include: Filter by file pattern (can be used multiple times)
-plaid search --include="*.py" "database connection" .
-plaid search --include="*.rs" --include="*.go" "error handling" .
+plaid --include="*.py" "database connection" .
+plaid --include="*.rs" --include="*.go" "error handling" .
 
 # -l: List files only (show unique filenames, not code details)
-plaid search -l "authentication" .
+plaid -l "authentication" .
 
 # Combine flags (like grep -rl)
-plaid search -r -l --include="*.ts" "fetch API" .
+plaid -r -l --include="*.ts" "fetch API" .
 ```
 
 **Supported patterns for `--include`:**
@@ -93,16 +141,17 @@ Use `-e`/`--pattern` to first filter files using grep (text match), then rank re
 
 ```bash
 # Find files containing "TODO", then semantically search for "error handling"
-plaid search -e "TODO" "error handling" .
+plaid -e "TODO" "error handling" .
 
 # Combine with --include for precise filtering
-plaid search -e "async" --include="*.ts" "promise handling" .
+plaid -e "async" --include="*.ts" "promise handling" .
 
 # List only files containing "deprecated" that match "migration"
-plaid search -l -e "deprecated" "migration guide" .
+plaid -l -e "deprecated" "migration guide" .
 ```
 
 **How it works:**
+
 1. `grep -rl` finds all files containing the text pattern
 2. Filtering retrieves code unit IDs from those files
 3. Semantic search ranks only those candidates
@@ -115,25 +164,26 @@ When using filters (`--include` or `-e`), only matching files are indexed. This 
 
 ```bash
 # Only indexes .py files, not the entire codebase
-plaid search --include="*.py" "database query" /large/project
+plaid --include="*.py" "database query" /large/project
 
 # Only indexes files containing "async", skips everything else
-plaid search -e "async" "error handling" /large/project
+plaid -e "async" "error handling" /large/project
 
 # Intersection: only indexes .ts files that contain "fetch"
-plaid search -e "fetch" --include="*.ts" "API call" /large/project
+plaid -e "fetch" --include="*.ts" "API call" /large/project
 ```
 
 **Indexing behavior by filter:**
 
-| Filters | Files Indexed |
-|---------|---------------|
-| None | All supported files |
-| `--include="*.py"` | Only `.py` files |
-| `-e "pattern"` | Only files containing pattern |
-| Both | Intersection (files matching both) |
+| Filters            | Files Indexed                      |
+| ------------------ | ---------------------------------- |
+| None               | All supported files                |
+| `--include="*.py"` | Only `.py` files                   |
+| `-e "pattern"`     | Only files containing pattern      |
+| Both               | Intersection (files matching both) |
 
 **Benefits:**
+
 - Search immediately in large codebases without full indexing
 - Index grows incrementally as you search different file types
 - Already-indexed files are skipped (content hash check)
@@ -163,7 +213,7 @@ plaid status
 ## Example Output
 
 ```
-$ plaid search "encode documents with ColBERT"
+$ plaid "encode documents with ColBERT"
 
 1. encode_documents (score: 10.100)
    → src/lib.rs:680
@@ -181,7 +231,7 @@ $ plaid search "encode documents with ColBERT"
 ### JSON Output
 
 ```bash
-$ plaid search "control flow" -k 1 --json
+$ plaid "control flow" -k 1 --json
 ```
 
 ```json
@@ -226,6 +276,7 @@ Each code unit (function, method, class) is analyzed across 5 layers:
 | **3. Control Flow** | Complexity, loops, branches, error handling   | `complexity: 5, has_loops: true`         |
 | **4. Data Flow**    | Variables defined                             | `variables: [result, temp, config]`      |
 | **5. Dependencies** | Imports used                                  | `imports: [serde, tokio]`                |
+| **+ File Path**     | Shortened path (last 3 dirs + filename)       | `project/src/utils/parser.rs`            |
 
 This rich context enables semantic understanding beyond simple text matching.
 
@@ -249,12 +300,17 @@ pub fn search(&self, query: &str, top_k: usize, subset: Option<&[i64]>) -> Resul
     let query_embeddings = self.model.encode_queries(&[query])?;
     ...
 }
+File: next-plaid-cli/src/index/mod.rs
 ```
 
 This structured format allows the model to understand:
+
 - **What** the code does (signature, description)
 - **How** it works (control flow, variables)
 - **Where** it fits (calls, called_by, imports)
+- **Location** in the codebase (file path)
+
+The file path is shortened to include only the filename and up to 3 parent directories, making it compact enough for efficient LLM tokenization while preserving meaningful context.
 
 ## Supported Languages
 
@@ -338,6 +394,7 @@ When files are skipped, the index command shows:
 ```
 
 Common files that may be skipped:
+
 - Minified JavaScript bundles (`bundle.min.js`)
 - Large generated files
 - Data files accidentally given code extensions
@@ -350,8 +407,8 @@ By default, uses [`lightonai/GTE-ModernColBERT-v1-onnx`](https://huggingface.co/
 Use a different model:
 
 ```bash
-plaid search "query" --model path/to/local/model
-plaid search "query" --model organization/model-name
+plaid "query" --model path/to/local/model
+plaid "query" --model organization/model-name
 ```
 
 ## Index Storage

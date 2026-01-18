@@ -1,4 +1,19 @@
+use std::path::Path;
+
 use crate::parser::{CodeUnit, UnitType};
+
+/// Shorten a file path to keep only the filename and up to 3 parent folders.
+/// This makes paths easier for language models to encode and process.
+fn shorten_path(path: &Path) -> String {
+    let components: Vec<_> = path.components().collect();
+    let len = components.len();
+
+    // Keep at most the last 4 components (3 folders + filename)
+    let start = len.saturating_sub(4);
+    let shortened: std::path::PathBuf = components[start..].iter().collect();
+
+    shortened.display().to_string()
+}
 
 /// Build text representation combining all 5 analysis layers.
 /// This rich text is what gets embedded by ColBERT for semantic search.
@@ -76,6 +91,9 @@ pub fn build_embedding_text(unit: &CodeUnit) -> String {
     if !unit.code_preview.is_empty() {
         parts.push(format!("Code:\n{}", unit.code_preview));
     }
+
+    // === File Path (shortened for better LLM encoding) ===
+    parts.push(format!("File: {}", shorten_path(&unit.file)));
 
     parts.join("\n")
 }

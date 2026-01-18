@@ -13,11 +13,53 @@ use next_plaid_cli::{
 #[command(
     name = "plaid",
     version,
-    about = "Semantic code search powered by ColBERT"
+    about = "Semantic code search powered by ColBERT",
+    args_conflicts_with_subcommands = true
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
+
+    // Default search arguments (when no subcommand is provided)
+    /// Natural language query (runs search by default)
+    #[arg(value_name = "QUERY")]
+    query: Option<String>,
+
+    /// Project directory to search in (default: current directory)
+    #[arg(default_value = ".")]
+    path: PathBuf,
+
+    /// Number of results
+    #[arg(short = 'k', long, default_value = "10")]
+    top_k: usize,
+
+    /// ColBERT model HuggingFace ID or local path
+    #[arg(long, default_value = DEFAULT_MODEL)]
+    model: String,
+
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
+
+    /// Skip auto-indexing (fail if no index exists)
+    #[arg(long)]
+    no_index: bool,
+
+    /// Search recursively (default behavior, for grep compatibility)
+    #[arg(short = 'r', long)]
+    recursive: bool,
+
+    /// Filter: search only files matching pattern (e.g., "*.py", "*.rs")
+    #[arg(long = "include", value_name = "PATTERN")]
+    include_patterns: Vec<String>,
+
+    /// List files only: show only filenames, not the matching code
+    #[arg(short = 'l', long = "files-only")]
+    files_only: bool,
+
+    /// Text pattern: pre-filter using grep, then rank with semantic search
+    #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
+    text_pattern: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -95,18 +137,19 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Ensure ONNX Runtime is available (downloads if needed)
-    if !matches!(cli.command, Commands::Status { .. }) {
+    let is_status = matches!(cli.command, Some(Commands::Status { .. }));
+    if !is_status {
         ensure_onnx_runtime()?;
     }
 
     match cli.command {
-        Commands::Index {
+        Some(Commands::Index {
             path,
             model,
             lang,
             force,
-        } => cmd_index(&path, &model, lang.as_deref(), force),
-        Commands::Search {
+        }) => cmd_index(&path, &model, lang.as_deref(), force),
+        Some(Commands::Search {
             query,
             path,
             top_k,
@@ -117,7 +160,7 @@ fn main() -> Result<()> {
             include_patterns,
             files_only,
             text_pattern,
-        } => cmd_search(
+        }) => cmd_search(
             &query,
             &path,
             top_k,
@@ -128,7 +171,29 @@ fn main() -> Result<()> {
             files_only,
             text_pattern.as_deref(),
         ),
-        Commands::Status { path } => cmd_status(&path),
+        Some(Commands::Status { path }) => cmd_status(&path),
+        None => {
+            // Default: run search if query is provided
+            if let Some(query) = cli.query {
+                cmd_search(
+                    &query,
+                    &cli.path,
+                    cli.top_k,
+                    &cli.model,
+                    cli.json,
+                    cli.no_index,
+                    &cli.include_patterns,
+                    cli.files_only,
+                    cli.text_pattern.as_deref(),
+                )
+            } else {
+                // No query provided - show help
+                use clap::CommandFactory;
+                Cli::command().print_help()?;
+                println!();
+                Ok(())
+            }
+        }
     }
 }
 

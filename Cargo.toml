@@ -8,7 +8,7 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/lightonai/next-plaid"
 homepage = "https://github.com/lightonai/next-plaid"
-authors = ["Raphael Sourty, LightOn <contact@lighton.ai>"]
+authors = ["Raphael Sourty, LightOn"]
 documentation = "https://docs.rs/next-plaid"
 
 [workspace.dependencies]
@@ -27,3 +27,32 @@ opt-level = 3
 lto = true
 codegen-units = 1
 opt-level = 3
+
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+# Config for 'cargo dist'
+[workspace.metadata.dist]
+# The preferred cargo-dist version to use in CI (Conditions for altering this include new features or bug fixes)
+cargo-dist-version = "0.30.3"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+# Whether to install an updater program
+install-updater = false
+
+# Custom runners for different targets
+[workspace.metadata.dist.github-custom-runners]
+aarch64-apple-darwin = "macos-14"
+x86_64-apple-darwin = "macos-13"

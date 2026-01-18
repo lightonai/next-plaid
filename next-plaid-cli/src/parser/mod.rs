@@ -519,8 +519,8 @@ fn extract_function(
     // Layer 5: Dependencies
     unit.imports = filter_used_imports(&unit.calls, file_imports);
 
-    // Code Preview (first ~10 lines)
-    let preview_end = (start_line + 10).min(end_line + 1).min(lines.len());
+    // Code Preview (first ~20 lines)
+    let preview_end = (start_line + 20).min(end_line + 1).min(lines.len());
     unit.code_preview = lines[start_line..preview_end].join("\n");
 
     Some(unit)
