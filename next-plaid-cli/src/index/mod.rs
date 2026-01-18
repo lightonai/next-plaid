@@ -518,7 +518,7 @@ impl IndexBuilder {
 
     fn scan_files(&self, languages: Option<&[Language]>) -> Result<(Vec<PathBuf>, usize)> {
         let walker = WalkBuilder::new(&self.project_root)
-            .hidden(true)
+            .hidden(false) // Handle hidden files manually in should_ignore (with .github exception)
             .git_ignore(true)
             .filter_entry(|entry| !should_ignore(entry.path()))
             .build();
@@ -628,12 +628,27 @@ const IGNORED_DIRS: &[&str] = &[
     ".DS_Store",
 ];
 
+/// Hidden directories that should be indexed (exceptions to hidden file filtering)
+const ALLOWED_HIDDEN_DIRS: &[&str] = &[".github", ".gitlab", ".circleci", ".buildkite"];
+
+/// Hidden files that should be indexed (exceptions to hidden file filtering)
+const ALLOWED_HIDDEN_FILES: &[&str] = &[".gitlab-ci.yml", ".gitlab-ci.yaml", ".travis.yml"];
+
 /// Check if a path should be ignored
 fn should_ignore(path: &Path) -> bool {
     // Check each component of the path
     for component in path.components() {
         if let std::path::Component::Normal(name) = component {
             let name_str = name.to_string_lossy();
+
+            // Skip hidden files/directories (starting with .) except allowed ones
+            if name_str.starts_with('.')
+                && !ALLOWED_HIDDEN_DIRS.contains(&name_str.as_ref())
+                && !ALLOWED_HIDDEN_FILES.contains(&name_str.as_ref())
+            {
+                return true;
+            }
+
             for pattern in IGNORED_DIRS {
                 if let Some(suffix) = pattern.strip_prefix('*') {
                     // Suffix match (e.g., "*.egg-info")
