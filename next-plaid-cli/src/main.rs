@@ -6,7 +6,7 @@ use colored::Colorize;
 
 use next_plaid_cli::{
     ensure_model, ensure_onnx_runtime, find_parent_index, get_index_dir_for_project,
-    get_plaid_data_dir, get_vector_index_path, index_exists, IndexBuilder, Language,
+    get_plaid_data_dir, get_vector_index_path, index_exists, Config, IndexBuilder, Language,
     ProjectMetadata, Searcher, DEFAULT_MODEL,
 };
 
@@ -34,9 +34,9 @@ struct Cli {
     #[arg(short = 'k', long, default_value = "10")]
     top_k: usize,
 
-    /// ColBERT model HuggingFace ID or local path
-    #[arg(long, default_value = DEFAULT_MODEL)]
-    model: String,
+    /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
+    #[arg(long)]
+    model: Option<String>,
 
     /// Output as JSON
     #[arg(long)]
@@ -75,9 +75,9 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// ColBERT model HuggingFace ID or local path
-        #[arg(long, default_value = DEFAULT_MODEL)]
-        model: String,
+        /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
+        #[arg(long)]
+        model: Option<String>,
 
         /// Only index specific languages (comma-separated: python,rust,typescript)
         #[arg(long)]
@@ -105,9 +105,9 @@ enum Commands {
         #[arg(short = 'k', long, default_value = "10")]
         top_k: usize,
 
-        /// ColBERT model HuggingFace ID or local path
-        #[arg(long, default_value = DEFAULT_MODEL)]
-        model: String,
+        /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
+        #[arg(long)]
+        model: Option<String>,
 
         /// Output as JSON
         #[arg(long)]
@@ -155,6 +155,12 @@ enum Commands {
         #[arg(long)]
         all: bool,
     },
+
+    /// Set the default model to use
+    SetModel {
+        /// HuggingFace model ID (e.g., "lightonai/GTE-ModernColBERT-v1-onnx")
+        model: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -176,7 +182,7 @@ fn main() -> Result<()> {
             lang,
             force,
             new_index,
-        }) => cmd_index(&path, &model, lang.as_deref(), force, new_index),
+        }) => cmd_index(&path, model.as_deref(), lang.as_deref(), force, new_index),
         Some(Commands::Search {
             query,
             path,
@@ -193,7 +199,7 @@ fn main() -> Result<()> {
             &query,
             &path,
             top_k,
-            &model,
+            model.as_deref(),
             json,
             no_index,
             &include_patterns,
@@ -203,6 +209,7 @@ fn main() -> Result<()> {
         ),
         Some(Commands::Status { path }) => cmd_status(&path),
         Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
+        Some(Commands::SetModel { model }) => cmd_set_model(&model),
         None => {
             // Default: run search if query is provided
             if let Some(query) = cli.query {
@@ -210,7 +217,7 @@ fn main() -> Result<()> {
                     &query,
                     &cli.path,
                     cli.top_k,
-                    &cli.model,
+                    cli.model.as_deref(),
                     cli.json,
                     cli.no_index,
                     &cli.include_patterns,
@@ -233,9 +240,26 @@ fn parse_languages(lang: Option<&str>) -> Option<Vec<Language>> {
     lang.map(|l| l.split(',').filter_map(|s| s.trim().parse().ok()).collect())
 }
 
+/// Resolve the model to use: CLI arg > saved config > default
+fn resolve_model(cli_model: Option<&str>) -> String {
+    if let Some(model) = cli_model {
+        return model.to_string();
+    }
+
+    // Try to load from config
+    if let Ok(config) = Config::load() {
+        if let Some(model) = config.get_default_model() {
+            return model.to_string();
+        }
+    }
+
+    // Fall back to default
+    DEFAULT_MODEL.to_string()
+}
+
 fn cmd_index(
     path: &PathBuf,
-    model: &str,
+    cli_model: Option<&str>,
     lang: Option<&str>,
     force: bool,
     new_index: bool,
@@ -251,10 +275,7 @@ fn cmd_index(
 
     let effective_root = match &parent_info {
         Some(info) => {
-            eprintln!(
-                "📂 Found parent index for {}",
-                info.project_path.display()
-            );
+            eprintln!("📂 Found parent index for {}", info.project_path.display());
             eprintln!("   Updating parent index instead of creating new one.");
             eprintln!("   Use --new-index to create a separate index for this directory.");
             info.project_path.clone()
@@ -262,8 +283,11 @@ fn cmd_index(
         None => path.clone(),
     };
 
+    // Resolve model: CLI > config > default
+    let model = resolve_model(cli_model);
+
     // Ensure model is downloaded
-    let model_path = ensure_model(Some(model))?;
+    let model_path = ensure_model(Some(&model))?;
 
     let builder = IndexBuilder::new(&effective_root, &model_path)?;
     let languages = parse_languages(lang);
@@ -330,7 +354,7 @@ fn cmd_search(
     query: &str,
     path: &PathBuf,
     top_k: usize,
-    model: &str,
+    cli_model: Option<&str>,
     json: bool,
     no_index: bool,
     include_patterns: &[String],
@@ -340,8 +364,11 @@ fn cmd_search(
 ) -> Result<()> {
     let path = std::fs::canonicalize(path)?;
 
+    // Resolve model: CLI > config > default
+    let model = resolve_model(cli_model);
+
     // Ensure model is downloaded
-    let model_path = ensure_model(Some(model))?;
+    let model_path = ensure_model(Some(&model))?;
 
     // Check for parent index unless --new-index is specified
     let parent_info = if new_index {
@@ -360,7 +387,10 @@ fn cmd_search(
                     info.relative_subdir.display()
                 );
             }
-            (info.project_path.clone(), Some(info.relative_subdir.clone()))
+            (
+                info.project_path.clone(),
+                Some(info.relative_subdir.clone()),
+            )
         }
         None => (path.clone(), None),
     };
@@ -480,7 +510,10 @@ fn cmd_search(
             let subdir_ids = searcher.filter_by_path_prefix(subdir)?;
             if subdir_ids.is_empty() {
                 if !json && !files_only {
-                    println!("No indexed code units in subdirectory: {}", subdir.display());
+                    println!(
+                        "No indexed code units in subdirectory: {}",
+                        subdir.display()
+                    );
                 }
                 return Ok(());
             }
@@ -493,7 +526,12 @@ fn cmd_search(
             combined_ids = match combined_ids {
                 Some(existing) => {
                     let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
-                    Some(file_ids.into_iter().filter(|id| existing_set.contains(id)).collect())
+                    Some(
+                        file_ids
+                            .into_iter()
+                            .filter(|id| existing_set.contains(id))
+                            .collect(),
+                    )
                 }
                 None => Some(file_ids),
             };
@@ -502,7 +540,12 @@ fn cmd_search(
             combined_ids = match combined_ids {
                 Some(existing) => {
                     let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
-                    Some(pattern_ids.into_iter().filter(|id| existing_set.contains(id)).collect())
+                    Some(
+                        pattern_ids
+                            .into_iter()
+                            .filter(|id| existing_set.contains(id))
+                            .collect(),
+                    )
                 }
                 None => Some(pattern_ids),
             };
@@ -628,6 +671,84 @@ fn cmd_clear(path: &PathBuf, all: bool) -> Result<()> {
         std::fs::remove_dir_all(&index_dir)?;
         println!("🗑️  Cleared index for {}", path.display());
     }
+
+    Ok(())
+}
+
+fn cmd_set_model(model: &str) -> Result<()> {
+    use next_plaid_onnx::Colbert;
+
+    // Load current config
+    let mut config = Config::load()?;
+    let current_model = config.get_default_model().map(|s| s.to_string());
+
+    // Check if model is changing
+    let is_changing = current_model.as_deref() != Some(model);
+
+    if !is_changing {
+        println!("✅ Default model already set to: {}", model);
+        return Ok(());
+    }
+
+    // Validate the new model before switching
+    eprintln!("🔍 Validating model: {}", model);
+
+    // Try to download/locate the model
+    let model_path = match ensure_model(Some(model)) {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("❌ Failed to download model: {}", e);
+            if let Some(ref current) = current_model {
+                eprintln!("   Keeping current model: {}", current);
+            }
+            return Err(e);
+        }
+    };
+
+    // Try to load the model to verify it's compatible
+    match Colbert::builder(&model_path).with_quantized(true).build() {
+        Ok(_) => {
+            eprintln!("✅ Model validated successfully");
+        }
+        Err(e) => {
+            eprintln!("❌ Model is not compatible: {}", e);
+            if let Some(ref current) = current_model {
+                eprintln!("   Keeping current model: {}", current);
+            }
+            anyhow::bail!("Model validation failed: {}", e);
+        }
+    }
+
+    // Model is valid - clear existing indexes if we had a previous model
+    if current_model.is_some() {
+        let data_dir = get_plaid_data_dir()?;
+        if data_dir.exists() {
+            let index_dirs: Vec<_> = std::fs::read_dir(&data_dir)?
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .collect();
+
+            if !index_dirs.is_empty() {
+                eprintln!(
+                    "🔄 Switching model from {} to {}",
+                    current_model.as_deref().unwrap_or(DEFAULT_MODEL),
+                    model
+                );
+                eprintln!("   Clearing {} existing index(es)...", index_dirs.len());
+
+                for entry in &index_dirs {
+                    let index_path = entry.path();
+                    std::fs::remove_dir_all(&index_path)?;
+                }
+            }
+        }
+    }
+
+    // Save new model preference
+    config.set_default_model(model);
+    config.save()?;
+
+    println!("✅ Default model set to: {}", model);
 
     Ok(())
 }
