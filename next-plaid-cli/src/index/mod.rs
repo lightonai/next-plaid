@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
+use indicatif::{ProgressBar, ProgressStyle};
 use next_plaid::{
     delete_from_index, filtering, IndexConfig, MmapIndex, SearchParameters, UpdateConfig,
 };
@@ -18,12 +19,20 @@ use state::{get_mtime, hash_file, FileInfo, IndexState};
 
 const INDEX_DIR: &str = ".plaid";
 
+/// Maximum file size to index (512 KB)
+/// Files larger than this are skipped to avoid:
+/// - Slow parsing of generated/minified code
+/// - Memory issues with very large files
+/// - Indexing non-source files (binaries, data files)
+const MAX_FILE_SIZE: u64 = 512 * 1024;
+
 #[derive(Debug)]
 pub struct UpdateStats {
     pub added: usize,
     pub changed: usize,
     pub deleted: usize,
     pub unchanged: usize,
+    pub skipped: usize,
 }
 
 #[derive(Debug, Default)]
@@ -60,26 +69,216 @@ impl IndexBuilder {
         let state = IndexState::load(&self.project_root)?;
         let index_path = self.project_root.join(INDEX_DIR).join("index");
         let index_exists = index_path.join("metadata.json").exists();
+        let filtering_exists = filtering::exists(index_path.to_str().unwrap());
 
-        if force || !index_exists {
+        // Need full rebuild if forced, index doesn't exist, or filtering DB is missing
+        if force || !index_exists || !filtering_exists {
             return self.full_rebuild(languages);
         }
 
         self.incremental_update(&state, languages)
     }
 
+    /// Index only specific files (for filtered search).
+    /// Only indexes files that are not already in the index or have changed.
+    /// Returns the number of files that were indexed.
+    pub fn index_specific_files(&self, files: &[PathBuf]) -> Result<UpdateStats> {
+        if files.is_empty() {
+            return Ok(UpdateStats {
+                added: 0,
+                changed: 0,
+                deleted: 0,
+                unchanged: 0,
+                skipped: 0,
+            });
+        }
+
+        let state = IndexState::load(&self.project_root)?;
+        let index_path = self.project_root.join(INDEX_DIR).join("index");
+        let index_path_str = index_path.to_str().unwrap();
+
+        // Determine which files need indexing (new or changed)
+        let mut files_to_index = Vec::new();
+        let mut unchanged = 0;
+
+        for path in files {
+            let full_path = self.project_root.join(path);
+            if !full_path.exists() {
+                continue;
+            }
+
+            let hash = hash_file(&full_path)?;
+            match state.files.get(path) {
+                Some(info) if info.content_hash == hash => {
+                    unchanged += 1;
+                }
+                _ => {
+                    files_to_index.push(path.clone());
+                }
+            }
+        }
+
+        if files_to_index.is_empty() {
+            return Ok(UpdateStats {
+                added: 0,
+                changed: 0,
+                deleted: 0,
+                unchanged,
+                skipped: 0,
+            });
+        }
+
+        // Load or create state
+        let mut new_state = state.clone();
+        let mut new_units: Vec<CodeUnit> = Vec::new();
+
+        // Progress bar for parsing
+        let pb = ProgressBar::new(files_to_index.len() as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("█▓░"),
+        );
+        pb.set_message("Parsing files...");
+
+        for path in &files_to_index {
+            let full_path = self.project_root.join(path);
+            let lang = match detect_language(&full_path) {
+                Some(l) => l,
+                None => {
+                    pb.inc(1);
+                    continue;
+                }
+            };
+            let source = std::fs::read_to_string(&full_path)
+                .with_context(|| format!("Failed to read {}", full_path.display()))?;
+            let units = extract_units(path, &source, lang);
+            new_units.extend(units);
+
+            new_state.files.insert(
+                path.clone(),
+                FileInfo {
+                    content_hash: hash_file(&full_path)?,
+                    mtime: get_mtime(&full_path)?,
+                },
+            );
+            pb.inc(1);
+        }
+        pb.finish_and_clear();
+
+        if new_units.is_empty() {
+            return Ok(UpdateStats {
+                added: 0,
+                changed: 0,
+                deleted: 0,
+                unchanged,
+                skipped: 0,
+            });
+        }
+
+        // Build call graph
+        build_call_graph(&mut new_units);
+
+        // Build embeddings with progress
+        let texts: Vec<String> = new_units.iter().map(build_embedding_text).collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+
+        let pb = ProgressBar::new(new_units.len() as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("█▓░"),
+        );
+        pb.set_message("Encoding...");
+
+        let batch_size = 64;
+        let mut all_embeddings = Vec::new();
+
+        for (i, chunk) in text_refs.chunks(batch_size).enumerate() {
+            let batch_embeddings = self
+                .model
+                .encode_documents(chunk, None)
+                .context("Failed to encode documents")?;
+            all_embeddings.extend(batch_embeddings);
+            let progress = ((i + 1) * batch_size).min(new_units.len());
+            pb.set_position(progress as u64);
+        }
+        pb.finish_and_clear();
+
+        // Create or update index
+        std::fs::create_dir_all(&index_path)?;
+        let config = IndexConfig::default();
+        let update_config = UpdateConfig::default();
+        let (_, doc_ids) =
+            MmapIndex::update_or_create(&all_embeddings, index_path_str, &config, &update_config)?;
+
+        // Store metadata
+        let metadata: Vec<serde_json::Value> = new_units
+            .iter()
+            .map(|u| serde_json::to_value(u).unwrap())
+            .collect();
+
+        if filtering::exists(index_path_str) {
+            filtering::update(index_path_str, &metadata, &doc_ids)?;
+        } else {
+            filtering::create(index_path_str, &metadata, &doc_ids)?;
+        }
+
+        new_state.save(&self.project_root)?;
+
+        Ok(UpdateStats {
+            added: files_to_index.len(),
+            changed: 0,
+            deleted: 0,
+            unchanged,
+            skipped: 0,
+        })
+    }
+
+    /// Scan files matching glob patterns (e.g., "*.py", "*.rs")
+    /// Returns relative paths from project root
+    pub fn scan_files_matching_patterns(&self, patterns: &[String]) -> Result<Vec<PathBuf>> {
+        let (all_files, _skipped) = self.scan_files(None)?;
+
+        if patterns.is_empty() {
+            return Ok(all_files);
+        }
+
+        let filtered: Vec<PathBuf> = all_files
+            .into_iter()
+            .filter(|path| matches_glob_pattern(path, patterns))
+            .collect();
+
+        Ok(filtered)
+    }
+
     /// Full rebuild (used when force=true or no index exists)
     fn full_rebuild(&self, languages: Option<&[Language]>) -> Result<UpdateStats> {
-        let files = self.scan_files(languages)?;
+        let (files, skipped) = self.scan_files(languages)?;
         let mut state = IndexState::default();
         let mut all_units: Vec<CodeUnit> = Vec::new();
+
+        // Progress bar for parsing files
+        let pb = ProgressBar::new(files.len() as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("█▓░"),
+        );
+        pb.set_message("Parsing files...");
 
         // Extract units from all files
         for path in &files {
             let full_path = self.project_root.join(path);
             let lang = match detect_language(&full_path) {
                 Some(l) => l,
-                None => continue,
+                None => {
+                    pb.inc(1);
+                    continue;
+                }
             };
             let source = std::fs::read_to_string(&full_path)
                 .with_context(|| format!("Failed to read {}", full_path.display()))?;
@@ -93,13 +292,15 @@ impl IndexBuilder {
                     mtime: get_mtime(&full_path)?,
                 },
             );
+            pb.inc(1);
         }
+        pb.finish_and_clear();
 
         // Build call graph to populate called_by
         build_call_graph(&mut all_units);
 
         if !all_units.is_empty() {
-            self.write_index(&all_units)?;
+            self.write_index_with_progress(&all_units)?;
         }
 
         state.save(&self.project_root)?;
@@ -109,6 +310,7 @@ impl IndexBuilder {
             changed: 0,
             deleted: 0,
             unchanged: 0,
+            skipped,
         })
     }
 
@@ -137,6 +339,7 @@ impl IndexBuilder {
                 changed: 0,
                 deleted: 0,
                 unchanged: plan.unchanged,
+                skipped: 0,
             });
         }
 
@@ -177,11 +380,31 @@ impl IndexBuilder {
 
         let mut new_units: Vec<CodeUnit> = Vec::new();
 
+        // Progress bar for parsing (only if there are files to index)
+        let pb = if !files_to_index.is_empty() {
+            let pb = ProgressBar::new(files_to_index.len() as u64);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                    .unwrap()
+                    .progress_chars("█▓░"),
+            );
+            pb.set_message("Parsing files...");
+            Some(pb)
+        } else {
+            None
+        };
+
         for path in &files_to_index {
             let full_path = self.project_root.join(path);
             let lang = match detect_language(&full_path) {
                 Some(l) => l,
-                None => continue,
+                None => {
+                    if let Some(ref pb) = pb {
+                        pb.inc(1);
+                    }
+                    continue;
+                }
             };
             let source = std::fs::read_to_string(&full_path)
                 .with_context(|| format!("Failed to read {}", full_path.display()))?;
@@ -195,6 +418,12 @@ impl IndexBuilder {
                     mtime: get_mtime(&full_path)?,
                 },
             );
+            if let Some(ref pb) = pb {
+                pb.inc(1);
+            }
+        }
+        if let Some(pb) = pb {
+            pb.finish_and_clear();
         }
 
         // 3. Add new units to index
@@ -202,19 +431,44 @@ impl IndexBuilder {
             // Build call graph for new units
             build_call_graph(&mut new_units);
 
-            // Build embeddings
+            // Build embeddings with progress
             let texts: Vec<String> = new_units.iter().map(build_embedding_text).collect();
             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-            let embeddings = self
-                .model
-                .encode_documents(&text_refs, None)
-                .context("Failed to encode documents")?;
+
+            // Progress bar for encoding
+            let pb = ProgressBar::new(new_units.len() as u64);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                    .unwrap()
+                    .progress_chars("█▓░"),
+            );
+            pb.set_message("Encoding...");
+
+            // Encode in batches for progress
+            let batch_size = 64;
+            let mut all_embeddings = Vec::new();
+
+            for (i, chunk) in text_refs.chunks(batch_size).enumerate() {
+                let batch_embeddings = self
+                    .model
+                    .encode_documents(chunk, None)
+                    .context("Failed to encode documents")?;
+                all_embeddings.extend(batch_embeddings);
+                let progress = ((i + 1) * batch_size).min(new_units.len());
+                pb.set_position(progress as u64);
+            }
+            pb.finish_and_clear();
 
             // Update or create index
             let config = IndexConfig::default();
             let update_config = UpdateConfig::default();
-            let (_, doc_ids) =
-                MmapIndex::update_or_create(&embeddings, index_path_str, &config, &update_config)?;
+            let (_, doc_ids) = MmapIndex::update_or_create(
+                &all_embeddings,
+                index_path_str,
+                &config,
+                &update_config,
+            )?;
 
             // Store metadata in the index using filtering API
             let metadata: Vec<serde_json::Value> = new_units
@@ -231,33 +485,54 @@ impl IndexBuilder {
             changed: plan.changed.len(),
             deleted: plan.deleted.len(),
             unchanged: plan.unchanged,
+            skipped: 0,
         })
     }
 
-    fn scan_files(&self, languages: Option<&[Language]>) -> Result<Vec<PathBuf>> {
+    fn scan_files(&self, languages: Option<&[Language]>) -> Result<(Vec<PathBuf>, usize)> {
         let walker = WalkBuilder::new(&self.project_root)
             .hidden(true)
             .git_ignore(true)
             .filter_entry(|entry| !should_ignore(entry.path()))
             .build();
 
-        let files: Vec<PathBuf> = walker
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-            .filter_map(|e| {
-                let path = e.path();
-                let lang = detect_language(path)?;
-                if languages.map(|ls| ls.contains(&lang)).unwrap_or(true) {
-                    path.strip_prefix(&self.project_root)
-                        .ok()
-                        .map(|p| p.to_path_buf())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let mut files = Vec::new();
+        let mut skipped = 0;
 
-        Ok(files)
+        for entry in walker.filter_map(|e| e.ok()) {
+            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+
+            let path = entry.path();
+
+            // Skip files that are too large
+            if is_file_too_large(path) {
+                skipped += 1;
+                continue;
+            }
+
+            let lang = match detect_language(path) {
+                Some(l) => l,
+                None => continue,
+            };
+
+            if languages.map(|ls| ls.contains(&lang)).unwrap_or(true) {
+                if let Ok(rel_path) = path.strip_prefix(&self.project_root) {
+                    files.push(rel_path.to_path_buf());
+                }
+            }
+        }
+
+        Ok((files, skipped))
+    }
+}
+
+/// Check if a file exceeds the maximum size limit
+fn is_file_too_large(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) => meta.len() > MAX_FILE_SIZE,
+        Err(_) => false, // If we can't read metadata, let it fail later
     }
 }
 
@@ -354,7 +629,7 @@ impl IndexBuilder {
         state: &IndexState,
         languages: Option<&[Language]>,
     ) -> Result<UpdatePlan> {
-        let current_files = self.scan_files(languages)?;
+        let (current_files, _skipped) = self.scan_files(languages)?;
         let current_set: HashSet<_> = current_files.iter().cloned().collect();
 
         let mut plan = UpdatePlan::default();
@@ -429,7 +704,16 @@ impl IndexBuilder {
         Ok(deleted_count)
     }
 
+    #[allow(dead_code)]
     fn write_index(&self, units: &[CodeUnit]) -> Result<()> {
+        self.write_index_impl(units, false)
+    }
+
+    fn write_index_with_progress(&self, units: &[CodeUnit]) -> Result<()> {
+        self.write_index_impl(units, true)
+    }
+
+    fn write_index_impl(&self, units: &[CodeUnit], show_progress: bool) -> Result<()> {
         let index_path = self.project_root.join(INDEX_DIR).join("index");
         std::fs::create_dir_all(&index_path)?;
 
@@ -437,17 +721,47 @@ impl IndexBuilder {
         let texts: Vec<String> = units.iter().map(build_embedding_text).collect();
         let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
 
-        // Encode with ColBERT
-        let embeddings = self
-            .model
-            .encode_documents(&text_refs, None)
-            .context("Failed to encode documents")?;
+        // Progress bar for encoding
+        let pb = if show_progress {
+            let pb = ProgressBar::new(units.len() as u64);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                    .unwrap()
+                    .progress_chars("█▓░"),
+            );
+            pb.set_message("Encoding...");
+            Some(pb)
+        } else {
+            None
+        };
+
+        // Encode with ColBERT in batches for progress tracking
+        let batch_size = 64;
+        let mut all_embeddings = Vec::new();
+
+        for (i, chunk) in text_refs.chunks(batch_size).enumerate() {
+            let batch_embeddings = self
+                .model
+                .encode_documents(chunk, None)
+                .context("Failed to encode documents")?;
+            all_embeddings.extend(batch_embeddings);
+
+            if let Some(ref pb) = pb {
+                let progress = ((i + 1) * batch_size).min(units.len());
+                pb.set_position(progress as u64);
+            }
+        }
+
+        if let Some(pb) = pb {
+            pb.finish_and_clear();
+        }
 
         // Create index and get document IDs
         let config = IndexConfig::default();
         let update_config = UpdateConfig::default();
         let (_, doc_ids) = MmapIndex::update_or_create(
-            &embeddings,
+            &all_embeddings,
             index_path.to_str().unwrap(),
             &config,
             &update_config,
@@ -483,6 +797,63 @@ pub struct SearchResult {
     pub score: f32,
 }
 
+/// Check if a file path matches any of the glob patterns
+fn matches_glob_pattern(path: &Path, patterns: &[String]) -> bool {
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let path_str = path.to_string_lossy();
+
+    for pattern in patterns {
+        // Handle simple glob patterns like "*.py" or "*.rs"
+        if let Some(ext_pattern) = pattern.strip_prefix("*.") {
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                if ext == ext_pattern {
+                    return true;
+                }
+            }
+        } else if pattern.starts_with('*') && pattern.ends_with('*') {
+            // *term* - contains match
+            let term = &pattern[1..pattern.len() - 1];
+            if file_name.contains(term) || path_str.contains(term) {
+                return true;
+            }
+        } else if let Some(suffix) = pattern.strip_prefix('*') {
+            // *suffix - ends with
+            if file_name.ends_with(suffix) {
+                return true;
+            }
+        } else if let Some(prefix) = pattern.strip_suffix('*') {
+            // prefix* - starts with
+            if file_name.starts_with(prefix) {
+                return true;
+            }
+        } else {
+            // Exact match or substring
+            if file_name == pattern || path_str.contains(pattern) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Convert a glob pattern to SQL LIKE pattern
+/// - `*` becomes `%` (match any sequence)
+/// - `?` becomes `_` (match single char)
+/// - `%` and `_` are escaped
+fn glob_to_sql_like(pattern: &str) -> String {
+    let mut result = String::new();
+    for c in pattern.chars() {
+        match c {
+            '*' => result.push('%'),
+            '?' => result.push('_'),
+            '%' => result.push_str("\\%"),
+            '_' => result.push_str("\\_"),
+            _ => result.push(c),
+        }
+    }
+    result
+}
+
 pub struct Searcher {
     model: Colbert,
     index: MmapIndex,
@@ -510,7 +881,58 @@ impl Searcher {
         })
     }
 
-    pub fn search(&self, query: &str, top_k: usize) -> Result<Vec<SearchResult>> {
+    /// Get document IDs matching the given file patterns using SQL LIKE
+    pub fn filter_by_file_patterns(&self, patterns: &[String]) -> Result<Vec<i64>> {
+        if patterns.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Build SQL condition with OR for multiple patterns
+        let mut conditions = Vec::new();
+        let mut params = Vec::new();
+
+        for pattern in patterns {
+            // Convert glob pattern to SQL LIKE pattern
+            let like_pattern = glob_to_sql_like(pattern);
+            conditions.push("file LIKE ?");
+            params.push(serde_json::json!(like_pattern));
+        }
+
+        let condition = conditions.join(" OR ");
+        let subset =
+            filtering::where_condition(&self.index_path, &condition, &params).unwrap_or_default();
+
+        Ok(subset)
+    }
+
+    /// Get document IDs for code units in the given files (exact match)
+    pub fn filter_by_files(&self, files: &[String]) -> Result<Vec<i64>> {
+        if files.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Build SQL condition with OR for multiple exact file matches
+        let mut conditions = Vec::new();
+        let mut params = Vec::new();
+
+        for file in files {
+            conditions.push("file = ?");
+            params.push(serde_json::json!(file));
+        }
+
+        let condition = conditions.join(" OR ");
+        let subset =
+            filtering::where_condition(&self.index_path, &condition, &params).unwrap_or_default();
+
+        Ok(subset)
+    }
+
+    pub fn search(
+        &self,
+        query: &str,
+        top_k: usize,
+        subset: Option<&[i64]>,
+    ) -> Result<Vec<SearchResult>> {
         // Encode query
         let query_embeddings = self
             .model
@@ -525,7 +947,7 @@ impl Searcher {
         };
         let results = self
             .index
-            .search(query_emb, &params, None)
+            .search(query_emb, &params, subset)
             .context("Search failed")?;
 
         // Retrieve metadata for the result document IDs

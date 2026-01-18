@@ -5,11 +5,15 @@ Semantic code search powered by ColBERT multi-vector embeddings and the PLAID al
 ## Features
 
 - **Semantic Search**: Find code using natural language queries
+- **Hybrid Search**: Combine text matching (`-e`) with semantic ranking
+- **Grep-like Flags**: Familiar `-r`, `--include`, `-l` flags for filtering results
+- **Selective Indexing**: When using filters, only matching files are indexed
 - **5-Layer Code Analysis**: Rich embeddings from AST, call graph, control flow, data flow, and dependencies
 - **18 Languages**: Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Swift, Scala, PHP, Lua, Elixir, Haskell, OCaml
 - **Config & Docs**: Also indexes YAML, TOML, JSON, Markdown, Dockerfile, Makefile, shell scripts
 - **Incremental Updates**: Only re-indexes changed files using content hashing
 - **Auto-Indexing**: Automatically builds index on first search
+- **Smart Size Limits**: Skips files >512KB to avoid memory issues with large generated files
 - **Fast**: ColBERT late interaction with PLAID compression for sub-second queries
 
 ## Installation
@@ -25,6 +29,7 @@ cargo install --path .
 ONNX Runtime is **automatically downloaded** on first use if not found on your system. No manual installation required.
 
 The CLI searches for ONNX Runtime in:
+
 1. `ORT_DYLIB_PATH` environment variable
 2. Python environments (pip/conda/venv)
 3. System paths
@@ -54,6 +59,84 @@ plaid search "authentication" -k 5
 # JSON output
 plaid search "parse config" --json
 ```
+
+### Grep-like Filtering
+
+Filter search results using familiar grep-style flags:
+
+```bash
+# -r: Recursive search (default behavior, for grep compatibility)
+plaid search -r "database" .
+
+# --include: Filter by file pattern (can be used multiple times)
+plaid search --include="*.py" "database connection" .
+plaid search --include="*.rs" --include="*.go" "error handling" .
+
+# -l: List files only (show unique filenames, not code details)
+plaid search -l "authentication" .
+
+# Combine flags (like grep -rl)
+plaid search -r -l --include="*.ts" "fetch API" .
+```
+
+**Supported patterns for `--include`:**
+| Pattern | Matches |
+|---------|---------|
+| `*.py` | Files with `.py` extension |
+| `*test*` | Files containing "test" in name |
+| `main*` | Files starting with "main" |
+| `*.spec.ts` | Files ending with `.spec.ts` |
+
+### Hybrid Search: Text + Semantic
+
+Use `-e`/`--pattern` to first filter files using grep (text match), then rank results with semantic search:
+
+```bash
+# Find files containing "TODO", then semantically search for "error handling"
+plaid search -e "TODO" "error handling" .
+
+# Combine with --include for precise filtering
+plaid search -e "async" --include="*.ts" "promise handling" .
+
+# List only files containing "deprecated" that match "migration"
+plaid search -l -e "deprecated" "migration guide" .
+```
+
+**How it works:**
+1. `grep -rl` finds all files containing the text pattern
+2. Filtering retrieves code unit IDs from those files
+3. Semantic search ranks only those candidates
+
+This is useful when you know a specific term exists in the code but want semantic understanding of the context.
+
+### Selective Indexing
+
+When using filters (`--include` or `-e`), only matching files are indexed. This makes searching in large codebases fast even without a pre-built index:
+
+```bash
+# Only indexes .py files, not the entire codebase
+plaid search --include="*.py" "database query" /large/project
+
+# Only indexes files containing "async", skips everything else
+plaid search -e "async" "error handling" /large/project
+
+# Intersection: only indexes .ts files that contain "fetch"
+plaid search -e "fetch" --include="*.ts" "API call" /large/project
+```
+
+**Indexing behavior by filter:**
+
+| Filters | Files Indexed |
+|---------|---------------|
+| None | All supported files |
+| `--include="*.py"` | Only `.py` files |
+| `-e "pattern"` | Only files containing pattern |
+| Both | Intersection (files matching both) |
+
+**Benefits:**
+- Search immediately in large codebases without full indexing
+- Index grows incrementally as you search different file types
+- Already-indexed files are skipped (content hash check)
 
 ### Index
 
@@ -118,7 +201,12 @@ $ plaid search "control flow" -k 1 --json
       "has_loops": true,
       "has_branches": true,
       "has_error_handling": false,
-      "variables": ["complexity", "has_branches", "has_error_handling", "has_loops"],
+      "variables": [
+        "complexity",
+        "has_branches",
+        "has_error_handling",
+        "has_loops"
+      ],
       "imports": [],
       "code_preview": "fn extract_control_flow(...) {\n    let mut complexity = 1;\n    ..."
     },
@@ -131,66 +219,93 @@ $ plaid search "control flow" -k 1 --json
 
 Each code unit (function, method, class) is analyzed across 5 layers:
 
-| Layer | Data Extracted | Example |
-|-------|---------------|---------|
-| **1. AST** | Signature, docstring, parameters, return type | `fn foo(x: i32) -> String` |
-| **2. Call Graph** | Functions called, functions that call this | `calls: [bar, baz]`, `called_by: [main]` |
-| **3. Control Flow** | Complexity, loops, branches, error handling | `complexity: 5, has_loops: true` |
-| **4. Data Flow** | Variables defined | `variables: [result, temp, config]` |
-| **5. Dependencies** | Imports used | `imports: [serde, tokio]` |
+| Layer               | Data Extracted                                | Example                                  |
+| ------------------- | --------------------------------------------- | ---------------------------------------- |
+| **1. AST**          | Signature, docstring, parameters, return type | `fn foo(x: i32) -> String`               |
+| **2. Call Graph**   | Functions called, functions that call this    | `calls: [bar, baz]`, `called_by: [main]` |
+| **3. Control Flow** | Complexity, loops, branches, error handling   | `complexity: 5, has_loops: true`         |
+| **4. Data Flow**    | Variables defined                             | `variables: [result, temp, config]`      |
+| **5. Dependencies** | Imports used                                  | `imports: [serde, tokio]`                |
 
 This rich context enables semantic understanding beyond simple text matching.
+
+### Embedding Text Example
+
+Here's an example of the text representation sent to the ColBERT model for encoding. This shows how all 5 layers are combined into a single searchable document:
+
+```
+Function: search
+Signature: pub fn search(&self, query: &str, top_k: usize, subset: Option<&[i64]>) -> Result<Vec<SearchResult>>
+Description: Search the index with an optional filtered subset
+Parameters: self, query, top_k, subset
+Returns: Result<Vec<SearchResult>>
+Calls: encode_queries, search, get, to_vec, context, iter, zip, filter_map, collect
+Called by: cmd_search
+Control flow: complexity=3, has_branches
+Variables: query_embeddings, query_emb, params, results, doc_ids, metadata, search_results
+Uses: next_plaid, serde_json, anyhow
+Code:
+pub fn search(&self, query: &str, top_k: usize, subset: Option<&[i64]>) -> Result<Vec<SearchResult>> {
+    let query_embeddings = self.model.encode_queries(&[query])?;
+    ...
+}
+```
+
+This structured format allows the model to understand:
+- **What** the code does (signature, description)
+- **How** it works (control flow, variables)
+- **Where** it fits (calls, called_by, imports)
 
 ## Supported Languages
 
 ### Code Languages (with tree-sitter parsing)
 
-| Language | Extensions |
-|----------|-----------|
-| Python | `.py` |
-| TypeScript | `.ts`, `.tsx` |
-| JavaScript | `.js`, `.jsx`, `.mjs` |
-| Go | `.go` |
-| Rust | `.rs` |
-| Java | `.java` |
-| C | `.c`, `.h` |
-| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` |
-| Ruby | `.rb` |
-| C# | `.cs` |
-| Kotlin | `.kt`, `.kts` |
-| Swift | `.swift` |
-| Scala | `.scala`, `.sc` |
-| PHP | `.php` |
-| Lua | `.lua` |
-| Elixir | `.ex`, `.exs` |
-| Haskell | `.hs` |
-| OCaml | `.ml`, `.mli` |
+| Language   | Extensions                            |
+| ---------- | ------------------------------------- |
+| Python     | `.py`                                 |
+| TypeScript | `.ts`, `.tsx`                         |
+| JavaScript | `.js`, `.jsx`, `.mjs`                 |
+| Go         | `.go`                                 |
+| Rust       | `.rs`                                 |
+| Java       | `.java`                               |
+| C          | `.c`, `.h`                            |
+| C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` |
+| Ruby       | `.rb`                                 |
+| C#         | `.cs`                                 |
+| Kotlin     | `.kt`, `.kts`                         |
+| Swift      | `.swift`                              |
+| Scala      | `.scala`, `.sc`                       |
+| PHP        | `.php`                                |
+| Lua        | `.lua`                                |
+| Elixir     | `.ex`, `.exs`                         |
+| Haskell    | `.hs`                                 |
+| OCaml      | `.ml`, `.mli`                         |
 
 ### Text & Documentation
 
-| Format | Extensions |
-|--------|-----------|
-| Markdown | `.md`, `.markdown` |
+| Format     | Extensions              |
+| ---------- | ----------------------- |
+| Markdown   | `.md`, `.markdown`      |
 | Plain Text | `.txt`, `.text`, `.rst` |
-| AsciiDoc | `.adoc`, `.asciidoc` |
-| Org | `.org` |
+| AsciiDoc   | `.adoc`, `.asciidoc`    |
+| Org        | `.org`                  |
 
 ### Configuration Files
 
-| Format | Extensions / Files |
-|--------|-------------------|
-| YAML | `.yaml`, `.yml` |
-| TOML | `.toml` |
-| JSON | `.json` |
-| Dockerfile | `Dockerfile` |
-| Makefile | `Makefile`, `GNUmakefile` |
+| Format     | Extensions / Files        |
+| ---------- | ------------------------- |
+| YAML       | `.yaml`, `.yml`           |
+| TOML       | `.toml`                   |
+| JSON       | `.json`                   |
+| Dockerfile | `Dockerfile`              |
+| Makefile   | `Makefile`, `GNUmakefile` |
 
 ### Shell Scripts
 
-| Format | Extensions |
-|--------|-----------|
-| Shell | `.sh`, `.bash`, `.zsh` |
-| PowerShell | `.ps1` |
+| Format     | Extensions             |
+| ---------- | ---------------------- |
+| Shell      | `.sh`, `.bash`, `.zsh` |
+| PowerShell | `.ps1`                 |
 
 Text, documentation, configuration files, and shell scripts are indexed as a single document per file.
 
@@ -198,19 +313,35 @@ Text, documentation, configuration files, and shell scripts are indexed as a sin
 
 The following directories are always ignored (even without `.gitignore`):
 
-| Category | Ignored |
-|----------|---------|
-| **Version Control** | `.git`, `.svn`, `.hg` |
-| **Dependencies** | `node_modules`, `vendor`, `third_party`, `external` |
-| **Build Outputs** | `target`, `build`, `dist`, `out`, `bin`, `obj` |
-| **Python** | `__pycache__`, `.venv`, `venv`, `.env`, `.tox`, `.pytest_cache`, `.mypy_cache`, `*.egg-info` |
-| **JavaScript** | `.next`, `.nuxt`, `.cache`, `.parcel-cache`, `.turbo` |
-| **Java** | `.gradle`, `.m2` |
-| **IDE/Editor** | `.idea`, `.vscode`, `.vs`, `*.xcworkspace`, `*.xcodeproj` |
-| **Coverage** | `coverage`, `.coverage`, `htmlcov`, `.nyc_output` |
-| **Misc** | `.plaid`, `tmp`, `temp`, `logs`, `.DS_Store` |
+| Category            | Ignored                                                                                      |
+| ------------------- | -------------------------------------------------------------------------------------------- |
+| **Version Control** | `.git`, `.svn`, `.hg`                                                                        |
+| **Dependencies**    | `node_modules`, `vendor`, `third_party`, `external`                                          |
+| **Build Outputs**   | `target`, `build`, `dist`, `out`, `bin`, `obj`                                               |
+| **Python**          | `__pycache__`, `.venv`, `venv`, `.env`, `.tox`, `.pytest_cache`, `.mypy_cache`, `*.egg-info` |
+| **JavaScript**      | `.next`, `.nuxt`, `.cache`, `.parcel-cache`, `.turbo`                                        |
+| **Java**            | `.gradle`, `.m2`                                                                             |
+| **IDE/Editor**      | `.idea`, `.vscode`, `.vs`, `*.xcworkspace`, `*.xcodeproj`                                    |
+| **Coverage**        | `coverage`, `.coverage`, `htmlcov`, `.nyc_output`                                            |
+| **Misc**            | `.plaid`, `tmp`, `temp`, `logs`, `.DS_Store`                                                 |
 
 Additionally, all patterns in `.gitignore` are respected.
+
+## File Size Limit
+
+Files larger than **512KB** are automatically skipped during indexing. This prevents memory issues with very large generated files, minified bundles, or data files.
+
+When files are skipped, the index command shows:
+
+```
+⊘ 3 files skipped (too large, >512KB)
+```
+
+Common files that may be skipped:
+- Minified JavaScript bundles (`bundle.min.js`)
+- Large generated files
+- Data files accidentally given code extensions
+- Vendored dependencies
 
 ## Model
 
@@ -255,7 +386,3 @@ cargo install --path . --features cuda
 # Apple CoreML
 cargo install --path . --features coreml
 ```
-
-## License
-
-MIT

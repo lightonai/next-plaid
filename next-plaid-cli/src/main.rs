@@ -65,6 +65,22 @@ enum Commands {
         /// Skip auto-indexing (fail if no index exists)
         #[arg(long)]
         no_index: bool,
+
+        /// Search recursively (default behavior, for grep compatibility)
+        #[arg(short = 'r', long)]
+        recursive: bool,
+
+        /// Filter: search only files matching pattern (e.g., "*.py", "*.rs")
+        #[arg(long = "include", value_name = "PATTERN")]
+        include_patterns: Vec<String>,
+
+        /// List files only: show only filenames, not the matching code
+        #[arg(short = 'l', long = "files-only")]
+        files_only: bool,
+
+        /// Text pattern: pre-filter using grep, then rank with semantic search
+        #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
+        text_pattern: Option<String>,
     },
 
     /// Show index status (what would be updated)
@@ -97,7 +113,21 @@ fn main() -> Result<()> {
             model,
             json,
             no_index,
-        } => cmd_search(&query, &path, top_k, &model, json, no_index),
+            recursive: _,
+            include_patterns,
+            files_only,
+            text_pattern,
+        } => cmd_search(
+            &query,
+            &path,
+            top_k,
+            &model,
+            json,
+            no_index,
+            &include_patterns,
+            files_only,
+            text_pattern.as_deref(),
+        ),
         Commands::Status { path } => cmd_status(&path),
     }
 }
@@ -144,10 +174,55 @@ fn cmd_index(path: &PathBuf, model: &str, lang: Option<&str>, force: bool) -> Re
             println!("   {} {} files unchanged", "=".dimmed(), stats.unchanged);
         }
     }
+    if stats.skipped > 0 {
+        println!(
+            "   {} {} files skipped (too large, >512KB)",
+            "⊘".dimmed(),
+            stats.skipped
+        );
+    }
 
     Ok(())
 }
 
+/// Run grep to find files containing a text pattern
+fn grep_files(pattern: &str, path: &std::path::Path) -> Result<Vec<String>> {
+    use anyhow::Context;
+    use std::process::Command;
+
+    let output = Command::new("grep")
+        .args([
+            "-rl",
+            "--exclude-dir=.plaid",
+            "--exclude-dir=.git",
+            "--exclude-dir=node_modules",
+            "--exclude-dir=target",
+            "--exclude-dir=.venv",
+            "--exclude-dir=venv",
+            "--exclude-dir=__pycache__",
+            "--exclude=*.db",
+            "--exclude=*.sqlite",
+            pattern,
+        ])
+        .current_dir(path)
+        .output()
+        .context("Failed to run grep")?;
+
+    if !output.status.success() && !output.stdout.is_empty() {
+        // grep returns 1 when no matches, but we still want to handle that gracefully
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let files: Vec<String> = stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.strip_prefix("./").unwrap_or(l).to_string())
+        .collect();
+
+    Ok(files)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn cmd_search(
     query: &str,
     path: &PathBuf,
@@ -155,40 +230,160 @@ fn cmd_search(
     model: &str,
     json: bool,
     no_index: bool,
+    include_patterns: &[String],
+    files_only: bool,
+    text_pattern: Option<&str>,
 ) -> Result<()> {
     let path = std::fs::canonicalize(path)?;
 
     // Ensure model is downloaded
     let model_path = ensure_model(Some(model))?;
 
-    // Auto-index if needed
+    // Determine which files to search based on filters
+    let has_filters = !include_patterns.is_empty() || text_pattern.is_some();
+
+    // Get files matching filters (if any)
+    let filtered_files: Option<Vec<String>> = if has_filters {
+        // Get files from grep if text pattern specified
+        let grep_matched: Option<Vec<String>> = if let Some(pattern) = text_pattern {
+            let files = grep_files(pattern, &path)?;
+            if files.is_empty() {
+                if !json && !files_only {
+                    println!("No files contain pattern: {}", pattern);
+                }
+                return Ok(());
+            }
+            if !json && !files_only {
+                eprintln!(
+                    "{} Found {} files matching '{}'",
+                    "●".blue(),
+                    files.len(),
+                    pattern
+                );
+            }
+            Some(files)
+        } else {
+            None
+        };
+
+        // Get files matching include patterns
+        let include_matched: Option<Vec<PathBuf>> = if !include_patterns.is_empty() && !no_index {
+            // We need to scan files to know which ones match the pattern
+            let builder = IndexBuilder::new(&path, &model_path)?;
+            Some(builder.scan_files_matching_patterns(include_patterns)?)
+        } else {
+            None
+        };
+
+        // Combine: intersect if both present
+        match (grep_matched, include_matched) {
+            (Some(grep), Some(include)) => {
+                let include_set: std::collections::HashSet<_> = include
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect();
+                let intersection: Vec<String> = grep
+                    .into_iter()
+                    .filter(|f| include_set.contains(f))
+                    .collect();
+                if intersection.is_empty() {
+                    if !json && !files_only {
+                        println!("No files match both text pattern and include filters");
+                    }
+                    return Ok(());
+                }
+                Some(intersection)
+            }
+            (Some(grep), None) => Some(grep),
+            (None, Some(include)) => Some(
+                include
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect(),
+            ),
+            (None, None) => None,
+        }
+    } else {
+        None
+    };
+
+    // Auto-index: selective if filters present, full otherwise
     if !no_index {
-        let needs_index = !index_exists(&path);
-
-        if needs_index {
-            eprintln!("{} No index found, building...", "●".blue());
-        }
-
         let builder = IndexBuilder::new(&path, &model_path)?;
-        let stats = builder.index(None, false)?;
 
-        let changes = stats.added + stats.changed + stats.deleted;
-        if changes > 0 && !json {
-            eprintln!("{} Indexed {} files", "✓".green(), changes);
+        if let Some(ref files) = filtered_files {
+            // Selective indexing: only index files that match the filters
+            let file_paths: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
+            let stats = builder.index_specific_files(&file_paths)?;
+
+            let changes = stats.added + stats.changed;
+            if changes > 0 && !json && !files_only {
+                eprintln!("{} Indexed {} matching files", "✓".green(), changes);
+            }
+        } else {
+            // Full indexing when no filters
+            let needs_index = !index_exists(&path);
+
+            if needs_index {
+                eprintln!("{} No index found, building...", "●".blue());
+            }
+
+            let stats = builder.index(None, false)?;
+
+            let changes = stats.added + stats.changed + stats.deleted;
+            if changes > 0 && !json && !files_only {
+                eprintln!("{} Indexed {} files", "✓".green(), changes);
+            }
         }
     }
 
-    // Verify index exists
-    if !index_exists(&path) {
-        anyhow::bail!("No index found. Run `plaid index` first.");
+    // Verify index exists (at least partially)
+    let index_path = path.join(".plaid").join("index");
+    if !index_path.join("metadata.json").exists() {
+        anyhow::bail!("No index found. Run `plaid index` first or remove --no-index flag.");
     }
 
-    // Search
+    // Load searcher
     let searcher = Searcher::load(&path, &model_path)?;
-    let results = searcher.search(query, top_k)?;
+
+    // Build subset from filtered files
+    let subset = if let Some(ref files) = filtered_files {
+        let ids = searcher.filter_by_files(files)?;
+        if ids.is_empty() {
+            if !json && !files_only {
+                println!("No indexed code units in filtered files");
+            }
+            return Ok(());
+        }
+        Some(ids)
+    } else if !include_patterns.is_empty() {
+        // Include patterns without grep - filter from existing index
+        let ids = searcher.filter_by_file_patterns(include_patterns)?;
+        if ids.is_empty() {
+            if !json && !files_only {
+                println!("No files match the specified patterns");
+            }
+            return Ok(());
+        }
+        Some(ids)
+    } else {
+        None
+    };
+
+    // Search with optional filtering
+    let results = searcher.search(query, top_k, subset.as_deref())?;
 
     // Output
-    if json {
+    if files_only {
+        // -l mode: show only unique filenames
+        let mut seen_files = std::collections::HashSet::new();
+        for result in &results {
+            let file_str = result.unit.file.display().to_string();
+            if seen_files.insert(file_str.clone()) {
+                println!("{}", file_str);
+            }
+        }
+    } else if json {
         println!("{}", serde_json::to_string_pretty(&results)?);
     } else {
         if results.is_empty() {
