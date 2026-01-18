@@ -5,7 +5,8 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 
 use next_plaid_cli::{
-    ensure_model, ensure_onnx_runtime, index_exists, IndexBuilder, Language, Searcher,
+    ensure_model, ensure_onnx_runtime, get_index_dir_for_project, get_plaid_data_dir,
+    get_vector_index_path, index_exists, IndexBuilder, Language, ProjectMetadata, Searcher,
     DEFAULT_MODEL,
 };
 
@@ -131,14 +132,28 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+
+    /// Clear index data
+    Clear {
+        /// Project directory (default: current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Clear all indexes for all projects
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Ensure ONNX Runtime is available (downloads if needed)
-    let is_status = matches!(cli.command, Some(Commands::Status { .. }));
-    if !is_status {
+    let skip_onnx = matches!(
+        cli.command,
+        Some(Commands::Status { .. }) | Some(Commands::Clear { .. })
+    );
+    if !skip_onnx {
         ensure_onnx_runtime()?;
     }
 
@@ -172,6 +187,7 @@ fn main() -> Result<()> {
             text_pattern.as_deref(),
         ),
         Some(Commands::Status { path }) => cmd_status(&path),
+        Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
         None => {
             // Default: run search if query is provided
             if let Some(query) = cli.query {
@@ -239,7 +255,6 @@ fn grep_files(pattern: &str, path: &std::path::Path) -> Result<Vec<String>> {
     let output = Command::new("grep")
         .args([
             "-rl",
-            "--exclude-dir=.plaid",
             "--exclude-dir=.git",
             "--exclude-dir=node_modules",
             "--exclude-dir=target",
@@ -379,8 +394,9 @@ fn cmd_search(
     }
 
     // Verify index exists (at least partially)
-    let index_path = path.join(".plaid").join("index");
-    if !index_path.join("metadata.json").exists() {
+    let index_dir = get_index_dir_for_project(&path)?;
+    let vector_index_path = get_vector_index_path(&index_dir);
+    if !vector_index_path.join("metadata.json").exists() {
         anyhow::bail!("No index found. Run `plaid index` first or remove --no-index flag.");
     }
 
@@ -459,15 +475,65 @@ fn cmd_status(path: &PathBuf) -> Result<()> {
     let path = std::fs::canonicalize(path)?;
 
     if !index_exists(&path) {
-        println!("No index found at {}", path.display());
+        println!("No index found for {}", path.display());
         println!("Run `plaid index` or `plaid search <query>` to create one.");
         return Ok(());
     }
 
-    // For now, just report that the index exists
-    // We could add more detailed status later
-    println!("Index exists at {}", path.display());
+    let index_dir = get_index_dir_for_project(&path)?;
+    println!("Project: {}", path.display());
+    println!("Index:   {}", index_dir.display());
+    println!();
     println!("Run `plaid index` to update or `plaid index --force` to rebuild.");
+
+    Ok(())
+}
+
+fn cmd_clear(path: &PathBuf, all: bool) -> Result<()> {
+    if all {
+        // Clear all indexes
+        let data_dir = get_plaid_data_dir()?;
+        if !data_dir.exists() {
+            println!("No indexes found.");
+            return Ok(());
+        }
+
+        // Collect index directories and their project paths
+        let index_dirs: Vec<_> = std::fs::read_dir(&data_dir)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .collect();
+
+        if index_dirs.is_empty() {
+            println!("No indexes found.");
+            return Ok(());
+        }
+
+        // Delete each index and log the project path
+        for entry in &index_dirs {
+            let index_path = entry.path();
+            let project_path = ProjectMetadata::load(&index_path)
+                .map(|m| m.project_path.display().to_string())
+                .unwrap_or_else(|_| index_path.display().to_string());
+
+            std::fs::remove_dir_all(&index_path)?;
+            println!("🗑️  Cleared index for {}", project_path);
+        }
+
+        println!("\n✅ Cleared {} index(es)", index_dirs.len());
+    } else {
+        // Clear index for current project
+        let path = std::fs::canonicalize(path)?;
+        let index_dir = get_index_dir_for_project(&path)?;
+
+        if !index_dir.exists() {
+            println!("No index found for {}", path.display());
+            return Ok(());
+        }
+
+        std::fs::remove_dir_all(&index_dir)?;
+        println!("🗑️  Cleared index for {}", path.display());
+    }
 
     Ok(())
 }

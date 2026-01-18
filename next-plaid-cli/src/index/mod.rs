@@ -1,3 +1,4 @@
+pub mod paths;
 pub mod state;
 
 use std::collections::HashSet;
@@ -15,9 +16,8 @@ use serde::{Deserialize, Serialize};
 use crate::embed::build_embedding_text;
 use crate::parser::{build_call_graph, detect_language, extract_units, CodeUnit, Language};
 
+use paths::{get_index_dir_for_project, get_vector_index_path, ProjectMetadata};
 use state::{get_mtime, hash_file, FileInfo, IndexState};
-
-const INDEX_DIR: &str = ".plaid";
 
 /// Maximum file size to index (512 KB)
 /// Files larger than this are skipped to avoid:
@@ -46,6 +46,7 @@ pub struct UpdatePlan {
 pub struct IndexBuilder {
     model: Colbert,
     project_root: PathBuf,
+    index_dir: PathBuf,
 }
 
 impl IndexBuilder {
@@ -55,10 +56,18 @@ impl IndexBuilder {
             .build()
             .context("Failed to load ColBERT model")?;
 
+        let index_dir = get_index_dir_for_project(project_root)?;
+
         Ok(Self {
             model,
             project_root: project_root.to_path_buf(),
+            index_dir,
         })
+    }
+
+    /// Get the path to the index directory
+    pub fn index_dir(&self) -> &Path {
+        &self.index_dir
     }
 
     /// Single entry point for indexing.
@@ -66,8 +75,8 @@ impl IndexBuilder {
     /// - Updates incrementally if files changed
     /// - Full rebuild if `force = true`
     pub fn index(&self, languages: Option<&[Language]>, force: bool) -> Result<UpdateStats> {
-        let state = IndexState::load(&self.project_root)?;
-        let index_path = self.project_root.join(INDEX_DIR).join("index");
+        let state = IndexState::load(&self.index_dir)?;
+        let index_path = get_vector_index_path(&self.index_dir);
         let index_exists = index_path.join("metadata.json").exists();
         let filtering_exists = filtering::exists(index_path.to_str().unwrap());
 
@@ -93,8 +102,8 @@ impl IndexBuilder {
             });
         }
 
-        let state = IndexState::load(&self.project_root)?;
-        let index_path = self.project_root.join(INDEX_DIR).join("index");
+        let state = IndexState::load(&self.index_dir)?;
+        let index_path = get_vector_index_path(&self.index_dir);
         let index_path_str = index_path.to_str().unwrap();
 
         // Determine which files need indexing (new or changed)
@@ -237,7 +246,7 @@ impl IndexBuilder {
 
         pb.finish_and_clear();
 
-        new_state.save(&self.project_root)?;
+        new_state.save(&self.index_dir)?;
 
         Ok(UpdateStats {
             added: files_to_index.len(),
@@ -314,7 +323,9 @@ impl IndexBuilder {
             self.write_index_with_progress(&all_units)?;
         }
 
-        state.save(&self.project_root)?;
+        // Save state and project metadata
+        state.save(&self.index_dir)?;
+        ProjectMetadata::new(&self.project_root).save(&self.index_dir)?;
 
         Ok(UpdateStats {
             added: files.len(),
@@ -332,7 +343,7 @@ impl IndexBuilder {
         languages: Option<&[Language]>,
     ) -> Result<UpdateStats> {
         let plan = self.compute_update_plan(old_state, languages)?;
-        let index_path = self.project_root.join(INDEX_DIR).join("index");
+        let index_path = get_vector_index_path(&self.index_dir);
         let index_path_str = index_path.to_str().unwrap();
 
         // 0. Clean up orphaned entries (files in index but not on disk)
@@ -494,7 +505,7 @@ impl IndexBuilder {
             pb.finish_and_clear();
         }
 
-        state.save(&self.project_root)?;
+        state.save(&self.index_dir)?;
 
         Ok(UpdateStats {
             added: plan.added.len(),
@@ -611,7 +622,6 @@ const IGNORED_DIRS: &[&str] = &[
     "htmlcov",
     ".nyc_output",
     // Misc
-    ".plaid",
     "tmp",
     "temp",
     "logs",
@@ -730,7 +740,7 @@ impl IndexBuilder {
     }
 
     fn write_index_impl(&self, units: &[CodeUnit], show_progress: bool) -> Result<()> {
-        let index_path = self.project_root.join(INDEX_DIR).join("index");
+        let index_path = get_vector_index_path(&self.index_dir);
         let index_path_str = index_path.to_str().unwrap();
         std::fs::create_dir_all(&index_path)?;
 
@@ -807,7 +817,7 @@ impl IndexBuilder {
 
     /// Get index status (what would be updated)
     pub fn status(&self, languages: Option<&[Language]>) -> Result<UpdatePlan> {
-        let state = IndexState::load(&self.project_root)?;
+        let state = IndexState::load(&self.index_dir)?;
         self.compute_update_plan(&state, languages)
     }
 }
@@ -884,7 +894,8 @@ pub struct Searcher {
 
 impl Searcher {
     pub fn load(project_root: &Path, model_path: &Path) -> Result<Self> {
-        let index_path = project_root.join(INDEX_DIR).join("index");
+        let index_dir = get_index_dir_for_project(project_root)?;
+        let index_path = get_vector_index_path(&index_dir);
         let index_path_str = index_path.to_str().unwrap().to_string();
 
         // Load model
@@ -1016,9 +1027,5 @@ impl Searcher {
 
 /// Check if an index exists for the given project
 pub fn index_exists(project_root: &Path) -> bool {
-    project_root
-        .join(INDEX_DIR)
-        .join("index")
-        .join("metadata.json")
-        .exists()
+    paths::index_exists(project_root)
 }

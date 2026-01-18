@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use xxhash_rust::xxh3::xxh3_64;
 
-const INDEX_DIR: &str = ".plaid";
-const STATE_FILE: &str = "state.json";
+use super::paths::get_state_path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IndexState {
@@ -24,8 +23,9 @@ pub struct FileInfo {
 }
 
 impl IndexState {
-    pub fn load(project_root: &Path) -> Result<Self> {
-        let state_path = project_root.join(INDEX_DIR).join(STATE_FILE);
+    /// Load state from the given index directory
+    pub fn load(index_dir: &Path) -> Result<Self> {
+        let state_path = get_state_path(index_dir);
         if state_path.exists() {
             let content = fs::read_to_string(&state_path)?;
             Ok(serde_json::from_str(&content)?)
@@ -34,15 +34,15 @@ impl IndexState {
         }
     }
 
-    pub fn save(&self, project_root: &Path) -> Result<()> {
-        let index_dir = project_root.join(INDEX_DIR);
-        fs::create_dir_all(&index_dir)?;
+    /// Save state to the given index directory
+    pub fn save(&self, index_dir: &Path) -> Result<()> {
+        fs::create_dir_all(index_dir)?;
 
         // Update CLI version before saving
         let mut state = self.clone();
         state.cli_version = env!("CARGO_PKG_VERSION").to_string();
 
-        let state_path = index_dir.join(STATE_FILE);
+        let state_path = get_state_path(index_dir);
         let content = serde_json::to_string_pretty(&state)?;
         fs::write(&state_path, content)?;
         Ok(())

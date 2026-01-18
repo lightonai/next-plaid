@@ -12,6 +12,9 @@ pub mod onnx_runtime;
 pub mod parser;
 
 pub use embed::build_embedding_text;
+pub use index::paths::{
+    get_index_dir_for_project, get_plaid_data_dir, get_vector_index_path, ProjectMetadata,
+};
 pub use index::{index_exists, IndexBuilder, SearchResult, Searcher, UpdatePlan, UpdateStats};
 pub use model::{ensure_model, DEFAULT_MODEL};
 pub use onnx_runtime::ensure_onnx_runtime;
