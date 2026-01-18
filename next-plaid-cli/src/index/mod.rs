@@ -914,6 +914,41 @@ impl Searcher {
         })
     }
 
+    /// Load a searcher from a specific index directory (for parent index use)
+    pub fn load_from_index_dir(index_dir: &Path, model_path: &Path) -> Result<Self> {
+        let index_path = get_vector_index_path(index_dir);
+        let index_path_str = index_path.to_str().unwrap().to_string();
+
+        let model = Colbert::builder(model_path)
+            .with_quantized(true)
+            .build()
+            .context("Failed to load ColBERT model")?;
+
+        let index = MmapIndex::load(&index_path_str).context("Failed to load index")?;
+
+        Ok(Self {
+            model,
+            index,
+            index_path: index_path_str,
+        })
+    }
+
+    /// Filter results to files within a subdirectory prefix.
+    /// Returns document IDs where file path starts with the given prefix.
+    pub fn filter_by_path_prefix(&self, prefix: &Path) -> Result<Vec<i64>> {
+        let prefix_str = prefix.to_string_lossy();
+        // Use SQL LIKE with the prefix followed by %
+        let like_pattern = format!("{}%", prefix_str);
+        let subset = filtering::where_condition(
+            &self.index_path,
+            "file LIKE ?",
+            &[serde_json::json!(like_pattern)],
+        )
+        .unwrap_or_default();
+
+        Ok(subset)
+    }
+
     /// Get document IDs matching the given file patterns using SQL LIKE
     pub fn filter_by_file_patterns(&self, patterns: &[String]) -> Result<Vec<i64>> {
         if patterns.is_empty() {

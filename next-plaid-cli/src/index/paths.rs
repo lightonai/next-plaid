@@ -122,6 +122,59 @@ pub fn index_exists(project_path: &Path) -> bool {
     matches!(find_index_for_project(project_path), Ok(Some(_)))
 }
 
+/// Information about a discovered parent index
+#[derive(Debug, Clone)]
+pub struct ParentIndexInfo {
+    /// Path to the parent project's index directory
+    pub index_dir: PathBuf,
+    /// The parent project's root path
+    pub project_path: PathBuf,
+    /// Relative path from parent project root to the search directory
+    pub relative_subdir: PathBuf,
+}
+
+/// Find if the given path is a subdirectory of any existing indexed project.
+/// Returns the most specific (longest-matching) parent index if found.
+pub fn find_parent_index(search_path: &Path) -> Result<Option<ParentIndexInfo>> {
+    let data_dir = get_plaid_data_dir()?;
+
+    if !data_dir.exists() {
+        return Ok(None);
+    }
+
+    let mut best_match: Option<ParentIndexInfo> = None;
+    let mut best_depth = 0;
+
+    for entry in fs::read_dir(&data_dir)?.filter_map(|e| e.ok()) {
+        let index_dir = entry.path();
+        if !index_dir.is_dir() {
+            continue;
+        }
+
+        // Try to load project metadata
+        if let Ok(meta) = ProjectMetadata::load(&index_dir) {
+            // Check if search_path starts with this project's path
+            // but is NOT the same path (must be a subdirectory)
+            if search_path != meta.project_path {
+                if let Ok(relative) = search_path.strip_prefix(&meta.project_path) {
+                    // Prefer the most specific (longest) parent path
+                    let depth = meta.project_path.components().count();
+                    if depth > best_depth {
+                        best_depth = depth;
+                        best_match = Some(ParentIndexInfo {
+                            index_dir,
+                            project_path: meta.project_path,
+                            relative_subdir: relative.to_path_buf(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(best_match)
+}
+
 /// Get the path to the state.json file within an index directory
 pub fn get_state_path(index_dir: &Path) -> PathBuf {
     index_dir.join(STATE_FILE)

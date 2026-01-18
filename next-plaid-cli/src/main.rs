@@ -5,9 +5,9 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 
 use next_plaid_cli::{
-    ensure_model, ensure_onnx_runtime, get_index_dir_for_project, get_plaid_data_dir,
-    get_vector_index_path, index_exists, IndexBuilder, Language, ProjectMetadata, Searcher,
-    DEFAULT_MODEL,
+    ensure_model, ensure_onnx_runtime, find_parent_index, get_index_dir_for_project,
+    get_plaid_data_dir, get_vector_index_path, index_exists, IndexBuilder, Language,
+    ProjectMetadata, Searcher, DEFAULT_MODEL,
 };
 
 #[derive(Parser)]
@@ -61,6 +61,10 @@ struct Cli {
     /// Text pattern: pre-filter using grep, then rank with semantic search
     #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
     text_pattern: Option<String>,
+
+    /// Force creation of a new index for this directory (ignore parent indexes)
+    #[arg(long)]
+    new_index: bool,
 }
 
 #[derive(Subcommand)]
@@ -82,6 +86,10 @@ enum Commands {
         /// Force full rebuild (ignore cache)
         #[arg(long)]
         force: bool,
+
+        /// Force creation of a new index for this directory (ignore parent indexes)
+        #[arg(long)]
+        new_index: bool,
     },
 
     /// Search for code (auto-indexes if needed)
@@ -124,6 +132,10 @@ enum Commands {
         /// Text pattern: pre-filter using grep, then rank with semantic search
         #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
         text_pattern: Option<String>,
+
+        /// Force creation of a new index for this directory (ignore parent indexes)
+        #[arg(long)]
+        new_index: bool,
     },
 
     /// Show index status (what would be updated)
@@ -163,7 +175,8 @@ fn main() -> Result<()> {
             model,
             lang,
             force,
-        }) => cmd_index(&path, &model, lang.as_deref(), force),
+            new_index,
+        }) => cmd_index(&path, &model, lang.as_deref(), force, new_index),
         Some(Commands::Search {
             query,
             path,
@@ -175,6 +188,7 @@ fn main() -> Result<()> {
             include_patterns,
             files_only,
             text_pattern,
+            new_index,
         }) => cmd_search(
             &query,
             &path,
@@ -185,6 +199,7 @@ fn main() -> Result<()> {
             &include_patterns,
             files_only,
             text_pattern.as_deref(),
+            new_index,
         ),
         Some(Commands::Status { path }) => cmd_status(&path),
         Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
@@ -201,6 +216,7 @@ fn main() -> Result<()> {
                     &cli.include_patterns,
                     cli.files_only,
                     cli.text_pattern.as_deref(),
+                    cli.new_index,
                 )
             } else {
                 // No query provided - show help
@@ -217,18 +233,44 @@ fn parse_languages(lang: Option<&str>) -> Option<Vec<Language>> {
     lang.map(|l| l.split(',').filter_map(|s| s.trim().parse().ok()).collect())
 }
 
-fn cmd_index(path: &PathBuf, model: &str, lang: Option<&str>, force: bool) -> Result<()> {
+fn cmd_index(
+    path: &PathBuf,
+    model: &str,
+    lang: Option<&str>,
+    force: bool,
+    new_index: bool,
+) -> Result<()> {
     let path = std::fs::canonicalize(path)?;
+
+    // Check for parent index unless --new-index is specified
+    let parent_info = if new_index {
+        None
+    } else {
+        find_parent_index(&path)?
+    };
+
+    let effective_root = match &parent_info {
+        Some(info) => {
+            eprintln!(
+                "📂 Found parent index for {}",
+                info.project_path.display()
+            );
+            eprintln!("   Updating parent index instead of creating new one.");
+            eprintln!("   Use --new-index to create a separate index for this directory.");
+            info.project_path.clone()
+        }
+        None => path.clone(),
+    };
 
     // Ensure model is downloaded
     let model_path = ensure_model(Some(model))?;
 
-    let builder = IndexBuilder::new(&path, &model_path)?;
+    let builder = IndexBuilder::new(&effective_root, &model_path)?;
     let languages = parse_languages(lang);
 
     if force {
         eprintln!("🔄 Rebuilding index...");
-    } else {
+    } else if parent_info.is_none() {
         eprintln!("📂 Indexing...");
     }
 
@@ -294,11 +336,34 @@ fn cmd_search(
     include_patterns: &[String],
     files_only: bool,
     text_pattern: Option<&str>,
+    new_index: bool,
 ) -> Result<()> {
     let path = std::fs::canonicalize(path)?;
 
     // Ensure model is downloaded
     let model_path = ensure_model(Some(model))?;
+
+    // Check for parent index unless --new-index is specified
+    let parent_info = if new_index {
+        None
+    } else {
+        find_parent_index(&path)?
+    };
+
+    // Determine effective project root and subdirectory filter
+    let (effective_root, subdir_filter): (PathBuf, Option<PathBuf>) = match &parent_info {
+        Some(info) => {
+            if !json && !files_only {
+                eprintln!(
+                    "📂 Using parent index: {} (subdir: {})",
+                    info.project_path.display(),
+                    info.relative_subdir.display()
+                );
+            }
+            (info.project_path.clone(), Some(info.relative_subdir.clone()))
+        }
+        None => (path.clone(), None),
+    };
 
     // Determine which files to search based on filters
     let has_filters = !include_patterns.is_empty() || text_pattern.is_some();
@@ -307,7 +372,7 @@ fn cmd_search(
     let filtered_files: Option<Vec<String>> = if has_filters {
         // Get files from grep if text pattern specified
         let grep_matched: Option<Vec<String>> = if let Some(pattern) = text_pattern {
-            let files = grep_files(pattern, &path)?;
+            let files = grep_files(pattern, &effective_root)?;
             if files.is_empty() {
                 if !json && !files_only {
                     println!("No files contain pattern: {}", pattern);
@@ -325,7 +390,7 @@ fn cmd_search(
         // Get files matching include patterns
         let include_matched: Option<Vec<PathBuf>> = if !include_patterns.is_empty() && !no_index {
             // We need to scan files to know which ones match the pattern
-            let builder = IndexBuilder::new(&path, &model_path)?;
+            let builder = IndexBuilder::new(&effective_root, &model_path)?;
             Some(builder.scan_files_matching_patterns(include_patterns)?)
         } else {
             None
@@ -365,7 +430,7 @@ fn cmd_search(
 
     // Auto-index: selective if filters present, full otherwise
     if !no_index {
-        let builder = IndexBuilder::new(&path, &model_path)?;
+        let builder = IndexBuilder::new(&effective_root, &model_path)?;
 
         if let Some(ref files) = filtered_files {
             // Selective indexing: only index files that match the filters
@@ -378,7 +443,7 @@ fn cmd_search(
             }
         } else {
             // Full indexing when no filters
-            let needs_index = !index_exists(&path);
+            let needs_index = !index_exists(&effective_root);
 
             if needs_index {
                 eprintln!("📂 Building index...");
@@ -394,37 +459,66 @@ fn cmd_search(
     }
 
     // Verify index exists (at least partially)
-    let index_dir = get_index_dir_for_project(&path)?;
+    let index_dir = get_index_dir_for_project(&effective_root)?;
     let vector_index_path = get_vector_index_path(&index_dir);
     if !vector_index_path.join("metadata.json").exists() {
         anyhow::bail!("No index found. Run `plaid index` first or remove --no-index flag.");
     }
 
-    // Load searcher
-    let searcher = Searcher::load(&path, &model_path)?;
+    // Load searcher (from parent index if applicable)
+    let searcher = match &parent_info {
+        Some(info) => Searcher::load_from_index_dir(&info.index_dir, &model_path)?,
+        None => Searcher::load(&effective_root, &model_path)?,
+    };
 
-    // Build subset from filtered files
-    let subset = if let Some(ref files) = filtered_files {
-        let ids = searcher.filter_by_files(files)?;
-        if ids.is_empty() {
-            if !json && !files_only {
-                println!("No indexed code units in filtered files");
+    // Build subset combining subdirectory filter AND user filters
+    let subset = {
+        let mut combined_ids: Option<Vec<i64>> = None;
+
+        // Apply subdirectory filter first if using parent index
+        if let Some(ref subdir) = subdir_filter {
+            let subdir_ids = searcher.filter_by_path_prefix(subdir)?;
+            if subdir_ids.is_empty() {
+                if !json && !files_only {
+                    println!("No indexed code units in subdirectory: {}", subdir.display());
+                }
+                return Ok(());
             }
-            return Ok(());
+            combined_ids = Some(subdir_ids);
         }
-        Some(ids)
-    } else if !include_patterns.is_empty() {
-        // Include patterns without grep - filter from existing index
-        let ids = searcher.filter_by_file_patterns(include_patterns)?;
-        if ids.is_empty() {
-            if !json && !files_only {
-                println!("No files match the specified patterns");
+
+        // Apply user filters (intersect with existing subset)
+        if let Some(ref files) = filtered_files {
+            let file_ids = searcher.filter_by_files(files)?;
+            combined_ids = match combined_ids {
+                Some(existing) => {
+                    let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
+                    Some(file_ids.into_iter().filter(|id| existing_set.contains(id)).collect())
+                }
+                None => Some(file_ids),
+            };
+        } else if !include_patterns.is_empty() {
+            let pattern_ids = searcher.filter_by_file_patterns(include_patterns)?;
+            combined_ids = match combined_ids {
+                Some(existing) => {
+                    let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
+                    Some(pattern_ids.into_iter().filter(|id| existing_set.contains(id)).collect())
+                }
+                None => Some(pattern_ids),
+            };
+        }
+
+        // Check if subset is empty after combining
+        if let Some(ref ids) = combined_ids {
+            if ids.is_empty() {
+                if !json && !files_only {
+                    println!("No indexed code units match the specified filters");
+                }
+                return Ok(());
             }
-            return Ok(());
         }
-        Some(ids)
-    } else {
-        None
+
+        combined_ids
     };
 
     // Search with optional filtering
