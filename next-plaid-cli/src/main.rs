@@ -6,15 +6,68 @@ use colored::Colorize;
 
 use next_plaid_cli::{
     ensure_model, ensure_onnx_runtime, find_parent_index, get_index_dir_for_project,
-    get_plaid_data_dir, get_vector_index_path, index_exists, Config, IndexBuilder, Language,
-    ProjectMetadata, Searcher, DEFAULT_MODEL,
+    get_plaid_data_dir, get_vector_index_path, index_exists, Config, IndexBuilder, ProjectMetadata,
+    Searcher, DEFAULT_MODEL,
 };
+
+const MAIN_HELP: &str = "\
+EXAMPLES:
+    # Search for code semantically (auto-indexes if needed)
+    plaid \"function that handles user authentication\"
+    plaid \"error handling for database connections\"
+
+    # Search in a specific directory
+    plaid \"API endpoints\" ./backend
+
+    # Filter by file type (grep-like)
+    plaid \"parse config\" --include \"*.rs\"
+    plaid \"test helpers\" --include \"*_test.go\"
+
+    # Hybrid search: grep first, then rank semantically
+    plaid \"usage\" -e \"async fn\"
+    plaid \"error\" -e \"panic!\" --include \"*.rs\"
+
+    # List only matching files (like grep -l)
+    plaid -l \"database queries\"
+
+    # Output as JSON for scripting
+    plaid --json \"authentication\" | jq '.[] | .unit.file'
+
+    # Check index status
+    plaid status
+
+    # Clear index
+    plaid clear
+    plaid clear --all
+
+    # Change default model
+    plaid set-model lightonai/GTE-ModernColBERT-v1-onnx
+
+SUPPORTED LANGUAGES:
+    Python, Rust, TypeScript, JavaScript, Go, Java, C, C++, C#, Ruby,
+    PHP, Swift, Kotlin, Scala, Shell/Bash, SQL, Markdown, Plain text
+
+ENVIRONMENT:
+    Indexes are stored in ~/.local/share/plaid/ (or $XDG_DATA_HOME/plaid)
+    Config is stored in ~/.config/plaid/ (or $XDG_CONFIG_HOME/plaid)";
 
 #[derive(Parser)]
 #[command(
     name = "plaid",
     version,
     about = "Semantic code search powered by ColBERT",
+    long_about = "Semantic code search powered by ColBERT neural embeddings.\n\n\
+        Unlike grep or ripgrep, plaid understands the MEANING of your query.\n\
+        Ask questions in natural language and find relevant code even when\n\
+        the exact keywords don't match.\n\n\
+        Features:\n\
+        • Natural language queries (\"function that validates email\")\n\
+        • Multi-language support (18+ programming languages)\n\
+        • Grep-like filtering (--include, -e, -l flags)\n\
+        • Hybrid search (combine text patterns with semantic ranking)\n\
+        • Incremental indexing (only re-indexes changed files)\n\
+        • Smart parent detection (search subdirs using parent index)",
+    after_help = MAIN_HELP,
     args_conflicts_with_subcommands = true
 )]
 struct Cli {
@@ -67,32 +120,68 @@ struct Cli {
     new_index: bool,
 }
 
+const SEARCH_HELP: &str = "\
+EXAMPLES:
+    # Basic semantic search
+    plaid search \"function that handles authentication\"
+    plaid search \"error handling\" ./backend
+
+    # Filter by file type
+    plaid search \"parse config\" --include \"*.rs\"
+    plaid search \"API handler\" --include \"*.go\"
+
+    # Hybrid search (grep + semantic ranking)
+    plaid search \"usage\" -e \"async fn\"
+    plaid search \"error\" -e \"Result<\" --include \"*.rs\"
+
+    # List only matching files
+    plaid search -l \"database operations\"
+
+    # More results
+    plaid search -k 20 \"logging utilities\"
+
+    # JSON output for scripting
+    plaid search --json \"auth\" | jq '.[0].unit.name'
+
+    # Skip auto-indexing
+    plaid search --no-index \"handlers\"
+
+GREP COMPATIBILITY:
+    -r, --recursive    Enabled by default (for grep users)
+    -l, --files-only   Show only filenames, like grep -l
+    -e, --pattern      Pre-filter with text pattern, like grep -e
+    --include          Filter files by glob pattern";
+
+const STATUS_HELP: &str = "\
+EXAMPLES:
+    plaid status
+    plaid status ~/projects/myapp";
+
+const CLEAR_HELP: &str = "\
+EXAMPLES:
+    # Clear index for current directory
+    plaid clear
+
+    # Clear index for specific project
+    plaid clear ~/projects/myapp
+
+    # Clear ALL indexes
+    plaid clear --all";
+
+const SET_MODEL_HELP: &str = "\
+EXAMPLES:
+    # Set default model
+    plaid set-model lightonai/GTE-ModernColBERT-v1-onnx
+
+NOTES:
+    • Changing models clears all existing indexes (dimensions differ)
+    • The model is downloaded from HuggingFace automatically
+    • Model preference is stored in ~/.config/plaid/config.json";
+
 #[derive(Subcommand)]
 enum Commands {
-    /// Build or update search index
-    Index {
-        /// Project directory (default: current directory)
-        #[arg(default_value = ".")]
-        path: PathBuf,
-
-        /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
-        #[arg(long)]
-        model: Option<String>,
-
-        /// Only index specific languages (comma-separated: python,rust,typescript)
-        #[arg(long)]
-        lang: Option<String>,
-
-        /// Force full rebuild (ignore cache)
-        #[arg(long)]
-        force: bool,
-
-        /// Force creation of a new index for this directory (ignore parent indexes)
-        #[arg(long)]
-        new_index: bool,
-    },
-
-    /// Search for code (auto-indexes if needed)
+    /// Search for code semantically (auto-indexes if needed)
+    #[command(after_help = SEARCH_HELP)]
     Search {
         /// Natural language query
         query: String,
@@ -138,14 +227,16 @@ enum Commands {
         new_index: bool,
     },
 
-    /// Show index status (what would be updated)
+    /// Show index status for a project
+    #[command(after_help = STATUS_HELP)]
     Status {
         /// Project directory
         #[arg(default_value = ".")]
         path: PathBuf,
     },
 
-    /// Clear index data
+    /// Clear index data for a project or all projects
+    #[command(after_help = CLEAR_HELP)]
     Clear {
         /// Project directory (default: current directory)
         #[arg(default_value = ".")]
@@ -156,7 +247,8 @@ enum Commands {
         all: bool,
     },
 
-    /// Set the default model to use
+    /// Set the default ColBERT model to use for indexing and search
+    #[command(after_help = SET_MODEL_HELP)]
     SetModel {
         /// HuggingFace model ID (e.g., "lightonai/GTE-ModernColBERT-v1-onnx")
         model: String,
@@ -176,13 +268,6 @@ fn main() -> Result<()> {
     }
 
     match cli.command {
-        Some(Commands::Index {
-            path,
-            model,
-            lang,
-            force,
-            new_index,
-        }) => cmd_index(&path, model.as_deref(), lang.as_deref(), force, new_index),
         Some(Commands::Search {
             query,
             path,
@@ -236,10 +321,6 @@ fn main() -> Result<()> {
     }
 }
 
-fn parse_languages(lang: Option<&str>) -> Option<Vec<Language>> {
-    lang.map(|l| l.split(',').filter_map(|s| s.trim().parse().ok()).collect())
-}
-
 /// Resolve the model to use: CLI arg > saved config > default
 fn resolve_model(cli_model: Option<&str>) -> String {
     if let Some(model) = cli_model {
@@ -255,62 +336,6 @@ fn resolve_model(cli_model: Option<&str>) -> String {
 
     // Fall back to default
     DEFAULT_MODEL.to_string()
-}
-
-fn cmd_index(
-    path: &PathBuf,
-    cli_model: Option<&str>,
-    lang: Option<&str>,
-    force: bool,
-    new_index: bool,
-) -> Result<()> {
-    let path = std::fs::canonicalize(path)?;
-
-    // Check for parent index unless --new-index is specified
-    let parent_info = if new_index {
-        None
-    } else {
-        find_parent_index(&path)?
-    };
-
-    let effective_root = match &parent_info {
-        Some(info) => {
-            eprintln!("📂 Found parent index for {}", info.project_path.display());
-            eprintln!("   Updating parent index instead of creating new one.");
-            eprintln!("   Use --new-index to create a separate index for this directory.");
-            info.project_path.clone()
-        }
-        None => path.clone(),
-    };
-
-    // Resolve model: CLI > config > default
-    let model = resolve_model(cli_model);
-
-    // Ensure model is downloaded
-    let model_path = ensure_model(Some(&model))?;
-
-    let builder = IndexBuilder::new(&effective_root, &model_path)?;
-    let languages = parse_languages(lang);
-
-    if force {
-        eprintln!("🔄 Rebuilding index...");
-    } else if parent_info.is_none() {
-        eprintln!("📂 Indexing...");
-    }
-
-    let stats = builder.index(languages.as_deref(), force)?;
-
-    let total = stats.added + stats.changed + stats.unchanged;
-    if stats.added + stats.changed + stats.deleted == 0 {
-        eprintln!("✅ Index up to date ({} files)", total);
-    } else {
-        eprintln!(
-            "✅ Indexed {} files (+{} ~{} -{})",
-            total, stats.added, stats.changed, stats.deleted
-        );
-    }
-
-    Ok(())
 }
 
 /// Run grep to find files containing a text pattern
@@ -492,7 +517,7 @@ fn cmd_search(
     let index_dir = get_index_dir_for_project(&effective_root)?;
     let vector_index_path = get_vector_index_path(&index_dir);
     if !vector_index_path.join("metadata.json").exists() {
-        anyhow::bail!("No index found. Run `plaid index` first or remove --no-index flag.");
+        anyhow::bail!("No index found. Run a search without --no-index to build the index first.");
     }
 
     // Load searcher (from parent index if applicable)
@@ -613,7 +638,7 @@ fn cmd_status(path: &PathBuf) -> Result<()> {
 
     if !index_exists(&path) {
         println!("No index found for {}", path.display());
-        println!("Run `plaid index` or `plaid search <query>` to create one.");
+        println!("Run `plaid <query>` to create one.");
         return Ok(());
     }
 
@@ -621,7 +646,7 @@ fn cmd_status(path: &PathBuf) -> Result<()> {
     println!("Project: {}", path.display());
     println!("Index:   {}", index_dir.display());
     println!();
-    println!("Run `plaid index` to update or `plaid index --force` to rebuild.");
+    println!("Run any search to update the index, or `plaid clear` to rebuild from scratch.");
 
     Ok(())
 }

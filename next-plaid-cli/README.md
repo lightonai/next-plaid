@@ -188,22 +188,6 @@ plaid -e "fetch" --include="*.ts" "API call" /large/project
 - Index grows incrementally as you search different file types
 - Already-indexed files are skipped (content hash check)
 
-### Index
-
-```bash
-# Build/update index
-plaid index
-
-# Force full rebuild
-plaid index --force
-
-# Index specific languages only
-plaid index --lang rust,python
-
-# Index specific directory
-plaid index /path/to/project
-```
-
 ### Status
 
 ```bash
@@ -387,7 +371,7 @@ Additionally, all patterns in `.gitignore` are respected.
 
 Files larger than **512KB** are automatically skipped during indexing. This prevents memory issues with very large generated files, minified bundles, or data files.
 
-When files are skipped, the index command shows:
+When files are skipped, the indexing output shows:
 
 ```
 ⊘ 3 files skipped (too large, >512KB)
@@ -404,25 +388,71 @@ Common files that may be skipped:
 
 By default, uses [`lightonai/GTE-ModernColBERT-v1-onnx`](https://huggingface.co/lightonai/GTE-ModernColBERT-v1-onnx) (INT8 quantized). The model is automatically downloaded on first use.
 
-Use a different model:
+### Using a Different Model
+
+Use a different model for a single query:
 
 ```bash
 plaid "query" --model path/to/local/model
 plaid "query" --model organization/model-name
 ```
 
+### Switching Default Model
+
+Change the default model permanently:
+
+```bash
+# Set a new default model
+plaid set-model lightonai/another-colbert-model
+
+# The new model is validated before switching
+# Old indexes are automatically cleared (they're incompatible)
+```
+
+Your model preference is stored in `~/.config/plaid/config.json`.
+
 ## Index Storage
 
-The index is stored in `.plaid/` in the project root:
+Indexes are stored in a centralized location following the XDG Base Directory specification:
+
+| Platform    | Location                                         |
+| ----------- | ------------------------------------------------ |
+| **Linux**   | `~/.local/share/plaid/indices/`                  |
+| **macOS**   | `~/Library/Application Support/plaid/indices/`   |
+| **Windows** | `C:\Users\<user>\AppData\Roaming\plaid\indices\` |
+
+Each project gets its own subdirectory named `{project-name}-{8-char-hash}`:
 
 ```
-.plaid/
-├── index/       # PLAID vector index
-├── state.json   # File hashes for incremental updates
-└── units.json   # Extracted code units metadata
+{project-name}-{hash}/
+├── index/          # PLAID vector index
+│   └── metadata.json
+├── state.json      # File hashes for incremental updates
+└── project.json    # Project path and metadata
 ```
 
-Add `.plaid/` to your `.gitignore`.
+### Parent Index Detection
+
+When searching in a subdirectory of an already-indexed project, the CLI automatically uses the parent index instead of creating a new one:
+
+```bash
+# If /my/project is already indexed...
+cd /my/project/src/utils
+plaid "helper function"   # Uses /my/project's index automatically
+
+# Force a new index for the subdirectory
+plaid --new-index "helper function"
+```
+
+### Clearing Indexes
+
+```bash
+# Clear index for current project
+plaid clear
+
+# Clear all indexes
+plaid clear --all
+```
 
 ## How It Works
 
@@ -443,3 +473,22 @@ cargo install --path . --features cuda
 # Apple CoreML
 cargo install --path . --features coreml
 ```
+
+## Configuration
+
+### Config File
+
+User preferences are stored in `~/.config/plaid/config.json`:
+
+```json
+{
+  "default_model": "lightonai/GTE-ModernColBERT-v1-onnx"
+}
+```
+
+### Environment Variables
+
+| Variable         | Description                                             |
+| ---------------- | ------------------------------------------------------- |
+| `ORT_DYLIB_PATH` | Path to ONNX Runtime library (overrides auto-detection) |
+| `CONDA_PREFIX`   | Used for finding Python environments                    |
