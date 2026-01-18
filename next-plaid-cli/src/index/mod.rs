@@ -180,10 +180,6 @@ impl IndexBuilder {
         // Build call graph
         build_call_graph(&mut new_units);
 
-        // Build embeddings with progress
-        let texts: Vec<String> = new_units.iter().map(build_embedding_text).collect();
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-
         let pb = ProgressBar::new(new_units.len() as u64);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -193,38 +189,53 @@ impl IndexBuilder {
         );
         pb.set_message("Encoding...");
 
-        let batch_size = 64;
-        let mut all_embeddings = Vec::new();
-
-        for (i, chunk) in text_refs.chunks(batch_size).enumerate() {
-            let batch_embeddings = self
-                .model
-                .encode_documents(chunk, None)
-                .context("Failed to encode documents")?;
-            all_embeddings.extend(batch_embeddings);
-            let progress = ((i + 1) * batch_size).min(new_units.len());
-            pb.set_position(progress as u64);
-        }
-        pb.finish_and_clear();
-
         // Create or update index
         std::fs::create_dir_all(&index_path)?;
         let config = IndexConfig::default();
         let update_config = UpdateConfig::default();
-        let (_, doc_ids) =
-            MmapIndex::update_or_create(&all_embeddings, index_path_str, &config, &update_config)?;
 
-        // Store metadata
-        let metadata: Vec<serde_json::Value> = new_units
-            .iter()
-            .map(|u| serde_json::to_value(u).unwrap())
-            .collect();
+        // Process in chunks of 500 documents to avoid RAM issues
+        const CHUNK_SIZE: usize = 500;
+        let encode_batch_size = 64;
 
-        if filtering::exists(index_path_str) {
-            filtering::update(index_path_str, &metadata, &doc_ids)?;
-        } else {
-            filtering::create(index_path_str, &metadata, &doc_ids)?;
+        for (chunk_idx, unit_chunk) in new_units.chunks(CHUNK_SIZE).enumerate() {
+            let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
+            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+
+            let mut chunk_embeddings = Vec::new();
+            for batch in text_refs.chunks(encode_batch_size) {
+                let batch_embeddings = self
+                    .model
+                    .encode_documents(batch, None)
+                    .context("Failed to encode documents")?;
+                chunk_embeddings.extend(batch_embeddings);
+
+                let progress = chunk_idx * CHUNK_SIZE + chunk_embeddings.len();
+                pb.set_position(progress.min(new_units.len()) as u64);
+            }
+
+            // Write this chunk to the index
+            let (_, doc_ids) = MmapIndex::update_or_create(
+                &chunk_embeddings,
+                index_path_str,
+                &config,
+                &update_config,
+            )?;
+
+            // Store metadata for this chunk
+            let metadata: Vec<serde_json::Value> = unit_chunk
+                .iter()
+                .map(|u| serde_json::to_value(u).unwrap())
+                .collect();
+
+            if filtering::exists(index_path_str) {
+                filtering::update(index_path_str, &metadata, &doc_ids)?;
+            } else {
+                filtering::create(index_path_str, &metadata, &doc_ids)?;
+            }
         }
+
+        pb.finish_and_clear();
 
         new_state.save(&self.project_root)?;
 
@@ -431,10 +442,6 @@ impl IndexBuilder {
             // Build call graph for new units
             build_call_graph(&mut new_units);
 
-            // Build embeddings with progress
-            let texts: Vec<String> = new_units.iter().map(build_embedding_text).collect();
-            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-
             // Progress bar for encoding
             let pb = ProgressBar::new(new_units.len() as u64);
             pb.set_style(
@@ -445,37 +452,46 @@ impl IndexBuilder {
             );
             pb.set_message("Encoding...");
 
-            // Encode in batches for progress
-            let batch_size = 64;
-            let mut all_embeddings = Vec::new();
-
-            for (i, chunk) in text_refs.chunks(batch_size).enumerate() {
-                let batch_embeddings = self
-                    .model
-                    .encode_documents(chunk, None)
-                    .context("Failed to encode documents")?;
-                all_embeddings.extend(batch_embeddings);
-                let progress = ((i + 1) * batch_size).min(new_units.len());
-                pb.set_position(progress as u64);
-            }
-            pb.finish_and_clear();
-
-            // Update or create index
             let config = IndexConfig::default();
             let update_config = UpdateConfig::default();
-            let (_, doc_ids) = MmapIndex::update_or_create(
-                &all_embeddings,
-                index_path_str,
-                &config,
-                &update_config,
-            )?;
 
-            // Store metadata in the index using filtering API
-            let metadata: Vec<serde_json::Value> = new_units
-                .iter()
-                .map(|u| serde_json::to_value(u).unwrap())
-                .collect();
-            filtering::update(index_path_str, &metadata, &doc_ids)?;
+            // Process in chunks of 500 documents to avoid RAM issues
+            const CHUNK_SIZE: usize = 500;
+            let encode_batch_size = 64;
+
+            for (chunk_idx, unit_chunk) in new_units.chunks(CHUNK_SIZE).enumerate() {
+                let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
+                let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+
+                let mut chunk_embeddings = Vec::new();
+                for batch in text_refs.chunks(encode_batch_size) {
+                    let batch_embeddings = self
+                        .model
+                        .encode_documents(batch, None)
+                        .context("Failed to encode documents")?;
+                    chunk_embeddings.extend(batch_embeddings);
+
+                    let progress = chunk_idx * CHUNK_SIZE + chunk_embeddings.len();
+                    pb.set_position(progress.min(new_units.len()) as u64);
+                }
+
+                // Write this chunk to the index
+                let (_, doc_ids) = MmapIndex::update_or_create(
+                    &chunk_embeddings,
+                    index_path_str,
+                    &config,
+                    &update_config,
+                )?;
+
+                // Store metadata for this chunk
+                let metadata: Vec<serde_json::Value> = unit_chunk
+                    .iter()
+                    .map(|u| serde_json::to_value(u).unwrap())
+                    .collect();
+                filtering::update(index_path_str, &metadata, &doc_ids)?;
+            }
+
+            pb.finish_and_clear();
         }
 
         state.save(&self.project_root)?;
@@ -715,11 +731,8 @@ impl IndexBuilder {
 
     fn write_index_impl(&self, units: &[CodeUnit], show_progress: bool) -> Result<()> {
         let index_path = self.project_root.join(INDEX_DIR).join("index");
+        let index_path_str = index_path.to_str().unwrap();
         std::fs::create_dir_all(&index_path)?;
-
-        // Build embedding text for all units
-        let texts: Vec<String> = units.iter().map(build_embedding_text).collect();
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
 
         // Progress bar for encoding
         let pb = if show_progress {
@@ -736,48 +749,57 @@ impl IndexBuilder {
             None
         };
 
-        // Encode with ColBERT in batches for progress tracking
-        let batch_size = 64;
-        let mut all_embeddings = Vec::new();
+        let config = IndexConfig::default();
+        let update_config = UpdateConfig::default();
 
-        for (i, chunk) in text_refs.chunks(batch_size).enumerate() {
-            let batch_embeddings = self
-                .model
-                .encode_documents(chunk, None)
-                .context("Failed to encode documents")?;
-            all_embeddings.extend(batch_embeddings);
+        // Process in chunks of 500 documents to avoid RAM issues
+        // Each chunk is encoded and written to the index before processing the next
+        const CHUNK_SIZE: usize = 500;
+        let encode_batch_size = 64;
 
-            if let Some(ref pb) = pb {
-                let progress = ((i + 1) * batch_size).min(units.len());
-                pb.set_position(progress as u64);
+        for (chunk_idx, unit_chunk) in units.chunks(CHUNK_SIZE).enumerate() {
+            // Build embedding text for this chunk
+            let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
+            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+
+            // Encode in smaller batches within the chunk
+            let mut chunk_embeddings = Vec::new();
+            for batch in text_refs.chunks(encode_batch_size) {
+                let batch_embeddings = self
+                    .model
+                    .encode_documents(batch, None)
+                    .context("Failed to encode documents")?;
+                chunk_embeddings.extend(batch_embeddings);
+
+                if let Some(ref pb) = pb {
+                    let progress = chunk_idx * CHUNK_SIZE + chunk_embeddings.len();
+                    pb.set_position(progress.min(units.len()) as u64);
+                }
+            }
+
+            // Write this chunk to the index
+            let (_, doc_ids) = MmapIndex::update_or_create(
+                &chunk_embeddings,
+                index_path_str,
+                &config,
+                &update_config,
+            )?;
+
+            // Store metadata for this chunk
+            let metadata: Vec<serde_json::Value> = unit_chunk
+                .iter()
+                .map(|u| serde_json::to_value(u).unwrap())
+                .collect();
+
+            if filtering::exists(index_path_str) {
+                filtering::update(index_path_str, &metadata, &doc_ids)?;
+            } else {
+                filtering::create(index_path_str, &metadata, &doc_ids)?;
             }
         }
 
         if let Some(pb) = pb {
             pb.finish_and_clear();
-        }
-
-        // Create index and get document IDs
-        let config = IndexConfig::default();
-        let update_config = UpdateConfig::default();
-        let (_, doc_ids) = MmapIndex::update_or_create(
-            &all_embeddings,
-            index_path.to_str().unwrap(),
-            &config,
-            &update_config,
-        )?;
-
-        // Store metadata in the index using filtering API
-        let metadata: Vec<serde_json::Value> = units
-            .iter()
-            .map(|u| serde_json::to_value(u).unwrap())
-            .collect();
-
-        // Use create for fresh index, update for incremental
-        if filtering::exists(index_path.to_str().unwrap()) {
-            filtering::update(index_path.to_str().unwrap(), &metadata, &doc_ids)?;
-        } else {
-            filtering::create(index_path.to_str().unwrap(), &metadata, &doc_ids)?;
         }
 
         Ok(())

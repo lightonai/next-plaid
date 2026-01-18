@@ -211,39 +211,20 @@ fn cmd_index(path: &PathBuf, model: &str, lang: Option<&str>, force: bool) -> Re
     let languages = parse_languages(lang);
 
     if force {
-        eprintln!("{} Full rebuild...", "●".blue());
+        eprintln!("🔄 Rebuilding index...");
     } else {
-        eprintln!("{} Checking for changes...", "●".blue());
+        eprintln!("📂 Indexing...");
     }
 
     let stats = builder.index(languages.as_deref(), force)?;
 
+    let total = stats.added + stats.changed + stats.unchanged;
     if stats.added + stats.changed + stats.deleted == 0 {
-        println!(
-            "{} Index is up to date ({} files)",
-            "✓".green(),
-            stats.unchanged
-        );
+        eprintln!("✅ Index up to date ({} files)", total);
     } else {
-        println!("{} Indexed:", "✓".green());
-        if stats.added > 0 {
-            println!("   {} {} files added", "+".green(), stats.added);
-        }
-        if stats.changed > 0 {
-            println!("   {} {} files changed", "~".yellow(), stats.changed);
-        }
-        if stats.deleted > 0 {
-            println!("   {} {} files deleted", "-".red(), stats.deleted);
-        }
-        if stats.unchanged > 0 {
-            println!("   {} {} files unchanged", "=".dimmed(), stats.unchanged);
-        }
-    }
-    if stats.skipped > 0 {
-        println!(
-            "   {} {} files skipped (too large, >512KB)",
-            "⊘".dimmed(),
-            stats.skipped
+        eprintln!(
+            "✅ Indexed {} files (+{} ~{} -{})",
+            total, stats.added, stats.changed, stats.deleted
         );
     }
 
@@ -319,12 +300,7 @@ fn cmd_search(
                 return Ok(());
             }
             if !json && !files_only {
-                eprintln!(
-                    "{} Found {} files matching '{}'",
-                    "●".blue(),
-                    files.len(),
-                    pattern
-                );
+                eprintln!("🔍 {} files match '{}'", files.len(), pattern);
             }
             Some(files)
         } else {
@@ -383,21 +359,21 @@ fn cmd_search(
 
             let changes = stats.added + stats.changed;
             if changes > 0 && !json && !files_only {
-                eprintln!("{} Indexed {} matching files", "✓".green(), changes);
+                eprintln!("✅ Indexed {} matching files", changes);
             }
         } else {
             // Full indexing when no filters
             let needs_index = !index_exists(&path);
 
             if needs_index {
-                eprintln!("{} No index found, building...", "●".blue());
+                eprintln!("📂 Building index...");
             }
 
             let stats = builder.index(None, false)?;
 
             let changes = stats.added + stats.changed + stats.deleted;
             if changes > 0 && !json && !files_only {
-                eprintln!("{} Indexed {} files", "✓".green(), changes);
+                eprintln!("✅ Indexed {} files", changes);
             }
         }
     }

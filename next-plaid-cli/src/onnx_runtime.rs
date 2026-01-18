@@ -165,7 +165,7 @@ fn download_onnx_runtime() -> Result<PathBuf> {
 
     let (url, archive_lib_path) = get_download_url()?;
 
-    eprintln!("Downloading ONNX Runtime {}...", ORT_VERSION);
+    eprintln!("⚙️  Runtime: ONNX {}", ORT_VERSION);
 
     // Download archive
     let response = ureq::get(&url)
@@ -177,8 +177,6 @@ fn download_onnx_runtime() -> Result<PathBuf> {
 
     // Extract library from archive
     extract_library(&archive_data, &archive_lib_path, &lib_path)?;
-
-    eprintln!("ONNX Runtime installed to {}", lib_path.display());
     Ok(lib_path)
 }
 

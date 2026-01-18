@@ -11,6 +11,9 @@ const STATE_FILE: &str = "state.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IndexState {
+    /// CLI version that created/updated this index
+    #[serde(default)]
+    pub cli_version: String,
     pub files: HashMap<PathBuf, FileInfo>,
 }
 
@@ -35,8 +38,12 @@ impl IndexState {
         let index_dir = project_root.join(INDEX_DIR);
         fs::create_dir_all(&index_dir)?;
 
+        // Update CLI version before saving
+        let mut state = self.clone();
+        state.cli_version = env!("CARGO_PKG_VERSION").to_string();
+
         let state_path = index_dir.join(STATE_FILE);
-        let content = serde_json::to_string_pretty(self)?;
+        let content = serde_json::to_string_pretty(&state)?;
         fs::write(&state_path, content)?;
         Ok(())
     }

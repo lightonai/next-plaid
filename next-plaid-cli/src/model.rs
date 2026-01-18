@@ -24,7 +24,7 @@ pub fn ensure_model(model_id: Option<&str>) -> Result<PathBuf> {
     }
 
     // Download from HuggingFace
-    eprintln!("Loading {}...", model_id);
+    eprintln!("🤖 Model: {}", model_id);
     let api = Api::new()?;
     let repo = api.model(model_id.to_string());
 
