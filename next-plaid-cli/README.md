@@ -9,7 +9,7 @@ Semantic code search powered by ColBERT multi-vector embeddings and the PLAID al
 - **Grep-like Flags**: Familiar `-r`, `--include`, `-l` flags for filtering results
 - **Selective Indexing**: When using filters, only matching files are indexed
 - **5-Layer Code Analysis**: Rich embeddings from AST, call graph, control flow, data flow, and dependencies
-- **File Path Aware**: Shortened file paths are included in embeddings for path-based semantic search
+- **File Path Aware**: Normalized file paths are included in embeddings for path-based semantic search
 - **18 Languages**: Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Swift, Scala, PHP, Lua, Elixir, Haskell, OCaml
 - **Config & Docs**: Also indexes YAML, TOML, JSON, Markdown, Dockerfile, Makefile, shell scripts
 - **Incremental Updates**: Only re-indexes changed files using content hashing
@@ -260,7 +260,7 @@ Each code unit (function, method, class) is analyzed across 5 layers:
 | **3. Control Flow** | Complexity, loops, branches, error handling   | `complexity: 5, has_loops: true`         |
 | **4. Data Flow**    | Variables defined                             | `variables: [result, temp, config]`      |
 | **5. Dependencies** | Imports used                                  | `imports: [serde, tokio]`                |
-| **+ File Path**     | Shortened path (last 3 dirs + filename)       | `project/src/utils/parser.rs`            |
+| **+ File Path**     | Normalized path for embedding + original filename | `project / src / utils / parser parser.rs` |
 
 This rich context enables semantic understanding beyond simple text matching.
 
@@ -284,7 +284,7 @@ pub fn search(&self, query: &str, top_k: usize, subset: Option<&[i64]>) -> Resul
     let query_embeddings = self.model.encode_queries(&[query])?;
     ...
 }
-File: next-plaid-cli/src/index/mod.rs
+File: next plaid cli / src / index / mod mod.rs
 ```
 
 This structured format allows the model to understand:
@@ -294,7 +294,15 @@ This structured format allows the model to understand:
 - **Where** it fits (calls, called_by, imports)
 - **Location** in the codebase (file path)
 
-The file path is shortened to include only the filename and up to 3 parent directories, making it compact enough for efficient LLM tokenization while preserving meaningful context.
+The file path is processed for better embedding quality:
+1. Shortened to include only the filename and up to 3 parent directories
+2. Path separators (`/`, `\`) are surrounded by spaces and normalized to `/`
+3. Underscores, hyphens, and dots are replaced with spaces
+4. CamelCase is split into separate words (e.g., `MyClass` → `my class`)
+5. The entire path is lowercased
+6. The original filename is appended at the end for exact matching
+
+This normalization helps the embedding model better understand path components as separate semantic tokens.
 
 ## Supported Languages
 
