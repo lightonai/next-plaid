@@ -369,24 +369,58 @@ fn is_function_node(kind: &str, lang: Language) -> bool {
 fn is_class_node(kind: &str, lang: Language) -> bool {
     match lang {
         Language::Python => kind == "class_definition",
-        Language::Rust => kind == "impl_item" || kind == "struct_item",
-        Language::TypeScript | Language::JavaScript => kind == "class_declaration",
+        Language::Rust => matches!(
+            kind,
+            "impl_item" | "struct_item" | "enum_item" | "trait_item"
+        ),
+        Language::TypeScript => matches!(
+            kind,
+            "class_declaration"
+                | "interface_declaration"
+                | "type_alias_declaration"
+                | "enum_declaration"
+        ),
+        Language::JavaScript => kind == "class_declaration",
         Language::Go => kind == "type_declaration",
-        Language::Java => kind == "class_declaration" || kind == "interface_declaration",
-        Language::Cpp => kind == "class_specifier" || kind == "struct_specifier",
+        Language::Java => matches!(
+            kind,
+            "class_declaration" | "interface_declaration" | "enum_declaration"
+        ),
+        Language::Cpp => matches!(
+            kind,
+            "class_specifier" | "struct_specifier" | "enum_specifier"
+        ),
         Language::Ruby => kind == "class" || kind == "module",
-        Language::CSharp => kind == "class_declaration" || kind == "interface_declaration",
+        Language::CSharp => matches!(
+            kind,
+            "class_declaration"
+                | "interface_declaration"
+                | "enum_declaration"
+                | "struct_declaration"
+        ),
         // Additional languages
-        Language::Kotlin => matches!(kind, "class_declaration" | "object_declaration"),
+        Language::Kotlin => matches!(
+            kind,
+            "class_declaration" | "object_declaration" | "interface_declaration"
+        ),
         Language::Swift => matches!(
             kind,
-            "class_declaration" | "struct_declaration" | "protocol_declaration"
+            "class_declaration"
+                | "struct_declaration"
+                | "protocol_declaration"
+                | "enum_declaration"
         ),
         Language::Scala => matches!(
             kind,
             "class_definition" | "object_definition" | "trait_definition"
         ),
-        Language::Php => kind == "class_declaration",
+        Language::Php => matches!(
+            kind,
+            "class_declaration"
+                | "interface_declaration"
+                | "trait_declaration"
+                | "enum_declaration"
+        ),
         Language::Lua => false,             // Lua doesn't have classes
         Language::Elixir => kind == "call", // defmodule is a call
         Language::Haskell => matches!(kind, "type_alias" | "newtype" | "adt"),
