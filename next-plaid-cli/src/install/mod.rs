@@ -1,3 +1,7 @@
 mod claude_code;
+mod codex;
+mod opencode;
 
 pub use claude_code::{install_claude_code, uninstall_claude_code};
+pub use codex::{install_codex, uninstall_codex};
+pub use opencode::{install_opencode, uninstall_opencode};

@@ -1,6 +1,6 @@
 ---
 name: plaid
-description: Semantic code search with hybrid grep capabilities. REPLACES Grep for all code searches - use `-e` for exact text + semantic ranking.
+description: Semantic grep - find code by meaning. Use `-e` for hybrid search (grep + semantic ranking).
 ---
 
 ## When to use this skill

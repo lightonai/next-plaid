@@ -6,9 +6,9 @@ use colored::Colorize;
 
 use next_plaid_cli::{
     ensure_model, ensure_onnx_runtime, find_parent_index, get_index_dir_for_project,
-    get_plaid_data_dir, get_vector_index_path, index_exists, install_claude_code, is_text_format,
-    uninstall_claude_code, Config, IndexBuilder, IndexState, ProjectMetadata, Searcher,
-    DEFAULT_MODEL,
+    get_plaid_data_dir, get_vector_index_path, index_exists, install_claude_code, install_codex,
+    install_opencode, is_text_format, uninstall_claude_code, uninstall_codex, uninstall_opencode,
+    Config, IndexBuilder, IndexState, ProjectMetadata, Searcher, DEFAULT_MODEL,
 };
 
 const MAIN_HELP: &str = "\
@@ -56,18 +56,15 @@ ENVIRONMENT:
 #[command(
     name = "plaid",
     version,
-    about = "Semantic code search powered by ColBERT",
-    long_about = "Semantic code search powered by ColBERT neural embeddings.\n\n\
-        Unlike grep or ripgrep, plaid understands the MEANING of your query.\n\
-        Ask questions in natural language and find relevant code even when\n\
-        the exact keywords don't match.\n\n\
-        Features:\n\
-        • Natural language queries (\"function that validates email\")\n\
-        • Multi-language support (18+ programming languages)\n\
-        • Grep-like filtering (--include, -e, -l flags)\n\
-        • Hybrid search (combine text patterns with semantic ranking)\n\
-        • Incremental indexing (only re-indexes changed files)\n\
-        • Smart parent detection (search subdirs using parent index)",
+    about = "Semantic grep - find code by meaning, not just text",
+    long_about = "Semantic grep - find code by meaning, not just text.\n\n\
+        plaid is grep that understands what you're looking for. Search with\n\
+        natural language like \"error handling logic\" and find relevant code\n\
+        even when keywords don't match exactly.\n\n\
+        • Hybrid search: grep + semantic ranking with -e flag\n\
+        • Natural language queries\n\
+        • 18+ languages supported\n\
+        • Incremental indexing",
     after_help = MAIN_HELP,
     args_conflicts_with_subcommands = true
 )]
@@ -131,6 +128,30 @@ struct Cli {
     /// Only search code files, skip text/config files (md, txt, yaml, json, toml, etc.)
     #[arg(long)]
     code_only: bool,
+
+    /// Install plaid as a plugin for Claude Code
+    #[arg(long = "claude-code")]
+    install_claude_code: bool,
+
+    /// Uninstall plaid plugin from Claude Code
+    #[arg(long = "uninstall-claude-code")]
+    uninstall_claude_code: bool,
+
+    /// Install plaid for OpenCode
+    #[arg(long = "opencode")]
+    install_opencode: bool,
+
+    /// Uninstall plaid from OpenCode
+    #[arg(long = "uninstall-opencode")]
+    uninstall_opencode: bool,
+
+    /// Install plaid for Codex
+    #[arg(long = "codex")]
+    install_codex: bool,
+
+    /// Uninstall plaid from Codex
+    #[arg(long = "uninstall-codex")]
+    uninstall_codex: bool,
 }
 
 const SEARCH_HELP: &str = "\
@@ -271,20 +292,36 @@ enum Commands {
         /// HuggingFace model ID (e.g., "lightonai/GTE-ModernColBERT-v1-onnx")
         model: String,
     },
-
-    /// Install plaid as a plugin for Claude Code
-    #[command(name = "install-claude-code")]
-    InstallClaudeCode,
-
-    /// Uninstall plaid plugin from Claude Code
-    #[command(name = "uninstall-claude-code")]
-    UninstallClaudeCode,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Handle global flags before subcommands
+    if cli.install_claude_code {
+        return install_claude_code();
+    }
+
+    if cli.uninstall_claude_code {
+        return uninstall_claude_code();
+    }
+
+    if cli.install_opencode {
+        return install_opencode();
+    }
+
+    if cli.uninstall_opencode {
+        return uninstall_opencode();
+    }
+
+    if cli.install_codex {
+        return install_codex();
+    }
+
+    if cli.uninstall_codex {
+        return uninstall_codex();
+    }
+
     if cli.stats {
         return cmd_stats();
     }
@@ -296,10 +333,7 @@ fn main() -> Result<()> {
     // Ensure ONNX Runtime is available (downloads if needed)
     let skip_onnx = matches!(
         cli.command,
-        Some(Commands::Status { .. })
-            | Some(Commands::Clear { .. })
-            | Some(Commands::InstallClaudeCode)
-            | Some(Commands::UninstallClaudeCode)
+        Some(Commands::Status { .. }) | Some(Commands::Clear { .. })
     );
     if !skip_onnx {
         ensure_onnx_runtime()?;
@@ -335,8 +369,6 @@ fn main() -> Result<()> {
         Some(Commands::Status { path }) => cmd_status(&path),
         Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
         Some(Commands::SetModel { model }) => cmd_set_model(&model),
-        Some(Commands::InstallClaudeCode) => install_claude_code(),
-        Some(Commands::UninstallClaudeCode) => uninstall_claude_code(),
         None => {
             // Default: run search if query is provided
             if let Some(query) = cli.query {
