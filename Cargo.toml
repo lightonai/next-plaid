@@ -48,7 +48,6 @@ targets = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
     "x86_64-pc-windows-msvc",
 ]
 # Whether to install an updater program
@@ -57,4 +56,4 @@ install-updater = false
 # Custom runners for different targets
 [workspace.metadata.dist.github-custom-runners]
 aarch64-apple-darwin = "macos-14"
-x86_64-apple-darwin = "macos-13"
+x86_64-apple-darwin = "macos-15"
