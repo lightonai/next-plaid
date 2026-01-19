@@ -428,11 +428,24 @@ fn cmd_search(
     // Ensure model is downloaded
     let model_path = ensure_model(Some(&model))?;
 
-    // Check for parent index unless --new-index is specified
+    // Check for parent index unless:
+    // - --new-index is specified
+    // - The resolved path is outside the current directory (external project)
     let parent_info = if new_index {
         None
     } else {
-        find_parent_index(&path)?
+        // If the resolved path is outside the CWD (whether specified as absolute
+        // or relative like "../other-project"), treat it as a separate project
+        // and don't use parent indexes.
+        let is_external_project = std::env::current_dir()
+            .map(|cwd| !path.starts_with(&cwd))
+            .unwrap_or(false);
+
+        if is_external_project {
+            None
+        } else {
+            find_parent_index(&path)?
+        }
     };
 
     // Determine effective project root and subdirectory filter
