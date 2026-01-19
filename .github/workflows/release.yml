@@ -278,10 +278,39 @@ jobs:
 
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 
+  # Publish to crates.io
+  publish-crates-io:
+    needs:
+      - plan
+      - host
+    if: ${{ always() && needs.host.result == 'success' && needs.plan.outputs.publishing == 'true' }}
+    runs-on: "ubuntu-22.04"
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish next-plaid
+        run: cargo publish -p next-plaid --no-verify
+        continue-on-error: true  # May already be published
+      - name: Wait for crates.io index
+        run: sleep 30
+      - name: Publish next-plaid-onnx
+        run: cargo publish -p next-plaid-onnx --no-verify
+        continue-on-error: true  # May already be published
+      - name: Wait for crates.io index
+        run: sleep 30
+      - name: Publish next-plaid-cli
+        run: cargo publish -p next-plaid-cli --no-verify
+
   announce:
     needs:
       - plan
       - host
+      - publish-crates-io
     # use "always() && ..." to allow us to wait for all publish jobs while
     # still allowing individual publish jobs to skip themselves (for prereleases).
     # "host" however must run to completion, no skipping allowed!
