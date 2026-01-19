@@ -2062,7 +2062,7 @@ dependencies = [
 
 [[package]]
 name = "next-plaid"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "accelerate-src",
  "approx",
@@ -2121,7 +2121,7 @@ dependencies = [
 
 [[package]]
 name = "next-plaid-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2168,7 +2168,7 @@ dependencies = [
 
 [[package]]
 name = "next-plaid-onnx"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "glob",
