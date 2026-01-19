@@ -3,37 +3,7 @@ use colored::Colorize;
 use std::fs;
 use std::path::PathBuf;
 
-/// The plaid skill definition for Codex AGENTS.md
-const PLAID_SKILL: &str = r#"
-## plaid - Semantic Code Search CLI
-
-**Description:** Semantic grep - find code by meaning, not just text. A CLI tool for searching your codebase using natural language.
-
-**Installation:** Install via cargo: `cargo install next-plaid-cli`
-
-**Usage:**
-```bash
-# Semantic search - find code by meaning
-plaid "error handling logic"
-plaid "authentication flow"
-
-# Hybrid search - grep pattern + semantic ranking
-plaid -e "async" "concurrent request handling"
-
-# Filter by file type
-plaid --include="*.rs" "database queries"
-
-# More results for exploration
-plaid "config loading" -k 20
-```
-
-**When to use:**
-- Use plaid for ALL code searches instead of grep
-- Natural language queries work best: describe what you're looking for
-- Use `-e` flag for hybrid search when you know a specific text pattern exists
-- Increase `-k` when exploring (e.g., `-k 20` or `-k 30`)
-
-"#;
+use super::SKILL_MD;
 
 /// Marker to identify plaid section in AGENTS.md
 const PLAID_MARKER_START: &str = "<!-- PLAID_START -->";
@@ -79,7 +49,7 @@ fn add_to_agents_md() -> Result<()> {
     // Add plaid section
     let plaid_section = format!(
         "{}\n{}\n{}\n",
-        PLAID_MARKER_START, PLAID_SKILL, PLAID_MARKER_END
+        PLAID_MARKER_START, SKILL_MD, PLAID_MARKER_END
     );
     content.push_str(&plaid_section);
 

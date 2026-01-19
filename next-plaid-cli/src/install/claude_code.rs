@@ -18,7 +18,8 @@ const MIN_CLAUDE_VERSION: &str = "2.0.36";
 const MARKETPLACE_JSON: &str = include_str!("../../../.claude-plugin/marketplace.json");
 const PLUGIN_JSON: &str = include_str!("../../../plugins/plaid/.claude-plugin/plugin.json");
 const HOOK_JSON: &str = include_str!("../../../plugins/plaid/hooks/hook.json");
-const SKILL_MD: &str = include_str!("../../../plugins/plaid/skills/plaid/SKILL.md");
+
+use super::SKILL_MD;
 
 /// Get the marketplace directory path (in user's data directory)
 fn get_marketplace_dir() -> Result<PathBuf> {
