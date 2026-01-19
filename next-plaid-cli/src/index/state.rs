@@ -64,3 +64,151 @@ pub fn get_mtime(path: &Path) -> Result<u64> {
         .as_secs();
     Ok(mtime)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_index_state_default() {
+        let state = IndexState::default();
+        assert!(state.cli_version.is_empty());
+        assert!(state.files.is_empty());
+    }
+
+    #[test]
+    fn test_file_info_serialization() {
+        let info = FileInfo {
+            content_hash: 12345678901234567890,
+            mtime: 1700000000,
+        };
+
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("12345678901234567890"));
+        assert!(json.contains("1700000000"));
+
+        let deserialized: FileInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.content_hash, 12345678901234567890);
+        assert_eq!(deserialized.mtime, 1700000000);
+    }
+
+    #[test]
+    fn test_index_state_serialization() {
+        let mut files = HashMap::new();
+        files.insert(
+            PathBuf::from("src/main.rs"),
+            FileInfo {
+                content_hash: 123456,
+                mtime: 1700000000,
+            },
+        );
+        let state = IndexState {
+            cli_version: "1.0.0".to_string(),
+            files,
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("1.0.0"));
+        assert!(json.contains("src/main.rs"));
+
+        let deserialized: IndexState = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.cli_version, "1.0.0");
+        assert!(deserialized
+            .files
+            .contains_key(&PathBuf::from("src/main.rs")));
+    }
+
+    #[test]
+    fn test_index_state_load_nonexistent() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = IndexState::load(temp_dir.path());
+        assert!(result.is_ok());
+        let state = result.unwrap();
+        assert!(state.files.is_empty());
+    }
+
+    #[test]
+    fn test_index_state_save_and_load() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let mut state = IndexState::default();
+        state.files.insert(
+            PathBuf::from("test.rs"),
+            FileInfo {
+                content_hash: 999999,
+                mtime: 1700000000,
+            },
+        );
+
+        // Save
+        state.save(temp_dir.path()).unwrap();
+
+        // Load and verify
+        let loaded = IndexState::load(temp_dir.path()).unwrap();
+        assert!(loaded.files.contains_key(&PathBuf::from("test.rs")));
+        let file_info = loaded.files.get(&PathBuf::from("test.rs")).unwrap();
+        assert_eq!(file_info.content_hash, 999999);
+
+        // CLI version should be set after saving
+        assert!(!loaded.cli_version.is_empty());
+    }
+
+    #[test]
+    fn test_hash_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+
+        // Create a file with known content
+        let mut file = fs::File::create(&file_path).unwrap();
+        file.write_all(b"Hello, World!").unwrap();
+
+        let hash = hash_file(&file_path).unwrap();
+        assert!(hash > 0);
+
+        // Same content should produce same hash
+        let hash2 = hash_file(&file_path).unwrap();
+        assert_eq!(hash, hash2);
+    }
+
+    #[test]
+    fn test_hash_file_different_content() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let file1 = temp_dir.path().join("file1.txt");
+        let file2 = temp_dir.path().join("file2.txt");
+
+        fs::write(&file1, "Content A").unwrap();
+        fs::write(&file2, "Content B").unwrap();
+
+        let hash1 = hash_file(&file1).unwrap();
+        let hash2 = hash_file(&file2).unwrap();
+
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_get_mtime() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+
+        fs::write(&file_path, "test content").unwrap();
+
+        let mtime = get_mtime(&file_path).unwrap();
+        // mtime should be a reasonable Unix timestamp (after year 2000)
+        assert!(mtime > 946684800); // Jan 1, 2000
+    }
+
+    #[test]
+    fn test_hash_file_nonexistent() {
+        let result = hash_file(Path::new("/nonexistent/file.txt"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_mtime_nonexistent() {
+        let result = get_mtime(Path::new("/nonexistent/file.txt"));
+        assert!(result.is_err());
+    }
+}

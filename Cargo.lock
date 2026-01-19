@@ -2023,6 +2023,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tar",
+ "tempfile",
  "thiserror 1.0.69",
  "tree-sitter",
  "tree-sitter-c",

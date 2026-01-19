@@ -70,3 +70,80 @@ pub fn get_config_path() -> Result<PathBuf> {
         .context("Could not determine config directory")?;
     Ok(parent.join(CONFIG_FILE))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+        assert!(config.default_model.is_none());
+        assert!(config.get_default_model().is_none());
+    }
+
+    #[test]
+    fn test_config_set_default_model() {
+        let mut config = Config::default();
+        config.set_default_model("test-model");
+        assert_eq!(config.get_default_model(), Some("test-model"));
+    }
+
+    #[test]
+    fn test_config_set_default_model_string() {
+        let mut config = Config::default();
+        config.set_default_model(String::from("another-model"));
+        assert_eq!(config.get_default_model(), Some("another-model"));
+    }
+
+    #[test]
+    fn test_config_serialization() {
+        let mut config = Config::default();
+        config.set_default_model("lightonai/GTE-ModernColBERT-v1-onnx");
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("lightonai/GTE-ModernColBERT-v1-onnx"));
+
+        let deserialized: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized.get_default_model(),
+            Some("lightonai/GTE-ModernColBERT-v1-onnx")
+        );
+    }
+
+    #[test]
+    fn test_config_serialization_empty() {
+        let config = Config::default();
+        let json = serde_json::to_string(&config).unwrap();
+        // Should not contain default_model key when None (skip_serializing_if)
+        assert!(!json.contains("default_model"));
+
+        let deserialized: Config = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.get_default_model().is_none());
+    }
+
+    #[test]
+    fn test_config_deserialization_missing_field() {
+        // Config should deserialize even if default_model is missing
+        let json = "{}";
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.get_default_model().is_none());
+    }
+
+    #[test]
+    fn test_config_deserialization_null_field() {
+        // Config should handle explicit null
+        let json = r#"{"default_model": null}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.get_default_model().is_none());
+    }
+
+    #[test]
+    fn test_config_path_exists() {
+        // Just verify the function doesn't panic
+        let result = get_config_path();
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(path.to_string_lossy().contains("config.json"));
+    }
+}

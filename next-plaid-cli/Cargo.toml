@@ -78,6 +78,9 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 # === Ndarray (for embeddings) ===
 ndarray = "0.16"
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 default = []
 cuda = ["next-plaid-onnx/cuda"]
