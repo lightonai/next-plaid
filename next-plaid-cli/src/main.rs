@@ -6,8 +6,8 @@ use colored::Colorize;
 
 use next_plaid_cli::{
     ensure_model, ensure_onnx_runtime, find_parent_index, get_index_dir_for_project,
-    get_plaid_data_dir, get_vector_index_path, index_exists, Config, IndexBuilder, ProjectMetadata,
-    Searcher, DEFAULT_MODEL,
+    get_plaid_data_dir, get_vector_index_path, index_exists, install_claude_code,
+    uninstall_claude_code, Config, IndexBuilder, ProjectMetadata, Searcher, DEFAULT_MODEL,
 };
 
 const MAIN_HELP: &str = "\
@@ -253,6 +253,14 @@ enum Commands {
         /// HuggingFace model ID (e.g., "lightonai/GTE-ModernColBERT-v1-onnx")
         model: String,
     },
+
+    /// Install plaid as a plugin for Claude Code
+    #[command(name = "install-claude-code")]
+    InstallClaudeCode,
+
+    /// Uninstall plaid plugin from Claude Code
+    #[command(name = "uninstall-claude-code")]
+    UninstallClaudeCode,
 }
 
 fn main() -> Result<()> {
@@ -261,7 +269,10 @@ fn main() -> Result<()> {
     // Ensure ONNX Runtime is available (downloads if needed)
     let skip_onnx = matches!(
         cli.command,
-        Some(Commands::Status { .. }) | Some(Commands::Clear { .. })
+        Some(Commands::Status { .. })
+            | Some(Commands::Clear { .. })
+            | Some(Commands::InstallClaudeCode)
+            | Some(Commands::UninstallClaudeCode)
     );
     if !skip_onnx {
         ensure_onnx_runtime()?;
@@ -295,6 +306,8 @@ fn main() -> Result<()> {
         Some(Commands::Status { path }) => cmd_status(&path),
         Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
         Some(Commands::SetModel { model }) => cmd_set_model(&model),
+        Some(Commands::InstallClaudeCode) => install_claude_code(),
+        Some(Commands::UninstallClaudeCode) => uninstall_claude_code(),
         None => {
             // Default: run search if query is provided
             if let Some(query) = cli.query {

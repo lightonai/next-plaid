@@ -130,10 +130,15 @@ plaid -r -l --include="*.ts" "fetch API" .
 **Supported patterns for `--include`:**
 | Pattern | Matches |
 |---------|---------|
-| `*.py` | Files with `.py` extension |
+| `*.py` | Files with `.py` extension (in any directory) |
+| `**/*.py` | Same as above (explicit recursive) |
+| `src/**/*.rs` | `.rs` files under any `src/` directory |
+| `**/.github/**/*` | All files in `.github/` directories |
 | `*test*` | Files containing "test" in name |
-| `main*` | Files starting with "main" |
+| `*_test.go` | Go test files (suffix pattern) |
 | `*.spec.ts` | Files ending with `.spec.ts` |
+
+The `--include` flag supports full glob patterns including `**` for recursive directory matching. Multiple patterns can be combined (OR logic).
 
 ### Hybrid Search: Text + Semantic
 

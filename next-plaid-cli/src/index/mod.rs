@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use next_plaid::{
@@ -844,61 +845,41 @@ pub struct SearchResult {
     pub score: f32,
 }
 
-/// Check if a file path matches any of the glob patterns
-fn matches_glob_pattern(path: &Path, patterns: &[String]) -> bool {
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    let path_str = path.to_string_lossy();
+/// Build a GlobSet from patterns for efficient matching
+fn build_glob_set(patterns: &[String]) -> Option<GlobSet> {
+    if patterns.is_empty() {
+        return None;
+    }
 
+    let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
-        // Handle simple glob patterns like "*.py" or "*.rs"
-        if let Some(ext_pattern) = pattern.strip_prefix("*.") {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if ext == ext_pattern {
-                    return true;
-                }
-            }
-        } else if pattern.starts_with('*') && pattern.ends_with('*') {
-            // *term* - contains match
-            let term = &pattern[1..pattern.len() - 1];
-            if file_name.contains(term) || path_str.contains(term) {
-                return true;
-            }
-        } else if let Some(suffix) = pattern.strip_prefix('*') {
-            // *suffix - ends with
-            if file_name.ends_with(suffix) {
-                return true;
-            }
-        } else if let Some(prefix) = pattern.strip_suffix('*') {
-            // prefix* - starts with
-            if file_name.starts_with(prefix) {
-                return true;
-            }
+        // Prepend **/ if pattern doesn't start with ** or /
+        // This makes "*.rs" match files in any directory
+        let normalized = if !pattern.starts_with("**/") && !pattern.starts_with('/') {
+            format!("**/{}", pattern)
         } else {
-            // Exact match or substring
-            if file_name == pattern || path_str.contains(pattern) {
-                return true;
-            }
+            pattern.clone()
+        };
+
+        if let Ok(glob) = Glob::new(&normalized) {
+            builder.add(glob);
         }
     }
-    false
+
+    builder.build().ok()
 }
 
-/// Convert a glob pattern to SQL LIKE pattern
-/// - `*` becomes `%` (match any sequence)
-/// - `?` becomes `_` (match single char)
-/// - `%` and `_` are escaped
-fn glob_to_sql_like(pattern: &str) -> String {
-    let mut result = String::new();
-    for c in pattern.chars() {
-        match c {
-            '*' => result.push('%'),
-            '?' => result.push('_'),
-            '%' => result.push_str("\\%"),
-            '_' => result.push_str("\\_"),
-            _ => result.push(c),
-        }
+/// Check if a file path matches any of the glob patterns
+fn matches_glob_pattern(path: &Path, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return true;
     }
-    result
+
+    let Some(glob_set) = build_glob_set(patterns) else {
+        return false;
+    };
+
+    glob_set.is_match(path)
 }
 
 pub struct Searcher {
@@ -964,28 +945,36 @@ impl Searcher {
         Ok(subset)
     }
 
-    /// Get document IDs matching the given file patterns using SQL LIKE
+    /// Get document IDs matching the given file patterns using globset
     pub fn filter_by_file_patterns(&self, patterns: &[String]) -> Result<Vec<i64>> {
         if patterns.is_empty() {
             return Ok(vec![]);
         }
 
-        // Build SQL condition with OR for multiple patterns
-        let mut conditions = Vec::new();
-        let mut params = Vec::new();
+        // Build globset from patterns
+        let Some(glob_set) = build_glob_set(patterns) else {
+            return Ok(vec![]);
+        };
 
-        for pattern in patterns {
-            // Convert glob pattern to SQL LIKE pattern
-            let like_pattern = glob_to_sql_like(pattern);
-            conditions.push("file LIKE ?");
-            params.push(serde_json::json!(like_pattern));
-        }
+        // Get all metadata from the index
+        let all_metadata = filtering::get(&self.index_path, None, &[], None).unwrap_or_default();
 
-        let condition = conditions.join(" OR ");
-        let subset =
-            filtering::where_condition(&self.index_path, &condition, &params).unwrap_or_default();
+        // Filter metadata by matching file paths against glob patterns
+        let matching_ids: Vec<i64> = all_metadata
+            .into_iter()
+            .filter_map(|row| {
+                let doc_id = row.get("_id")?.as_i64()?;
+                let file = row.get("file")?.as_str()?;
+                let path = Path::new(file);
+                if glob_set.is_match(path) {
+                    Some(doc_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-        Ok(subset)
+        Ok(matching_ids)
     }
 
     /// Get document IDs for code units in the given files (exact match)
@@ -1078,4 +1067,83 @@ impl Searcher {
 /// Check if an index exists for the given project
 pub fn index_exists(project_root: &Path) -> bool {
     paths::index_exists(project_root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_glob_simple_extension() {
+        let patterns = vec!["*.rs".to_string()];
+        assert!(matches_glob_pattern(Path::new("src/main.rs"), &patterns));
+        assert!(matches_glob_pattern(
+            Path::new("nested/deep/file.rs"),
+            &patterns
+        ));
+        assert!(!matches_glob_pattern(Path::new("src/main.py"), &patterns));
+    }
+
+    #[test]
+    fn test_glob_recursive_double_star() {
+        let patterns = vec!["**/*.rs".to_string()];
+        assert!(matches_glob_pattern(Path::new("src/main.rs"), &patterns));
+        assert!(matches_glob_pattern(Path::new("a/b/c/d.rs"), &patterns));
+        assert!(!matches_glob_pattern(Path::new("main.py"), &patterns));
+    }
+
+    #[test]
+    fn test_glob_directory_pattern() {
+        let patterns = vec!["src/**/*.rs".to_string()];
+        assert!(matches_glob_pattern(Path::new("src/main.rs"), &patterns));
+        assert!(matches_glob_pattern(
+            Path::new("src/index/mod.rs"),
+            &patterns
+        ));
+        // Matches anywhere src/ appears due to **/ prefix
+        assert!(matches_glob_pattern(
+            Path::new("project/src/main.rs"),
+            &patterns
+        ));
+        assert!(!matches_glob_pattern(Path::new("lib/main.rs"), &patterns));
+    }
+
+    #[test]
+    fn test_glob_github_workflows() {
+        let patterns = vec!["**/.github/**/*".to_string()];
+        assert!(matches_glob_pattern(
+            Path::new(".github/workflows/ci.yml"),
+            &patterns
+        ));
+        assert!(matches_glob_pattern(
+            Path::new("project/.github/actions/setup.yml"),
+            &patterns
+        ));
+        assert!(!matches_glob_pattern(Path::new("src/main.rs"), &patterns));
+    }
+
+    #[test]
+    fn test_glob_multiple_patterns() {
+        let patterns = vec!["*.rs".to_string(), "*.py".to_string()];
+        assert!(matches_glob_pattern(Path::new("main.rs"), &patterns));
+        assert!(matches_glob_pattern(Path::new("main.py"), &patterns));
+        assert!(!matches_glob_pattern(Path::new("main.js"), &patterns));
+    }
+
+    #[test]
+    fn test_glob_test_files() {
+        let patterns = vec!["*_test.go".to_string()];
+        assert!(matches_glob_pattern(
+            Path::new("pkg/main_test.go"),
+            &patterns
+        ));
+        assert!(!matches_glob_pattern(Path::new("pkg/main.go"), &patterns));
+    }
+
+    #[test]
+    fn test_glob_empty_patterns() {
+        let patterns: Vec<String> = vec![];
+        // Empty patterns should match everything
+        assert!(matches_glob_pattern(Path::new("any/file.rs"), &patterns));
+    }
 }

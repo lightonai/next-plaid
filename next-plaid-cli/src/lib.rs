@@ -8,6 +8,7 @@
 pub mod config;
 pub mod embed;
 pub mod index;
+pub mod install;
 pub mod model;
 pub mod onnx_runtime;
 pub mod parser;
@@ -22,3 +23,6 @@ pub use index::{index_exists, IndexBuilder, SearchResult, Searcher, UpdatePlan, 
 pub use model::{ensure_model, DEFAULT_MODEL};
 pub use onnx_runtime::ensure_onnx_runtime;
 pub use parser::{build_call_graph, detect_language, extract_units, CodeUnit, Language, UnitType};
+
+// Install commands for AI coding tools
+pub use install::{install_claude_code, uninstall_claude_code};

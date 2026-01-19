@@ -2012,6 +2012,7 @@ dependencies = [
  "colored",
  "dirs 5.0.1",
  "flate2",
+ "globset",
  "hf-hub",
  "ignore",
  "indicatif 0.17.11",
