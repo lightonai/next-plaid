@@ -11,9 +11,10 @@ description: Semantic code search with hybrid grep capabilities. REPLACES Grep f
 | ------------------------- | -------------------------------------- |
 | Find by intent            | `plaid "error handling logic" -k 10`   |
 | Find exact text + context | `plaid -e "className" "how it's used"` |
-| Find with regex pattern   | `plaid -e "get\|set" -E "accessors"`   |
 | Find in specific files    | `plaid --include="*.ts" "query"`       |
 | List matching files only  | `plaid -l "query"`                     |
+
+Find with regex pattern: `plaid -e "get|set" -E "accessors"`
 
 ## Hybrid search: the key feature
 
