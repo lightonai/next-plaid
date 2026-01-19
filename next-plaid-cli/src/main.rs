@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -531,6 +532,29 @@ fn print_highlighted_content(
     }
 }
 
+/// Group results by file, maintaining relevance order
+/// Files are ordered by their most relevant result, and within each file,
+/// results are shown in order of relevance
+fn group_results_by_file<'a>(
+    results: &'a [&next_plaid_cli::SearchResult],
+) -> Vec<(PathBuf, Vec<&'a next_plaid_cli::SearchResult>)> {
+    let mut file_order: Vec<PathBuf> = Vec::new();
+    let mut file_results: HashMap<PathBuf, Vec<&'a next_plaid_cli::SearchResult>> = HashMap::new();
+
+    for result in results {
+        let file = result.unit.file.clone();
+        if !file_results.contains_key(&file) {
+            file_order.push(file.clone());
+        }
+        file_results.entry(file).or_default().push(result);
+    }
+
+    file_order
+        .into_iter()
+        .filter_map(|file| file_results.remove(&file).map(|results| (file, results)))
+        .collect()
+}
+
 /// Compute boosted score based on literal query matches in code unit
 fn compute_final_score(semantic_score: f32, query: &str, unit: &next_plaid_cli::CodeUnit) -> f32 {
     let mut score = semantic_score;
@@ -838,71 +862,81 @@ fn cmd_search(
 
         let mut current_index = 1;
 
-        // Display code results first
+        // Display code results first, grouped by file
         if !code_results.is_empty() {
             println!("{}", "code:".green().bold());
-            for result in &code_results {
-                println!(
-                    "{} {}",
-                    format!("{}.", current_index).dimmed(),
-                    result.unit.name.bold()
-                );
-                println!(
-                    "   {} {}:{}-{}",
-                    "→".blue(),
-                    result.unit.file.display(),
-                    result.unit.line,
-                    result.unit.end_line
-                );
-                if show_content {
-                    // Read and display the function content with syntax highlighting (limited to 50 lines)
-                    if let Ok(content) = std::fs::read_to_string(&result.unit.file) {
-                        let lines: Vec<&str> = content.lines().collect();
-                        let start = result.unit.line.saturating_sub(1);
-                        let end = result.unit.end_line.min(lines.len());
-                        if start < lines.len() {
-                            print_highlighted_content(&result.unit.file, &lines, start, 50, end);
+            let grouped = group_results_by_file(&code_results);
+            for (file, file_results) in grouped {
+                // Print file header
+                println!("{}", file.display().to_string().cyan());
+                for result in file_results {
+                    println!(
+                        "   {} {} {}",
+                        format!("{}.", current_index).dimmed(),
+                        result.unit.name.bold(),
+                        format!(":{}-{}", result.unit.line, result.unit.end_line).dimmed()
+                    );
+                    if show_content {
+                        // Read and display the function content with syntax highlighting (limited to 50 lines)
+                        if let Ok(content) = std::fs::read_to_string(&result.unit.file) {
+                            let lines: Vec<&str> = content.lines().collect();
+                            let start = result.unit.line.saturating_sub(1);
+                            let end = result.unit.end_line.min(lines.len());
+                            if start < lines.len() {
+                                print_highlighted_content(
+                                    &result.unit.file,
+                                    &lines,
+                                    start,
+                                    50,
+                                    end,
+                                );
+                            }
                         }
+                    } else if !result.unit.signature.is_empty() {
+                        println!("      {}", result.unit.signature.dimmed());
                     }
-                } else if !result.unit.signature.is_empty() {
-                    println!("   {}", result.unit.signature.dimmed());
+                    current_index += 1;
                 }
                 println!();
-                current_index += 1;
             }
         }
 
-        // Display document/config results after
+        // Display document/config results after, grouped by file
         if !doc_results.is_empty() {
             println!("{}", "documents:".yellow().bold());
-            for result in &doc_results {
-                println!(
-                    "{} {}",
-                    format!("{}.", current_index).dimmed(),
-                    result.unit.name.bold()
-                );
-                println!(
-                    "   {} {}:{}-{}",
-                    "→".blue(),
-                    result.unit.file.display(),
-                    result.unit.line,
-                    result.unit.end_line
-                );
-                if show_content {
-                    // Read and display the document content with syntax highlighting (limited to 50 lines)
-                    if let Ok(content) = std::fs::read_to_string(&result.unit.file) {
-                        let lines: Vec<&str> = content.lines().collect();
-                        let start = result.unit.line.saturating_sub(1);
-                        let end = result.unit.end_line.min(lines.len());
-                        if start < lines.len() {
-                            print_highlighted_content(&result.unit.file, &lines, start, 50, end);
+            let grouped = group_results_by_file(&doc_results);
+            for (file, file_results) in grouped {
+                // Print file header
+                println!("{}", file.display().to_string().cyan());
+                for result in file_results {
+                    println!(
+                        "   {} {} {}",
+                        format!("{}.", current_index).dimmed(),
+                        result.unit.name.bold(),
+                        format!(":{}-{}", result.unit.line, result.unit.end_line).dimmed()
+                    );
+                    if show_content {
+                        // Read and display the document content with syntax highlighting (limited to 50 lines)
+                        if let Ok(content) = std::fs::read_to_string(&result.unit.file) {
+                            let lines: Vec<&str> = content.lines().collect();
+                            let start = result.unit.line.saturating_sub(1);
+                            let end = result.unit.end_line.min(lines.len());
+                            if start < lines.len() {
+                                print_highlighted_content(
+                                    &result.unit.file,
+                                    &lines,
+                                    start,
+                                    50,
+                                    end,
+                                );
+                            }
                         }
+                    } else if !result.unit.signature.is_empty() {
+                        println!("      {}", result.unit.signature.dimmed());
                     }
-                } else if !result.unit.signature.is_empty() {
-                    println!("   {}", result.unit.signature.dimmed());
+                    current_index += 1;
                 }
                 println!();
-                current_index += 1;
             }
         }
     }
