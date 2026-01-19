@@ -1,8 +1,12 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{Style, ThemeSet};
+use syntect::parsing::SyntaxSet;
+use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 
 use next_plaid_cli::{
     ensure_model, ensure_onnx_runtime, find_parent_index, get_index_dir_for_project,
@@ -30,6 +34,10 @@ EXAMPLES:
 
     # List only matching files (like grep -l)
     plaid -l \"database queries\"
+
+    # Show full function/class content
+    plaid -c \"parse config\"
+    plaid --content \"authentication handler\" -k 5
 
     # Output as JSON for scripting
     plaid --json \"authentication\" | jq '.[] | .unit.file'
@@ -82,7 +90,7 @@ struct Cli {
     path: PathBuf,
 
     /// Number of results
-    #[arg(short = 'k', default_value = "20")]
+    #[arg(short = 'k', default_value = "15")]
     top_k: usize,
 
     /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
@@ -108,6 +116,10 @@ struct Cli {
     /// List files only: show only filenames, not the matching code
     #[arg(short = 'l', long = "files-only")]
     files_only: bool,
+
+    /// Show function/class content with syntax highlighting (up to 50 lines)
+    #[arg(short = 'c', long = "content")]
+    show_content: bool,
 
     /// Text pattern: pre-filter using grep, then rank with semantic search
     #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
@@ -171,6 +183,10 @@ EXAMPLES:
     # List only matching files
     plaid search -l \"database operations\"
 
+    # Show full function/class content
+    plaid search -c \"parse config\"
+    plaid search --content \"handler\" -k 5
+
     # More results
     plaid search -k 20 \"logging utilities\"
 
@@ -183,6 +199,7 @@ EXAMPLES:
 GREP COMPATIBILITY:
     -r, --recursive    Enabled by default (for grep users)
     -l, --files-only   Show only filenames, like grep -l
+    -c, --content      Show syntax-highlighted content (up to 50 lines)
     -e, --pattern      Pre-filter with text pattern, like grep -e
     -E, --extended-regexp  Use extended regex (ERE) for -e pattern
     --include          Filter files by glob pattern";
@@ -252,6 +269,10 @@ enum Commands {
         /// List files only: show only filenames, not the matching code
         #[arg(short = 'l', long = "files-only")]
         files_only: bool,
+
+        /// Show full function/class content instead of just signature
+        #[arg(short = 'c', long = "content")]
+        show_content: bool,
 
         /// Text pattern: pre-filter using grep, then rank with semantic search
         #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
@@ -350,6 +371,7 @@ fn main() -> Result<()> {
             recursive: _,
             include_patterns,
             files_only,
+            show_content,
             text_pattern,
             extended_regexp,
             code_only,
@@ -362,6 +384,7 @@ fn main() -> Result<()> {
             no_index,
             &include_patterns,
             files_only,
+            show_content,
             text_pattern.as_deref(),
             extended_regexp,
             code_only,
@@ -381,6 +404,7 @@ fn main() -> Result<()> {
                     cli.no_index,
                     &cli.include_patterns,
                     cli.files_only,
+                    cli.show_content,
                     cli.text_pattern.as_deref(),
                     cli.extended_regexp,
                     cli.code_only,
@@ -456,6 +480,57 @@ fn grep_files(pattern: &str, path: &std::path::Path, extended_regexp: bool) -> R
     Ok(files)
 }
 
+/// Print content with syntax highlighting
+fn print_highlighted_content(
+    file_path: &Path,
+    lines: &[&str],
+    start_line: usize,
+    max_lines: usize,
+    end_line: usize,
+) {
+    let ps = SyntaxSet::load_defaults_newlines();
+    let ts = ThemeSet::load_defaults();
+    let theme = &ts.themes["base16-ocean.dark"];
+
+    // Try to detect syntax from file extension
+    let syntax = file_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .and_then(|ext| ps.find_syntax_by_extension(ext))
+        .unwrap_or_else(|| ps.find_syntax_plain_text());
+
+    let mut highlighter = HighlightLines::new(syntax, theme);
+
+    let display_end = end_line.min(start_line + max_lines);
+    let truncated = end_line > display_end;
+
+    // Reconstruct the content for highlighting
+    let content_to_highlight: String = lines[start_line..display_end]
+        .iter()
+        .map(|l| format!("{}\n", l))
+        .collect();
+
+    println!();
+    for (i, line) in LinesWithEndings::from(&content_to_highlight).enumerate() {
+        let line_num = start_line + i + 1;
+        let ranges: Vec<(Style, &str)> = highlighter
+            .highlight_line(line, &ps)
+            .unwrap_or_else(|_| vec![(Style::default(), line)]);
+        let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
+        // Remove trailing newline for cleaner output
+        let escaped = escaped.trim_end_matches('\n');
+        println!(
+            "   {} {}\x1b[0m",
+            format!("{:4}", line_num).dimmed(),
+            escaped
+        );
+    }
+
+    if truncated {
+        println!("   {}", "...".dimmed());
+    }
+}
+
 /// Compute boosted score based on literal query matches in code unit
 fn compute_final_score(semantic_score: f32, query: &str, unit: &next_plaid_cli::CodeUnit) -> f32 {
     let mut score = semantic_score;
@@ -487,6 +562,7 @@ fn cmd_search(
     no_index: bool,
     include_patterns: &[String],
     files_only: bool,
+    show_content: bool,
     text_pattern: Option<&str>,
     extended_regexp: bool,
     code_only: bool,
@@ -772,12 +848,23 @@ fn cmd_search(
                     result.unit.name.bold()
                 );
                 println!(
-                    "   {} {}:{}",
+                    "   {} {}:{}-{}",
                     "→".blue(),
                     result.unit.file.display(),
-                    result.unit.line
+                    result.unit.line,
+                    result.unit.end_line
                 );
-                if !result.unit.signature.is_empty() {
+                if show_content {
+                    // Read and display the function content with syntax highlighting (limited to 50 lines)
+                    if let Ok(content) = std::fs::read_to_string(&result.unit.file) {
+                        let lines: Vec<&str> = content.lines().collect();
+                        let start = result.unit.line.saturating_sub(1);
+                        let end = result.unit.end_line.min(lines.len());
+                        if start < lines.len() {
+                            print_highlighted_content(&result.unit.file, &lines, start, 50, end);
+                        }
+                    }
+                } else if !result.unit.signature.is_empty() {
                     println!("   {}", result.unit.signature.dimmed());
                 }
                 println!();
@@ -795,12 +882,23 @@ fn cmd_search(
                     result.unit.name.bold()
                 );
                 println!(
-                    "   {} {}:{}",
+                    "   {} {}:{}-{}",
                     "→".blue(),
                     result.unit.file.display(),
-                    result.unit.line
+                    result.unit.line,
+                    result.unit.end_line
                 );
-                if !result.unit.signature.is_empty() {
+                if show_content {
+                    // Read and display the document content with syntax highlighting (limited to 50 lines)
+                    if let Ok(content) = std::fs::read_to_string(&result.unit.file) {
+                        let lines: Vec<&str> = content.lines().collect();
+                        let start = result.unit.line.saturating_sub(1);
+                        let end = result.unit.end_line.min(lines.len());
+                        if start < lines.len() {
+                            print_highlighted_content(&result.unit.file, &lines, start, 50, end);
+                        }
+                    }
+                } else if !result.unit.signature.is_empty() {
                     println!("   {}", result.unit.signature.dimmed());
                 }
                 println!();

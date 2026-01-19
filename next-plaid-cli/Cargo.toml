@@ -55,6 +55,7 @@ dirs = "5"
 clap = { version = "4", features = ["derive"] }
 colored = "2"
 indicatif = "0.17"
+syntect = "5"
 
 # === Serialization ===
 serde = { version = "1", features = ["derive"] }

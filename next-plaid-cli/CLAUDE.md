@@ -16,6 +16,7 @@ plaid --include="**/.github/**/*" "<query>"     # Search CI/CD configs
 plaid -e "<text>" "<semantic query>"            # Hybrid: text + semantic
 plaid -e "<regex>" -E "<semantic query>"        # Hybrid with extended regex (ERE)
 plaid -l "<query>"                              # List files only
+plaid -c "<query>"                              # Show syntax-highlighted content (50 lines max)
 plaid --json "<query>"                          # JSON output
 ```
 
@@ -30,6 +31,7 @@ plaid --json "<query>"                          # JSON output
 | Search specific file type       | `plaid --include="*.ext" "query"`       |
 | Search in specific directories  | `plaid --include="src/**/*.rs" "query"` |
 | Search CI/CD configs            | `plaid --include="**/.github/**/*" "q"` |
+| View highlighted content (50L)  | `plaid -c "query"`                      |
 | Exact string/regex match only   | Built-in `Grep` tool                    |
 | Find files by name              | Built-in `Glob` tool                    |
 
