@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use ignore::gitignore::GitignoreBuilder;
 use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use next_plaid::{
@@ -113,15 +114,48 @@ impl IndexBuilder {
         let index_path = get_vector_index_path(&self.index_dir);
         let index_path_str = index_path.to_str().unwrap();
 
+        // Build gitignore matcher to filter out gitignored files
+        // This ensures index_specific_files respects .gitignore like scan_files does
+        let gitignore = {
+            let mut builder = GitignoreBuilder::new(&self.project_root);
+            let gitignore_path = self.project_root.join(".gitignore");
+            if gitignore_path.exists() {
+                let _ = builder.add(&gitignore_path);
+            }
+            builder.build().ok()
+        };
+
         // Determine which files need indexing (new or changed)
         let mut files_added = Vec::new();
         let mut files_changed = Vec::new();
         let mut unchanged = 0;
 
         for path in files {
+            // Security: skip files outside the project root (path traversal protection)
+            if !is_within_project_root(&self.project_root, path) {
+                continue;
+            }
+
             let full_path = self.project_root.join(path);
             if !full_path.exists() {
                 continue;
+            }
+
+            // Skip files in ignored directories (same filtering as scan_files)
+            if should_ignore(&full_path) {
+                continue;
+            }
+
+            // Skip gitignored files (same filtering as scan_files)
+            // Use matched_path_or_any_parents to check if the file or any parent
+            // directory is ignored (handles patterns like "/site" matching "site/...")
+            if let Some(ref gi) = gitignore {
+                if gi
+                    .matched_path_or_any_parents(path, full_path.is_dir())
+                    .is_ignore()
+                {
+                    continue;
+                }
             }
 
             let hash = hash_file(&full_path)?;
@@ -593,6 +627,39 @@ fn is_file_too_large(path: &Path) -> bool {
     match std::fs::metadata(path) {
         Ok(meta) => meta.len() > MAX_FILE_SIZE,
         Err(_) => false, // If we can't read metadata, let it fail later
+    }
+}
+
+/// Check if a path is within the project root directory.
+/// This prevents path traversal attacks (e.g., ../../../etc/passwd).
+/// The check is done by canonicalizing both paths and verifying
+/// the resolved path starts with the project root.
+fn is_within_project_root(project_root: &Path, relative_path: &Path) -> bool {
+    // Check for obvious path traversal patterns first (fast path)
+    let path_str = relative_path.to_string_lossy();
+    if path_str.contains("..") {
+        // Could be a traversal attempt - do full canonicalization check
+        let full_path = project_root.join(relative_path);
+        match full_path.canonicalize() {
+            Ok(canonical) => {
+                // Canonicalize project root as well for accurate comparison
+                match project_root.canonicalize() {
+                    Ok(canonical_root) => canonical.starts_with(&canonical_root),
+                    Err(_) => false,
+                }
+            }
+            Err(_) => false, // If canonicalization fails, reject the path
+        }
+    } else {
+        // No ".." in path, but still verify the path doesn't escape via symlinks
+        let full_path = project_root.join(relative_path);
+        if !full_path.exists() {
+            return true; // Non-existent paths will be skipped later anyway
+        }
+        match (full_path.canonicalize(), project_root.canonicalize()) {
+            (Ok(canonical), Ok(canonical_root)) => canonical.starts_with(&canonical_root),
+            _ => false,
+        }
     }
 }
 
@@ -1177,5 +1244,69 @@ mod tests {
         let patterns: Vec<String> = vec![];
         // Empty patterns should match everything
         assert!(matches_glob_pattern(Path::new("any/file.rs"), &patterns));
+    }
+
+    #[test]
+    fn test_is_within_project_root_simple_path() {
+        let temp_dir = std::env::temp_dir().join("plaid_test_project");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // Simple relative path should be allowed
+        assert!(is_within_project_root(&temp_dir, Path::new("src/main.rs")));
+        assert!(is_within_project_root(&temp_dir, Path::new("file.txt")));
+    }
+
+    #[test]
+    fn test_is_within_project_root_path_traversal() {
+        let temp_dir = std::env::temp_dir().join("plaid_test_project");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // Path traversal attempts should be rejected
+        assert!(!is_within_project_root(
+            &temp_dir,
+            Path::new("../../../etc/passwd")
+        ));
+        assert!(!is_within_project_root(&temp_dir, Path::new("../sibling")));
+        assert!(!is_within_project_root(
+            &temp_dir,
+            Path::new("foo/../../..")
+        ));
+    }
+
+    #[test]
+    fn test_is_within_project_root_hidden_traversal() {
+        let temp_dir = std::env::temp_dir().join("plaid_test_project");
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        // Hidden path traversal patterns
+        assert!(!is_within_project_root(
+            &temp_dir,
+            Path::new("src/../../../etc/passwd")
+        ));
+        assert!(!is_within_project_root(
+            &temp_dir,
+            Path::new("./foo/../../../bar")
+        ));
+    }
+
+    #[test]
+    fn test_is_within_project_root_valid_dotdot_in_middle() {
+        let temp_dir = std::env::temp_dir().join("plaid_test_project_dotdot");
+        let sub_dir = temp_dir.join("src").join("subdir");
+        let _ = std::fs::create_dir_all(&sub_dir);
+
+        // Create a test file
+        let test_file = temp_dir.join("src").join("main.rs");
+        let _ = std::fs::write(&test_file, "fn main() {}");
+
+        // Path that goes down then up but stays within project should be allowed
+        // src/subdir/../main.rs resolves to src/main.rs
+        assert!(is_within_project_root(
+            &temp_dir,
+            Path::new("src/subdir/../main.rs")
+        ));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
