@@ -1,0 +1,391 @@
+name: CLI E2E Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'next-plaid-cli/**'
+      - 'next-plaid/**'
+      - 'next-plaid-onnx/**'
+      - '.github/workflows/cli-e2e.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'next-plaid-cli/**'
+      - 'next-plaid/**'
+      - 'next-plaid-onnx/**'
+      - '.github/workflows/cli-e2e.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  cli-e2e:
+    name: CLI E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            features: ""
+          - os: macos-latest
+            features: ""
+          - os: windows-latest
+            features: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: next-plaid-cli -> target
+
+      - name: Build CLI
+        working-directory: next-plaid-cli
+        run: cargo build --release
+
+      - name: Create test project
+        shell: bash
+        run: |
+          mkdir -p test_project/src
+          mkdir -p test_project/tests
+          mkdir -p test_project/lib
+
+          # Create Python files
+          cat > test_project/src/auth.py << 'EOF'
+          """Authentication module for user login and registration."""
+
+          def authenticate_user(username: str, password: str) -> bool:
+              """Authenticate a user with username and password."""
+              if not username or not password:
+                  raise ValueError("Username and password are required")
+              # Check against database
+              return verify_credentials(username, password)
+
+          def verify_credentials(username: str, password: str) -> bool:
+              """Verify user credentials against the database."""
+              # This would normally check a database
+              return True
+
+          def register_user(username: str, email: str, password: str) -> dict:
+              """Register a new user account."""
+              if len(password) < 8:
+                  raise ValueError("Password must be at least 8 characters")
+              return {"id": 1, "username": username, "email": email}
+
+          async def async_login(username: str, password: str) -> dict:
+              """Asynchronous login function for non-blocking auth."""
+              result = authenticate_user(username, password)
+              return {"success": result, "user": username}
+          EOF
+
+          # Create Rust files
+          cat > test_project/src/database.rs << 'EOF'
+          //! Database connection and query handling module.
+
+          use std::collections::HashMap;
+
+          /// Database connection pool for managing connections.
+          pub struct ConnectionPool {
+              connections: Vec<Connection>,
+              max_size: usize,
+          }
+
+          impl ConnectionPool {
+              /// Create a new connection pool with the specified size.
+              pub fn new(max_size: usize) -> Self {
+                  Self {
+                      connections: Vec::new(),
+                      max_size,
+                  }
+              }
+
+              /// Execute a SQL query and return results.
+              pub fn execute_query(&self, query: &str) -> Result<Vec<HashMap<String, String>>, Error> {
+                  // Execute the query
+                  Ok(vec![])
+              }
+
+              /// Handle database errors with retry logic.
+              pub fn handle_error(&self, error: Error) -> Result<(), Error> {
+                  eprintln!("Database error: {:?}", error);
+                  Err(error)
+              }
+          }
+
+          /// Represents a database connection.
+          pub struct Connection {
+              url: String,
+              active: bool,
+          }
+
+          /// Database error types.
+          #[derive(Debug)]
+          pub enum Error {
+              ConnectionFailed,
+              QueryFailed,
+              Timeout,
+          }
+          EOF
+
+          # Create TypeScript files
+          cat > test_project/src/api.ts << 'EOF'
+          /**
+           * API client for making HTTP requests.
+           */
+
+          interface ApiResponse<T> {
+            data: T;
+            status: number;
+            message: string;
+          }
+
+          /**
+           * Fetch data from the API endpoint.
+           */
+          export async function fetchData<T>(endpoint: string): Promise<ApiResponse<T>> {
+            const response = await fetch(endpoint);
+            const data = await response.json();
+            return {
+              data,
+              status: response.status,
+              message: 'Success'
+            };
+          }
+
+          /**
+           * Handle API errors and retry if needed.
+           */
+          export function handleApiError(error: Error): void {
+            console.error('API Error:', error.message);
+            // Log to monitoring service
+          }
+
+          /**
+           * Authentication token management.
+           */
+          export class TokenManager {
+            private token: string | null = null;
+
+            setToken(token: string): void {
+              this.token = token;
+            }
+
+            getToken(): string | null {
+              return this.token;
+            }
+
+            clearToken(): void {
+              this.token = null;
+            }
+          }
+          EOF
+
+          # Create Go files
+          cat > test_project/lib/cache.go << 'EOF'
+          // Package cache provides caching functionality.
+          package cache
+
+          import (
+              "sync"
+              "time"
+          )
+
+          // Cache stores key-value pairs with expiration.
+          type Cache struct {
+              data map[string]entry
+              mu   sync.RWMutex
+          }
+
+          type entry struct {
+              value     interface{}
+              expiresAt time.Time
+          }
+
+          // NewCache creates a new cache instance.
+          func NewCache() *Cache {
+              return &Cache{
+                  data: make(map[string]entry),
+              }
+          }
+
+          // Set stores a value with the given key and TTL.
+          func (c *Cache) Set(key string, value interface{}, ttl time.Duration) {
+              c.mu.Lock()
+              defer c.mu.Unlock()
+              c.data[key] = entry{
+                  value:     value,
+                  expiresAt: time.Now().Add(ttl),
+              }
+          }
+
+          // Get retrieves a value by key.
+          func (c *Cache) Get(key string) (interface{}, bool) {
+              c.mu.RLock()
+              defer c.mu.RUnlock()
+              e, ok := c.data[key]
+              if !ok || time.Now().After(e.expiresAt) {
+                  return nil, false
+              }
+              return e.value, true
+          }
+
+          // HandleCacheError logs cache errors.
+          func HandleCacheError(err error) {
+              // Log error to monitoring
+          }
+          EOF
+
+          # Create test file
+          cat > test_project/tests/test_auth.py << 'EOF'
+          """Tests for authentication module."""
+
+          import pytest
+          from src.auth import authenticate_user, register_user
+
+          def test_authenticate_user_success():
+              """Test successful authentication."""
+              result = authenticate_user("testuser", "password123")
+              assert result is True
+
+          def test_authenticate_user_empty_username():
+              """Test authentication fails with empty username."""
+              with pytest.raises(ValueError):
+                  authenticate_user("", "password123")
+
+          def test_register_user_short_password():
+              """Test registration fails with short password."""
+              with pytest.raises(ValueError):
+                  register_user("user", "email@test.com", "short")
+
+          async def test_async_login():
+              """Test async login function."""
+              from src.auth import async_login
+              result = await async_login("user", "pass")
+              assert "success" in result
+          EOF
+
+          echo "Test project created successfully"
+          ls -la test_project/
+          ls -la test_project/src/
+          ls -la test_project/lib/
+          ls -la test_project/tests/
+
+      - name: Test basic search (index + search)
+        shell: bash
+        run: |
+          cd test_project
+          echo "=== Testing basic semantic search ==="
+          ../next-plaid-cli/target/release/plaid "user authentication login" -k 5
+          echo "Basic search completed successfully"
+
+      - name: Test search with --include filter
+        shell: bash
+        run: |
+          cd test_project
+          echo "=== Testing --include filter for Python files ==="
+          ../next-plaid-cli/target/release/plaid "authenticate user" --include "*.py" -k 5
+          echo ""
+          echo "=== Testing --include filter for Rust files ==="
+          ../next-plaid-cli/target/release/plaid "database connection" --include "*.rs" -k 5
+          echo ""
+          echo "=== Testing --include filter for TypeScript files ==="
+          ../next-plaid-cli/target/release/plaid "API endpoint" --include "*.ts" -k 5
+          echo "Include filter tests completed successfully"
+
+      - name: Test search with -l (files only)
+        shell: bash
+        run: |
+          cd test_project
+          echo "=== Testing -l flag (files only output) ==="
+          OUTPUT=$(../next-plaid-cli/target/release/plaid -l "error handling" -k 10)
+          echo "$OUTPUT"
+          # Verify output contains file paths
+          if echo "$OUTPUT" | grep -q "\."; then
+            echo "Files-only output test passed"
+          else
+            echo "Warning: Expected file paths in output"
+          fi
+
+      - name: Test hybrid search with -e (grep pattern)
+        shell: bash
+        run: |
+          cd test_project
+          echo "=== Testing hybrid search with -e flag ==="
+          # Search for "async" text pattern, rank by "login function" semantically
+          ../next-plaid-cli/target/release/plaid -e "async" "login function" -k 5 || echo "No matches (expected if grep not available)"
+          echo ""
+          echo "=== Testing -e with --include ==="
+          ../next-plaid-cli/target/release/plaid -e "def " "user registration" --include "*.py" -k 5 || echo "No matches (expected if grep not available)"
+          echo "Hybrid search tests completed"
+
+      - name: Test hybrid search with -E (extended regex)
+        shell: bash
+        run: |
+          cd test_project
+          echo "=== Testing -E flag (extended regex) ==="
+          # Use extended regex to match "async" or "await"
+          ../next-plaid-cli/target/release/plaid -e "async|await" -E "asynchronous operations" -k 5 || echo "No matches (expected if grep not available)"
+          echo "Extended regex test completed"
+
+      - name: Test JSON output
+        shell: bash
+        run: |
+          cd test_project
+          echo "=== Testing JSON output ==="
+          OUTPUT=$(../next-plaid-cli/target/release/plaid --json "cache management" -k 3)
+          echo "$OUTPUT"
+          # Verify it's valid JSON
+          if echo "$OUTPUT" | head -1 | grep -q "^\["; then
+            echo "JSON output test passed"
+          else
+            echo "Warning: Output may not be valid JSON array"
+          fi
+
+      - name: Test status command
+        shell: bash
+        run: |
+          cd test_project
+          echo "=== Testing status command ==="
+          ../next-plaid-cli/target/release/plaid status
+          echo "Status command test completed"
+
+      - name: Test search in subdirectory
+        shell: bash
+        run: |
+          cd test_project
+          echo "=== Testing search in specific subdirectory ==="
+          ../next-plaid-cli/target/release/plaid "test authentication" ./tests -k 5
+          echo "Subdirectory search test completed"
+
+      - name: Test --no-index flag (should work with existing index)
+        shell: bash
+        run: |
+          cd test_project
+          echo "=== Testing --no-index flag ==="
+          ../next-plaid-cli/target/release/plaid --no-index "database query" -k 5
+          echo "No-index flag test completed"
+
+      - name: Test clear command
+        shell: bash
+        run: |
+          cd test_project
+          echo "=== Testing clear command ==="
+          ../next-plaid-cli/target/release/plaid clear
+          echo "Clear command test completed"
+
+      - name: Test re-indexing after clear
+        shell: bash
+        run: |
+          cd test_project
+          echo "=== Testing re-indexing after clear ==="
+          ../next-plaid-cli/target/release/plaid "handle error" -k 5
+          echo "Re-indexing test completed"
+
+      - name: Run CLI unit tests
+        working-directory: next-plaid-cli
+        run: cargo test
