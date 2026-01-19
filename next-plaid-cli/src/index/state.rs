@@ -14,6 +14,9 @@ pub struct IndexState {
     #[serde(default)]
     pub cli_version: String,
     pub files: HashMap<PathBuf, FileInfo>,
+    /// Number of searches performed against this index
+    #[serde(default)]
+    pub search_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +49,16 @@ impl IndexState {
         let content = serde_json::to_string_pretty(&state)?;
         fs::write(&state_path, content)?;
         Ok(())
+    }
+
+    /// Increment the search count
+    pub fn increment_search_count(&mut self) {
+        self.search_count += 1;
+    }
+
+    /// Reset the search count to zero
+    pub fn reset_search_count(&mut self) {
+        self.search_count = 0;
     }
 }
 
@@ -107,6 +120,7 @@ mod tests {
         let state = IndexState {
             cli_version: "1.0.0".to_string(),
             files,
+            search_count: 0,
         };
 
         let json = serde_json::to_string(&state).unwrap();
@@ -210,5 +224,37 @@ mod tests {
     fn test_get_mtime_nonexistent() {
         let result = get_mtime(Path::new("/nonexistent/file.txt"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_search_count_increment_and_reset() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create initial state with zero search count
+        let mut state = IndexState::default();
+        assert_eq!(state.search_count, 0);
+
+        // Increment search count
+        state.increment_search_count();
+        assert_eq!(state.search_count, 1);
+
+        state.increment_search_count();
+        state.increment_search_count();
+        assert_eq!(state.search_count, 3);
+
+        // Save and reload to verify persistence
+        state.save(temp_dir.path()).unwrap();
+        let loaded = IndexState::load(temp_dir.path()).unwrap();
+        assert_eq!(loaded.search_count, 3);
+
+        // Reset search count
+        let mut loaded = loaded;
+        loaded.reset_search_count();
+        assert_eq!(loaded.search_count, 0);
+
+        // Save and reload to verify reset persists
+        loaded.save(temp_dir.path()).unwrap();
+        let reloaded = IndexState::load(temp_dir.path()).unwrap();
+        assert_eq!(reloaded.search_count, 0);
     }
 }

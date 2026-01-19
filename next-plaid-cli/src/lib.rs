@@ -19,6 +19,7 @@ pub use index::paths::{
     find_parent_index, get_index_dir_for_project, get_plaid_data_dir, get_vector_index_path,
     ParentIndexInfo, ProjectMetadata,
 };
+pub use index::state::IndexState;
 pub use index::{index_exists, IndexBuilder, SearchResult, Searcher, UpdatePlan, UpdateStats};
 pub use model::{ensure_model, DEFAULT_MODEL};
 pub use onnx_runtime::ensure_onnx_runtime;
