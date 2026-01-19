@@ -6,7 +6,7 @@ use colored::Colorize;
 
 use next_plaid_cli::{
     ensure_model, ensure_onnx_runtime, find_parent_index, get_index_dir_for_project,
-    get_plaid_data_dir, get_vector_index_path, index_exists, install_claude_code,
+    get_plaid_data_dir, get_vector_index_path, index_exists, install_claude_code, is_text_format,
     uninstall_claude_code, Config, IndexBuilder, IndexState, ProjectMetadata, Searcher,
     DEFAULT_MODEL,
 };
@@ -127,6 +127,10 @@ struct Cli {
     /// Reset search statistics for all indexes
     #[arg(long)]
     reset_stats: bool,
+
+    /// Only search code files, skip text/config files (md, txt, yaml, json, toml, etc.)
+    #[arg(long)]
+    code_only: bool,
 }
 
 const SEARCH_HELP: &str = "\
@@ -235,6 +239,10 @@ enum Commands {
         /// Use extended regular expressions (ERE) for -e pattern
         #[arg(short = 'E', long = "extended-regexp")]
         extended_regexp: bool,
+
+        /// Only search code files, skip text/config files (md, txt, yaml, json, toml, etc.)
+        #[arg(long)]
+        code_only: bool,
     },
 
     /// Show index status for a project
@@ -310,6 +318,7 @@ fn main() -> Result<()> {
             files_only,
             text_pattern,
             extended_regexp,
+            code_only,
         }) => cmd_search(
             &query,
             &path,
@@ -321,6 +330,7 @@ fn main() -> Result<()> {
             files_only,
             text_pattern.as_deref(),
             extended_regexp,
+            code_only,
         ),
         Some(Commands::Status { path }) => cmd_status(&path),
         Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
@@ -341,6 +351,7 @@ fn main() -> Result<()> {
                     cli.files_only,
                     cli.text_pattern.as_deref(),
                     cli.extended_regexp,
+                    cli.code_only,
                 )
             } else {
                 // No query provided - show help
@@ -425,6 +436,7 @@ fn cmd_search(
     files_only: bool,
     text_pattern: Option<&str>,
     extended_regexp: bool,
+    code_only: bool,
 ) -> Result<()> {
     let path = std::fs::canonicalize(path)?;
 
@@ -636,7 +648,20 @@ fn cmd_search(
     };
 
     // Search with optional filtering
-    let results = searcher.search(query, top_k, subset.as_deref())?;
+    // Request more results if code_only is enabled, since we'll filter some out
+    let search_top_k = if code_only { top_k * 2 } else { top_k };
+    let results = searcher.search(query, search_top_k, subset.as_deref())?;
+
+    // Filter out text/config files if --code-only is enabled
+    let results: Vec<_> = if code_only {
+        results
+            .into_iter()
+            .filter(|r| !is_text_format(r.unit.language))
+            .take(top_k)
+            .collect()
+    } else {
+        results
+    };
 
     // Increment search count
     let index_dir = get_index_dir_for_project(&effective_root)?;

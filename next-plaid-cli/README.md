@@ -123,6 +123,9 @@ plaid --include="*.rs" --include="*.go" "error handling" .
 # -l: List files only (show unique filenames, not code details)
 plaid -l "authentication" .
 
+# --code-only: Skip text/config files (md, txt, yaml, json, toml, etc.)
+plaid --code-only "authentication" .
+
 # Combine flags (like grep -rl)
 plaid -r -l --include="*.ts" "fetch API" .
 ```
@@ -210,6 +213,29 @@ plaid -e "fetch" --include="*.ts" "API call" /large/project
 - Search immediately in large codebases without full indexing
 - Index grows incrementally as you search different file types
 - Already-indexed files are skipped (content hash check)
+
+### Code-Only Mode
+
+Use `--code-only` to exclude text and configuration files from search results, focusing only on actual code:
+
+```bash
+# Search only code files, skip markdown, yaml, json, etc.
+plaid --code-only "authentication logic" .
+
+# Combine with other flags
+plaid --code-only -k 20 "error handling" .
+plaid --code-only --include="*.py" "database" .
+```
+
+**Files excluded by `--code-only`:**
+
+| Category       | File Types                              |
+| -------------- | --------------------------------------- |
+| Documentation  | Markdown, Plain text, AsciiDoc, Org     |
+| Configuration  | YAML, TOML, JSON, Dockerfile, Makefile  |
+| Shell scripts  | Shell (.sh, .bash, .zsh), PowerShell    |
+
+This is useful when searching for implementation details without results from documentation, config files, or scripts cluttering the output.
 
 ### Status
 

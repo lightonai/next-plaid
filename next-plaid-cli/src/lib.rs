@@ -23,7 +23,9 @@ pub use index::state::IndexState;
 pub use index::{index_exists, IndexBuilder, SearchResult, Searcher, UpdatePlan, UpdateStats};
 pub use model::{ensure_model, DEFAULT_MODEL};
 pub use onnx_runtime::ensure_onnx_runtime;
-pub use parser::{build_call_graph, detect_language, extract_units, CodeUnit, Language, UnitType};
+pub use parser::{
+    build_call_graph, detect_language, extract_units, is_text_format, CodeUnit, Language, UnitType,
+};
 
 // Install commands for AI coding tools
 pub use install::{install_claude_code, uninstall_claude_code};
