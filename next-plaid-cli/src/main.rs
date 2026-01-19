@@ -115,6 +115,10 @@ struct Cli {
     #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
     text_pattern: Option<String>,
 
+    /// Use extended regular expressions (ERE) for -e pattern
+    #[arg(short = 'E', long = "extended-regexp")]
+    extended_regexp: bool,
+
     /// Force creation of a new index for this directory (ignore parent indexes)
     #[arg(long)]
     new_index: bool,
@@ -150,6 +154,7 @@ GREP COMPATIBILITY:
     -r, --recursive    Enabled by default (for grep users)
     -l, --files-only   Show only filenames, like grep -l
     -e, --pattern      Pre-filter with text pattern, like grep -e
+    -E, --extended-regexp  Use extended regex (ERE) for -e pattern
     --include          Filter files by glob pattern";
 
 const STATUS_HELP: &str = "\
@@ -222,6 +227,10 @@ enum Commands {
         #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
         text_pattern: Option<String>,
 
+        /// Use extended regular expressions (ERE) for -e pattern
+        #[arg(short = 'E', long = "extended-regexp")]
+        extended_regexp: bool,
+
         /// Force creation of a new index for this directory (ignore parent indexes)
         #[arg(long)]
         new_index: bool,
@@ -290,6 +299,7 @@ fn main() -> Result<()> {
             include_patterns,
             files_only,
             text_pattern,
+            extended_regexp,
             new_index,
         }) => cmd_search(
             &query,
@@ -301,6 +311,7 @@ fn main() -> Result<()> {
             &include_patterns,
             files_only,
             text_pattern.as_deref(),
+            extended_regexp,
             new_index,
         ),
         Some(Commands::Status { path }) => cmd_status(&path),
@@ -321,6 +332,7 @@ fn main() -> Result<()> {
                     &cli.include_patterns,
                     cli.files_only,
                     cli.text_pattern.as_deref(),
+                    cli.extended_regexp,
                     cli.new_index,
                 )
             } else {
@@ -352,23 +364,30 @@ fn resolve_model(cli_model: Option<&str>) -> String {
 }
 
 /// Run grep to find files containing a text pattern
-fn grep_files(pattern: &str, path: &std::path::Path) -> Result<Vec<String>> {
+fn grep_files(pattern: &str, path: &std::path::Path, extended_regexp: bool) -> Result<Vec<String>> {
     use anyhow::Context;
     use std::process::Command;
 
+    let mut args = vec![
+        "-rl".to_string(),
+        "--exclude-dir=.git".to_string(),
+        "--exclude-dir=node_modules".to_string(),
+        "--exclude-dir=target".to_string(),
+        "--exclude-dir=.venv".to_string(),
+        "--exclude-dir=venv".to_string(),
+        "--exclude-dir=__pycache__".to_string(),
+        "--exclude=*.db".to_string(),
+        "--exclude=*.sqlite".to_string(),
+    ];
+
+    if extended_regexp {
+        args.push("-E".to_string());
+    }
+
+    args.push(pattern.to_string());
+
     let output = Command::new("grep")
-        .args([
-            "-rl",
-            "--exclude-dir=.git",
-            "--exclude-dir=node_modules",
-            "--exclude-dir=target",
-            "--exclude-dir=.venv",
-            "--exclude-dir=venv",
-            "--exclude-dir=__pycache__",
-            "--exclude=*.db",
-            "--exclude=*.sqlite",
-            pattern,
-        ])
+        .args(&args)
         .current_dir(path)
         .output()
         .context("Failed to run grep")?;
@@ -398,6 +417,7 @@ fn cmd_search(
     include_patterns: &[String],
     files_only: bool,
     text_pattern: Option<&str>,
+    extended_regexp: bool,
     new_index: bool,
 ) -> Result<()> {
     let path = std::fs::canonicalize(path)?;
@@ -440,7 +460,7 @@ fn cmd_search(
     let filtered_files: Option<Vec<String>> = if has_filters {
         // Get files from grep if text pattern specified
         let grep_matched: Option<Vec<String>> = if let Some(pattern) = text_pattern {
-            let files = grep_files(pattern, &effective_root)?;
+            let files = grep_files(pattern, &effective_root, extended_regexp)?;
             if files.is_empty() {
                 if !json && !files_only {
                     println!("No files contain pattern: {}", pattern);

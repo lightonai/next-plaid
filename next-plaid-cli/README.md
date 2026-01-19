@@ -6,7 +6,7 @@ Semantic code search powered by ColBERT multi-vector embeddings and the PLAID al
 
 - **Semantic Search**: Find code using natural language queries
 - **Hybrid Search**: Combine text matching (`-e`) with semantic ranking
-- **Grep-like Flags**: Familiar `-r`, `--include`, `-l` flags for filtering results
+- **Grep-like Flags**: Familiar `-r`, `-e`, `-E`, `--include`, `-l` flags for filtering results
 - **Selective Indexing**: When using filters, only matching files are indexed
 - **5-Layer Code Analysis**: Rich embeddings from AST, call graph, control flow, data flow, and dependencies
 - **File Path Aware**: Normalized file paths are included in embeddings for path-based semantic search
@@ -155,9 +155,27 @@ plaid -e "async" --include="*.ts" "promise handling" .
 plaid -l -e "deprecated" "migration guide" .
 ```
 
+**Extended Regular Expressions (ERE):**
+
+Use `-E`/`--extended-regexp` to enable extended regex syntax for the `-e` pattern:
+
+```bash
+# Alternation: find files containing "fn" OR "struct"
+plaid -e "fn|struct" -E "rust definitions" .
+
+# Quantifiers: one or more digits
+plaid -e "error[0-9]+" -E "error codes" .
+
+# Optional: match "color" or "colour"
+plaid -e "colou?r" -E "color handling" .
+
+# Grouping with alternation
+plaid -e "(get|set)Value" -E "accessor methods" .
+```
+
 **How it works:**
 
-1. `grep -rl` finds all files containing the text pattern
+1. `grep -rl` (or `grep -rlE` with `-E`) finds all files containing the text pattern
 2. Filtering retrieves code unit IDs from those files
 3. Semantic search ranks only those candidates
 

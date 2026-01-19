@@ -11,6 +11,7 @@ description: Semantic code search with hybrid grep capabilities. REPLACES Grep f
 | ------------------------- | -------------------------------------- |
 | Find by intent            | `plaid "error handling logic" -k 10`   |
 | Find exact text + context | `plaid -e "className" "how it's used"` |
+| Find with regex pattern   | `plaid -e "get|set" -E "accessors"`    |
 | Find in specific files    | `plaid --include="*.ts" "query"`       |
 | List matching files only  | `plaid -l "query"`                     |
 
@@ -39,6 +40,10 @@ plaid "how are database connections pooled" -k 15
 # Hybrid (when you know a keyword exists)
 plaid -e "pool" "database connection management" -k 10
 
+# Hybrid with extended regex (alternation, +, ?, grouping)
+plaid -e "get|set" -E "accessor methods" -k 10
+plaid -e "(create|update)User" -E "user mutations" -k 10
+
 # Scoped to directory
 plaid "authentication middleware" ./src/auth
 
@@ -54,6 +59,7 @@ plaid -e "async fn" "concurrent request handling" --include="*.rs" -k 10
 ```
 Do you know an exact string that must appear?
 ├── YES → Use hybrid: plaid -e "text" "semantic query"
+│         Need regex (alternation, +, ?)? Add: -E
 └── NO → Use pure semantic: plaid "describe what you need"
 
 Need to filter by file type?
