@@ -11,21 +11,21 @@ cd "$REPO_ROOT"
 
 echo "Running pre-commit checks..."
 
-# Check Rust formatting
-echo "Checking Rust formatting..."
-cargo fmt --all -- --check
-
-# Run clippy (using cross-platform features only)
-echo "Running clippy..."
-cargo clippy --all-targets -- -D warnings
-
-# Run Rust tests
-echo "Running Rust tests..."
-cargo test
-
 # Build documentation (with warnings as errors)
 echo "Building documentation..."
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+
+# Index crate checks (next-plaid)
+echo "Checking index crate formatting..."
+cd next-plaid && cargo fmt --all -- --check
+
+echo "Running index crate clippy..."
+cargo clippy --all-targets -- -D warnings
+
+echo "Running index crate tests..."
+cargo test
+
+cd "$REPO_ROOT"
 
 # API crate checks
 echo "Checking API crate formatting..."
@@ -52,6 +52,18 @@ cargo test
 # Lint ONNX Python code
 echo "Linting ONNX Python code..."
 cd python && uv run --extra dev ruff check .
+
+cd "$REPO_ROOT"
+
+# CLI crate checks
+echo "Checking CLI crate formatting..."
+cd next-plaid-cli && cargo fmt --all -- --check
+
+echo "Running CLI crate clippy..."
+cargo clippy --all-targets -- -D warnings
+
+echo "Running CLI crate tests..."
+cargo test
 
 cd "$REPO_ROOT"
 
