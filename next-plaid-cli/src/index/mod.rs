@@ -86,6 +86,12 @@ impl IndexBuilder {
             return self.full_rebuild(languages);
         }
 
+        // State is out of sync with index (e.g., state.json was deleted but index exists)
+        // Do a full rebuild to avoid UNIQUE constraint errors when re-adding existing docs
+        if state.files.is_empty() {
+            return self.full_rebuild(languages);
+        }
+
         self.incremental_update(&state, languages)
     }
 
@@ -297,6 +303,12 @@ impl IndexBuilder {
 
     /// Full rebuild (used when force=true or no index exists)
     fn full_rebuild(&self, languages: Option<&[Language]>) -> Result<UpdateStats> {
+        // Clear existing index data to avoid duplicates
+        let index_path = get_vector_index_path(&self.index_dir);
+        if index_path.exists() {
+            std::fs::remove_dir_all(&index_path)?;
+        }
+
         let (files, skipped) = self.scan_files(languages)?;
         let mut state = IndexState::default();
         let mut all_units: Vec<CodeUnit> = Vec::new();
