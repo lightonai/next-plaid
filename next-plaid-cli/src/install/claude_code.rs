@@ -14,10 +14,10 @@ const PLUGIN_NAME: &str = "plaid";
 /// Minimum required Claude Code version for plugin support
 const MIN_CLAUDE_VERSION: &str = "2.0.36";
 
-/// Embedded marketplace and plugin files
-const MARKETPLACE_JSON: &str = include_str!("../../../.claude-plugin/marketplace.json");
-const PLUGIN_JSON: &str = include_str!("../../../plugins/plaid/.claude-plugin/plugin.json");
-const HOOK_JSON: &str = include_str!("../../../plugins/plaid/hooks/hook.json");
+/// Embedded marketplace and plugin files (bundled with the crate for cargo install support)
+const MARKETPLACE_JSON: &str = include_str!("marketplace.json");
+const PLUGIN_JSON: &str = include_str!("plugin.json");
+const HOOK_JSON: &str = include_str!("hook.json");
 
 use super::SKILL_MD;
 

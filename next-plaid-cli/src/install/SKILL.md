@@ -33,16 +33,16 @@ plaid is a CLI tool. Run it via shell to search your codebase semantically. Desc
 
 ### Quick reference
 
-| Task | Command |
-|------|---------|
-| Find by intent | `plaid "error handling logic"` |
-| Hybrid search | `plaid -e "pattern" "semantic query"` |
-| Regex pattern | `plaid -e "get\|set" -E "accessor methods"` |
-| Filter by file type | `plaid --include="*.rs" "query"` |
-| Code only (skip md/yaml) | `plaid --code-only "query"` |
-| Search in directory | `plaid "query" ./src/auth` |
-| List files only | `plaid -l "query"` |
-| More results | `plaid -k 25 "query"` |
+| Task                     | Command                                     |
+| ------------------------ | ------------------------------------------- |
+| Find by intent           | `plaid "error handling logic"`              |
+| Hybrid search            | `plaid -e "pattern" "semantic query"`       |
+| Regex pattern            | `plaid -e "get\|set" -E "accessor methods"` |
+| Filter by file type      | `plaid --include="*.rs" "query"`            |
+| Code only (skip md/yaml) | `plaid --code-only "query"`                 |
+| Search in directory      | `plaid "query" ./src/auth`                  |
+| List files only          | `plaid -l "query"`                          |
+| More results             | `plaid -k 25 "query"`                       |
 
 ### Core options
 
@@ -87,6 +87,7 @@ plaid -e "authenticate" "user login flow" --include="*.ts"
 ```
 
 Why hybrid is better:
+
 - Filters to files containing your exact text (like grep)
 - Ranks results by semantic relevance (unlike grep)
 - Returns the most meaningful matches first

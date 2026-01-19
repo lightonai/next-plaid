@@ -29,6 +29,8 @@ ENV/
 env/
 .uv/
 *.json
+# Exception: Claude Code plugin files must be tracked
+!next-plaid-cli/src/install/*.json
 next-plaid-api/indices/
 *.npz
 

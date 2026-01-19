@@ -1,0 +1,10 @@
+{
+  "name": "plaid",
+  "description": "Semantic grep with hybrid search - find code by meaning",
+  "version": "0.1.0",
+  "author": {
+    "name": "LightOn"
+  },
+  "hooks": "./hooks/hook.json",
+  "skills": ["./skills/plaid"]
+}
