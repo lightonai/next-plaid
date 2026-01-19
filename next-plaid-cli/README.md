@@ -470,9 +470,6 @@ When searching in a subdirectory of an already-indexed project, the CLI automati
 # If /my/project is already indexed...
 cd /my/project/src/utils
 plaid "helper function"   # Uses /my/project's index automatically
-
-# Force a new index for the subdirectory
-plaid --new-index "helper function"
 ```
 
 ### Clearing Indexes

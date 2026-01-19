@@ -118,10 +118,6 @@ struct Cli {
     /// Use extended regular expressions (ERE) for -e pattern
     #[arg(short = 'E', long = "extended-regexp")]
     extended_regexp: bool,
-
-    /// Force creation of a new index for this directory (ignore parent indexes)
-    #[arg(long)]
-    new_index: bool,
 }
 
 const SEARCH_HELP: &str = "\
@@ -230,10 +226,6 @@ enum Commands {
         /// Use extended regular expressions (ERE) for -e pattern
         #[arg(short = 'E', long = "extended-regexp")]
         extended_regexp: bool,
-
-        /// Force creation of a new index for this directory (ignore parent indexes)
-        #[arg(long)]
-        new_index: bool,
     },
 
     /// Show index status for a project
@@ -300,7 +292,6 @@ fn main() -> Result<()> {
             files_only,
             text_pattern,
             extended_regexp,
-            new_index,
         }) => cmd_search(
             &query,
             &path,
@@ -312,7 +303,6 @@ fn main() -> Result<()> {
             files_only,
             text_pattern.as_deref(),
             extended_regexp,
-            new_index,
         ),
         Some(Commands::Status { path }) => cmd_status(&path),
         Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
@@ -333,7 +323,6 @@ fn main() -> Result<()> {
                     cli.files_only,
                     cli.text_pattern.as_deref(),
                     cli.extended_regexp,
-                    cli.new_index,
                 )
             } else {
                 // No query provided - show help
@@ -418,7 +407,6 @@ fn cmd_search(
     files_only: bool,
     text_pattern: Option<&str>,
     extended_regexp: bool,
-    new_index: bool,
 ) -> Result<()> {
     let path = std::fs::canonicalize(path)?;
 
@@ -428,15 +416,9 @@ fn cmd_search(
     // Ensure model is downloaded
     let model_path = ensure_model(Some(&model))?;
 
-    // Check for parent index unless:
-    // - --new-index is specified
-    // - The resolved path is outside the current directory (external project)
-    let parent_info = if new_index {
-        None
-    } else {
-        // If the resolved path is outside the CWD (whether specified as absolute
-        // or relative like "../other-project"), treat it as a separate project
-        // and don't use parent indexes.
+    // Check for parent index unless the resolved path is outside
+    // the current directory (external project)
+    let parent_info = {
         let is_external_project = std::env::current_dir()
             .map(|cwd| !path.starts_with(&cwd))
             .unwrap_or(false);
