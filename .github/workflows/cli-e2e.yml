@@ -1,20 +1,7 @@
 name: CLI E2E Tests
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'next-plaid-cli/**'
-      - 'next-plaid/**'
-      - 'next-plaid-onnx/**'
-      - '.github/workflows/cli-e2e.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'next-plaid-cli/**'
-      - 'next-plaid/**'
-      - 'next-plaid-onnx/**'
-      - '.github/workflows/cli-e2e.yml'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
