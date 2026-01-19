@@ -244,6 +244,7 @@ fn get_download_url() -> Result<(String, String)> {
 }
 
 /// Extract library from tgz archive
+#[cfg(not(target_os = "windows"))]
 fn extract_library(archive_data: &[u8], lib_path_in_archive: &str, dest: &Path) -> Result<()> {
     use flate2::read::GzDecoder;
     use std::io::Read;
@@ -254,8 +255,12 @@ fn extract_library(archive_data: &[u8], lib_path_in_archive: &str, dest: &Path) 
     for entry in archive.entries()? {
         let mut entry = entry?;
         let path = entry.path()?;
+        let path_str = path.to_string_lossy();
 
-        if path.to_string_lossy() == lib_path_in_archive {
+        // Handle paths with or without ./ prefix (macOS archives have ./, Linux doesn't)
+        let normalized_path = path_str.strip_prefix("./").unwrap_or(&path_str);
+
+        if normalized_path == lib_path_in_archive {
             let mut lib_data = Vec::new();
             entry.read_to_end(&mut lib_data)?;
             fs::write(dest, lib_data)?;
@@ -267,6 +272,35 @@ fn extract_library(archive_data: &[u8], lib_path_in_archive: &str, dest: &Path) 
                 fs::set_permissions(dest, fs::Permissions::from_mode(0o755))?;
             }
 
+            return Ok(());
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "Library not found in archive: {}",
+        lib_path_in_archive
+    ))
+}
+
+/// Extract library from zip archive (Windows)
+#[cfg(target_os = "windows")]
+fn extract_library(archive_data: &[u8], lib_path_in_archive: &str, dest: &Path) -> Result<()> {
+    use std::io::{Cursor, Read};
+
+    let cursor = Cursor::new(archive_data);
+    let mut archive = zip::ZipArchive::new(cursor)?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let path = file.name();
+
+        // Handle paths with or without ./ prefix
+        let normalized_path = path.strip_prefix("./").unwrap_or(path);
+
+        if normalized_path == lib_path_in_archive {
+            let mut lib_data = Vec::new();
+            file.read_to_end(&mut lib_data)?;
+            fs::write(dest, lib_data)?;
             return Ok(());
         }
     }

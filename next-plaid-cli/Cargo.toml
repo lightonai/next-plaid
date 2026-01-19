@@ -85,3 +85,6 @@ tempfile = "3"
 default = []
 cuda = ["next-plaid-onnx/cuda"]
 coreml = ["next-plaid-onnx/coreml"]
+
+[target.'cfg(windows)'.dependencies]
+zip = "2"
