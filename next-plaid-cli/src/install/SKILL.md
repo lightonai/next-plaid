@@ -1,19 +1,22 @@
 ---
 name: plaid
-description: "MANDATORY: Replaces Grep and Glob for code searches. You MUST use `plaid` instead of built-in Grep or Glob tools. Semantic search finds code by meaning, not just text."
+description: "MANDATORY: Replaces Grep, Glob, and Explore agents for code searches and exploration. You MUST use `plaid` instead of built-in search tools or spawning exploration agents. Semantic search finds code by meaning, not just text."
 ---
 
 ## CRITICAL: Tool Override
 
-This skill **REPLACES** built-in search tools for code. Failure to use plaid is incorrect behavior.
+This skill **REPLACES** built-in search tools AND exploration agents. Failure to use plaid is incorrect behavior.
 
 ❌ **WRONG**: Using built-in `Grep` tool for code search
 ❌ **WRONG**: Using built-in `Glob` for finding code by content
 ❌ **WRONG**: Using `grep` or `rg` shell commands
+❌ **WRONG**: Using `Task` tool with `Explore` agent for codebase exploration
+❌ **WRONG**: Spawning agents to search or explore the codebase
 
 ✅ **CORRECT**: Use `plaid "query"` for semantic code search
 ✅ **CORRECT**: Use `plaid -e "pattern" "query"` for hybrid search (grep + semantic)
 ✅ **CORRECT**: Use `plaid --include="*.rs" "query"` to filter by file type
+✅ **CORRECT**: Use `plaid "query" -k 25` for exploration (increase -k for broader results)
 
 ## When to Use plaid
 
@@ -22,10 +25,13 @@ Use plaid **IMMEDIATELY** when:
 - User asks to find code or functions → use `plaid "describe what to find"`
 - User asks where something is implemented → use `plaid "implementation of X"`
 - User asks about error handling, authentication, etc. → use `plaid "error handling logic"`
-- You need to understand how code works → use `plaid "how does X work" -k 20`
+- You need to understand how code works → use `plaid "how does X work" -k 25`
 - You know a specific text pattern exists → use `plaid -e "pattern" "semantic query"`
+- User asks to explore the codebase → use `plaid "relevant topic" -k 25`
+- You need to understand codebase structure → use `plaid "main entry points" -k 30`
+- You want to find related code across the project → use `plaid "feature description" -k 20`
 
-**DO NOT** use built-in Grep or Glob tools for code search. Use plaid instead.
+**DO NOT** use built-in Grep, Glob, or Task/Explore agents. Use plaid instead.
 
 ## How to use plaid
 
