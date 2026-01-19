@@ -5,16 +5,18 @@
 //! - macOS: ~/Library/Application Support/plaid/indices/
 //! - Windows: C:\Users\{user}\AppData\Roaming\plaid\indices\
 
-use std::fs;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::xxh3_64;
 
 const STATE_FILE: &str = "state.json";
 const PROJECT_FILE: &str = "project.json";
 const INDEX_SUBDIR: &str = "index";
+const LOCK_FILE: &str = ".lock";
 
 /// Metadata about the project stored alongside the index
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,6 +185,44 @@ pub fn get_state_path(index_dir: &Path) -> PathBuf {
 /// Get the path to the vector index within an index directory
 pub fn get_vector_index_path(index_dir: &Path) -> PathBuf {
     index_dir.join(INDEX_SUBDIR)
+}
+
+/// Get the path to the lock file within an index directory
+pub fn get_lock_path(index_dir: &Path) -> PathBuf {
+    index_dir.join(LOCK_FILE)
+}
+
+/// Acquires an exclusive lock on the index directory.
+/// Returns a guard (File handle) that releases the lock when dropped.
+///
+/// If another process holds the lock, retries for up to 60 seconds before
+/// returning an error.
+pub fn acquire_index_lock(index_dir: &Path) -> Result<File> {
+    use std::time::{Duration, Instant};
+
+    const TIMEOUT: Duration = Duration::from_secs(60);
+    const RETRY_INTERVAL: Duration = Duration::from_millis(500);
+
+    fs::create_dir_all(index_dir)?;
+    let lock_path = get_lock_path(index_dir);
+    let lock_file = File::create(&lock_path)
+        .with_context(|| format!("Failed to create lock file at {}", lock_path.display()))?;
+
+    let start = Instant::now();
+    loop {
+        match lock_file.try_lock_exclusive() {
+            Ok(()) => return Ok(lock_file),
+            Err(_) if start.elapsed() < TIMEOUT => {
+                std::thread::sleep(RETRY_INTERVAL);
+            }
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "Timed out waiting for index lock after 60 seconds. \
+                     Another plaid instance may be updating this index."
+                ));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -10,10 +10,11 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 
 use next_plaid_cli::{
-    ensure_model, ensure_onnx_runtime, find_parent_index, get_index_dir_for_project,
-    get_plaid_data_dir, get_vector_index_path, index_exists, install_claude_code, install_codex,
-    install_opencode, is_text_format, uninstall_claude_code, uninstall_codex, uninstall_opencode,
-    Config, IndexBuilder, IndexState, ProjectMetadata, Searcher, DEFAULT_MODEL,
+    acquire_index_lock, ensure_model, ensure_onnx_runtime, find_parent_index,
+    get_index_dir_for_project, get_plaid_data_dir, get_vector_index_path, index_exists,
+    install_claude_code, install_codex, install_opencode, is_text_format, uninstall_claude_code,
+    uninstall_codex, uninstall_opencode, Config, IndexBuilder, IndexState, ProjectMetadata,
+    Searcher, DEFAULT_MODEL,
 };
 
 const MAIN_HELP: &str = "\
@@ -147,7 +148,7 @@ struct Cli {
     code_only: bool,
 
     /// Install plaid as a plugin for Claude Code
-    #[arg(long = "claude-code")]
+    #[arg(long = "install-claude-code")]
     install_claude_code: bool,
 
     /// Uninstall plaid plugin from Claude Code
@@ -1299,6 +1300,8 @@ fn cmd_clear(path: &PathBuf, all: bool) -> Result<()> {
                 .map(|m| m.project_path.display().to_string())
                 .unwrap_or_else(|_| index_path.display().to_string());
 
+            // Acquire lock before deleting
+            let _lock = acquire_index_lock(&index_path)?;
             std::fs::remove_dir_all(&index_path)?;
             println!("🗑️  Cleared index for {}", project_path);
         }
@@ -1314,6 +1317,8 @@ fn cmd_clear(path: &PathBuf, all: bool) -> Result<()> {
             return Ok(());
         }
 
+        // Acquire lock before deleting
+        let _lock = acquire_index_lock(&index_dir)?;
         std::fs::remove_dir_all(&index_dir)?;
         println!("🗑️  Cleared index for {}", path.display());
     }

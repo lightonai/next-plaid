@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 use crate::embed::build_embedding_text;
 use crate::parser::{build_call_graph, detect_language, extract_units, CodeUnit, Language};
 
-use paths::{get_index_dir_for_project, get_vector_index_path, ProjectMetadata};
+use paths::{
+    acquire_index_lock, get_index_dir_for_project, get_vector_index_path, ProjectMetadata,
+};
 use state::{get_mtime, hash_file, FileInfo, IndexState};
 
 /// Maximum file size to index (512 KB)
@@ -77,6 +79,7 @@ impl IndexBuilder {
     /// - Updates incrementally if files changed
     /// - Full rebuild if `force = true`
     pub fn index(&self, languages: Option<&[Language]>, force: bool) -> Result<UpdateStats> {
+        let _lock = acquire_index_lock(&self.index_dir)?;
         let state = IndexState::load(&self.index_dir)?;
         let index_path = get_vector_index_path(&self.index_dir);
         let index_exists = index_path.join("metadata.json").exists();
@@ -110,6 +113,7 @@ impl IndexBuilder {
             });
         }
 
+        let _lock = acquire_index_lock(&self.index_dir)?;
         let state = IndexState::load(&self.index_dir)?;
         let index_path = get_vector_index_path(&self.index_dir);
         let index_path_str = index_path.to_str().unwrap();

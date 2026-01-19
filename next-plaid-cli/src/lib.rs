@@ -16,8 +16,8 @@ pub mod parser;
 pub use config::Config;
 pub use embed::build_embedding_text;
 pub use index::paths::{
-    find_parent_index, get_index_dir_for_project, get_plaid_data_dir, get_vector_index_path,
-    ParentIndexInfo, ProjectMetadata,
+    acquire_index_lock, find_parent_index, get_index_dir_for_project, get_plaid_data_dir,
+    get_vector_index_path, ParentIndexInfo, ProjectMetadata,
 };
 pub use index::state::IndexState;
 pub use index::{index_exists, IndexBuilder, SearchResult, Searcher, UpdatePlan, UpdateStats};
