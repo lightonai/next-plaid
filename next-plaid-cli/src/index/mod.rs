@@ -108,7 +108,8 @@ impl IndexBuilder {
         let index_path_str = index_path.to_str().unwrap();
 
         // Determine which files need indexing (new or changed)
-        let mut files_to_index = Vec::new();
+        let mut files_added = Vec::new();
+        let mut files_changed = Vec::new();
         let mut unchanged = 0;
 
         for path in files {
@@ -122,11 +123,22 @@ impl IndexBuilder {
                 Some(info) if info.content_hash == hash => {
                     unchanged += 1;
                 }
-                _ => {
-                    files_to_index.push(path.clone());
+                Some(_) => {
+                    // File exists in index but content changed
+                    files_changed.push(path.clone());
+                }
+                None => {
+                    // New file not in index
+                    files_added.push(path.clone());
                 }
             }
         }
+
+        let files_to_index: Vec<PathBuf> = files_added
+            .iter()
+            .chain(files_changed.iter())
+            .cloned()
+            .collect();
 
         if files_to_index.is_empty() {
             return Ok(UpdateStats {
@@ -136,6 +148,14 @@ impl IndexBuilder {
                 unchanged,
                 skipped: 0,
             });
+        }
+
+        // Delete old entries for changed files before re-indexing
+        // This prevents duplicates when a file's content has changed
+        if filtering::exists(index_path_str) {
+            for file_path in &files_changed {
+                self.delete_file_from_index(index_path_str, file_path)?;
+            }
         }
 
         // Load or create state
@@ -250,8 +270,8 @@ impl IndexBuilder {
         new_state.save(&self.index_dir)?;
 
         Ok(UpdateStats {
-            added: files_to_index.len(),
-            changed: 0,
+            added: files_added.len(),
+            changed: files_changed.len(),
             deleted: 0,
             unchanged,
             skipped: 0,
