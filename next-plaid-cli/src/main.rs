@@ -864,7 +864,6 @@ fn cmd_search(
 
         // Display code results first, grouped by file
         if !code_results.is_empty() {
-            println!("{}", "code:".green().bold());
             let grouped = group_results_by_file(&code_results);
             for (file, file_results) in grouped {
                 // Print file header
