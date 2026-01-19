@@ -37,6 +37,8 @@ lto = "thin"
 [workspace.metadata.dist]
 # The preferred cargo-dist version to use in CI (Conditions for altering this include new features or bug fixes)
 cargo-dist-version = "0.30.3"
+# Allow custom modifications to release.yml (workflow_dispatch, crates.io publishing)
+allow-dirty = ["ci"]
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
