@@ -122,6 +122,10 @@ struct Cli {
     #[arg(short = 'c', long = "content")]
     show_content: bool,
 
+    /// Number of context lines to show (default: 6 for semantic, 3+3 for grep)
+    #[arg(short = 'n', long = "lines", default_value = "15")]
+    context_lines: usize,
+
     /// Text pattern: pre-filter using grep, then rank with semantic search
     #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
     text_pattern: Option<String>,
@@ -275,6 +279,10 @@ enum Commands {
         #[arg(short = 'c', long = "content")]
         show_content: bool,
 
+        /// Number of context lines to show (default: 6 for semantic, 3+3 for grep)
+        #[arg(short = 'n', long = "lines", default_value = "15")]
+        context_lines: usize,
+
         /// Text pattern: pre-filter using grep, then rank with semantic search
         #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
         text_pattern: Option<String>,
@@ -373,6 +381,7 @@ fn main() -> Result<()> {
             include_patterns,
             files_only,
             show_content,
+            context_lines,
             text_pattern,
             extended_regexp,
             code_only,
@@ -386,6 +395,7 @@ fn main() -> Result<()> {
             &include_patterns,
             files_only,
             show_content,
+            context_lines,
             text_pattern.as_deref(),
             extended_regexp,
             code_only,
@@ -406,6 +416,7 @@ fn main() -> Result<()> {
                     &cli.include_patterns,
                     cli.files_only,
                     cli.show_content,
+                    cli.context_lines,
                     cli.text_pattern.as_deref(),
                     cli.extended_regexp,
                     cli.code_only,
@@ -481,7 +492,202 @@ fn grep_files(pattern: &str, path: &std::path::Path, extended_regexp: bool) -> R
     Ok(files)
 }
 
-/// Print content with syntax highlighting
+/// Run grep with context to get exact matches with surrounding lines
+fn grep_with_context(
+    pattern: &str,
+    path: &std::path::Path,
+    extended_regexp: bool,
+    context_lines: usize,
+) -> Result<Vec<GrepMatch>> {
+    use anyhow::Context;
+    use std::process::Command;
+
+    let mut args = vec![
+        "-rn".to_string(),
+        "--exclude-dir=.git".to_string(),
+        "--exclude-dir=node_modules".to_string(),
+        "--exclude-dir=target".to_string(),
+        "--exclude-dir=.venv".to_string(),
+        "--exclude-dir=venv".to_string(),
+        "--exclude-dir=__pycache__".to_string(),
+        "--exclude=*.db".to_string(),
+        "--exclude=*.sqlite".to_string(),
+    ];
+
+    // Only add context flags if context_lines > 0
+    if context_lines > 0 {
+        args.insert(1, format!("-B{}", context_lines));
+        args.insert(2, format!("-A{}", context_lines));
+    }
+
+    if extended_regexp {
+        args.push("-E".to_string());
+    }
+
+    args.push(pattern.to_string());
+
+    let output = Command::new("grep")
+        .args(&args)
+        .current_dir(path)
+        .output()
+        .context("Failed to run grep")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_grep_output(&stdout, path, context_lines > 0)
+}
+
+/// A single grep match with file and line number
+#[derive(Debug)]
+struct GrepMatch {
+    file: PathBuf,
+    line_number: usize,
+}
+
+/// Parse grep output into structured matches (simple format: file:linenum:content)
+fn parse_grep_output(output: &str, base_path: &Path, _has_context: bool) -> Result<Vec<GrepMatch>> {
+    let mut matches: Vec<GrepMatch> = Vec::new();
+
+    for line in output.lines() {
+        // Format: file:linenum:content
+        if let Some(first_colon) = line.find(':') {
+            let after_first = &line[first_colon + 1..];
+            if let Some(second_colon) = after_first.find(':') {
+                let potential_linenum = &after_first[..second_colon];
+                if let Ok(line_num) = potential_linenum.parse::<usize>() {
+                    let file_str = &line[..first_colon];
+                    let file_path = base_path.join(file_str.strip_prefix("./").unwrap_or(file_str));
+
+                    matches.push(GrepMatch {
+                        file: file_path,
+                        line_number: line_num,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(matches)
+}
+
+/// Calculate merged display ranges for all matches within a code unit
+/// Returns a vector of (start, end) ranges (0-indexed) that cover all matches with context
+fn calc_display_ranges(
+    match_lines: &[usize],
+    unit_start: usize,
+    unit_end: usize,
+    half_context: usize,
+    max_lines: usize,
+) -> Vec<(usize, usize)> {
+    if match_lines.is_empty() {
+        // No matches, show from beginning with max_lines limit
+        let start = unit_start.saturating_sub(1);
+        let end = unit_end.min(start + max_lines);
+        return vec![(start, end)];
+    }
+
+    // Filter matches within the unit range and sort
+    let mut matches_in_range: Vec<usize> = match_lines
+        .iter()
+        .filter(|&&line| line >= unit_start && line <= unit_end)
+        .copied()
+        .collect();
+    matches_in_range.sort();
+
+    if matches_in_range.is_empty() {
+        // No matches in range, show from beginning
+        let start = unit_start.saturating_sub(1);
+        let end = unit_end.min(start + max_lines);
+        return vec![(start, end)];
+    }
+
+    // Calculate ranges for each match (with context)
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for &match_line in &matches_in_range {
+        let start = match_line
+            .saturating_sub(1)
+            .saturating_sub(half_context)
+            .max(unit_start.saturating_sub(1));
+        let end = (match_line.saturating_sub(1) + half_context + 1).min(unit_end);
+        ranges.push((start, end));
+    }
+
+    // Merge overlapping ranges
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in ranges {
+        if let Some(last) = merged.last_mut() {
+            if start <= last.1 {
+                // Overlapping or adjacent, merge
+                last.1 = last.1.max(end);
+            } else {
+                merged.push((start, end));
+            }
+        } else {
+            merged.push((start, end));
+        }
+    }
+
+    merged
+}
+
+/// Print content with syntax highlighting for multiple ranges
+fn print_highlighted_ranges(
+    file_path: &Path,
+    lines: &[&str],
+    ranges: &[(usize, usize)],
+    unit_end: usize,
+) {
+    let ps = SyntaxSet::load_defaults_newlines();
+    let ts = ThemeSet::load_defaults();
+    let theme = &ts.themes["base16-ocean.dark"];
+
+    // Try to detect syntax from file extension
+    let syntax = file_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .and_then(|ext| ps.find_syntax_by_extension(ext))
+        .unwrap_or_else(|| ps.find_syntax_plain_text());
+
+    println!();
+
+    for (range_idx, &(start, end)) in ranges.iter().enumerate() {
+        let display_end = end.min(lines.len());
+        let display_start = start.min(lines.len());
+
+        if display_start >= lines.len() {
+            continue;
+        }
+
+        // Reconstruct the content for highlighting
+        let content_to_highlight: String = lines[display_start..display_end]
+            .iter()
+            .map(|l| format!("{}\n", l))
+            .collect();
+
+        let mut highlighter = HighlightLines::new(syntax, theme);
+
+        for (i, line) in LinesWithEndings::from(&content_to_highlight).enumerate() {
+            let line_num = display_start + i + 1;
+            let ranges: Vec<(Style, &str)> = highlighter
+                .highlight_line(line, &ps)
+                .unwrap_or_else(|_| vec![(Style::default(), line)]);
+            let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
+            // Remove trailing newline for cleaner output
+            let escaped = escaped.trim_end_matches('\n');
+            println!(
+                "   {} {}\x1b[0m",
+                format!("{:4}", line_num).dimmed(),
+                escaped
+            );
+        }
+
+        // Add separator between ranges, or "..." if more content follows
+        if range_idx < ranges.len() - 1 || display_end < unit_end {
+            println!("   {}", "...".dimmed());
+        }
+    }
+}
+
+/// Print content with syntax highlighting (single range, legacy)
 fn print_highlighted_content(
     file_path: &Path,
     lines: &[&str],
@@ -502,7 +708,7 @@ fn print_highlighted_content(
 
     let mut highlighter = HighlightLines::new(syntax, theme);
 
-    let display_end = end_line.min(start_line + max_lines);
+    let display_end = end_line.min(start_line.saturating_add(max_lines));
     let truncated = end_line > display_end;
 
     // Reconstruct the content for highlighting
@@ -587,6 +793,7 @@ fn cmd_search(
     include_patterns: &[String],
     files_only: bool,
     show_content: bool,
+    context_lines: usize,
     text_pattern: Option<&str>,
     extended_regexp: bool,
     code_only: bool,
@@ -805,6 +1012,46 @@ fn cmd_search(
     let search_top_k = if code_only { top_k * 3 } else { top_k * 2 };
     let results = searcher.search(query, search_top_k, subset.as_deref())?;
 
+    // When -e is used, filter to only code units that actually contain the pattern
+    // (not just units from files that contain the pattern somewhere)
+    let results = if let Some(pattern) = text_pattern {
+        let grep_matches = grep_with_context(pattern, &effective_root, extended_regexp, 0)?;
+        // Build a map of file -> set of matching line numbers
+        let mut file_match_lines: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+        for m in grep_matches {
+            file_match_lines
+                .entry(m.file)
+                .or_default()
+                .push(m.line_number);
+        }
+
+        // Filter results to only include units where at least one match line
+        // falls within the unit's line range
+        results
+            .into_iter()
+            .filter(|r| {
+                // Unit file is relative, grep files are absolute (joined with effective_root)
+                // Resolve unit file to absolute path for comparison
+                let unit_file_abs = if r.unit.file.is_absolute() {
+                    r.unit.file.clone()
+                } else {
+                    effective_root.join(&r.unit.file)
+                };
+                let canonical_file = std::fs::canonicalize(&unit_file_abs).unwrap_or(unit_file_abs);
+
+                if let Some(match_lines) = file_match_lines.get(&canonical_file) {
+                    match_lines
+                        .iter()
+                        .any(|&line| line >= r.unit.line && line <= r.unit.end_line)
+                } else {
+                    false
+                }
+            })
+            .collect()
+    } else {
+        results
+    };
+
     // Apply query boost and re-sort results
     let mut results: Vec<_> = results
         .into_iter()
@@ -855,12 +1102,35 @@ fn cmd_search(
             return Ok(());
         }
 
+        // When -e is used, get matching line numbers to show all occurrences
+        let match_lines: HashMap<PathBuf, Vec<usize>> = if let Some(pattern) = text_pattern {
+            let grep_matches = grep_with_context(pattern, &effective_root, extended_regexp, 0)?;
+            let mut map: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+            for m in grep_matches {
+                map.entry(m.file).or_default().push(m.line_number);
+            }
+            map
+        } else {
+            HashMap::new()
+        };
+
+        // Helper to get match lines for a file (canonicalized path lookup)
+        let get_file_matches = |file: &PathBuf| -> Vec<usize> {
+            let canonical_file = std::fs::canonicalize(file).unwrap_or_else(|_| file.clone());
+            match_lines
+                .get(&canonical_file)
+                .cloned()
+                .unwrap_or_default()
+        };
+
         // Separate results into code files and documents/config files
         let (code_results, doc_results): (Vec<_>, Vec<_>) = results
             .iter()
             .partition(|r| !is_text_format(r.unit.language));
 
         let mut current_index = 1;
+        let half_context = context_lines / 2;
+        let has_text_pattern = text_pattern.is_some();
 
         // Display code results first, grouped by file
         if !code_results.is_empty() {
@@ -875,24 +1145,40 @@ fn cmd_search(
                         result.unit.name.bold(),
                         format!(":{}-{}", result.unit.line, result.unit.end_line).dimmed()
                     );
-                    if show_content {
-                        // Read and display the function content with syntax highlighting (limited to 50 lines)
-                        if let Ok(content) = std::fs::read_to_string(&result.unit.file) {
-                            let lines: Vec<&str> = content.lines().collect();
+                    // Show content
+                    if let Ok(content) = std::fs::read_to_string(&result.unit.file) {
+                        let lines: Vec<&str> = content.lines().collect();
+                        let end = result.unit.end_line.min(lines.len());
+                        let max_lines = if show_content {
+                            usize::MAX
+                        } else {
+                            context_lines
+                        };
+
+                        if has_text_pattern {
+                            // Show all match occurrences with context
+                            let file_matches = get_file_matches(&result.unit.file);
+                            let ranges = calc_display_ranges(
+                                &file_matches,
+                                result.unit.line,
+                                end,
+                                half_context,
+                                max_lines,
+                            );
+                            print_highlighted_ranges(&result.unit.file, &lines, &ranges, end);
+                        } else {
+                            // No -e flag, show from beginning
                             let start = result.unit.line.saturating_sub(1);
-                            let end = result.unit.end_line.min(lines.len());
                             if start < lines.len() {
                                 print_highlighted_content(
                                     &result.unit.file,
                                     &lines,
                                     start,
-                                    50,
+                                    max_lines,
                                     end,
                                 );
                             }
                         }
-                    } else if !result.unit.signature.is_empty() {
-                        println!("      {}", result.unit.signature.dimmed());
                     }
                     current_index += 1;
                 }
@@ -902,7 +1188,6 @@ fn cmd_search(
 
         // Display document/config results after, grouped by file
         if !doc_results.is_empty() {
-            println!("{}", "documents:".yellow().bold());
             let grouped = group_results_by_file(&doc_results);
             for (file, file_results) in grouped {
                 // Print file header
@@ -914,24 +1199,36 @@ fn cmd_search(
                         result.unit.name.bold(),
                         format!(":{}-{}", result.unit.line, result.unit.end_line).dimmed()
                     );
-                    if show_content {
-                        // Read and display the document content with syntax highlighting (limited to 50 lines)
-                        if let Ok(content) = std::fs::read_to_string(&result.unit.file) {
-                            let lines: Vec<&str> = content.lines().collect();
+                    // Show content
+                    if let Ok(content) = std::fs::read_to_string(&result.unit.file) {
+                        let lines: Vec<&str> = content.lines().collect();
+                        let end = result.unit.end_line.min(lines.len());
+                        let max_lines = if show_content { 250 } else { context_lines };
+
+                        if has_text_pattern {
+                            // Show all match occurrences with context
+                            let file_matches = get_file_matches(&result.unit.file);
+                            let ranges = calc_display_ranges(
+                                &file_matches,
+                                result.unit.line,
+                                end,
+                                half_context,
+                                max_lines,
+                            );
+                            print_highlighted_ranges(&result.unit.file, &lines, &ranges, end);
+                        } else {
+                            // No -e flag, show from beginning
                             let start = result.unit.line.saturating_sub(1);
-                            let end = result.unit.end_line.min(lines.len());
                             if start < lines.len() {
                                 print_highlighted_content(
                                     &result.unit.file,
                                     &lines,
                                     start,
-                                    50,
+                                    max_lines,
                                     end,
                                 );
                             }
                         }
-                    } else if !result.unit.signature.is_empty() {
-                        println!("      {}", result.unit.signature.dimmed());
                     }
                     current_index += 1;
                 }
