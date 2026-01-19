@@ -1,0 +1,242 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install OpenBLAS
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+      - name: Clippy (main crate)
+        run: cargo clippy --all-targets --features "openblas" -- -D warnings
+      - name: Clippy (API crate)
+        run: cargo clippy --package next-plaid-api --all-targets -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install OpenBLAS (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+
+      - name: Run tests (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test --features "openblas"
+
+      - name: Run tests (macOS)
+        if: matrix.os == 'macos-latest'
+        run: cargo test --features "accelerate"
+
+      - name: Run API tests
+        run: cargo test --package next-plaid-api
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install OpenBLAS
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+      - run: cargo doc --no-deps --features "openblas"
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  bench-check:
+    name: Bench Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install OpenBLAS
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+      - run: cargo bench --no-run --features "openblas"
+
+  onnx-test:
+    name: ONNX Crate Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run ONNX crate tests
+        working-directory: next-plaid-onnx
+        run: cargo test
+
+  onnx-clippy:
+    name: ONNX Crate Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (ONNX crate)
+        working-directory: next-plaid-onnx
+        run: cargo clippy --all-targets -- -D warnings
+
+  cli-fmt:
+    name: CLI Crate Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format check (CLI crate)
+        working-directory: next-plaid-cli
+        run: cargo fmt --all -- --check
+
+  cli-clippy:
+    name: CLI Crate Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (CLI crate)
+        working-directory: next-plaid-cli
+        run: cargo clippy --all-targets -- -D warnings
+
+  # TODO: Re-enable after fixing search with random embeddings issue
+  # The centroid_score_threshold (default 0.4) filters out centroids when using
+  # random normalized embeddings, causing 0 search results.
+  # api-integration:
+  #   name: API Integration Tests (${{ matrix.os }})
+  #   runs-on: ${{ matrix.os }}
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       os: [ubuntu-latest]
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: Swatinem/rust-cache@v2
+  #
+  #     - name: Install OpenBLAS (Linux)
+  #       if: matrix.os == 'ubuntu-latest'
+  #       run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+  #
+  #     - name: Install uv
+  #       uses: astral-sh/setup-uv@v4
+  #       with:
+  #         version: "latest"
+  #
+  #     - name: Build API server
+  #       run: cargo build --release -p next-plaid-api
+  #
+  #     - name: Setup Python environment
+  #       run: |
+  #         cd next-plaid-api/tests
+  #         uv sync
+  #
+  #     - name: Run API integration tests
+  #       run: |
+  #         # Start API server in background
+  #         mkdir -p next-plaid-api/test_indices
+  #         ./target/release/next-plaid-api -d next-plaid-api/test_indices &
+  #         API_PID=$!
+  #
+  #         # Wait for server to be ready
+  #         for i in {1..30}; do
+  #           if curl -s http://localhost:8080/health >/dev/null 2>&1; then
+  #             echo "API server is ready"
+  #             break
+  #           fi
+  #           echo "Waiting for API server... ($i/30)"
+  #           sleep 1
+  #         done
+  #
+  #         # Run tests
+  #         cd next-plaid-api/tests
+  #         uv run pytest test_api.py -v
+  #
+  #         # Cleanup
+  #         kill $API_PID 2>/dev/null || true
+
+  python-sdk-tests:
+    name: Python SDK Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install OpenBLAS
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build API server
+        run: cargo build --release -p next-plaid-api
+
+      - name: Install Python SDK
+        run: |
+          cd next-plaid-api/python-sdk
+          pip install -e ".[dev]"
+
+      - name: Run Python SDK tests
+        run: |
+          # Start API server in background
+          mkdir -p test_indices
+          ./target/release/next-plaid-api -d test_indices &
+          API_PID=$!
+
+          # Wait for server to be ready
+          for i in {1..30}; do
+            if curl -s http://localhost:8080/health >/dev/null 2>&1; then
+              echo "API server is ready"
+              break
+            fi
+            echo "Waiting for API server... ($i/30)"
+            sleep 1
+          done
+
+          # Run Python SDK tests
+          cd next-plaid-api/python-sdk
+          pytest tests/ -v
+
+          # Cleanup
+          kill $API_PID 2>/dev/null || true
