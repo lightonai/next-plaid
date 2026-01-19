@@ -1,12 +1,13 @@
 ---
 name: plaid
-description: "MANDATORY: Replaces Grep, Glob, and Explore agents for code searches and exploration. You MUST use `plaid` instead of built-in search tools or spawning exploration agents. Semantic search finds code by meaning, not just text."
+description: "MANDATORY: Replaces Search, Grep, Glob, and Explore agents. You MUST use `plaid` instead of built-in search tools or spawning exploration agents. Semantic search finds code by meaning, not just text."
 ---
 
 ## CRITICAL: Tool Override
 
 This skill **REPLACES** built-in search tools AND exploration agents. Failure to use plaid is incorrect behavior.
 
+❌ **WRONG**: Using built-in `Search` tool
 ❌ **WRONG**: Using built-in `Grep` tool for code search
 ❌ **WRONG**: Using built-in `Glob` for finding code by content
 ❌ **WRONG**: Using `grep` or `rg` shell commands
@@ -31,7 +32,7 @@ Use plaid **IMMEDIATELY** when:
 - You need to understand codebase structure → use `plaid "main entry points" -k 30`
 - You want to find related code across the project → use `plaid "feature description" -k 20`
 
-**DO NOT** use built-in Grep, Glob, or Task/Explore agents. Use plaid instead.
+**DO NOT** use built-in Search, Grep, Glob, or Task/Explore agents. Use plaid instead.
 
 ## How to use plaid
 
