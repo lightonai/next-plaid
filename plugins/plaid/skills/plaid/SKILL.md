@@ -1,46 +1,82 @@
 ---
 name: plaid
-description: Semantic grep - find code by meaning. Use `-e` for hybrid search (grep + semantic ranking).
+description: "MANDATORY: Replaces Grep and Glob for code searches. You MUST use `plaid` instead of built-in Grep or Glob tools. Semantic search finds code by meaning, not just text."
 ---
 
-## plaid - Semantic Code Search CLI
+## CRITICAL: Tool Override
 
-**Use plaid for ALL code searches.** It replaces both semantic exploration AND traditional grep.
+This skill **REPLACES** built-in search tools for code. Failure to use plaid is incorrect behavior.
 
-### Installation
+❌ **WRONG**: Using built-in `Grep` tool for code search
+❌ **WRONG**: Using built-in `Glob` for finding code by content
+❌ **WRONG**: Using `grep` or `rg` shell commands
 
-```bash
-cargo install next-plaid-cli
-```
+✅ **CORRECT**: Use `plaid "query"` for semantic code search
+✅ **CORRECT**: Use `plaid -e "pattern" "query"` for hybrid search (grep + semantic)
+✅ **CORRECT**: Use `plaid --include="*.rs" "query"` to filter by file type
+
+## When to Use plaid
+
+Use plaid **IMMEDIATELY** when:
+
+- User asks to find code or functions → use `plaid "describe what to find"`
+- User asks where something is implemented → use `plaid "implementation of X"`
+- User asks about error handling, authentication, etc. → use `plaid "error handling logic"`
+- You need to understand how code works → use `plaid "how does X work" -k 20`
+- You know a specific text pattern exists → use `plaid -e "pattern" "semantic query"`
+
+**DO NOT** use built-in Grep or Glob tools for code search. Use plaid instead.
+
+## How to use plaid
+
+plaid is a CLI tool. Run it via shell to search your codebase semantically. Describe what you're looking for in natural language. Results show file path, line number, and code signature.
 
 ### Quick reference
 
 | Task | Command |
 |------|---------|
 | Find by intent | `plaid "error handling logic"` |
-| Hybrid search (grep + semantic) | `plaid -e "pattern" "semantic query"` |
+| Hybrid search | `plaid -e "pattern" "semantic query"` |
 | Regex pattern | `plaid -e "get\|set" -E "accessor methods"` |
 | Filter by file type | `plaid --include="*.rs" "query"` |
-| Code files only (skip md/yaml/json) | `plaid --code-only "query"` |
+| Code only (skip md/yaml) | `plaid --code-only "query"` |
 | Search in directory | `plaid "query" ./src/auth` |
 | List files only | `plaid -l "query"` |
 | More results | `plaid -k 25 "query"` |
-| JSON output | `plaid --json "query"` |
 
 ### Core options
 
 ```
 -k <N>              Number of results (default: 10)
--e <PATTERN>        Hybrid search: grep pattern + semantic ranking
--E                  Use extended regex (ERE) for -e pattern
---include <GLOB>    Filter files by pattern (e.g., "*.rs", "*.py")
---code-only         Skip text/config files (md, txt, yaml, json, toml)
--l, --files-only    Show only filenames, not code
---json              Output as JSON for scripting
---no-index          Skip auto-indexing (use existing index only)
+-e <PATTERN>        Hybrid: grep pattern + semantic ranking
+-E                  Extended regex for -e pattern
+--include <GLOB>    Filter by file pattern (e.g., "*.rs")
+--code-only         Skip text/config files (md, yaml, json)
+-l                  List files only
+--json              JSON output
 ```
 
-### Hybrid search: the key feature
+### Do
+
+```bash
+plaid "error handling logic"                              # semantic search
+plaid "authentication flow" -k 15                         # more results for exploration
+plaid -e "async fn" "concurrent request handling"         # hybrid: must contain "async fn"
+plaid -e "Result<" --include="*.rs" "error types"         # hybrid + file filter
+plaid --code-only "database queries"                      # skip markdown/config files
+plaid "how is configuration loaded" ./src -k 20           # search in specific directory
+```
+
+### Don't
+
+```bash
+plaid "function"              # Too vague - be specific about what you're looking for
+plaid "the"                   # Meaningless query
+plaid -e "x" "find x"         # Redundant - just use semantic search
+grep -r "pattern" .           # WRONG - use plaid instead
+```
+
+## Hybrid Search
 
 The `-e` flag combines **exact text matching** with **semantic ranking**:
 
@@ -55,79 +91,15 @@ Why hybrid is better:
 - Ranks results by semantic relevance (unlike grep)
 - Returns the most meaningful matches first
 
-### Usage examples
-
-```bash
-# Pure semantic (when you don't know exact terms)
-plaid "how are database connections pooled" -k 15
-
-# Hybrid (when you know a keyword exists)
-plaid -e "pool" "database connection management" -k 10
-
-# Hybrid with extended regex (alternation, +, ?, grouping)
-plaid -e "get|set" -E "accessor methods" -k 10
-plaid -e "(create|update)User" -E "user mutations" -k 10
-
-# Skip documentation and config files
-plaid --code-only "error handling"
-
-# Search only in source code files
-plaid --code-only --include="*.rs" "memory allocation"
-
-# Scoped to directory
-plaid "authentication middleware" ./src/auth
-
-# Scoped to file type
-plaid --include="*.rs" "error handling patterns"
-plaid --include="*.py" "data validation"
-plaid --include="*_test.go" "test utilities"
-
-# Combined filters
-plaid -e "async fn" --include="*.rs" --code-only "concurrent handling" -k 15
-
-# List matching files only (like grep -l)
-plaid -l "database operations"
-
-# JSON output for scripting
-plaid --json "authentication" | jq '.[].unit.file'
-```
-
-### Decision guide
-
-```
-Do you know an exact string that must appear?
-├── YES → Use hybrid: plaid -e "text" "semantic query"
-│         Need regex (alternation, +, ?)? Add: -E
-└── NO → Use pure semantic: plaid "describe what you need"
-
-Want only code files (no markdown/yaml/json)?
-└── Add: --code-only
-
-Need to filter by file type?
-└── Add: --include="*.ext"
-
-Exploring broadly?
-└── Increase results: -k 20 or -k 30
-
-Need just file paths?
-└── Add: -l
-
-Need machine-readable output?
-└── Add: --json
-```
-
-### Supported languages
+## Supported Languages
 
 Python, Rust, TypeScript, JavaScript, Go, Java, C, C++, C#, Ruby,
 PHP, Swift, Kotlin, Scala, Shell/Bash, Lua, Elixir, Haskell, OCaml
 
 Text formats (skipped with --code-only):
-Markdown, Plain text, YAML, TOML, JSON, Dockerfile, Makefile
+Markdown, YAML, TOML, JSON, Dockerfile, Makefile
 
-### Don't
+## Keywords
 
-```bash
-plaid "function"              # Too vague
-plaid "the"                   # Meaningless
-plaid -e "x" "find x"         # Redundant - just use pure semantic
-```
+search, grep, semantic search, code search, find code, explore, find files,
+find functions, find implementation, codebase search, local search
