@@ -173,10 +173,12 @@ fn extract_markdown_units(path: &Path, _source: &str, lines: &[&str]) -> Vec<Cod
         .unwrap_or("document")
         .to_string();
 
+    let end_line = lines.len();
     let unit = create_text_unit(
         path,
         &title,
         1,
+        end_line,
         Language::Markdown,
         UnitType::Document,
         lines,
@@ -202,7 +204,8 @@ fn extract_plain_text_units(
         .unwrap_or("document")
         .to_string();
 
-    let unit = create_text_unit(path, &title, 1, lang, UnitType::Document, lines);
+    let end_line = lines.len();
+    let unit = create_text_unit(path, &title, 1, end_line, lang, UnitType::Document, lines);
 
     vec![unit]
 }
@@ -212,6 +215,7 @@ fn create_text_unit(
     path: &Path,
     name: &str,
     line: usize,
+    end_line: usize,
     lang: Language,
     unit_type: UnitType,
     content_lines: &[&str],
@@ -250,6 +254,7 @@ fn create_text_unit(
         qualified_name,
         file: path.to_path_buf(),
         line,
+        end_line,
         language: lang,
         unit_type,
         signature,
@@ -492,6 +497,7 @@ fn extract_function(
         name,
         path.to_path_buf(),
         start_line + 1,
+        end_line + 1,
         lang,
         unit_type,
         parent_class,
@@ -547,6 +553,7 @@ fn extract_class(
         name,
         path.to_path_buf(),
         start_line + 1,
+        end_line + 1,
         lang,
         UnitType::Class,
         None,

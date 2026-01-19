@@ -99,6 +99,7 @@ pub struct CodeUnit {
     pub qualified_name: String,
     pub file: PathBuf,
     pub line: usize,
+    pub end_line: usize,
     pub language: Language,
     pub unit_type: UnitType,
 
@@ -133,6 +134,7 @@ impl CodeUnit {
         name: String,
         file: PathBuf,
         line: usize,
+        end_line: usize,
         language: Language,
         unit_type: UnitType,
         parent_class: Option<&str>,
@@ -147,6 +149,7 @@ impl CodeUnit {
             qualified_name,
             file,
             line,
+            end_line,
             language,
             unit_type,
             signature: String::new(),
