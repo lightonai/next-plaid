@@ -82,7 +82,7 @@ struct Cli {
     path: PathBuf,
 
     /// Number of results
-    #[arg(short = 'k', long, default_value = "10")]
+    #[arg(short = 'k', default_value = "20")]
     top_k: usize,
 
     /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
@@ -226,7 +226,7 @@ enum Commands {
         path: PathBuf,
 
         /// Number of results
-        #[arg(short = 'k', long, default_value = "10")]
+        #[arg(short = 'k', default_value = "20")]
         top_k: usize,
 
         /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
@@ -456,6 +456,27 @@ fn grep_files(pattern: &str, path: &std::path::Path, extended_regexp: bool) -> R
     Ok(files)
 }
 
+/// Compute boosted score based on literal query matches in code unit
+fn compute_final_score(semantic_score: f32, query: &str, unit: &next_plaid_cli::CodeUnit) -> f32 {
+    let mut score = semantic_score;
+    let query_lower = query.to_lowercase();
+
+    // Boost if query appears literally in name (strongest boost)
+    if unit.name.to_lowercase().contains(&query_lower) {
+        score += 3.0;
+    }
+    // Boost if query appears literally in signature
+    if unit.signature.to_lowercase().contains(&query_lower) {
+        score += 2.0;
+    }
+    // Boost if query appears in code preview (moderate boost)
+    if unit.code_preview.to_lowercase().contains(&query_lower) {
+        score += 1.0;
+    }
+
+    score
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_search(
     query: &str,
@@ -680,11 +701,25 @@ fn cmd_search(
     };
 
     // Search with optional filtering
-    // Request more results if code_only is enabled, since we'll filter some out
-    let search_top_k = if code_only { top_k * 2 } else { top_k };
+    // Request more results to allow for re-ranking with query boost
+    let search_top_k = if code_only { top_k * 3 } else { top_k * 2 };
     let results = searcher.search(query, search_top_k, subset.as_deref())?;
 
-    // Filter out text/config files if --code-only is enabled
+    // Apply query boost and re-sort results
+    let mut results: Vec<_> = results
+        .into_iter()
+        .map(|mut r| {
+            r.score = compute_final_score(r.score, query, &r.unit);
+            r
+        })
+        .collect();
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Filter out text/config files if --code-only is enabled, then take top_k
     let results: Vec<_> = if code_only {
         results
             .into_iter()
@@ -692,7 +727,7 @@ fn cmd_search(
             .take(top_k)
             .collect()
     } else {
-        results
+        results.into_iter().take(top_k).collect()
     };
 
     // Increment search count
@@ -720,23 +755,57 @@ fn cmd_search(
             return Ok(());
         }
 
-        for (i, result) in results.iter().enumerate() {
-            println!(
-                "{} {} {}",
-                format!("{}.", i + 1).dimmed(),
-                result.unit.name.bold(),
-                format!("(score: {:.3})", result.score).dimmed()
-            );
-            println!(
-                "   {} {}:{}",
-                "→".blue(),
-                result.unit.file.display(),
-                result.unit.line
-            );
-            if !result.unit.signature.is_empty() {
-                println!("   {}", result.unit.signature.dimmed());
+        // Separate results into code files and documents/config files
+        let (code_results, doc_results): (Vec<_>, Vec<_>) = results
+            .iter()
+            .partition(|r| !is_text_format(r.unit.language));
+
+        let mut current_index = 1;
+
+        // Display code results first
+        if !code_results.is_empty() {
+            println!("{}", "code:".green().bold());
+            for result in &code_results {
+                println!(
+                    "{} {}",
+                    format!("{}.", current_index).dimmed(),
+                    result.unit.name.bold()
+                );
+                println!(
+                    "   {} {}:{}",
+                    "→".blue(),
+                    result.unit.file.display(),
+                    result.unit.line
+                );
+                if !result.unit.signature.is_empty() {
+                    println!("   {}", result.unit.signature.dimmed());
+                }
+                println!();
+                current_index += 1;
             }
-            println!();
+        }
+
+        // Display document/config results after
+        if !doc_results.is_empty() {
+            println!("{}", "documents:".yellow().bold());
+            for result in &doc_results {
+                println!(
+                    "{} {}",
+                    format!("{}.", current_index).dimmed(),
+                    result.unit.name.bold()
+                );
+                println!(
+                    "   {} {}:{}",
+                    "→".blue(),
+                    result.unit.file.display(),
+                    result.unit.line
+                );
+                if !result.unit.signature.is_empty() {
+                    println!("   {}", result.unit.signature.dimmed());
+                }
+                println!();
+                current_index += 1;
+            }
         }
     }
 
