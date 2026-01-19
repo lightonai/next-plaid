@@ -571,6 +571,7 @@ fn parse_grep_output(output: &str, base_path: &Path, _has_context: bool) -> Resu
 
 /// Calculate merged display ranges for all matches within a code unit
 /// Returns a vector of (start, end) ranges (0-indexed) that cover all matches with context
+/// Always includes the function signature (first line of unit) for context
 fn calc_display_ranges(
     match_lines: &[usize],
     unit_start: usize,
@@ -578,11 +579,12 @@ fn calc_display_ranges(
     half_context: usize,
     max_lines: usize,
 ) -> Vec<(usize, usize)> {
+    let signature_line = unit_start.saturating_sub(1); // 0-indexed first line of unit
+
     if match_lines.is_empty() {
         // No matches, show from beginning with max_lines limit
-        let start = unit_start.saturating_sub(1);
-        let end = unit_end.min(start + max_lines);
-        return vec![(start, end)];
+        let end = unit_end.min(signature_line + max_lines);
+        return vec![(signature_line, end)];
     }
 
     // Filter matches within the unit range and sort
@@ -595,9 +597,8 @@ fn calc_display_ranges(
 
     if matches_in_range.is_empty() {
         // No matches in range, show from beginning
-        let start = unit_start.saturating_sub(1);
-        let end = unit_end.min(start + max_lines);
-        return vec![(start, end)];
+        let end = unit_end.min(signature_line + max_lines);
+        return vec![(signature_line, end)];
     }
 
     // Calculate ranges for each match (with context)
@@ -606,7 +607,7 @@ fn calc_display_ranges(
         let start = match_line
             .saturating_sub(1)
             .saturating_sub(half_context)
-            .max(unit_start.saturating_sub(1));
+            .max(signature_line);
         let end = (match_line.saturating_sub(1) + half_context + 1).min(unit_end);
         ranges.push((start, end));
     }
@@ -623,6 +624,16 @@ fn calc_display_ranges(
             }
         } else {
             merged.push((start, end));
+        }
+    }
+
+    // Ensure signature line is always included
+    // If first range doesn't start at signature, prepend a signature-only range
+    if let Some(first) = merged.first() {
+        if first.0 > signature_line {
+            // Add signature line as separate range (just the first line or two)
+            let sig_end = (signature_line + 2).min(first.0); // Show 1-2 lines of signature
+            merged.insert(0, (signature_line, sig_end));
         }
     }
 
