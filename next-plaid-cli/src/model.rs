@@ -14,7 +14,8 @@ const REQUIRED_FILES: &[&str] = &[
 
 /// Load model from cache or download from HuggingFace.
 /// Returns path to the model directory.
-pub fn ensure_model(model_id: Option<&str>) -> Result<PathBuf> {
+/// If `quiet` is true, suppresses the model name output.
+pub fn ensure_model(model_id: Option<&str>, quiet: bool) -> Result<PathBuf> {
     let model_id = model_id.unwrap_or(DEFAULT_MODEL);
 
     // Check if it's a local path
@@ -24,7 +25,9 @@ pub fn ensure_model(model_id: Option<&str>) -> Result<PathBuf> {
     }
 
     // Download from HuggingFace
-    eprintln!("🤖 Model: {}", model_id);
+    if !quiet {
+        eprintln!("🤖 Model: {}", model_id);
+    }
     let api = Api::new()?;
     let repo = api.model(model_id.to_string());
 

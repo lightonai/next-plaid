@@ -123,7 +123,7 @@ struct Cli {
     show_content: bool,
 
     /// Number of context lines to show (default: 6 for semantic, 3+3 for grep)
-    #[arg(short = 'n', long = "lines", default_value = "15")]
+    #[arg(short = 'n', long = "lines", default_value = "6")]
     context_lines: usize,
 
     /// Text pattern: pre-filter using grep, then rank with semantic search
@@ -280,7 +280,7 @@ enum Commands {
         show_content: bool,
 
         /// Number of context lines to show (default: 6 for semantic, 3+3 for grep)
-        #[arg(short = 'n', long = "lines", default_value = "15")]
+        #[arg(short = 'n', long = "lines", default_value = "6")]
         context_lines: usize,
 
         /// Text pattern: pre-filter using grep, then rank with semantic search
@@ -814,8 +814,11 @@ fn cmd_search(
     // Resolve model: CLI > config > default
     let model = resolve_model(cli_model);
 
-    // Ensure model is downloaded
-    let model_path = ensure_model(Some(&model))?;
+    // Check if index already exists (suppress model output if so)
+    let has_existing_index = index_exists(&path) || find_parent_index(&path)?.is_some();
+
+    // Ensure model is downloaded (quiet if we already have an index)
+    let model_path = ensure_model(Some(&model), has_existing_index)?;
 
     // Check for parent index unless the resolved path is outside
     // the current directory (external project)
@@ -1336,8 +1339,8 @@ fn cmd_set_model(model: &str) -> Result<()> {
     // Validate the new model before switching
     eprintln!("🔍 Validating model: {}", model);
 
-    // Try to download/locate the model
-    let model_path = match ensure_model(Some(model)) {
+    // Try to download/locate the model (quiet since we already printed "Validating model")
+    let model_path = match ensure_model(Some(model), true) {
         Ok(path) => path,
         Err(e) => {
             eprintln!("❌ Failed to download model: {}", e);
