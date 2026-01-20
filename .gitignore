@@ -9,8 +9,6 @@
 *~
 *.plaid
 
-next-plaid-cli/llm-tldr
-
 # OS
 .DS_Store
 Thumbs.db
@@ -30,7 +28,7 @@ env/
 .uv/
 *.json
 # Exception: Claude Code plugin files must be tracked
-!next-plaid-cli/src/install/*.json
+!colgrep/src/install/*.json
 !.claude-plugin/marketplace.json
 next-plaid-api/indices/
 *.npz

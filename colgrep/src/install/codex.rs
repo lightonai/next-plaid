@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 use super::SKILL_MD;
 
-/// Marker to identify plaid section in AGENTS.md
-const PLAID_MARKER_START: &str = "<!-- PLAID_START -->";
-const PLAID_MARKER_END: &str = "<!-- PLAID_END -->";
+/// Marker to identify colgrep section in AGENTS.md
+const COLGREP_MARKER_START: &str = "<!-- COLGREP_START -->";
+const COLGREP_MARKER_END: &str = "<!-- COLGREP_END -->";
 
 /// Get the Codex directory
 fn get_codex_dir() -> Result<PathBuf> {
@@ -21,7 +21,7 @@ fn get_agents_md_path() -> Result<PathBuf> {
     Ok(codex_dir.join("AGENTS.md"))
 }
 
-/// Add plaid skill definition to AGENTS.md
+/// Add colgrep skill definition to AGENTS.md
 fn add_to_agents_md() -> Result<()> {
     let codex_dir = get_codex_dir()?;
     fs::create_dir_all(&codex_dir)?;
@@ -34,30 +34,30 @@ fn add_to_agents_md() -> Result<()> {
         String::from("# Codex Agent Tools\n\n")
     };
 
-    // Check if plaid is already installed
-    if content.contains(PLAID_MARKER_START) {
-        // Remove existing plaid section first
+    // Check if colgrep is already installed
+    if content.contains(COLGREP_MARKER_START) {
+        // Remove existing colgrep section first
         if let (Some(start), Some(end)) = (
-            content.find(PLAID_MARKER_START),
-            content.find(PLAID_MARKER_END),
+            content.find(COLGREP_MARKER_START),
+            content.find(COLGREP_MARKER_END),
         ) {
-            let end_pos = end + PLAID_MARKER_END.len();
+            let end_pos = end + COLGREP_MARKER_END.len();
             content = format!("{}{}", &content[..start], &content[end_pos..]);
         }
     }
 
-    // Add plaid section
-    let plaid_section = format!(
+    // Add colgrep section
+    let colgrep_section = format!(
         "{}\n{}\n{}\n",
-        PLAID_MARKER_START, SKILL_MD, PLAID_MARKER_END
+        COLGREP_MARKER_START, SKILL_MD, COLGREP_MARKER_END
     );
-    content.push_str(&plaid_section);
+    content.push_str(&colgrep_section);
 
     fs::write(&agents_path, content)?;
     Ok(())
 }
 
-/// Remove plaid skill from AGENTS.md
+/// Remove colgrep skill from AGENTS.md
 fn remove_from_agents_md() -> Result<()> {
     let agents_path = get_agents_md_path()?;
 
@@ -68,10 +68,10 @@ fn remove_from_agents_md() -> Result<()> {
     let content = fs::read_to_string(&agents_path)?;
 
     if let (Some(start), Some(end)) = (
-        content.find(PLAID_MARKER_START),
-        content.find(PLAID_MARKER_END),
+        content.find(COLGREP_MARKER_START),
+        content.find(COLGREP_MARKER_END),
     ) {
-        let end_pos = end + PLAID_MARKER_END.len();
+        let end_pos = end + COLGREP_MARKER_END.len();
         let new_content = format!("{}{}", &content[..start], &content[end_pos..]);
 
         // Clean up extra newlines
@@ -88,15 +88,15 @@ fn remove_from_agents_md() -> Result<()> {
     Ok(())
 }
 
-/// Install plaid for Codex
+/// Install colgrep for Codex
 pub fn install_codex() -> Result<()> {
-    println!("Installing plaid for Codex...");
+    println!("Installing colgrep for Codex...");
 
     // Add to AGENTS.md
     add_to_agents_md()?;
     let agents_path = get_agents_md_path()?;
     println!(
-        "{} Added plaid instructions to {}",
+        "{} Added colgrep instructions to {}",
         "✓".green(),
         agents_path.display()
     );
@@ -105,16 +105,16 @@ pub fn install_codex() -> Result<()> {
     Ok(())
 }
 
-/// Uninstall plaid from Codex
+/// Uninstall colgrep from Codex
 pub fn uninstall_codex() -> Result<()> {
-    println!("Uninstalling plaid from Codex...");
+    println!("Uninstalling colgrep from Codex...");
 
     // Remove from AGENTS.md
     remove_from_agents_md()?;
-    println!("{} Removed plaid from AGENTS.md", "✓".green());
+    println!("{} Removed colgrep from AGENTS.md", "✓".green());
 
     println!();
-    println!("{}", "Plaid has been uninstalled from Codex.".green());
+    println!("{}", "Colgrep has been uninstalled from Codex.".green());
     Ok(())
 }
 
@@ -125,12 +125,12 @@ fn print_codex_success() {
     println!(
         "  {} {}",
         "✓".green().bold(),
-        "PLAID INSTALLED FOR CODEX".green().bold()
+        "COLGREP INSTALLED FOR CODEX".green().bold()
     );
     println!();
     println!(
         "  {}",
-        "Plaid is now available as a semantic search tool in Codex.".white()
+        "Colgrep is now available as a semantic search tool in Codex.".white()
     );
     println!();
     println!("  {}", "Usage in Codex:".cyan().bold());
@@ -141,7 +141,7 @@ fn print_codex_success() {
     println!("    {}", "Example: \"find error handling logic\"".white());
     println!();
     println!("  {}", "To uninstall:".cyan().bold());
-    println!("    {}", "plaid --uninstall-codex".green());
+    println!("    {}", "colgrep --uninstall-codex".green());
     println!();
     println!("{}", "═".repeat(70).cyan());
 }

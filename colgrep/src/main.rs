@@ -9,66 +9,65 @@ use syntect::highlighting::{Style, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 
-use next_plaid_cli::{
-    acquire_index_lock, ensure_model, ensure_onnx_runtime, find_parent_index,
-    get_index_dir_for_project, get_plaid_data_dir, get_vector_index_path, index_exists,
-    install_claude_code, install_codex, install_opencode, is_text_format, uninstall_claude_code,
-    uninstall_codex, uninstall_opencode, Config, IndexBuilder, IndexState, ProjectMetadata,
-    Searcher, DEFAULT_MODEL,
+use colgrep::{
+    acquire_index_lock, ensure_model, ensure_onnx_runtime, find_parent_index, get_colgrep_data_dir,
+    get_index_dir_for_project, get_vector_index_path, index_exists, install_claude_code,
+    install_codex, install_opencode, is_text_format, uninstall_claude_code, uninstall_codex,
+    uninstall_opencode, Config, IndexBuilder, IndexState, ProjectMetadata, Searcher, DEFAULT_MODEL,
 };
 
 const MAIN_HELP: &str = "\
 EXAMPLES:
     # Search for code semantically (auto-indexes if needed)
-    plaid \"function that handles user authentication\"
-    plaid \"error handling for database connections\"
+    colgrep \"function that handles user authentication\"
+    colgrep \"error handling for database connections\"
 
     # Search in a specific directory
-    plaid \"API endpoints\" ./backend
+    colgrep \"API endpoints\" ./backend
 
     # Filter by file type (grep-like)
-    plaid \"parse config\" --include \"*.rs\"
-    plaid \"test helpers\" --include \"*_test.go\"
+    colgrep \"parse config\" --include \"*.rs\"
+    colgrep \"test helpers\" --include \"*_test.go\"
 
     # Hybrid search: grep first, then rank semantically
-    plaid \"usage\" -e \"async fn\"
-    plaid \"error\" -e \"panic!\" --include \"*.rs\"
+    colgrep \"usage\" -e \"async fn\"
+    colgrep \"error\" -e \"panic!\" --include \"*.rs\"
 
     # List only matching files (like grep -l)
-    plaid -l \"database queries\"
+    colgrep -l \"database queries\"
 
     # Show full function/class content
-    plaid -c \"parse config\"
-    plaid --content \"authentication handler\" -k 5
+    colgrep -c \"parse config\"
+    colgrep --content \"authentication handler\" -k 5
 
     # Output as JSON for scripting
-    plaid --json \"authentication\" | jq '.[] | .unit.file'
+    colgrep --json \"authentication\" | jq '.[] | .unit.file'
 
     # Check index status
-    plaid status
+    colgrep status
 
     # Clear index
-    plaid clear
-    plaid clear --all
+    colgrep clear
+    colgrep clear --all
 
     # Change default model
-    plaid set-model lightonai/GTE-ModernColBERT-v1-onnx
+    colgrep set-model lightonai/GTE-ModernColBERT-v1-onnx
 
 SUPPORTED LANGUAGES:
     Python, Rust, TypeScript, JavaScript, Go, Java, C, C++, C#, Ruby,
     PHP, Swift, Kotlin, Scala, Shell/Bash, SQL, Markdown, Plain text
 
 ENVIRONMENT:
-    Indexes are stored in ~/.local/share/plaid/ (or $XDG_DATA_HOME/plaid)
-    Config is stored in ~/.config/plaid/ (or $XDG_CONFIG_HOME/plaid)";
+    Indexes are stored in ~/.local/share/colgrep/ (or $XDG_DATA_HOME/colgrep)
+    Config is stored in ~/.config/colgrep/ (or $XDG_CONFIG_HOME/colgrep)";
 
 #[derive(Parser)]
 #[command(
-    name = "plaid",
+    name = "colgrep",
     version,
     about = "Semantic grep - find code by meaning, not just text",
     long_about = "Semantic grep - find code by meaning, not just text.\n\n\
-        plaid is grep that understands what you're looking for. Search with\n\
+        colgrep is grep that understands what you're looking for. Search with\n\
         natural language like \"error handling logic\" and find relevant code\n\
         even when keywords don't match exactly.\n\n\
         • Hybrid search: grep + semantic ranking with -e flag\n\
@@ -135,6 +134,22 @@ struct Cli {
     #[arg(short = 'E', long = "extended-regexp")]
     extended_regexp: bool,
 
+    /// Interpret -e pattern as fixed string, not regex
+    #[arg(short = 'F', long = "fixed-strings")]
+    fixed_strings: bool,
+
+    /// Match whole words only for -e pattern
+    #[arg(short = 'w', long = "word-regexp")]
+    word_regexp: bool,
+
+    /// Exclude files matching pattern (can be repeated)
+    #[arg(long = "exclude", value_name = "PATTERN")]
+    exclude_patterns: Vec<String>,
+
+    /// Exclude directories (can be repeated)
+    #[arg(long = "exclude-dir", value_name = "DIR")]
+    exclude_dirs: Vec<String>,
+
     /// Show statistics for all indexes
     #[arg(long)]
     stats: bool,
@@ -147,27 +162,27 @@ struct Cli {
     #[arg(long)]
     code_only: bool,
 
-    /// Install plaid as a plugin for Claude Code
+    /// Install colgrep as a plugin for Claude Code
     #[arg(long = "install-claude-code")]
     install_claude_code: bool,
 
-    /// Uninstall plaid plugin from Claude Code
+    /// Uninstall colgrep plugin from Claude Code
     #[arg(long = "uninstall-claude-code")]
     uninstall_claude_code: bool,
 
-    /// Install plaid for OpenCode
+    /// Install colgrep for OpenCode
     #[arg(long = "opencode")]
     install_opencode: bool,
 
-    /// Uninstall plaid from OpenCode
+    /// Uninstall colgrep from OpenCode
     #[arg(long = "uninstall-opencode")]
     uninstall_opencode: bool,
 
-    /// Install plaid for Codex
+    /// Install colgrep for Codex
     #[arg(long = "codex")]
     install_codex: bool,
 
-    /// Uninstall plaid from Codex
+    /// Uninstall colgrep from Codex
     #[arg(long = "uninstall-codex")]
     uninstall_codex: bool,
 }
@@ -175,32 +190,32 @@ struct Cli {
 const SEARCH_HELP: &str = "\
 EXAMPLES:
     # Basic semantic search
-    plaid search \"function that handles authentication\"
-    plaid search \"error handling\" ./backend
+    colgrep search \"function that handles authentication\"
+    colgrep search \"error handling\" ./backend
 
     # Filter by file type
-    plaid search \"parse config\" --include \"*.rs\"
-    plaid search \"API handler\" --include \"*.go\"
+    colgrep search \"parse config\" --include \"*.rs\"
+    colgrep search \"API handler\" --include \"*.go\"
 
     # Hybrid search (grep + semantic ranking)
-    plaid search \"usage\" -e \"async fn\"
-    plaid search \"error\" -e \"Result<\" --include \"*.rs\"
+    colgrep search \"usage\" -e \"async fn\"
+    colgrep search \"error\" -e \"Result<\" --include \"*.rs\"
 
     # List only matching files
-    plaid search -l \"database operations\"
+    colgrep search -l \"database operations\"
 
     # Show full function/class content
-    plaid search -c \"parse config\"
-    plaid search --content \"handler\" -k 5
+    colgrep search -c \"parse config\"
+    colgrep search --content \"handler\" -k 5
 
     # More results
-    plaid search -k 20 \"logging utilities\"
+    colgrep search -k 20 \"logging utilities\"
 
     # JSON output for scripting
-    plaid search --json \"auth\" | jq '.[0].unit.name'
+    colgrep search --json \"auth\" | jq '.[0].unit.name'
 
     # Skip auto-indexing
-    plaid search --no-index \"handlers\"
+    colgrep search --no-index \"handlers\"
 
 GREP COMPATIBILITY:
     -r, --recursive    Enabled by default (for grep users)
@@ -208,59 +223,63 @@ GREP COMPATIBILITY:
     -c, --content      Show syntax-highlighted content (up to 50 lines)
     -e, --pattern      Pre-filter with text pattern, like grep -e
     -E, --extended-regexp  Use extended regex (ERE) for -e pattern
-    --include          Filter files by glob pattern";
+    -F, --fixed-strings    Interpret -e pattern as fixed string (no regex)
+    -w, --word-regexp      Match whole words only for -e pattern
+    --include          Filter files by glob pattern
+    --exclude          Exclude files matching pattern
+    --exclude-dir      Exclude directories";
 
 const STATUS_HELP: &str = "\
 EXAMPLES:
-    plaid status
-    plaid status ~/projects/myapp";
+    colgrep status
+    colgrep status ~/projects/myapp";
 
 const CLEAR_HELP: &str = "\
 EXAMPLES:
     # Clear index for current directory
-    plaid clear
+    colgrep clear
 
     # Clear index for specific project
-    plaid clear ~/projects/myapp
+    colgrep clear ~/projects/myapp
 
     # Clear ALL indexes
-    plaid clear --all";
+    colgrep clear --all";
 
 const SET_MODEL_HELP: &str = "\
 EXAMPLES:
     # Set default model
-    plaid set-model lightonai/GTE-ModernColBERT-v1-onnx
+    colgrep set-model lightonai/GTE-ModernColBERT-v1-onnx
 
 NOTES:
     • Changing models clears all existing indexes (dimensions differ)
     • The model is downloaded from HuggingFace automatically
-    • Model preference is stored in ~/.config/plaid/config.json";
+    • Model preference is stored in ~/.config/colgrep/config.json";
 
 const CONFIG_HELP: &str = "\
 EXAMPLES:
     # Show current configuration
-    plaid config
+    colgrep config
 
     # Set default number of results
-    plaid config --k 20
+    colgrep config --k 20
 
     # Set default context lines
-    plaid config --n 10
+    colgrep config --n 10
 
     # Use full-precision (FP32) model instead of INT8 quantized
-    plaid config --fp32
+    colgrep config --fp32
 
     # Switch back to INT8 quantized model (default)
-    plaid config --int8
+    colgrep config --int8
 
     # Set both at once
-    plaid config --k 25 --n 8
+    colgrep config --k 25 --n 8
 
     # Reset to defaults (unset)
-    plaid config --k 0 --n 0
+    colgrep config --k 0 --n 0
 
 NOTES:
-    • Values are stored in ~/.config/plaid/config.json
+    • Values are stored in ~/.config/colgrep/config.json
     • Use 0 to reset a value to its default
     • These values override the CLI defaults when not explicitly specified
     • INT8 quantized is the default (faster inference, smaller model)";
@@ -320,6 +339,22 @@ enum Commands {
         /// Use extended regular expressions (ERE) for -e pattern
         #[arg(short = 'E', long = "extended-regexp")]
         extended_regexp: bool,
+
+        /// Interpret -e pattern as fixed string, not regex
+        #[arg(short = 'F', long = "fixed-strings")]
+        fixed_strings: bool,
+
+        /// Match whole words only for -e pattern
+        #[arg(short = 'w', long = "word-regexp")]
+        word_regexp: bool,
+
+        /// Exclude files matching pattern (can be repeated)
+        #[arg(long = "exclude", value_name = "PATTERN")]
+        exclude_patterns: Vec<String>,
+
+        /// Exclude directories (can be repeated)
+        #[arg(long = "exclude-dir", value_name = "DIR")]
+        exclude_dirs: Vec<String>,
 
         /// Only search code files, skip text/config files (md, txt, yaml, json, toml, etc.)
         #[arg(long)]
@@ -434,6 +469,10 @@ fn main() -> Result<()> {
             context_lines,
             text_pattern,
             extended_regexp,
+            fixed_strings,
+            word_regexp,
+            exclude_patterns,
+            exclude_dirs,
             code_only,
         }) => cmd_search(
             &query,
@@ -448,6 +487,10 @@ fn main() -> Result<()> {
             resolve_context_lines(context_lines, 6),
             text_pattern.as_deref(),
             extended_regexp,
+            fixed_strings,
+            word_regexp,
+            &exclude_patterns,
+            &exclude_dirs,
             code_only,
         ),
         Some(Commands::Status { path }) => cmd_status(&path),
@@ -475,6 +518,10 @@ fn main() -> Result<()> {
                     resolve_context_lines(cli.context_lines, 6),
                     cli.text_pattern.as_deref(),
                     cli.extended_regexp,
+                    cli.fixed_strings,
+                    cli.word_regexp,
+                    &cli.exclude_patterns,
+                    &cli.exclude_dirs,
                     cli.code_only,
                 )
             } else {
@@ -538,12 +585,22 @@ fn resolve_context_lines(cli_n: Option<usize>, default: usize) -> usize {
 }
 
 /// Run grep to find files containing a text pattern
-fn grep_files(pattern: &str, path: &std::path::Path, extended_regexp: bool) -> Result<Vec<String>> {
+/// Returns a list of file paths (relative to the search path)
+fn grep_files(
+    pattern: &str,
+    path: &std::path::Path,
+    extended_regexp: bool,
+    fixed_strings: bool,
+    word_regexp: bool,
+    exclude_patterns: &[String],
+    exclude_dirs: &[String],
+) -> Result<Vec<String>> {
     use anyhow::Context;
     use std::process::Command;
 
     let mut args = vec![
         "-rl".to_string(),
+        // Default exclusions
         "--exclude-dir=.git".to_string(),
         "--exclude-dir=node_modules".to_string(),
         "--exclude-dir=target".to_string(),
@@ -554,10 +611,28 @@ fn grep_files(pattern: &str, path: &std::path::Path, extended_regexp: bool) -> R
         "--exclude=*.sqlite".to_string(),
     ];
 
-    if extended_regexp {
+    // Add user-specified exclude directories
+    for dir in exclude_dirs {
+        args.push(format!("--exclude-dir={}", dir));
+    }
+
+    // Add user-specified exclude patterns
+    for pattern in exclude_patterns {
+        args.push(format!("--exclude={}", pattern));
+    }
+
+    // -F takes precedence over -E (like grep behavior)
+    if fixed_strings {
+        args.push("-F".to_string());
+    } else if extended_regexp {
         args.push("-E".to_string());
     }
 
+    if word_regexp {
+        args.push("-w".to_string());
+    }
+
+    args.push("--".to_string()); // End of options, pattern follows
     args.push(pattern.to_string());
 
     let output = Command::new("grep")
@@ -566,10 +641,7 @@ fn grep_files(pattern: &str, path: &std::path::Path, extended_regexp: bool) -> R
         .output()
         .context("Failed to run grep")?;
 
-    if !output.status.success() && !output.stdout.is_empty() {
-        // grep returns 1 when no matches, but we still want to handle that gracefully
-    }
-
+    // grep returns 1 when no matches found, which is not an error for us
     let stdout = String::from_utf8_lossy(&output.stdout);
     let files: Vec<String> = stdout
         .lines()
@@ -578,83 +650,6 @@ fn grep_files(pattern: &str, path: &std::path::Path, extended_regexp: bool) -> R
         .collect();
 
     Ok(files)
-}
-
-/// Run grep with context to get exact matches with surrounding lines
-fn grep_with_context(
-    pattern: &str,
-    path: &std::path::Path,
-    extended_regexp: bool,
-    context_lines: usize,
-) -> Result<Vec<GrepMatch>> {
-    use anyhow::Context;
-    use std::process::Command;
-
-    let mut args = vec![
-        "-rn".to_string(),
-        "--exclude-dir=.git".to_string(),
-        "--exclude-dir=node_modules".to_string(),
-        "--exclude-dir=target".to_string(),
-        "--exclude-dir=.venv".to_string(),
-        "--exclude-dir=venv".to_string(),
-        "--exclude-dir=__pycache__".to_string(),
-        "--exclude=*.db".to_string(),
-        "--exclude=*.sqlite".to_string(),
-    ];
-
-    // Only add context flags if context_lines > 0
-    if context_lines > 0 {
-        args.insert(1, format!("-B{}", context_lines));
-        args.insert(2, format!("-A{}", context_lines));
-    }
-
-    if extended_regexp {
-        args.push("-E".to_string());
-    }
-
-    args.push(pattern.to_string());
-
-    let output = Command::new("grep")
-        .args(&args)
-        .current_dir(path)
-        .output()
-        .context("Failed to run grep")?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_grep_output(&stdout, path, context_lines > 0)
-}
-
-/// A single grep match with file and line number
-#[derive(Debug)]
-struct GrepMatch {
-    file: PathBuf,
-    line_number: usize,
-}
-
-/// Parse grep output into structured matches (simple format: file:linenum:content)
-fn parse_grep_output(output: &str, base_path: &Path, _has_context: bool) -> Result<Vec<GrepMatch>> {
-    let mut matches: Vec<GrepMatch> = Vec::new();
-
-    for line in output.lines() {
-        // Format: file:linenum:content
-        if let Some(first_colon) = line.find(':') {
-            let after_first = &line[first_colon + 1..];
-            if let Some(second_colon) = after_first.find(':') {
-                let potential_linenum = &after_first[..second_colon];
-                if let Ok(line_num) = potential_linenum.parse::<usize>() {
-                    let file_str = &line[..first_colon];
-                    let file_path = base_path.join(file_str.strip_prefix("./").unwrap_or(file_str));
-
-                    matches.push(GrepMatch {
-                        file: file_path,
-                        line_number: line_num,
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(matches)
 }
 
 /// Calculate merged display ranges for all matches within a code unit
@@ -841,10 +836,10 @@ fn print_highlighted_content(
 /// Files are ordered by their most relevant result, and within each file,
 /// results are shown in order of relevance
 fn group_results_by_file<'a>(
-    results: &'a [&next_plaid_cli::SearchResult],
-) -> Vec<(PathBuf, Vec<&'a next_plaid_cli::SearchResult>)> {
+    results: &'a [&colgrep::SearchResult],
+) -> Vec<(PathBuf, Vec<&'a colgrep::SearchResult>)> {
     let mut file_order: Vec<PathBuf> = Vec::new();
-    let mut file_results: HashMap<PathBuf, Vec<&'a next_plaid_cli::SearchResult>> = HashMap::new();
+    let mut file_results: HashMap<PathBuf, Vec<&'a colgrep::SearchResult>> = HashMap::new();
 
     for result in results {
         let file = result.unit.file.clone();
@@ -861,7 +856,12 @@ fn group_results_by_file<'a>(
 }
 
 /// Compute boosted score based on literal query matches in code unit
-fn compute_final_score(semantic_score: f32, query: &str, unit: &next_plaid_cli::CodeUnit) -> f32 {
+fn compute_final_score(
+    semantic_score: f32,
+    query: &str,
+    unit: &colgrep::CodeUnit,
+    text_pattern: Option<&str>,
+) -> f32 {
     let mut score = semantic_score;
     let query_lower = query.to_lowercase();
 
@@ -878,7 +878,49 @@ fn compute_final_score(semantic_score: f32, query: &str, unit: &next_plaid_cli::
         score += 1.0;
     }
 
+    // Decrement score for test functions unless query or pattern contains "test"
+    let query_has_test = query_lower.contains("test");
+    let pattern_has_test = text_pattern
+        .map(|p| p.to_lowercase().contains("test"))
+        .unwrap_or(false);
+    if unit.name.to_lowercase().contains("test") && !query_has_test && !pattern_has_test {
+        score -= 1.0;
+    }
+
     score
+}
+
+/// Check if --include patterns would escape the subdirectory
+/// A pattern escapes if it starts with `**/` followed by a specific directory name
+/// that doesn't exist within the current subdirectory.
+///
+/// When this returns true, the caller should search the full project index
+/// (still bounded by effective_root) rather than restricting to the subdirectory.
+/// This does NOT cause the search to escape to a higher-level or different index.
+fn should_search_from_root(
+    include_patterns: &[String],
+    subdir: &Path,
+    effective_root: &Path,
+) -> bool {
+    for pattern in include_patterns {
+        // Check for patterns like "**/.github/**/*" or "**/vendor/**"
+        if let Some(rest) = pattern.strip_prefix("**/") {
+            // Extract the first path component after "**/
+            if let Some(dir_name) = rest.split('/').next() {
+                // Skip if it's a wildcard pattern like "*.rs"
+                if dir_name.contains('*') {
+                    continue;
+                }
+                // Check if this directory exists in the current subdir
+                let subdir_path = effective_root.join(subdir).join(dir_name);
+                if !subdir_path.exists() {
+                    // Directory doesn't exist in subdir, pattern escapes to root
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -895,6 +937,10 @@ fn cmd_search(
     context_lines: usize,
     text_pattern: Option<&str>,
     extended_regexp: bool,
+    fixed_strings: bool,
+    word_regexp: bool,
+    exclude_patterns: &[String],
+    exclude_dirs: &[String],
     code_only: bool,
 ) -> Result<()> {
     let path = std::fs::canonicalize(path)?;
@@ -943,96 +989,50 @@ fn cmd_search(
         None => (path.clone(), None),
     };
 
-    // Determine which files to search based on filters
-    let has_filters = !include_patterns.is_empty() || text_pattern.is_some();
-
-    // Get files matching filters (if any)
-    let filtered_files: Option<Vec<String>> = if has_filters {
-        // Get files from grep if text pattern specified
-        let grep_matched: Option<Vec<String>> = if let Some(pattern) = text_pattern {
-            let files = grep_files(pattern, &effective_root, extended_regexp)?;
-            if files.is_empty() {
-                if !json && !files_only {
-                    println!("No files contain pattern: {}", pattern);
-                }
-                return Ok(());
-            }
+    // Check if --include patterns would escape the subdirectory
+    // If so, search the full project (still within the same index - effective_root)
+    // This does NOT escape to a different or parent index, it only removes the subdir restriction
+    let subdir_filter = if let Some(ref subdir) = subdir_filter {
+        if should_search_from_root(include_patterns, subdir, &effective_root) {
             if !json && !files_only {
-                eprintln!("🔍 {} files match '{}'", files.len(), pattern);
+                eprintln!("📂 Pattern escapes subdirectory, searching full project");
             }
-            Some(files)
+            None // Skip subdir filter, search full index (still bounded by effective_root)
         } else {
-            None
-        };
-
-        // Get files matching include patterns
-        let include_matched: Option<Vec<PathBuf>> = if !include_patterns.is_empty() && !no_index {
-            // We need to scan files to know which ones match the pattern
-            let builder = IndexBuilder::with_quantized(&effective_root, &model_path, quantized)?;
-            Some(builder.scan_files_matching_patterns(include_patterns)?)
-        } else {
-            None
-        };
-
-        // Combine: intersect if both present
-        match (grep_matched, include_matched) {
-            (Some(grep), Some(include)) => {
-                let include_set: std::collections::HashSet<_> = include
-                    .iter()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .collect();
-                let intersection: Vec<String> = grep
-                    .into_iter()
-                    .filter(|f| include_set.contains(f))
-                    .collect();
-                if intersection.is_empty() {
-                    if !json && !files_only {
-                        println!("No files match both text pattern and include filters");
-                    }
-                    return Ok(());
-                }
-                Some(intersection)
-            }
-            (Some(grep), None) => Some(grep),
-            (None, Some(include)) => Some(
-                include
-                    .iter()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .collect(),
-            ),
-            (None, None) => None,
+            Some(subdir.clone())
         }
     } else {
         None
     };
 
-    // Auto-index: selective if filters present, full otherwise
+    // Get files matching include patterns (for file-type filtering)
+    let include_files: Option<Vec<String>> = if !include_patterns.is_empty() && !no_index {
+        let builder = IndexBuilder::with_quantized(&effective_root, &model_path, quantized)?;
+        let paths = builder.scan_files_matching_patterns(include_patterns)?;
+        Some(
+            paths
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect(),
+        )
+    } else {
+        None
+    };
+
+    // Auto-index: always do incremental update (no grep-based selective indexing)
     if !no_index {
         let builder = IndexBuilder::with_quantized(&effective_root, &model_path, quantized)?;
+        let needs_index = !index_exists(&effective_root);
 
-        if let Some(ref files) = filtered_files {
-            // Selective indexing: only index files that match the filters
-            let file_paths: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
-            let stats = builder.index_specific_files(&file_paths)?;
+        if needs_index {
+            eprintln!("📂 Building index...");
+        }
 
-            let changes = stats.added + stats.changed;
-            if changes > 0 && !json && !files_only {
-                eprintln!("✅ Indexed {} matching files", changes);
-            }
-        } else {
-            // Full indexing when no filters
-            let needs_index = !index_exists(&effective_root);
+        let stats = builder.index(None, false)?;
 
-            if needs_index {
-                eprintln!("📂 Building index...");
-            }
-
-            let stats = builder.index(None, false)?;
-
-            let changes = stats.added + stats.changed + stats.deleted;
-            if changes > 0 && !json && !files_only {
-                eprintln!("✅ Indexed {} files", changes);
-            }
+        let changes = stats.added + stats.changed + stats.deleted;
+        if changes > 0 && !json && !files_only {
+            eprintln!("✅ Indexed {} files", changes);
         }
     }
 
@@ -1051,7 +1051,7 @@ fn cmd_search(
         None => Searcher::load_with_quantized(&effective_root, &model_path, quantized)?,
     };
 
-    // Build subset combining subdirectory filter AND user filters
+    // Build subset combining subdirectory filter, text pattern filter, and include patterns
     let subset = {
         let mut combined_ids: Option<Vec<i64>> = None;
 
@@ -1070,8 +1070,53 @@ fn cmd_search(
             combined_ids = Some(subdir_ids);
         }
 
-        // Apply user filters (intersect with existing subset)
-        if let Some(ref files) = filtered_files {
+        // Apply text pattern filter: use grep to find files, then filter_by_files for subset
+        if let Some(pattern) = text_pattern {
+            // Run grep once to find files containing the pattern
+            let matched_files = grep_files(
+                pattern,
+                &effective_root,
+                extended_regexp,
+                fixed_strings,
+                word_regexp,
+                exclude_patterns,
+                exclude_dirs,
+            )?;
+            if matched_files.is_empty() {
+                if !json && !files_only {
+                    println!("No files contain pattern: {}", pattern);
+                }
+                return Ok(());
+            }
+            if !json && !files_only {
+                eprintln!("🔍 {} files match '{}'", matched_files.len(), pattern);
+            }
+
+            // Use filtering to get doc IDs for code units in those files
+            let file_ids = searcher.filter_by_files(&matched_files)?;
+            if file_ids.is_empty() {
+                if !json && !files_only {
+                    println!("No indexed code units in files matching: {}", pattern);
+                }
+                return Ok(());
+            }
+
+            combined_ids = match combined_ids {
+                Some(existing) => {
+                    let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
+                    Some(
+                        file_ids
+                            .into_iter()
+                            .filter(|id| existing_set.contains(id))
+                            .collect(),
+                    )
+                }
+                None => Some(file_ids),
+            };
+        }
+
+        // Apply include pattern filter (file type filtering)
+        if let Some(ref files) = include_files {
             let file_ids = searcher.filter_by_files(files)?;
             combined_ids = match combined_ids {
                 Some(existing) => {
@@ -1115,55 +1160,18 @@ fn cmd_search(
     };
 
     // Search with optional filtering
-    // Request more results to allow for re-ranking with query boost
-    let search_top_k = if code_only { top_k * 3 } else { top_k * 2 };
+    // Request more results to allow for re-ranking with query boost and test function demotion
+    let search_top_k = if code_only { top_k * 4 } else { top_k * 3 };
     let results = searcher.search(query, search_top_k, subset.as_deref())?;
 
-    // When -e is used, filter to only code units that actually contain the pattern
-    // (not just units from files that contain the pattern somewhere)
-    let results = if let Some(pattern) = text_pattern {
-        let grep_matches = grep_with_context(pattern, &effective_root, extended_regexp, 0)?;
-        // Build a map of file -> set of matching line numbers
-        let mut file_match_lines: HashMap<PathBuf, Vec<usize>> = HashMap::new();
-        for m in grep_matches {
-            file_match_lines
-                .entry(m.file)
-                .or_default()
-                .push(m.line_number);
-        }
-
-        // Filter results to only include units where at least one match line
-        // falls within the unit's line range
-        results
-            .into_iter()
-            .filter(|r| {
-                // Unit file is relative, grep files are absolute (joined with effective_root)
-                // Resolve unit file to absolute path for comparison
-                let unit_file_abs = if r.unit.file.is_absolute() {
-                    r.unit.file.clone()
-                } else {
-                    effective_root.join(&r.unit.file)
-                };
-                let canonical_file = std::fs::canonicalize(&unit_file_abs).unwrap_or(unit_file_abs);
-
-                if let Some(match_lines) = file_match_lines.get(&canonical_file) {
-                    match_lines
-                        .iter()
-                        .any(|&line| line >= r.unit.line && line <= r.unit.end_line)
-                } else {
-                    false
-                }
-            })
-            .collect()
-    } else {
-        results
-    };
+    // Note: When -e is used, results are already filtered to units containing the pattern
+    // via filter_by_text_pattern() above, so no additional grep filtering needed
 
     // Apply query boost and re-sort results
     let mut results: Vec<_> = results
         .into_iter()
         .map(|mut r| {
-            r.score = compute_final_score(r.score, query, &r.unit);
+            r.score = compute_final_score(r.score, query, &r.unit, text_pattern);
             r
         })
         .collect();
@@ -1209,25 +1217,79 @@ fn cmd_search(
             return Ok(());
         }
 
-        // When -e is used, get matching line numbers to show all occurrences
-        let match_lines: HashMap<PathBuf, Vec<usize>> = if let Some(pattern) = text_pattern {
-            let grep_matches = grep_with_context(pattern, &effective_root, extended_regexp, 0)?;
-            let mut map: HashMap<PathBuf, Vec<usize>> = HashMap::new();
-            for m in grep_matches {
-                map.entry(m.file).or_default().push(m.line_number);
-            }
-            map
-        } else {
-            HashMap::new()
-        };
+        // Helper to find matching line numbers within a code unit's content
+        // Supports: simple patterns, regex (-E), fixed strings (-F), whole word (-w)
+        let find_matches_in_unit = |unit: &colgrep::CodeUnit,
+                                    pattern: &str,
+                                    use_regex: bool,
+                                    is_fixed: bool,
+                                    is_word: bool|
+         -> Vec<usize> {
+            // -F takes precedence over -E (like grep)
+            let effective_use_regex = use_regex && !is_fixed;
 
-        // Helper to get match lines for a file (canonicalized path lookup)
-        let get_file_matches = |file: &PathBuf| -> Vec<usize> {
-            let canonical_file = std::fs::canonicalize(file).unwrap_or_else(|_| file.clone());
-            match_lines
-                .get(&canonical_file)
-                .cloned()
-                .unwrap_or_default()
+            if effective_use_regex {
+                // Build regex pattern, optionally with word boundaries
+                let regex_pattern = if is_word {
+                    format!(r"\b{}\b", pattern)
+                } else {
+                    pattern.to_string()
+                };
+                match regex::RegexBuilder::new(&regex_pattern)
+                    .case_insensitive(true)
+                    .build()
+                {
+                    Ok(re) => unit
+                        .code_preview
+                        .lines()
+                        .enumerate()
+                        .filter_map(|(i, line)| {
+                            if re.is_match(line) {
+                                Some(unit.line + i)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    Err(_) => vec![], // Invalid regex, return empty
+                }
+            } else if is_word {
+                // Word match with fixed string: use regex with escaped pattern
+                let escaped = regex::escape(pattern);
+                let word_pattern = format!(r"\b{}\b", escaped);
+                match regex::RegexBuilder::new(&word_pattern)
+                    .case_insensitive(true)
+                    .build()
+                {
+                    Ok(re) => unit
+                        .code_preview
+                        .lines()
+                        .enumerate()
+                        .filter_map(|(i, line)| {
+                            if re.is_match(line) {
+                                Some(unit.line + i)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    Err(_) => vec![],
+                }
+            } else {
+                // Simple case-insensitive substring match (fixed string, no word boundary)
+                let pattern_lower = pattern.to_lowercase();
+                unit.code_preview
+                    .lines()
+                    .enumerate()
+                    .filter_map(|(i, line)| {
+                        if line.to_lowercase().contains(&pattern_lower) {
+                            Some(unit.line + i)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            }
         };
 
         // Separate results into code files and documents/config files
@@ -1246,14 +1308,25 @@ fn cmd_search(
                 // Print file header
                 println!("{}", file.display().to_string().cyan());
                 for result in file_results {
+                    // Use signature if available, fallback to name
+                    let display_name = if result.unit.signature.is_empty() {
+                        result.unit.name.clone()
+                    } else {
+                        result.unit.signature.clone()
+                    };
                     println!(
-                        "   {} {} {}",
+                        "   {} {}{}",
                         format!("{}.", current_index).dimmed(),
-                        result.unit.name.bold(),
+                        display_name.bold(),
                         format!(":{}-{}", result.unit.line, result.unit.end_line).dimmed()
                     );
-                    // Show content
-                    if let Ok(content) = std::fs::read_to_string(&result.unit.file) {
+                    // Show content - resolve path relative to effective_root for parent index support
+                    let file_to_read = if result.unit.file.is_absolute() {
+                        result.unit.file.clone()
+                    } else {
+                        effective_root.join(&result.unit.file)
+                    };
+                    if let Ok(content) = std::fs::read_to_string(&file_to_read) {
                         let lines: Vec<&str> = content.lines().collect();
                         let end = result.unit.end_line.min(lines.len());
                         let max_lines = if show_content {
@@ -1264,7 +1337,13 @@ fn cmd_search(
 
                         if has_text_pattern {
                             // Show all match occurrences with context
-                            let file_matches = get_file_matches(&result.unit.file);
+                            let file_matches = find_matches_in_unit(
+                                &result.unit,
+                                text_pattern.unwrap(),
+                                extended_regexp,
+                                fixed_strings,
+                                word_regexp,
+                            );
                             let ranges = calc_display_ranges(
                                 &file_matches,
                                 result.unit.line,
@@ -1272,13 +1351,13 @@ fn cmd_search(
                                 half_context,
                                 max_lines,
                             );
-                            print_highlighted_ranges(&result.unit.file, &lines, &ranges, end);
+                            print_highlighted_ranges(&file_to_read, &lines, &ranges, end);
                         } else {
                             // No -e flag, show from beginning
                             let start = result.unit.line.saturating_sub(1);
                             if start < lines.len() {
                                 print_highlighted_content(
-                                    &result.unit.file,
+                                    &file_to_read,
                                     &lines,
                                     start,
                                     max_lines,
@@ -1300,21 +1379,38 @@ fn cmd_search(
                 // Print file header
                 println!("{}", file.display().to_string().cyan());
                 for result in file_results {
+                    // Use signature if available, fallback to name
+                    let display_name = if result.unit.signature.is_empty() {
+                        result.unit.name.clone()
+                    } else {
+                        result.unit.signature.clone()
+                    };
                     println!(
-                        "   {} {} {}",
+                        "   {} {}{}",
                         format!("{}.", current_index).dimmed(),
-                        result.unit.name.bold(),
+                        display_name.bold(),
                         format!(":{}-{}", result.unit.line, result.unit.end_line).dimmed()
                     );
-                    // Show content
-                    if let Ok(content) = std::fs::read_to_string(&result.unit.file) {
+                    // Show content - resolve path relative to effective_root for parent index support
+                    let file_to_read = if result.unit.file.is_absolute() {
+                        result.unit.file.clone()
+                    } else {
+                        effective_root.join(&result.unit.file)
+                    };
+                    if let Ok(content) = std::fs::read_to_string(&file_to_read) {
                         let lines: Vec<&str> = content.lines().collect();
                         let end = result.unit.end_line.min(lines.len());
                         let max_lines = if show_content { 250 } else { context_lines };
 
                         if has_text_pattern {
                             // Show all match occurrences with context
-                            let file_matches = get_file_matches(&result.unit.file);
+                            let file_matches = find_matches_in_unit(
+                                &result.unit,
+                                text_pattern.unwrap(),
+                                extended_regexp,
+                                fixed_strings,
+                                word_regexp,
+                            );
                             let ranges = calc_display_ranges(
                                 &file_matches,
                                 result.unit.line,
@@ -1322,13 +1418,13 @@ fn cmd_search(
                                 half_context,
                                 max_lines,
                             );
-                            print_highlighted_ranges(&result.unit.file, &lines, &ranges, end);
+                            print_highlighted_ranges(&file_to_read, &lines, &ranges, end);
                         } else {
                             // No -e flag, show from beginning
                             let start = result.unit.line.saturating_sub(1);
                             if start < lines.len() {
                                 print_highlighted_content(
-                                    &result.unit.file,
+                                    &file_to_read,
                                     &lines,
                                     start,
                                     max_lines,
@@ -1352,7 +1448,7 @@ fn cmd_status(path: &PathBuf) -> Result<()> {
 
     if !index_exists(&path) {
         println!("No index found for {}", path.display());
-        println!("Run `plaid <query>` to create one.");
+        println!("Run `colgrep <query>` to create one.");
         return Ok(());
     }
 
@@ -1360,7 +1456,7 @@ fn cmd_status(path: &PathBuf) -> Result<()> {
     println!("Project: {}", path.display());
     println!("Index:   {}", index_dir.display());
     println!();
-    println!("Run any search to update the index, or `plaid clear` to rebuild from scratch.");
+    println!("Run any search to update the index, or `colgrep clear` to rebuild from scratch.");
 
     Ok(())
 }
@@ -1368,7 +1464,7 @@ fn cmd_status(path: &PathBuf) -> Result<()> {
 fn cmd_clear(path: &PathBuf, all: bool) -> Result<()> {
     if all {
         // Clear all indexes
-        let data_dir = get_plaid_data_dir()?;
+        let data_dir = get_colgrep_data_dir()?;
         if !data_dir.exists() {
             println!("No indexes found.");
             return Ok(());
@@ -1464,7 +1560,7 @@ fn cmd_set_model(model: &str) -> Result<()> {
 
     // Model is valid - clear existing indexes if we had a previous model
     if current_model.is_some() {
-        let data_dir = get_plaid_data_dir()?;
+        let data_dir = get_colgrep_data_dir()?;
         if data_dir.exists() {
             let index_dirs: Vec<_> = std::fs::read_dir(&data_dir)?
                 .filter_map(|e| e.ok())
@@ -1598,7 +1694,7 @@ fn get_index_document_count(vector_index_path: &std::path::Path) -> usize {
 }
 
 fn cmd_stats() -> Result<()> {
-    let data_dir = get_plaid_data_dir()?;
+    let data_dir = get_colgrep_data_dir()?;
     if !data_dir.exists() {
         println!("No indexes found.");
         return Ok(());
@@ -1652,7 +1748,7 @@ fn cmd_stats() -> Result<()> {
 }
 
 fn cmd_reset_stats() -> Result<()> {
-    let data_dir = get_plaid_data_dir()?;
+    let data_dir = get_colgrep_data_dir()?;
     if !data_dir.exists() {
         println!("No indexes found.");
         return Ok(());
@@ -1685,7 +1781,7 @@ fn cmd_reset_stats() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use next_plaid_cli::{CodeUnit, Language, SearchResult, UnitType};
+    use colgrep::{CodeUnit, Language, SearchResult, UnitType};
 
     /// Helper to create a test CodeUnit with minimal required fields
     fn make_test_unit(name: &str, signature: &str, code_preview: &str, file: &str) -> CodeUnit {
@@ -1795,7 +1891,7 @@ mod tests {
             "does something else",
             "test.rs",
         );
-        let score = compute_final_score(5.0, "search_query", &unit);
+        let score = compute_final_score(5.0, "search_query", &unit, None);
         // No matches, score should be unchanged
         assert_eq!(score, 5.0);
     }
@@ -1808,7 +1904,7 @@ mod tests {
             "handles queries",
             "test.rs",
         );
-        let score = compute_final_score(5.0, "search_query", &unit);
+        let score = compute_final_score(5.0, "search_query", &unit, None);
         // Name contains query, should have +3.0 boost, signature too +2.0
         assert!(score > 5.0);
         assert_eq!(score, 5.0 + 3.0 + 2.0); // name + signature
@@ -1822,7 +1918,7 @@ mod tests {
             "does something",
             "test.rs",
         );
-        let score = compute_final_score(5.0, "search_query", &unit);
+        let score = compute_final_score(5.0, "search_query", &unit, None);
         // Signature contains query, should have +2.0 boost
         assert_eq!(score, 5.0 + 2.0);
     }
@@ -1835,7 +1931,7 @@ mod tests {
             "processes search_query and returns",
             "test.rs",
         );
-        let score = compute_final_score(5.0, "search_query", &unit);
+        let score = compute_final_score(5.0, "search_query", &unit, None);
         // Code preview contains query, should have +1.0 boost
         assert_eq!(score, 5.0 + 1.0);
     }
@@ -1848,7 +1944,7 @@ mod tests {
             "handles queries",
             "test.rs",
         );
-        let score = compute_final_score(5.0, "search_query", &unit);
+        let score = compute_final_score(5.0, "search_query", &unit, None);
         // Case insensitive match should work
         assert!(score > 5.0);
     }
@@ -1861,9 +1957,48 @@ mod tests {
             "search_query implementation",
             "test.rs",
         );
-        let score = compute_final_score(5.0, "search_query", &unit);
+        let score = compute_final_score(5.0, "search_query", &unit, None);
         // All three locations contain query
         assert_eq!(score, 5.0 + 3.0 + 2.0 + 1.0);
+    }
+
+    #[test]
+    fn test_compute_final_score_test_function_decremented() {
+        let unit = make_test_unit(
+            "test_something",
+            "fn test_something()",
+            "does something",
+            "test.rs",
+        );
+        let score = compute_final_score(5.0, "search_query", &unit, None);
+        // Test function should be decremented by 1.0
+        assert_eq!(score, 5.0 - 1.0);
+    }
+
+    #[test]
+    fn test_compute_final_score_test_function_not_decremented_when_query_has_test() {
+        let unit = make_test_unit(
+            "test_something",
+            "fn test_something()",
+            "does something",
+            "test.rs",
+        );
+        let score = compute_final_score(5.0, "test", &unit, None);
+        // Query contains "test", so no decrement; name contains query so +3.0, signature +2.0
+        assert_eq!(score, 5.0 + 3.0 + 2.0);
+    }
+
+    #[test]
+    fn test_compute_final_score_test_function_not_decremented_when_pattern_has_test() {
+        let unit = make_test_unit(
+            "test_something",
+            "fn test_something()",
+            "does something",
+            "test.rs",
+        );
+        let score = compute_final_score(5.0, "search_query", &unit, Some("test"));
+        // Pattern contains "test", so no decrement
+        assert_eq!(score, 5.0);
     }
 
     // Test group_results_by_file function
@@ -1939,5 +2074,63 @@ mod tests {
         assert_eq!(grouped[0].1[0].unit.name, "best_match");
         assert_eq!(grouped[0].1[1].unit.name, "second_best");
         assert_eq!(grouped[0].1[2].unit.name, "third_best");
+    }
+
+    // Test should_search_from_root function
+    #[test]
+    fn test_should_search_from_root_no_patterns() {
+        let patterns: Vec<String> = vec![];
+        let subdir = PathBuf::from("src");
+        let root = PathBuf::from("/tmp/test_project");
+        assert!(!should_search_from_root(&patterns, &subdir, &root));
+    }
+
+    #[test]
+    fn test_should_search_from_root_wildcard_extension() {
+        // Pattern like "**/*.rs" should NOT escape (it's a file extension, not a directory)
+        let patterns = vec!["**/*.rs".to_string()];
+        let subdir = PathBuf::from("src");
+        let root = PathBuf::from("/tmp/test_project");
+        assert!(!should_search_from_root(&patterns, &subdir, &root));
+    }
+
+    #[test]
+    fn test_should_search_from_root_no_star_star_prefix() {
+        // Pattern like "src/**/*.py" should NOT escape (no **/ prefix)
+        let patterns = vec!["src/**/*.py".to_string()];
+        let subdir = PathBuf::from("src");
+        let root = PathBuf::from("/tmp/test_project");
+        assert!(!should_search_from_root(&patterns, &subdir, &root));
+    }
+
+    #[test]
+    fn test_should_search_from_root_simple_glob() {
+        // Pattern like "*.json" should NOT escape (no **/ prefix)
+        let patterns = vec!["*.json".to_string()];
+        let subdir = PathBuf::from("src");
+        let root = PathBuf::from("/tmp/test_project");
+        assert!(!should_search_from_root(&patterns, &subdir, &root));
+    }
+
+    #[test]
+    fn test_should_search_from_root_escaping_pattern() {
+        // Pattern like "**/.github/**/*" should escape if .github doesn't exist in subdir
+        // Since /tmp/test_project/src/.github almost certainly doesn't exist, this should return true
+        let patterns = vec!["**/.github/**/*".to_string()];
+        let subdir = PathBuf::from("src");
+        let root = PathBuf::from("/tmp/test_project_nonexistent");
+        assert!(should_search_from_root(&patterns, &subdir, &root));
+    }
+
+    #[test]
+    fn test_should_search_from_root_multiple_patterns_one_escapes() {
+        // If ANY pattern escapes, should return true
+        let patterns = vec![
+            "**/*.rs".to_string(),         // doesn't escape (wildcard)
+            "**/.github/**/*".to_string(), // escapes
+        ];
+        let subdir = PathBuf::from("src");
+        let root = PathBuf::from("/tmp/test_project_nonexistent");
+        assert!(should_search_from_root(&patterns, &subdir, &root));
     }
 }

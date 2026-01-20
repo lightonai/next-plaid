@@ -5,7 +5,7 @@ A CLI tool to export HuggingFace ColBERT models to ONNX format for fast Rust inf
 ## Installation
 
 ```bash
-pip install "pylate-onnx-export @ git+https://github.com/lightonai/next-plaid.git#subdirectory=next-plaid-onnx/python"
+pip install pylate-onnx-export
 ```
 
 ## Quick Start
@@ -85,9 +85,9 @@ models/<model-name>/
 
 Any PyLate-compatible ColBERT model from HuggingFace can be exported:
 
-| Model | Embedding Dim | Description |
-|-------|---------------|-------------|
-| `lightonai/GTE-ModernColBERT-v1` | 128 | High-quality ColBERT model (recommended) |
+| Model                            | Embedding Dim | Description                              |
+| -------------------------------- | ------------- | ---------------------------------------- |
+| `lightonai/GTE-ModernColBERT-v1` | 128           | High-quality ColBERT model (recommended) |
 
 ## Python API
 

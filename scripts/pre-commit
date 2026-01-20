@@ -57,7 +57,7 @@ cd "$REPO_ROOT"
 
 # CLI crate checks
 echo "Checking CLI crate formatting..."
-cd next-plaid-cli && cargo fmt --all -- --check
+cd colgrep && cargo fmt --all -- --check
 
 echo "Running CLI crate clippy..."
 cargo clippy --all-targets -- -D warnings

@@ -4,12 +4,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// The marketplace identifier for the plaid plugin
+/// The marketplace identifier for the colgrep plugin
 /// Note: Must not conflict with plugin name on case-insensitive filesystems
-const MARKETPLACE_ID: &str = "lightonai-plaid";
+const MARKETPLACE_ID: &str = "lightonai-colgrep";
 
 /// The plugin name as registered in Claude Code
-const PLUGIN_NAME: &str = "plaid";
+const PLUGIN_NAME: &str = "colgrep";
 
 /// Minimum required Claude Code version for plugin support
 const MIN_CLAUDE_VERSION: &str = "2.0.36";
@@ -24,7 +24,7 @@ use super::SKILL_MD;
 /// Get the marketplace directory path (in user's data directory)
 fn get_marketplace_dir() -> Result<PathBuf> {
     let data_dir = dirs::data_dir().context("Could not determine data directory")?;
-    Ok(data_dir.join("plaid").join("claude-marketplace"))
+    Ok(data_dir.join("colgrep").join("claude-marketplace"))
 }
 
 /// Create the full marketplace directory structure with all files
@@ -33,13 +33,13 @@ fn get_marketplace_dir() -> Result<PathBuf> {
 /// ├── .claude-plugin/
 /// │   └── marketplace.json
 /// └── plugins/
-///     └── plaid/
+///     └── colgrep/
 ///         ├── .claude-plugin/
 ///         │   └── plugin.json
 ///         ├── hooks/
 ///         │   └── hook.json
 ///         └── skills/
-///             └── plaid/
+///             └── colgrep/
 ///                 └── SKILL.md
 fn create_marketplace_files() -> Result<PathBuf> {
     let marketplace_dir = get_marketplace_dir()?;
@@ -49,10 +49,10 @@ fn create_marketplace_files() -> Result<PathBuf> {
     fs::create_dir_all(&marketplace_claude_dir)?;
 
     // Create plugin directory structure
-    let plugin_dir = marketplace_dir.join("plugins").join("plaid");
+    let plugin_dir = marketplace_dir.join("plugins").join("colgrep");
     let plugin_claude_dir = plugin_dir.join(".claude-plugin");
     let hooks_dir = plugin_dir.join("hooks");
-    let skills_dir = plugin_dir.join("skills").join("plaid");
+    let skills_dir = plugin_dir.join("skills").join("colgrep");
 
     fs::create_dir_all(&plugin_claude_dir)?;
     fs::create_dir_all(&hooks_dir)?;
@@ -93,7 +93,7 @@ fn check_claude_cli() -> Result<()> {
     Ok(())
 }
 
-/// Install the plaid plugin for Claude Code
+/// Install the colgrep plugin for Claude Code
 pub fn install_claude_code() -> Result<()> {
     // Check claude CLI is available
     check_claude_cli()?;
@@ -102,7 +102,7 @@ pub fn install_claude_code() -> Result<()> {
     let shell = get_shell();
 
     // Step 1: Create marketplace files in local directory
-    println!("Creating plaid marketplace files...");
+    println!("Creating colgrep marketplace files...");
     let marketplace_dir = create_marketplace_files()?;
     let marketplace_path = marketplace_dir.to_string_lossy();
     println!(
@@ -125,7 +125,7 @@ pub fn install_claude_code() -> Result<()> {
         .output();
 
     // Step 4: Add marketplace using local path
-    println!("Adding plaid marketplace to Claude Code...");
+    println!("Adding colgrep marketplace to Claude Code...");
     let marketplace_add = Command::new(&shell)
         .args([
             "-c",
@@ -153,10 +153,10 @@ pub fn install_claude_code() -> Result<()> {
         );
         anyhow::bail!("Failed to add marketplace");
     }
-    println!("{} Added plaid marketplace", "✓".green());
+    println!("{} Added colgrep marketplace", "✓".green());
 
     // Step 5: Install the plugin from the marketplace
-    println!("Installing plaid plugin...");
+    println!("Installing colgrep plugin...");
     let plugin_install = Command::new(&shell)
         .args([
             "-c",
@@ -184,7 +184,7 @@ pub fn install_claude_code() -> Result<()> {
         );
         anyhow::bail!("Failed to install plugin");
     }
-    println!("{} Installed plaid plugin", "✓".green());
+    println!("{} Installed colgrep plugin", "✓".green());
 
     // Print success message and usage instructions
     print_install_success();
@@ -192,12 +192,12 @@ pub fn install_claude_code() -> Result<()> {
     Ok(())
 }
 
-/// Uninstall the plaid plugin from Claude Code
+/// Uninstall the colgrep plugin from Claude Code
 pub fn uninstall_claude_code() -> Result<()> {
     let shell = get_shell();
 
     // Step 1: Uninstall the plugin
-    println!("Uninstalling plaid plugin...");
+    println!("Uninstalling colgrep plugin...");
     let plugin_uninstall = Command::new(&shell)
         .args(["-c", &format!("claude plugin uninstall {}", PLUGIN_NAME)])
         .output()
@@ -216,11 +216,11 @@ pub fn uninstall_claude_code() -> Result<()> {
         );
         // Continue to try removing from marketplace anyway
     } else {
-        println!("{} Uninstalled plaid plugin", "✓".green());
+        println!("{} Uninstalled colgrep plugin", "✓".green());
     }
 
     // Step 2: Remove from marketplace
-    println!("Removing plaid from marketplace...");
+    println!("Removing colgrep from marketplace...");
     let marketplace_remove = Command::new(&shell)
         .args([
             "-c",
@@ -246,7 +246,7 @@ pub fn uninstall_claude_code() -> Result<()> {
         );
         // Continue to cleanup local files anyway
     } else {
-        println!("{} Removed plaid from marketplace", "✓".green());
+        println!("{} Removed colgrep from marketplace", "✓".green());
     }
 
     // Step 3: Clean up local plugin files
@@ -266,7 +266,10 @@ pub fn uninstall_claude_code() -> Result<()> {
     }
 
     println!();
-    println!("{}", "Plaid has been uninstalled from Claude Code.".green());
+    println!(
+        "{}",
+        "Colgrep has been uninstalled from Claude Code.".green()
+    );
 
     Ok(())
 }
@@ -290,19 +293,19 @@ fn print_install_success() {
     println!(
         "  {} {}",
         "✓".green().bold(),
-        "PLAID INSTALLED FOR CLAUDE CODE".green().bold()
+        "COLGREP INSTALLED FOR CLAUDE CODE".green().bold()
     );
     println!();
-    println!("  Plaid is now available as a semantic search tool in Claude Code.");
-    println!("  Claude will automatically use plaid for code searches.");
+    println!("  Colgrep is now available as a semantic search tool in Claude Code.");
+    println!("  Claude will automatically use colgrep for code searches.");
     println!();
     println!("  {}", "What happens:".cyan().bold());
-    println!("    • Plaid indexes your project on first search");
+    println!("    • Colgrep indexes your project on first search");
     println!("    • Subsequent searches use the cached index");
     println!("    • Index updates automatically when files change");
     println!();
     println!("  {}", "To uninstall:".cyan().bold());
-    println!("    {}", "plaid --uninstall-claude-code".green());
+    println!("    {}", "colgrep --uninstall-claude-code".green());
     println!();
     println!("{}", border.yellow());
     println!();

@@ -598,7 +598,10 @@ impl ColbertBuilder {
             let builder = Session::builder()?
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
                 .with_intra_threads(self.threads_per_session)?
-                .with_inter_threads(if self.num_sessions > 1 { 1 } else { 2 })?;
+                .with_inter_threads(if self.num_sessions > 1 { 1 } else { 2 })?
+                // Disable memory pattern optimization for ~7% speedup on CPU
+                // (based on benchmarking - helps with variable-length sequences)
+                .with_memory_pattern(false)?;
 
             let builder = configure_execution_provider(builder, self.execution_provider)?;
 

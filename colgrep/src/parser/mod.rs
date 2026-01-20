@@ -245,9 +245,8 @@ fn create_text_unit(
         }
     };
 
-    // Code preview - first 20 lines
-    let preview_lines: Vec<&str> = content_lines.iter().take(20).cloned().collect();
-    let code_preview = preview_lines.join("\n");
+    // Full source content for filtering
+    let code_preview = content_lines.join("\n");
 
     CodeUnit {
         name: name.to_string(),
@@ -564,9 +563,9 @@ fn extract_function(
     // Layer 5: Dependencies
     unit.imports = filter_used_imports(&unit.calls, file_imports);
 
-    // Code Preview (first ~20 lines)
-    let preview_end = (start_line + 20).min(end_line + 1).min(lines.len());
-    unit.code_preview = lines[start_line..preview_end].join("\n");
+    // Full source content for filtering
+    let content_end = (end_line + 1).min(lines.len());
+    unit.code_preview = lines[start_line..content_end].join("\n");
 
     Some(unit)
 }
@@ -603,9 +602,9 @@ fn extract_class(
     // Layer 5: Dependencies (classes can have imports)
     unit.imports = file_imports.to_vec();
 
-    // Code Preview (first ~5 lines for classes)
-    let preview_end = (start_line + 5).min(end_line + 1).min(lines.len());
-    unit.code_preview = lines[start_line..preview_end].join("\n");
+    // Full source content for filtering
+    let content_end = (end_line + 1).min(lines.len());
+    unit.code_preview = lines[start_line..content_end].join("\n");
 
     Some(unit)
 }

@@ -1123,6 +1123,52 @@ impl Searcher {
         Ok(subset)
     }
 
+    /// Get document IDs for code units containing the given text pattern
+    /// Uses SQL LIKE on the stored code_preview field
+    pub fn filter_by_text_pattern(
+        &self,
+        pattern: &str,
+        case_insensitive: bool,
+    ) -> Result<Vec<i64>> {
+        if pattern.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Escape SQL LIKE special characters in the pattern
+        let escaped_pattern = pattern
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+
+        let like_pattern = format!("%{}%", escaped_pattern);
+
+        // Use LIKE with ESCAPE clause for proper escaping
+        let condition = if case_insensitive {
+            "LOWER(code_preview) LIKE LOWER(?) ESCAPE '\\'"
+        } else {
+            "code_preview LIKE ? ESCAPE '\\'"
+        };
+
+        let subset = filtering::where_condition(
+            &self.index_path,
+            condition,
+            &[serde_json::json!(like_pattern)],
+        )
+        .unwrap_or_default();
+
+        Ok(subset)
+    }
+
+    /// Get metadata for specific document IDs
+    pub fn get_metadata_for_ids(&self, ids: &[i64]) -> Result<Vec<serde_json::Value>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let metadata = filtering::get(&self.index_path, None, &[], Some(ids)).unwrap_or_default();
+        Ok(metadata)
+    }
+
     pub fn search(
         &self,
         query: &str,

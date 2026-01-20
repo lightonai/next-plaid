@@ -11,8 +11,9 @@
 # Usage:
 #   1. Go to Actions > Docker Release
 #   2. Click "Run workflow"
-#   3. Enter the version (e.g., "0.1.0" or "1.2.3")
-#   4. Click "Run workflow"
+#   3. Click "Run workflow"
+#
+# Version is automatically extracted from Cargo.toml
 #
 # Images will be published as:
 #   - ghcr.io/<owner>/lategrep:cpu-<version>
@@ -25,19 +26,27 @@ name: Docker Release
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to release (e.g., 0.1.0)'
-        required: true
-        type: string
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  get-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
   build-and-push:
     name: Build and Push (${{ matrix.variant }})
+    needs: get-version
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -52,7 +61,7 @@ jobs:
             platforms: linux/amd64
 
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
@@ -78,7 +87,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ matrix.variant }}-${{ inputs.version }}
+            type=raw,value=${{ matrix.variant }}-${{ needs.get-version.outputs.version }}
             type=raw,value=${{ matrix.variant }}-latest
 
       - name: Build and push Docker image
@@ -96,32 +105,64 @@ jobs:
 
   create-release-summary:
     name: Create Release Summary
-    needs: build-and-push
+    needs: [get-version, build-and-push]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.get-version.outputs.version }}"
+          # Check if release exists
+          if gh release view "$VERSION" &>/dev/null; then
+            BODY=$(gh release view "$VERSION" --json body -q .body)
+            # Append Docker section if not already present
+            if ! echo "$BODY" | grep -q "## Docker Images"; then
+              NEW_BODY="$BODY
+
+          ## Docker Images
+
+          \`\`\`bash
+          # CPU variant (supports amd64 and arm64)
+          docker pull ghcr.io/${{ github.repository }}:cpu-$VERSION
+
+          # CUDA variant (amd64 only, requires NVIDIA GPU)
+          docker pull ghcr.io/${{ github.repository }}:cuda-$VERSION
+          \`\`\`"
+              # Remove leading spaces from each line (caused by YAML indentation)
+              echo "$NEW_BODY" | sed 's/^          //' > release_notes.md
+              gh release edit "$VERSION" --notes-file release_notes.md
+            fi
+          fi
+
       - name: Summary
         run: |
           echo "## Docker Images Released 🐳" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Version: \`${{ inputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Version: \`${{ needs.get-version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Available Images" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Variant | Tag | Platforms |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|-----|-----------|" >> $GITHUB_STEP_SUMMARY
-          echo "| CPU | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cpu-${{ inputs.version }}\` | linux/amd64, linux/arm64 |" >> $GITHUB_STEP_SUMMARY
+          echo "| CPU | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cpu-${{ needs.get-version.outputs.version }}\` | linux/amd64, linux/arm64 |" >> $GITHUB_STEP_SUMMARY
           echo "| CPU (latest) | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cpu-latest\` | linux/amd64, linux/arm64 |" >> $GITHUB_STEP_SUMMARY
-          echo "| CUDA | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cuda-${{ inputs.version }}\` | linux/amd64 |" >> $GITHUB_STEP_SUMMARY
+          echo "| CUDA | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cuda-${{ needs.get-version.outputs.version }}\` | linux/amd64 |" >> $GITHUB_STEP_SUMMARY
           echo "| CUDA (latest) | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cuda-latest\` | linux/amd64 |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Pull Commands" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
           echo "# CPU variant" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cpu-${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cpu-${{ needs.get-version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "# CUDA variant (requires NVIDIA GPU)" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cuda-${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cuda-${{ needs.get-version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
         env:
           REGISTRY: ghcr.io

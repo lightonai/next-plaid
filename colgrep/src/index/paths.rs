@@ -1,9 +1,9 @@
 //! Centralized index storage paths following XDG Base Directory Specification
 //!
 //! Index storage location:
-//! - Linux: ~/.local/share/plaid/indices/
-//! - macOS: ~/Library/Application Support/plaid/indices/
-//! - Windows: C:\Users\{user}\AppData\Roaming\plaid\indices\
+//! - Linux: ~/.local/share/colgrep/indices/
+//! - macOS: ~/Library/Application Support/colgrep/indices/
+//! - Windows: C:\Users\{user}\AppData\Roaming\colgrep\indices\
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -56,10 +56,10 @@ impl ProjectMetadata {
     }
 }
 
-/// Get the base plaid data directory (XDG_DATA_HOME/plaid or platform equivalent)
-pub fn get_plaid_data_dir() -> Result<PathBuf> {
+/// Get the base colgrep data directory (XDG_DATA_HOME/colgrep or platform equivalent)
+pub fn get_colgrep_data_dir() -> Result<PathBuf> {
     let data_dir = dirs::data_dir().context("Could not determine data directory")?;
-    Ok(data_dir.join("plaid").join("indices"))
+    Ok(data_dir.join("colgrep").join("indices"))
 }
 
 /// Compute the index directory name for a project path
@@ -92,7 +92,7 @@ fn compute_index_dir_name(project_path: &Path) -> String {
 /// Get the index directory for a project path
 /// Creates the directory structure if it doesn't exist
 pub fn get_index_dir_for_project(project_path: &Path) -> Result<PathBuf> {
-    let base_dir = get_plaid_data_dir()?;
+    let base_dir = get_colgrep_data_dir()?;
     let dir_name = compute_index_dir_name(project_path);
     Ok(base_dir.join(dir_name))
 }
@@ -138,7 +138,7 @@ pub struct ParentIndexInfo {
 /// Find if the given path is a subdirectory of any existing indexed project.
 /// Returns the most specific (longest-matching) parent index if found.
 pub fn find_parent_index(search_path: &Path) -> Result<Option<ParentIndexInfo>> {
-    let data_dir = get_plaid_data_dir()?;
+    let data_dir = get_colgrep_data_dir()?;
 
     if !data_dir.exists() {
         return Ok(None);
@@ -218,7 +218,7 @@ pub fn acquire_index_lock(index_dir: &Path) -> Result<File> {
             Err(_) => {
                 return Err(anyhow::anyhow!(
                     "Timed out waiting for index lock after 60 seconds. \
-                     Another plaid instance may be updating this index."
+                     Another colgrep instance may be updating this index."
                 ));
             }
         }

@@ -32,7 +32,7 @@ jobs:
           workspaces: ". -> target"
 
       - name: Build CLI
-        working-directory: next-plaid-cli
+        working-directory: colgrep
         run: cargo build --release
 
       - name: Create test project
@@ -374,5 +374,5 @@ jobs:
           echo "Re-indexing test completed"
 
       - name: Run CLI unit tests
-        working-directory: next-plaid-cli
+        working-directory: colgrep
         run: cargo test

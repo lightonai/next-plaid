@@ -1,6 +1,6 @@
 //! User configuration persistence
 //!
-//! Stores user preferences (like default model) in the plaid data directory.
+//! Stores user preferences (like default model) in the colgrep data directory.
 
 use std::fs;
 use std::path::PathBuf;
@@ -8,11 +8,11 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::index::paths::get_plaid_data_dir;
+use crate::index::paths::get_colgrep_data_dir;
 
 const CONFIG_FILE: &str = "config.json";
 
-/// User configuration stored in the plaid data directory
+/// User configuration stored in the colgrep data directory
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Default model to use (HuggingFace model ID or local path)
@@ -33,7 +33,7 @@ pub struct Config {
 }
 
 impl Config {
-    /// Load config from the plaid data directory
+    /// Load config from the colgrep data directory
     /// Returns default config if file doesn't exist
     pub fn load() -> Result<Self> {
         let path = get_config_path()?;
@@ -48,7 +48,7 @@ impl Config {
         Ok(config)
     }
 
-    /// Save config to the plaid data directory
+    /// Save config to the colgrep data directory
     pub fn save(&self) -> Result<()> {
         let path = get_config_path()?;
 
@@ -120,7 +120,7 @@ impl Config {
 
 /// Get the path to the config file
 pub fn get_config_path() -> Result<PathBuf> {
-    let data_dir = get_plaid_data_dir()?;
+    let data_dir = get_colgrep_data_dir()?;
     // Go up one level from indices directory
     let parent = data_dir
         .parent()

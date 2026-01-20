@@ -43,7 +43,7 @@ on:
   pull_request:
   push:
     tags:
-      - '**[0-9]+.[0-9]+.[0-9]+*'
+      - "**[0-9]+.[0-9]+.[0-9]+*"
 
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
@@ -296,16 +296,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Publish next-plaid
         run: cargo publish -p next-plaid --no-verify
-        continue-on-error: true  # May already be published
+        continue-on-error: true # May already be published
       - name: Wait for crates.io index
         run: sleep 30
       - name: Publish next-plaid-onnx
         run: cargo publish -p next-plaid-onnx --no-verify
-        continue-on-error: true  # May already be published
+        continue-on-error: true # May already be published
       - name: Wait for crates.io index
         run: sleep 30
-      - name: Publish next-plaid-cli
-        run: cargo publish -p next-plaid-cli --no-verify
+      - name: Publish colgrep
+        run: cargo publish -p colgrep --no-verify
 
   announce:
     needs:

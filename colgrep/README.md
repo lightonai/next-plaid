@@ -1,4 +1,4 @@
-# next-plaid-cli
+# colgrep
 
 Semantic code search powered by ColBERT multi-vector embeddings and the PLAID algorithm.
 
@@ -24,13 +24,13 @@ Semantic code search powered by ColBERT multi-vector embeddings and the PLAID al
 **macOS / Linux:**
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/next-plaid-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-powershell -c "irm https://github.com/lightonai/next-plaid/releases/latest/download/next-plaid-cli-installer.ps1 | iex"
+powershell -c "irm https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.ps1 | iex"
 ```
 
 ### Using Cargo
@@ -38,7 +38,7 @@ powershell -c "irm https://github.com/lightonai/next-plaid/releases/latest/downl
 If you have Rust installed:
 
 ```bash
-cargo install next-plaid-cli
+cargo install colgrep
 ```
 
 ### Installing Rust
@@ -65,7 +65,7 @@ After installation, restart your terminal and verify with `rustc --version`.
 
 ```bash
 git clone https://github.com/lightonai/next-plaid.git
-cd next-plaid/next-plaid-cli
+cd next-plaid/colgrep
 cargo install --path .
 ```
 
@@ -93,19 +93,19 @@ pip install onnxruntime-gpu
 
 ```bash
 # Search in current directory (auto-indexes if needed)
-plaid "error handling in API"
+colgrep "error handling in API"
 
 # Search in specific directory
-plaid "database connection" /path/to/project
+colgrep "database connection" /path/to/project
 
 # Limit results
-plaid "authentication" -k 5
+colgrep "authentication" -k 5
 
 # JSON output
-plaid "parse config" --json
+colgrep "parse config" --json
 
 # Explicit subcommand (same behavior)
-plaid search "query"
+colgrep search "query"
 ```
 
 ### Grep-like Filtering
@@ -114,23 +114,23 @@ Filter search results using familiar grep-style flags:
 
 ```bash
 # -r: Recursive search (default behavior, for grep compatibility)
-plaid -r "database" .
+colgrep -r "database" .
 
 # --include: Filter by file pattern (can be used multiple times)
-plaid --include="*.py" "database connection" .
-plaid --include="*.rs" --include="*.go" "error handling" .
+colgrep --include="*.py" "database connection" .
+colgrep --include="*.rs" --include="*.go" "error handling" .
 
 # -l: List files only (show unique filenames, not code details)
-plaid -l "authentication" .
+colgrep -l "authentication" .
 
 # --code-only: Skip text/config files (md, txt, yaml, json, toml, etc.)
-plaid --code-only "authentication" .
+colgrep --code-only "authentication" .
 
 # -n/--lines: Control context lines (default: 6)
-plaid -n 10 "database connection" .    # Show 10 lines per result
+colgrep -n 10 "database connection" .    # Show 10 lines per result
 
 # Combine flags (like grep -rl)
-plaid -r -l --include="*.ts" "fetch API" .
+colgrep -r -l --include="*.ts" "fetch API" .
 ```
 
 **Supported patterns for `--include`:**
@@ -152,13 +152,13 @@ Use `-e`/`--pattern` to first filter files using grep (text match), then rank re
 
 ```bash
 # Find files containing "TODO", then semantically search for "error handling"
-plaid -e "TODO" "error handling" .
+colgrep -e "TODO" "error handling" .
 
 # Combine with --include for precise filtering
-plaid -e "async" --include="*.ts" "promise handling" .
+colgrep -e "async" --include="*.ts" "promise handling" .
 
 # List only files containing "deprecated" that match "migration"
-plaid -l -e "deprecated" "migration guide" .
+colgrep -l -e "deprecated" "migration guide" .
 ```
 
 **Extended Regular Expressions (ERE):**
@@ -167,16 +167,16 @@ Use `-E`/`--extended-regexp` to enable extended regex syntax for the `-e` patter
 
 ```bash
 # Alternation: find files containing "fn" OR "struct"
-plaid -e "fn|struct" -E "rust definitions" .
+colgrep -e "fn|struct" -E "rust definitions" .
 
 # Quantifiers: one or more digits
-plaid -e "error[0-9]+" -E "error codes" .
+colgrep -e "error[0-9]+" -E "error codes" .
 
 # Optional: match "color" or "colour"
-plaid -e "colou?r" -E "color handling" .
+colgrep -e "colou?r" -E "color handling" .
 
 # Grouping with alternation
-plaid -e "(get|set)Value" -E "accessor methods" .
+colgrep -e "(get|set)Value" -E "accessor methods" .
 ```
 
 **How it works:**
@@ -194,13 +194,13 @@ Control how many lines of code are shown per result:
 
 ```bash
 # Default: 6 lines for semantic results, 3+3 for grep matches
-plaid -e "async" "error handling" .
+colgrep -e "async" "error handling" .
 
 # Custom: 10 lines for semantic, 5+5 for grep
-plaid -e "async" "error handling" -n 10 .
+colgrep -e "async" "error handling" -n 10 .
 
 # Minimal: 2 lines for semantic, 1+1 for grep
-plaid -e "async" "error handling" -n 2 .
+colgrep -e "async" "error handling" -n 2 .
 ```
 
 The `-n` value controls:
@@ -213,13 +213,13 @@ When using filters (`--include` or `-e`), only matching files are indexed. This 
 
 ```bash
 # Only indexes .py files, not the entire codebase
-plaid --include="*.py" "database query" /large/project
+colgrep --include="*.py" "database query" /large/project
 
 # Only indexes files containing "async", skips everything else
-plaid -e "async" "error handling" /large/project
+colgrep -e "async" "error handling" /large/project
 
 # Intersection: only indexes .ts files that contain "fetch"
-plaid -e "fetch" --include="*.ts" "API call" /large/project
+colgrep -e "fetch" --include="*.ts" "API call" /large/project
 ```
 
 **Indexing behavior by filter:**
@@ -243,11 +243,11 @@ Use `--code-only` to exclude text and configuration files from search results, f
 
 ```bash
 # Search only code files, skip markdown, yaml, json, etc.
-plaid --code-only "authentication logic" .
+colgrep --code-only "authentication logic" .
 
 # Combine with other flags
-plaid --code-only -k 20 "error handling" .
-plaid --code-only --include="*.py" "database" .
+colgrep --code-only -k 20 "error handling" .
+colgrep --code-only --include="*.py" "database" .
 ```
 
 **Files excluded by `--code-only`:**
@@ -263,13 +263,13 @@ This is useful when searching for implementation details without results from do
 ### Status
 
 ```bash
-plaid status
+colgrep status
 ```
 
 ## Example Output
 
 ```
-$ plaid "encode documents with ColBERT"
+$ colgrep "encode documents with ColBERT"
 
 1. encode_documents (score: 10.100)
    → src/lib.rs:680
@@ -287,7 +287,7 @@ $ plaid "encode documents with ColBERT"
 ### JSON Output
 
 ```bash
-$ plaid "control flow" -k 1 --json
+$ colgrep "control flow" -k 1 --json
 ```
 
 ```json
@@ -350,13 +350,13 @@ Calls: encode_queries, search, get, to_vec, context, iter, zip, filter_map, coll
 Called by: cmd_search
 Control flow: complexity=3, has_branches
 Variables: query_embeddings, query_emb, params, results, doc_ids, metadata, search_results
-Uses: next_plaid, serde_json, anyhow
+Uses: next_colgrep, serde_json, anyhow
 Code:
 pub fn search(&self, query: &str, top_k: usize, subset: Option<&[i64]>) -> Result<Vec<SearchResult>> {
     let query_embeddings = self.model.encode_queries(&[query])?;
     ...
 }
-File: next plaid cli / src / index / mod mod.rs
+File: next colgrep cli / src / index / mod mod.rs
 ```
 
 This structured format allows the model to understand:
@@ -443,7 +443,7 @@ The following directories are always ignored (even without `.gitignore`):
 | **Java**            | `.gradle`, `.m2`                                                                             |
 | **IDE/Editor**      | `.idea`, `.vscode`, `.vs`, `*.xcworkspace`, `*.xcodeproj`                                    |
 | **Coverage**        | `coverage`, `.coverage`, `htmlcov`, `.nyc_output`                                            |
-| **Misc**            | `.plaid`, `tmp`, `temp`, `logs`, `.DS_Store`                                                 |
+| **Misc**            | `.colgrep`, `tmp`, `temp`, `logs`, `.DS_Store`                                                 |
 
 Additionally, all patterns in `.gitignore` are respected.
 
@@ -466,15 +466,15 @@ Common files that may be skipped:
 
 ## Model
 
-By default, uses [`lightonai/GTE-ModernColBERT-v1-onnx`](https://huggingface.co/lightonai/GTE-ModernColBERT-v1-onnx) with INT8 quantization for fast inference. The model is automatically downloaded on first use. Use `plaid config --fp32` to switch to full-precision mode (see [Configuration](#configuration)).
+By default, uses [`lightonai/GTE-ModernColBERT-v1-onnx`](https://huggingface.co/lightonai/GTE-ModernColBERT-v1-onnx) with INT8 quantization for fast inference. The model is automatically downloaded on first use. Use `colgrep config --fp32` to switch to full-precision mode (see [Configuration](#configuration)).
 
 ### Using a Different Model
 
 Use a different model for a single query:
 
 ```bash
-plaid "query" --model path/to/local/model
-plaid "query" --model organization/model-name
+colgrep "query" --model path/to/local/model
+colgrep "query" --model organization/model-name
 ```
 
 ### Switching Default Model
@@ -483,13 +483,13 @@ Change the default model permanently:
 
 ```bash
 # Set a new default model
-plaid set-model lightonai/another-colbert-model
+colgrep set-model lightonai/another-colbert-model
 
 # The new model is validated before switching
 # Old indexes are automatically cleared (they're incompatible)
 ```
 
-Your model preference is stored in `~/.config/plaid/config.json`.
+Your model preference is stored in `~/.config/colgrep/config.json`.
 
 ## Index Storage
 
@@ -497,9 +497,9 @@ Indexes are stored in a centralized location following the XDG Base Directory sp
 
 | Platform    | Location                                         |
 | ----------- | ------------------------------------------------ |
-| **Linux**   | `~/.local/share/plaid/indices/`                  |
-| **macOS**   | `~/Library/Application Support/plaid/indices/`   |
-| **Windows** | `C:\Users\<user>\AppData\Roaming\plaid\indices\` |
+| **Linux**   | `~/.local/share/colgrep/indices/`                  |
+| **macOS**   | `~/Library/Application Support/colgrep/indices/`   |
+| **Windows** | `C:\Users\<user>\AppData\Roaming\colgrep\indices\` |
 
 Each project gets its own subdirectory named `{project-name}-{8-char-hash}`:
 
@@ -518,17 +518,17 @@ When searching in a subdirectory of an already-indexed project, the CLI automati
 ```bash
 # If /my/project is already indexed...
 cd /my/project/src/utils
-plaid "helper function"   # Uses /my/project's index automatically
+colgrep "helper function"   # Uses /my/project's index automatically
 ```
 
 ### Clearing Indexes
 
 ```bash
 # Clear index for current project
-plaid clear
+colgrep clear
 
 # Clear all indexes
-plaid clear --all
+colgrep clear --all
 ```
 
 ## How It Works
@@ -559,38 +559,38 @@ View and modify configuration settings:
 
 ```bash
 # Show current configuration
-plaid config
+colgrep config
 
 # Set default number of results
-plaid config --k 20
+colgrep config --k 20
 
 # Set default context lines
-plaid config --n 10
+colgrep config --n 10
 
 # Use full-precision (FP32) model instead of INT8 quantized
-plaid config --fp32
+colgrep config --fp32
 
 # Switch back to INT8 quantized model (default, faster)
-plaid config --int8
+colgrep config --int8
 
 # Reset to defaults (use 0)
-plaid config --k 0 --n 0
+colgrep config --k 0 --n 0
 ```
 
 ### Model Precision
 
-By default, plaid uses INT8 quantized models for faster inference with minimal quality loss. You can switch to full-precision (FP32) if needed:
+By default, colgrep uses INT8 quantized models for faster inference with minimal quality loss. You can switch to full-precision (FP32) if needed:
 
 | Mode | Flag | Description |
 |------|------|-------------|
 | **INT8** (default) | `--int8` | ~2x faster inference, smaller model size |
 | **FP32** | `--fp32` | Full precision, slightly better accuracy |
 
-Note: When switching precision, clear existing indexes with `plaid clear --all` since embeddings are generated with different model weights.
+Note: When switching precision, clear existing indexes with `colgrep clear --all` since embeddings are generated with different model weights.
 
 ### Config File
 
-User preferences are stored in `~/.config/plaid/config.json`. Only non-default values are saved:
+User preferences are stored in `~/.config/colgrep/config.json`. Only non-default values are saved:
 
 ```json
 {

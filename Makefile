@@ -86,9 +86,9 @@ ci-onnx:
 
 # Run CI checks for cli crate
 ci-cli:
-	cd next-plaid-cli && cargo fmt --all -- --check
-	cd next-plaid-cli && cargo clippy --all-targets -- -D warnings
-	cd next-plaid-cli && cargo test
+	cd colgrep && cargo fmt --all -- --check
+	cd colgrep && cargo clippy --all-targets -- -D warnings
+	cd colgrep && cargo test
 
 # Run API integration tests (starts server, runs Python tests, cleans up)
 test-api-integration:

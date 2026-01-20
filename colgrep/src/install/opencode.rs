@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 use super::SKILL_MD;
 
-/// Marker to identify plaid section in AGENTS.md
-const PLAID_MARKER_START: &str = "<!-- PLAID_START -->";
-const PLAID_MARKER_END: &str = "<!-- PLAID_END -->";
+/// Marker to identify colgrep section in AGENTS.md
+const COLGREP_MARKER_START: &str = "<!-- COLGREP_START -->";
+const COLGREP_MARKER_END: &str = "<!-- COLGREP_END -->";
 
 /// Get the OpenCode directory
 fn get_opencode_dir() -> Result<PathBuf> {
@@ -21,7 +21,7 @@ fn get_agents_md_path() -> Result<PathBuf> {
     Ok(opencode_dir.join("AGENTS.md"))
 }
 
-/// Add plaid instructions to AGENTS.md
+/// Add colgrep instructions to AGENTS.md
 fn add_to_agents_md() -> Result<()> {
     let opencode_dir = get_opencode_dir()?;
     fs::create_dir_all(&opencode_dir)?;
@@ -34,30 +34,30 @@ fn add_to_agents_md() -> Result<()> {
         String::from("# OpenCode Agent Tools\n\n")
     };
 
-    // Check if plaid is already installed
-    if content.contains(PLAID_MARKER_START) {
-        // Remove existing plaid section first
+    // Check if colgrep is already installed
+    if content.contains(COLGREP_MARKER_START) {
+        // Remove existing colgrep section first
         if let (Some(start), Some(end)) = (
-            content.find(PLAID_MARKER_START),
-            content.find(PLAID_MARKER_END),
+            content.find(COLGREP_MARKER_START),
+            content.find(COLGREP_MARKER_END),
         ) {
-            let end_pos = end + PLAID_MARKER_END.len();
+            let end_pos = end + COLGREP_MARKER_END.len();
             content = format!("{}{}", &content[..start], &content[end_pos..]);
         }
     }
 
-    // Add plaid section
-    let plaid_section = format!(
+    // Add colgrep section
+    let colgrep_section = format!(
         "{}\n{}\n{}\n",
-        PLAID_MARKER_START, SKILL_MD, PLAID_MARKER_END
+        COLGREP_MARKER_START, SKILL_MD, COLGREP_MARKER_END
     );
-    content.push_str(&plaid_section);
+    content.push_str(&colgrep_section);
 
     fs::write(&agents_path, content)?;
     Ok(())
 }
 
-/// Remove plaid from AGENTS.md
+/// Remove colgrep from AGENTS.md
 fn remove_from_agents_md() -> Result<()> {
     let agents_path = get_agents_md_path()?;
 
@@ -68,10 +68,10 @@ fn remove_from_agents_md() -> Result<()> {
     let content = fs::read_to_string(&agents_path)?;
 
     if let (Some(start), Some(end)) = (
-        content.find(PLAID_MARKER_START),
-        content.find(PLAID_MARKER_END),
+        content.find(COLGREP_MARKER_START),
+        content.find(COLGREP_MARKER_END),
     ) {
-        let end_pos = end + PLAID_MARKER_END.len();
+        let end_pos = end + COLGREP_MARKER_END.len();
         let new_content = format!("{}{}", &content[..start], &content[end_pos..]);
 
         // Clean up extra newlines
@@ -88,15 +88,15 @@ fn remove_from_agents_md() -> Result<()> {
     Ok(())
 }
 
-/// Install plaid for OpenCode
+/// Install colgrep for OpenCode
 pub fn install_opencode() -> Result<()> {
-    println!("Installing plaid for OpenCode...");
+    println!("Installing colgrep for OpenCode...");
 
     // Add instructions to AGENTS.md
     add_to_agents_md()?;
     let agents_path = get_agents_md_path()?;
     println!(
-        "{} Added plaid instructions to {}",
+        "{} Added colgrep instructions to {}",
         "✓".green(),
         agents_path.display()
     );
@@ -105,15 +105,15 @@ pub fn install_opencode() -> Result<()> {
     Ok(())
 }
 
-/// Uninstall plaid from OpenCode
+/// Uninstall colgrep from OpenCode
 pub fn uninstall_opencode() -> Result<()> {
-    println!("Uninstalling plaid from OpenCode...");
+    println!("Uninstalling colgrep from OpenCode...");
 
     remove_from_agents_md()?;
-    println!("{} Removed plaid from AGENTS.md", "✓".green());
+    println!("{} Removed colgrep from AGENTS.md", "✓".green());
 
     println!();
-    println!("{}", "Plaid has been uninstalled from OpenCode.".green());
+    println!("{}", "Colgrep has been uninstalled from OpenCode.".green());
     Ok(())
 }
 
@@ -124,12 +124,12 @@ fn print_opencode_success() {
     println!(
         "  {} {}",
         "✓".green().bold(),
-        "PLAID INSTALLED FOR OPENCODE".green().bold()
+        "COLGREP INSTALLED FOR OPENCODE".green().bold()
     );
     println!();
     println!(
         "  {}",
-        "Plaid is now available as a semantic search tool in OpenCode.".white()
+        "Colgrep is now available as a semantic search tool in OpenCode.".white()
     );
     println!();
     println!("  {}", "Usage in OpenCode:".cyan().bold());
@@ -140,7 +140,7 @@ fn print_opencode_success() {
     println!("    {}", "Example: \"find error handling logic\"".white());
     println!();
     println!("  {}", "To uninstall:".cyan().bold());
-    println!("    {}", "plaid --uninstall-opencode".green());
+    println!("    {}", "colgrep --uninstall-opencode".green());
     println!();
     println!("{}", "═".repeat(70).cyan());
 }

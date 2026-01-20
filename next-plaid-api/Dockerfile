@@ -60,9 +60,9 @@ ARG ORT_VERSION=1.23.0
 RUN mkdir -p /opt/ort_cpu && \
     ARCH=$(uname -m) && \
     if [ "$ARCH" = "aarch64" ]; then \
-        ORT_ARCH="aarch64"; \
+    ORT_ARCH="aarch64"; \
     else \
-        ORT_ARCH="x64"; \
+    ORT_ARCH="x64"; \
     fi && \
     wget -q https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz && \
     tar -xzf onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz && \
@@ -83,7 +83,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
-COPY next-plaid-cli ./next-plaid-cli
+COPY colgrep ./colgrep
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -101,7 +101,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
-COPY next-plaid-cli ./next-plaid-cli
+COPY colgrep ./colgrep
 
 RUN cargo build --release --package next-plaid-api --features "openblas,model"
 
@@ -146,7 +146,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
-COPY next-plaid-cli ./next-plaid-cli
+COPY colgrep ./colgrep
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -164,7 +164,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
-COPY next-plaid-cli ./next-plaid-cli
+COPY colgrep ./colgrep
 
 RUN cargo build --release --package next-plaid-api --features "openblas,cuda"
 

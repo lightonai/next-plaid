@@ -1,4 +1,4 @@
-//! next-plaid-cli: Semantic code search powered by ColBERT
+//! colgrep: Semantic code search powered by ColBERT
 //!
 //! This crate provides semantic code search using:
 //! - **next-plaid** - Multi-vector search (ColBERT/PLAID)
@@ -16,7 +16,7 @@ pub mod parser;
 pub use config::Config;
 pub use embed::build_embedding_text;
 pub use index::paths::{
-    acquire_index_lock, find_parent_index, get_index_dir_for_project, get_plaid_data_dir,
+    acquire_index_lock, find_parent_index, get_colgrep_data_dir, get_index_dir_for_project,
     get_vector_index_path, ParentIndexInfo, ProjectMetadata,
 };
 pub use index::state::IndexState;
