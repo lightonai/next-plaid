@@ -1,0 +1,128 @@
+# =============================================================================
+# Docker Release Workflow
+# =============================================================================
+# Manually triggered workflow to build and push Docker images to GitHub
+# Container Registry (ghcr.io).
+#
+# Builds two variants:
+#   - CPU: For systems without GPU (uses ONNX Runtime CPU)
+#   - CUDA: For systems with NVIDIA GPU (uses ONNX Runtime GPU + CUDA 12.4)
+#
+# Usage:
+#   1. Go to Actions > Docker Release
+#   2. Click "Run workflow"
+#   3. Enter the version (e.g., "0.1.0" or "1.2.3")
+#   4. Click "Run workflow"
+#
+# Images will be published as:
+#   - ghcr.io/<owner>/lategrep:cpu-<version>
+#   - ghcr.io/<owner>/lategrep:cpu-latest
+#   - ghcr.io/<owner>/lategrep:cuda-<version>
+#   - ghcr.io/<owner>/lategrep:cuda-latest
+# =============================================================================
+
+name: Docker Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.1.0)'
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: Build and Push (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: cpu
+            target: runtime-cpu
+            platforms: linux/amd64,linux/arm64
+          - variant: cuda
+            target: runtime-cuda
+            # CUDA only supports x86_64
+            platforms: linux/amd64
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ matrix.variant }}-${{ inputs.version }}
+            type=raw,value=${{ matrix.variant }}-latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: next-plaid-api/Dockerfile
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platforms }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+
+  create-release-summary:
+    name: Create Release Summary
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summary
+        run: |
+          echo "## Docker Images Released 🐳" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Version: \`${{ inputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Available Images" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Variant | Tag | Platforms |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-----|-----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| CPU | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cpu-${{ inputs.version }}\` | linux/amd64, linux/arm64 |" >> $GITHUB_STEP_SUMMARY
+          echo "| CPU (latest) | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cpu-latest\` | linux/amd64, linux/arm64 |" >> $GITHUB_STEP_SUMMARY
+          echo "| CUDA | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cuda-${{ inputs.version }}\` | linux/amd64 |" >> $GITHUB_STEP_SUMMARY
+          echo "| CUDA (latest) | \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cuda-latest\` | linux/amd64 |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Pull Commands" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "# CPU variant" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cpu-${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# CUDA variant (requires NVIDIA GPU)" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cuda-${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        env:
+          REGISTRY: ghcr.io
+          IMAGE_NAME: ${{ github.repository }}
