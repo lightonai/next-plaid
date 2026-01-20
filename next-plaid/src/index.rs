@@ -79,7 +79,41 @@ pub struct Metadata {
     /// Average document length
     pub avg_doclen: f64,
     /// Total number of documents
+    #[serde(default)]
     pub num_documents: usize,
+    /// Whether the index has been converted to next-plaid compatible format.
+    /// If false or missing, the index may need fast-plaid to next-plaid conversion.
+    #[serde(default)]
+    pub next_plaid_compatible: bool,
+}
+
+impl Metadata {
+    /// Load metadata from a JSON file, inferring num_documents from doclens if not present.
+    pub fn load_from_path(index_path: &Path) -> Result<Self> {
+        let metadata_path = index_path.join("metadata.json");
+        let mut metadata: Metadata = serde_json::from_reader(BufReader::new(
+            File::open(&metadata_path)
+                .map_err(|e| Error::IndexLoad(format!("Failed to open metadata: {}", e)))?,
+        ))?;
+
+        // If num_documents is 0 (default), infer from doclens files
+        if metadata.num_documents == 0 {
+            let mut total_docs = 0usize;
+            for chunk_idx in 0..metadata.num_chunks {
+                let doclens_path = index_path.join(format!("doclens.{}.json", chunk_idx));
+                if let Ok(file) = File::open(&doclens_path) {
+                    if let Ok(chunk_doclens) =
+                        serde_json::from_reader::<_, Vec<i64>>(BufReader::new(file))
+                    {
+                        total_docs += chunk_doclens.len();
+                    }
+                }
+            }
+            metadata.num_documents = total_docs;
+        }
+
+        Ok(metadata)
+    }
 }
 
 /// Chunk metadata
@@ -392,6 +426,7 @@ pub fn create_index_files(
         num_embeddings: total_embeddings,
         avg_doclen,
         num_documents,
+        next_plaid_compatible: true, // Created by next-plaid, always compatible
     };
 
     let metadata_path = index_dir.join("metadata.json");
@@ -497,17 +532,48 @@ impl MmapIndex {
     ///
     /// This creates merged files for codes and residuals if they don't exist,
     /// then memory-maps them for efficient access.
+    ///
+    /// If the index was created by fast-plaid, it will be automatically converted
+    /// to next-plaid compatible format on first load.
     pub fn load(index_path: &str) -> Result<Self> {
         use ndarray_npy::ReadNpyExt;
 
         let index_dir = Path::new(index_path);
 
-        // Load metadata
-        let metadata_path = index_dir.join("metadata.json");
-        let metadata: Metadata = serde_json::from_reader(BufReader::new(
-            File::open(&metadata_path)
-                .map_err(|e| Error::IndexLoad(format!("Failed to open metadata: {}", e)))?,
-        ))?;
+        // Load metadata (infers num_documents from doclens if not present)
+        let mut metadata = Metadata::load_from_path(index_dir)?;
+
+        // Check if conversion from fast-plaid format is needed
+        if !metadata.next_plaid_compatible {
+            eprintln!("Checking index format compatibility...");
+            let converted = crate::mmap::convert_fastplaid_to_nextplaid(index_dir)?;
+            if converted {
+                eprintln!("Index converted to next-plaid compatible format.");
+                // Delete any existing merged files since the source files changed
+                let merged_codes = index_dir.join("merged_codes.npy");
+                let merged_residuals = index_dir.join("merged_residuals.npy");
+                let codes_manifest = index_dir.join("merged_codes.manifest.json");
+                let residuals_manifest = index_dir.join("merged_residuals.manifest.json");
+                for path in [
+                    &merged_codes,
+                    &merged_residuals,
+                    &codes_manifest,
+                    &residuals_manifest,
+                ] {
+                    if path.exists() {
+                        let _ = fs::remove_file(path);
+                    }
+                }
+            }
+
+            // Mark as compatible and save metadata
+            metadata.next_plaid_compatible = true;
+            let metadata_path = index_dir.join("metadata.json");
+            let file = File::create(&metadata_path)
+                .map_err(|e| Error::IndexLoad(format!("Failed to update metadata: {}", e)))?;
+            serde_json::to_writer_pretty(BufWriter::new(file), &metadata)?;
+            eprintln!("Metadata updated with next_plaid_compatible: true");
+        }
 
         // Load codec with memory-mapped centroids for reduced RAM usage.
         // Other small tensors (bucket weights, etc.) are still loaded into memory.
@@ -937,10 +1003,7 @@ impl MmapIndex {
                     .collect();
                 crate::delete::delete_from_index_keep_buffer(&docs_to_delete, &path_str)?;
                 // Reload metadata after delete
-                let metadata_path = index_path.join("metadata.json");
-                self.metadata = serde_json::from_reader(std::io::BufReader::new(
-                    std::fs::File::open(&metadata_path)?,
-                ))?;
+                self.metadata = Metadata::load_from_path(index_path)?;
             }
 
             // New embeddings start after buffer is re-indexed

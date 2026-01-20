@@ -2710,6 +2710,8 @@ dev = [
 ]
 eval = [
     { name = "beir" },
+    { name = "fast-plaid", version = "1.2.4.280", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10' or python_full_version >= '3.12'" },
+    { name = "fast-plaid", version = "1.4.1.290", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10' and python_full_version < '3.12'" },
     { name = "fastkmeans" },
     { name = "httpx" },
     { name = "pylate", version = "1.2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10' and python_full_version < '3.12'" },
@@ -2726,6 +2728,7 @@ fast-plaid = [
 [package.metadata]
 requires-dist = [
     { name = "beir", marker = "extra == 'eval'", specifier = ">=2.0.0" },
+    { name = "fast-plaid", marker = "extra == 'eval'", specifier = ">=0.1.0" },
     { name = "fast-plaid", marker = "extra == 'fast-plaid'", specifier = ">=0.1.0" },
     { name = "fastkmeans", marker = "extra == 'eval'", specifier = ">=0.1.0" },
     { name = "httpx", marker = "extra == 'eval'", specifier = ">=0.24.0" },

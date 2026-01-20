@@ -368,6 +368,253 @@ pub fn write_array1_i64(array: &Array1<i64>, path: &Path) -> Result<()> {
 /// NPY file magic bytes
 const NPY_MAGIC: &[u8] = b"\x93NUMPY";
 
+/// Parse dtype from NPY header string (e.g., "<f2" for float16, "<f4" for float32)
+fn parse_dtype_from_header(header: &str) -> Result<String> {
+    // Find 'descr': '...'
+    let descr_start = header
+        .find("'descr':")
+        .ok_or_else(|| Error::IndexLoad("No descr in NPY header".into()))?;
+
+    let after_descr = &header[descr_start + 8..];
+    let quote_start = after_descr
+        .find('\'')
+        .ok_or_else(|| Error::IndexLoad("No dtype quote in NPY header".into()))?;
+    let rest = &after_descr[quote_start + 1..];
+    let quote_end = rest
+        .find('\'')
+        .ok_or_else(|| Error::IndexLoad("Unclosed dtype quote in NPY header".into()))?;
+
+    Ok(rest[..quote_end].to_string())
+}
+
+/// Detect NPY file dtype without loading the entire file
+pub fn detect_npy_dtype(path: &Path) -> Result<String> {
+    let file = File::open(path)
+        .map_err(|e| Error::IndexLoad(format!("Failed to open NPY file {:?}: {}", path, e)))?;
+
+    let mmap = unsafe {
+        Mmap::map(&file)
+            .map_err(|e| Error::IndexLoad(format!("Failed to mmap NPY file {:?}: {}", path, e)))?
+    };
+
+    if mmap.len() < 10 {
+        return Err(Error::IndexLoad("NPY file too small".into()));
+    }
+
+    // Check magic
+    if &mmap[..6] != NPY_MAGIC {
+        return Err(Error::IndexLoad("Invalid NPY magic".into()));
+    }
+
+    let major_version = mmap[6];
+
+    // Read header length
+    let header_len = if major_version == 1 {
+        u16::from_le_bytes([mmap[8], mmap[9]]) as usize
+    } else if major_version == 2 {
+        if mmap.len() < 12 {
+            return Err(Error::IndexLoad("NPY v2 file too small".into()));
+        }
+        u32::from_le_bytes([mmap[8], mmap[9], mmap[10], mmap[11]]) as usize
+    } else {
+        return Err(Error::IndexLoad(format!(
+            "Unsupported NPY version: {}",
+            major_version
+        )));
+    };
+
+    let header_start = if major_version == 1 { 10 } else { 12 };
+    let header_end = header_start + header_len;
+
+    if mmap.len() < header_end {
+        return Err(Error::IndexLoad("NPY header exceeds file size".into()));
+    }
+
+    let header_str = std::str::from_utf8(&mmap[header_start..header_end])
+        .map_err(|e| Error::IndexLoad(format!("Invalid NPY header encoding: {}", e)))?;
+
+    parse_dtype_from_header(header_str)
+}
+
+/// Convert a float16 NPY file to float32 in place
+pub fn convert_f16_to_f32_npy(path: &Path) -> Result<()> {
+    use half::f16;
+    use std::io::Read;
+
+    // Read the entire file
+    let mut file = File::open(path)
+        .map_err(|e| Error::IndexLoad(format!("Failed to open {:?}: {}", path, e)))?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)
+        .map_err(|e| Error::IndexLoad(format!("Failed to read {:?}: {}", path, e)))?;
+
+    if data.len() < 10 || &data[..6] != NPY_MAGIC {
+        return Err(Error::IndexLoad("Invalid NPY file".into()));
+    }
+
+    let major_version = data[6];
+    let header_start = if major_version == 1 { 10 } else { 12 };
+    let header_len = if major_version == 1 {
+        u16::from_le_bytes([data[8], data[9]]) as usize
+    } else {
+        u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize
+    };
+    let header_end = header_start + header_len;
+
+    // Parse header to get shape
+    let header_str = std::str::from_utf8(&data[header_start..header_end])
+        .map_err(|e| Error::IndexLoad(format!("Invalid header: {}", e)))?;
+    let shape = parse_shape_from_header(header_str)?;
+
+    // Calculate total elements
+    let total_elements: usize = shape.iter().product();
+    let f16_data = &data[header_end..header_end + total_elements * 2];
+
+    // Convert f16 to f32
+    let mut f32_data = Vec::with_capacity(total_elements * 4);
+    for chunk in f16_data.chunks(2) {
+        let f16_val = f16::from_le_bytes([chunk[0], chunk[1]]);
+        let f32_val: f32 = f16_val.to_f32();
+        f32_data.extend_from_slice(&f32_val.to_le_bytes());
+    }
+
+    // Write new file with f32 dtype
+    let file = File::create(path)
+        .map_err(|e| Error::IndexLoad(format!("Failed to create {:?}: {}", path, e)))?;
+    let mut writer = BufWriter::new(file);
+
+    if shape.len() == 1 {
+        write_npy_header_1d(&mut writer, shape[0], "<f4")?;
+    } else if shape.len() == 2 {
+        write_npy_header_2d(&mut writer, shape[0], shape[1], "<f4")?;
+    } else {
+        return Err(Error::IndexLoad("Unsupported shape dimensions".into()));
+    }
+
+    writer
+        .write_all(&f32_data)
+        .map_err(|e| Error::IndexLoad(format!("Failed to write data: {}", e)))?;
+    writer.flush()?;
+
+    Ok(())
+}
+
+/// Convert an int64 NPY file to int32 in place
+pub fn convert_i64_to_i32_npy(path: &Path) -> Result<()> {
+    use std::io::Read;
+
+    // Read the entire file
+    let mut file = File::open(path)
+        .map_err(|e| Error::IndexLoad(format!("Failed to open {:?}: {}", path, e)))?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)
+        .map_err(|e| Error::IndexLoad(format!("Failed to read {:?}: {}", path, e)))?;
+
+    if data.len() < 10 || &data[..6] != NPY_MAGIC {
+        return Err(Error::IndexLoad("Invalid NPY file".into()));
+    }
+
+    let major_version = data[6];
+    let header_start = if major_version == 1 { 10 } else { 12 };
+    let header_len = if major_version == 1 {
+        u16::from_le_bytes([data[8], data[9]]) as usize
+    } else {
+        u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize
+    };
+    let header_end = header_start + header_len;
+
+    // Parse header to get shape
+    let header_str = std::str::from_utf8(&data[header_start..header_end])
+        .map_err(|e| Error::IndexLoad(format!("Invalid header: {}", e)))?;
+    let shape = parse_shape_from_header(header_str)?;
+
+    if shape.len() != 1 {
+        return Err(Error::IndexLoad("Expected 1D array for i64->i32".into()));
+    }
+
+    let len = shape[0];
+    let i64_data = &data[header_end..header_end + len * 8];
+
+    // Convert i64 to i32
+    let mut i32_data = Vec::with_capacity(len * 4);
+    for chunk in i64_data.chunks(8) {
+        let i64_val = i64::from_le_bytes(chunk.try_into().unwrap());
+        let i32_val = i64_val as i32;
+        i32_data.extend_from_slice(&i32_val.to_le_bytes());
+    }
+
+    // Write new file with i32 dtype
+    let file = File::create(path)
+        .map_err(|e| Error::IndexLoad(format!("Failed to create {:?}: {}", path, e)))?;
+    let mut writer = BufWriter::new(file);
+
+    write_npy_header_1d(&mut writer, len, "<i4")?;
+
+    writer
+        .write_all(&i32_data)
+        .map_err(|e| Error::IndexLoad(format!("Failed to write data: {}", e)))?;
+    writer.flush()?;
+
+    Ok(())
+}
+
+/// Re-save a u8 NPY file to ensure dtype descriptor is "|u1" (platform-independent)
+///
+/// Note: We can't use ndarray_npy::ReadNpyExt here because it doesn't accept "<u1"
+/// descriptor, so we manually read the raw data and resave with "|u1".
+pub fn normalize_u8_npy(path: &Path) -> Result<()> {
+    use std::io::Read;
+
+    // Read the entire file
+    let mut file = File::open(path)
+        .map_err(|e| Error::IndexLoad(format!("Failed to open {:?}: {}", path, e)))?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)
+        .map_err(|e| Error::IndexLoad(format!("Failed to read {:?}: {}", path, e)))?;
+
+    if data.len() < 10 || &data[..6] != NPY_MAGIC {
+        return Err(Error::IndexLoad("Invalid NPY file".into()));
+    }
+
+    let major_version = data[6];
+    let header_start = if major_version == 1 { 10 } else { 12 };
+    let header_len = if major_version == 1 {
+        u16::from_le_bytes([data[8], data[9]]) as usize
+    } else {
+        u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize
+    };
+    let header_end = header_start + header_len;
+
+    // Parse header to get shape
+    let header_str = std::str::from_utf8(&data[header_start..header_end])
+        .map_err(|e| Error::IndexLoad(format!("Invalid header: {}", e)))?;
+    let shape = parse_shape_from_header(header_str)?;
+
+    if shape.len() != 2 {
+        return Err(Error::IndexLoad(
+            "Expected 2D array for u8 normalization".into(),
+        ));
+    }
+
+    let nrows = shape[0];
+    let ncols = shape[1];
+    let u8_data = &data[header_end..header_end + nrows * ncols];
+
+    // Re-write with explicit "|u1" dtype
+    let new_file = File::create(path)
+        .map_err(|e| Error::IndexLoad(format!("Failed to create {:?}: {}", path, e)))?;
+    let mut writer = BufWriter::new(new_file);
+
+    write_npy_header_2d(&mut writer, nrows, ncols, "|u1")?;
+
+    writer
+        .write_all(u8_data)
+        .map_err(|e| Error::IndexLoad(format!("Failed to write data: {}", e)))?;
+    writer.flush()?;
+
+    Ok(())
+}
+
 /// Parse NPY header and return (shape, data_offset, is_fortran_order)
 fn parse_npy_header(mmap: &Mmap) -> Result<(Vec<usize>, usize, bool)> {
     if mmap.len() < 10 {
@@ -1078,6 +1325,74 @@ pub fn merge_residuals_chunks(
     save_manifest(&manifest_path, &new_manifest)?;
 
     Ok(merged_path)
+}
+
+// ============================================================================
+// Fast-PLAID Compatibility Conversion
+// ============================================================================
+
+/// Convert a fast-plaid index to next-plaid compatible format.
+///
+/// This function detects and converts:
+/// - float16 → float32 for centroids, avg_residual, bucket_cutoffs, bucket_weights
+/// - int64 → int32 for ivf_lengths
+/// - `<u1` → `|u1` for residuals
+///
+/// Returns true if any conversion was performed, false if already compatible.
+pub fn convert_fastplaid_to_nextplaid(index_path: &Path) -> Result<bool> {
+    let mut converted = false;
+
+    // Float files to convert from f16 to f32
+    let float_files = [
+        "centroids.npy",
+        "avg_residual.npy",
+        "bucket_cutoffs.npy",
+        "bucket_weights.npy",
+    ];
+
+    for filename in float_files {
+        let path = index_path.join(filename);
+        if path.exists() {
+            let dtype = detect_npy_dtype(&path)?;
+            if dtype == "<f2" {
+                eprintln!("  Converting {} from float16 to float32", filename);
+                convert_f16_to_f32_npy(&path)?;
+                converted = true;
+            }
+        }
+    }
+
+    // Convert ivf_lengths from i64 to i32
+    let ivf_lengths_path = index_path.join("ivf_lengths.npy");
+    if ivf_lengths_path.exists() {
+        let dtype = detect_npy_dtype(&ivf_lengths_path)?;
+        if dtype == "<i8" {
+            eprintln!("  Converting ivf_lengths.npy from int64 to int32");
+            convert_i64_to_i32_npy(&ivf_lengths_path)?;
+            converted = true;
+        }
+    }
+
+    // Normalize residual files to use "|u1" descriptor
+    // fast-plaid uses "<u1" which ndarray_npy doesn't accept
+    for entry in fs::read_dir(index_path)? {
+        let entry = entry?;
+        let filename = entry.file_name().to_string_lossy().to_string();
+        if filename.ends_with(".residuals.npy") {
+            let path = entry.path();
+            let dtype = detect_npy_dtype(&path)?;
+            if dtype == "<u1" {
+                eprintln!(
+                    "  Normalizing {} dtype descriptor from <u1 to |u1",
+                    filename
+                );
+                normalize_u8_npy(&path)?;
+                converted = true;
+            }
+        }
+    }
+
+    Ok(converted)
 }
 
 #[cfg(test)]

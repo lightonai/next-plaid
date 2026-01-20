@@ -534,12 +534,9 @@ pub fn update_index(
     let batch_size = batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
     let index_dir = Path::new(index_path);
 
-    // Load existing metadata
+    // Load existing metadata (infers num_documents from doclens if not present)
     let metadata_path = index_dir.join("metadata.json");
-    let metadata: Metadata = serde_json::from_reader(BufReader::new(
-        File::open(&metadata_path)
-            .map_err(|e| Error::IndexLoad(format!("Failed to open metadata: {}", e)))?,
-    ))?;
+    let metadata = Metadata::load_from_path(index_dir)?;
 
     let num_existing_chunks = metadata.num_chunks;
     let old_num_documents = metadata.num_documents;
@@ -832,6 +829,7 @@ pub fn update_index(
         num_embeddings,
         avg_doclen: new_avg_doclen,
         num_documents: total_num_documents,
+        next_plaid_compatible: true,
     };
 
     serde_json::to_writer_pretty(BufWriter::new(File::create(&metadata_path)?), &new_metadata)?;

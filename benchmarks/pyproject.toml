@@ -25,6 +25,7 @@ eval = [
     "tqdm>=4.60.0",
     "httpx>=0.24.0",
     "requests>=2.28.0",
+    "fast-plaid>=0.1.0",
 ]
 
 [tool.ruff]

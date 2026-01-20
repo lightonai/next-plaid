@@ -68,12 +68,9 @@ fn delete_from_index_impl(doc_ids: &[i64], index_path: &str, clean_buffer: bool)
 
     let index_dir = Path::new(index_path);
 
-    // Load main metadata
+    // Load main metadata (infers num_documents from doclens if not present)
     let metadata_path = index_dir.join("metadata.json");
-    let metadata: Metadata = serde_json::from_reader(BufReader::new(
-        File::open(&metadata_path)
-            .map_err(|e| Error::Delete(format!("Failed to open metadata: {}", e)))?,
-    ))?;
+    let metadata = Metadata::load_from_path(index_dir)?;
 
     // Save original document count before any modifications - needed for buffer cleanup
     let original_num_documents = metadata.num_documents;
