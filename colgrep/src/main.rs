@@ -729,6 +729,7 @@ fn print_highlighted_ranges(
     lines: &[&str],
     ranges: &[(usize, usize)],
     unit_end: usize,
+    line_num_width: usize,
 ) {
     let ps = SyntaxSet::load_defaults_newlines();
     let ts = ThemeSet::load_defaults();
@@ -740,8 +741,6 @@ fn print_highlighted_ranges(
         .and_then(|ext| ext.to_str())
         .and_then(|ext| ps.find_syntax_by_extension(ext))
         .unwrap_or_else(|| ps.find_syntax_plain_text());
-
-    println!();
 
     for (range_idx, &(start, end)) in ranges.iter().enumerate() {
         let display_end = end.min(lines.len());
@@ -768,15 +767,15 @@ fn print_highlighted_ranges(
             // Remove trailing newline for cleaner output
             let escaped = escaped.trim_end_matches('\n');
             println!(
-                "   {} {}\x1b[0m",
-                format!("{:4}", line_num).dimmed(),
+                "{} {}\x1b[0m",
+                format!("{:>width$}", line_num, width = line_num_width).dimmed(),
                 escaped
             );
         }
 
         // Add separator between ranges, or "..." if more content follows
         if range_idx < ranges.len() - 1 || display_end < unit_end {
-            println!("   {}", "...".dimmed());
+            println!("{}", "...".dimmed());
         }
     }
 }
@@ -788,6 +787,7 @@ fn print_highlighted_content(
     start_line: usize,
     max_lines: usize,
     end_line: usize,
+    line_num_width: usize,
 ) {
     let ps = SyntaxSet::load_defaults_newlines();
     let ts = ThemeSet::load_defaults();
@@ -811,7 +811,6 @@ fn print_highlighted_content(
         .map(|l| format!("{}\n", l))
         .collect();
 
-    println!();
     for (i, line) in LinesWithEndings::from(&content_to_highlight).enumerate() {
         let line_num = start_line + i + 1;
         let ranges: Vec<(Style, &str)> = highlighter
@@ -821,20 +820,20 @@ fn print_highlighted_content(
         // Remove trailing newline for cleaner output
         let escaped = escaped.trim_end_matches('\n');
         println!(
-            "   {} {}\x1b[0m",
-            format!("{:4}", line_num).dimmed(),
+            "{} {}\x1b[0m",
+            format!("{:>width$}", line_num, width = line_num_width).dimmed(),
             escaped
         );
     }
 
     if truncated {
-        println!("   {}", "...".dimmed());
+        println!("{}", "...".dimmed());
     }
 }
 
-/// Group results by file, maintaining relevance order
+/// Group results by file, maintaining relevance order for files
 /// Files are ordered by their most relevant result, and within each file,
-/// results are shown in order of relevance
+/// results are sorted by line number (position in file)
 fn group_results_by_file<'a>(
     results: &'a [&colgrep::SearchResult],
 ) -> Vec<(PathBuf, Vec<&'a colgrep::SearchResult>)> {
@@ -851,7 +850,13 @@ fn group_results_by_file<'a>(
 
     file_order
         .into_iter()
-        .filter_map(|file| file_results.remove(&file).map(|results| (file, results)))
+        .filter_map(|file| {
+            file_results.remove(&file).map(|mut results| {
+                // Sort results by line number within each file
+                results.sort_by_key(|r| r.unit.line);
+                (file, results)
+            })
+        })
         .collect()
 }
 
@@ -973,19 +978,10 @@ fn cmd_search(
 
     // Determine effective project root and subdirectory filter
     let (effective_root, subdir_filter): (PathBuf, Option<PathBuf>) = match &parent_info {
-        Some(info) => {
-            if !json && !files_only {
-                eprintln!(
-                    "📂 Using parent index: {} (subdir: {})",
-                    info.project_path.display(),
-                    info.relative_subdir.display()
-                );
-            }
-            (
-                info.project_path.clone(),
-                Some(info.relative_subdir.clone()),
-            )
-        }
+        Some(info) => (
+            info.project_path.clone(),
+            Some(info.relative_subdir.clone()),
+        ),
         None => (path.clone(), None),
     };
 
@@ -1032,7 +1028,20 @@ fn cmd_search(
 
         let changes = stats.added + stats.changed + stats.deleted;
         if changes > 0 && !json && !files_only {
-            eprintln!("✅ Indexed {} files", changes);
+            if let Some(ref info) = parent_info {
+                eprintln!(
+                    "📂 Using index: {} (subdir: {}): indexed {} files\n",
+                    info.project_path.display(),
+                    info.relative_subdir.display(),
+                    changes
+                );
+            } else {
+                eprintln!(
+                    "📂 Using index: {}: indexed {} files\n",
+                    effective_root.display(),
+                    changes
+                );
+            }
         }
     }
 
@@ -1087,9 +1096,6 @@ fn cmd_search(
                     println!("No files contain pattern: {}", pattern);
                 }
                 return Ok(());
-            }
-            if !json && !files_only {
-                eprintln!("🔍 {} files match '{}'", matched_files.len(), pattern);
             }
 
             // Use filtering to get doc IDs for code units in those files
@@ -1297,29 +1303,25 @@ fn cmd_search(
             .iter()
             .partition(|r| !is_text_format(r.unit.language));
 
-        let mut current_index = 1;
         let half_context = context_lines / 2;
         let has_text_pattern = text_pattern.is_some();
+
+        // Calculate max line number across all results for consistent alignment
+        let max_line_num = results.iter().map(|r| r.unit.end_line).max().unwrap_or(1);
+        let line_num_width = max_line_num.to_string().len().max(4); // At least 4 chars
 
         // Display code results first, grouped by file
         if !code_results.is_empty() {
             let grouped = group_results_by_file(&code_results);
             for (file, file_results) in grouped {
-                // Print file header
-                println!("{}", file.display().to_string().cyan());
+                // Print file header with absolute path
+                let abs_path = if file.is_absolute() {
+                    file.clone()
+                } else {
+                    effective_root.join(&file)
+                };
+                println!("file: {}", abs_path.display().to_string().cyan());
                 for result in file_results {
-                    // Use signature if available, fallback to name
-                    let display_name = if result.unit.signature.is_empty() {
-                        result.unit.name.clone()
-                    } else {
-                        result.unit.signature.clone()
-                    };
-                    println!(
-                        "   {} {}{}",
-                        format!("{}.", current_index).dimmed(),
-                        display_name.bold(),
-                        format!(":{}-{}", result.unit.line, result.unit.end_line).dimmed()
-                    );
                     // Show content - resolve path relative to effective_root for parent index support
                     let file_to_read = if result.unit.file.is_absolute() {
                         result.unit.file.clone()
@@ -1351,7 +1353,13 @@ fn cmd_search(
                                 half_context,
                                 max_lines,
                             );
-                            print_highlighted_ranges(&file_to_read, &lines, &ranges, end);
+                            print_highlighted_ranges(
+                                &file_to_read,
+                                &lines,
+                                &ranges,
+                                end,
+                                line_num_width,
+                            );
                         } else {
                             // No -e flag, show from beginning
                             let start = result.unit.line.saturating_sub(1);
@@ -1362,11 +1370,11 @@ fn cmd_search(
                                     start,
                                     max_lines,
                                     end,
+                                    line_num_width,
                                 );
                             }
                         }
                     }
-                    current_index += 1;
                 }
                 println!();
             }
@@ -1376,21 +1384,14 @@ fn cmd_search(
         if !doc_results.is_empty() {
             let grouped = group_results_by_file(&doc_results);
             for (file, file_results) in grouped {
-                // Print file header
-                println!("{}", file.display().to_string().cyan());
+                // Print file header with absolute path
+                let abs_path = if file.is_absolute() {
+                    file.clone()
+                } else {
+                    effective_root.join(&file)
+                };
+                println!("file: {}", abs_path.display().to_string().cyan());
                 for result in file_results {
-                    // Use signature if available, fallback to name
-                    let display_name = if result.unit.signature.is_empty() {
-                        result.unit.name.clone()
-                    } else {
-                        result.unit.signature.clone()
-                    };
-                    println!(
-                        "   {} {}{}",
-                        format!("{}.", current_index).dimmed(),
-                        display_name.bold(),
-                        format!(":{}-{}", result.unit.line, result.unit.end_line).dimmed()
-                    );
                     // Show content - resolve path relative to effective_root for parent index support
                     let file_to_read = if result.unit.file.is_absolute() {
                         result.unit.file.clone()
@@ -1418,7 +1419,13 @@ fn cmd_search(
                                 half_context,
                                 max_lines,
                             );
-                            print_highlighted_ranges(&file_to_read, &lines, &ranges, end);
+                            print_highlighted_ranges(
+                                &file_to_read,
+                                &lines,
+                                &ranges,
+                                end,
+                                line_num_width,
+                            );
                         } else {
                             // No -e flag, show from beginning
                             let start = result.unit.line.saturating_sub(1);
@@ -1429,11 +1436,11 @@ fn cmd_search(
                                     start,
                                     max_lines,
                                     end,
+                                    line_num_width,
                                 );
                             }
                         }
                     }
-                    current_index += 1;
                 }
                 println!();
             }
