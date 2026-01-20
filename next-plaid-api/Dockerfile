@@ -83,6 +83,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
+COPY next-plaid-cli ./next-plaid-cli
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -100,6 +101,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
+COPY next-plaid-cli ./next-plaid-cli
 
 RUN cargo build --release --package next-plaid-api --features "openblas,model"
 
@@ -144,6 +146,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
+COPY next-plaid-cli ./next-plaid-cli
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -161,6 +164,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
+COPY next-plaid-cli ./next-plaid-cli
 
 RUN cargo build --release --package next-plaid-api --features "openblas,cuda"
 

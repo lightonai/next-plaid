@@ -12,6 +12,9 @@ const REQUIRED_FILES: &[&str] = &[
     "config.json",
 ];
 
+/// Optional files (non-quantized model)
+const OPTIONAL_FILES: &[&str] = &["model.onnx"];
+
 /// Load model from cache or download from HuggingFace.
 /// Returns path to the model directory.
 /// If `quiet` is true, suppresses the model name output.
@@ -47,6 +50,11 @@ pub fn ensure_model(model_id: Option<&str>, quiet: bool) -> Result<PathBuf> {
                 }
             }
         }
+    }
+
+    // Try to download optional files (non-quantized model) - ignore errors
+    for file in OPTIONAL_FILES {
+        let _ = repo.get(file);
     }
 
     model_dir.ok_or_else(|| anyhow::anyhow!("Failed to determine model directory"))

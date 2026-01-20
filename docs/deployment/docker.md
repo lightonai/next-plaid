@@ -96,6 +96,17 @@ services:
       - ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}:/models
     environment:
       - RUST_LOG=info
+      # Rate limiting (configurable)
+      - RATE_LIMIT_PER_SECOND=${RATE_LIMIT_PER_SECOND:-50}
+      - RATE_LIMIT_BURST_SIZE=${RATE_LIMIT_BURST_SIZE:-100}
+      - CONCURRENCY_LIMIT=${CONCURRENCY_LIMIT:-100}
+      # Document processing
+      - MAX_QUEUED_TASKS_PER_INDEX=${MAX_QUEUED_TASKS_PER_INDEX:-10}
+      - MAX_BATCH_DOCUMENTS=${MAX_BATCH_DOCUMENTS:-300}
+      - BATCH_CHANNEL_SIZE=${BATCH_CHANNEL_SIZE:-100}
+      # Encode batching
+      - MAX_BATCH_TEXTS=${MAX_BATCH_TEXTS:-64}
+      - ENCODE_BATCH_CHANNEL_SIZE=${ENCODE_BATCH_CHANNEL_SIZE:-256}
     command:
       - --host
       - "0.0.0.0"
@@ -146,6 +157,17 @@ services:
     environment:
       - RUST_LOG=info
       - NVIDIA_VISIBLE_DEVICES=all
+      # Rate limiting (configurable)
+      - RATE_LIMIT_PER_SECOND=${RATE_LIMIT_PER_SECOND:-50}
+      - RATE_LIMIT_BURST_SIZE=${RATE_LIMIT_BURST_SIZE:-100}
+      - CONCURRENCY_LIMIT=${CONCURRENCY_LIMIT:-100}
+      # Document processing
+      - MAX_QUEUED_TASKS_PER_INDEX=${MAX_QUEUED_TASKS_PER_INDEX:-10}
+      - MAX_BATCH_DOCUMENTS=${MAX_BATCH_DOCUMENTS:-300}
+      - BATCH_CHANNEL_SIZE=${BATCH_CHANNEL_SIZE:-100}
+      # Encode batching
+      - MAX_BATCH_TEXTS=${MAX_BATCH_TEXTS:-64}
+      - ENCODE_BATCH_CHANNEL_SIZE=${ENCODE_BATCH_CHANNEL_SIZE:-256}
     command:
       - --host
       - "0.0.0.0"
@@ -205,13 +227,30 @@ docker compose down
 
 ### Environment Variables
 
-| Variable            | Default                           | Description                          |
-| ------------------- | --------------------------------- | ------------------------------------ |
-| `RUST_LOG`          | `info`                            | Log level                            |
-| `HF_TOKEN`          | -                                 | HuggingFace token for private models |
+#### General
+
+| Variable            | Default                           | Description                            |
+| ------------------- | --------------------------------- | -------------------------------------- |
+| `RUST_LOG`          | `info`                            | Log level                              |
+| `HF_TOKEN`          | -                                 | HuggingFace token for private models   |
 | `NEXT_PLAID_DATA`   | `~/.local/share/next-plaid`       | Host path for persistent index storage |
-| `NEXT_PLAID_MODELS` | `~/.cache/huggingface/next-plaid` | Host path for downloaded model cache |
-| `MODELS_DIR`        | `/models`                         | Container path for models            |
+| `NEXT_PLAID_MODELS` | `~/.cache/huggingface/next-plaid` | Host path for downloaded model cache   |
+| `MODELS_DIR`        | `/models`                         | Container path for models              |
+
+#### Rate Limiting & Concurrency
+
+| Variable                     | Default | Description                                      |
+| ---------------------------- | ------- | ------------------------------------------------ |
+| `RATE_LIMIT_PER_SECOND`      | `50`    | Max requests per second (sustained rate)         |
+| `RATE_LIMIT_BURST_SIZE`      | `100`   | Burst size for rate limiting                     |
+| `CONCURRENCY_LIMIT`          | `100`   | Max concurrent in-flight requests                |
+| `MAX_QUEUED_TASKS_PER_INDEX` | `10`    | Max queued updates/deletes per index (semaphore) |
+| `MAX_BATCH_DOCUMENTS`        | `300`   | Max documents to batch before processing         |
+| `BATCH_CHANNEL_SIZE`         | `100`   | Buffer size for document batch queue             |
+| `MAX_BATCH_TEXTS`            | `64`    | Max texts to batch for encoding                  |
+| `ENCODE_BATCH_CHANNEL_SIZE`  | `256`   | Buffer size for encode batch queue               |
+
+These variables can be set in your `docker-compose.yml` or via a `.env` file.
 
 ### Volume Mounts
 

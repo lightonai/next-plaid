@@ -12,6 +12,7 @@ use next_plaid::MmapIndex;
 use parking_lot::RwLock;
 
 use crate::error::{ApiError, ApiResult};
+use crate::models::IndexConfigStored;
 
 /// Configuration for the API server.
 #[derive(Debug, Clone)]
@@ -84,6 +85,8 @@ pub struct AppState {
     pub config: ApiConfig,
     /// Loaded indices by name
     indices: RwLock<HashMap<String, Arc<RwLock<MmapIndex>>>>,
+    /// Cached index configurations to avoid repeated file reads
+    index_configs: RwLock<HashMap<String, IndexConfigStored>>,
     /// Optional ONNX model for encoding texts
     #[cfg(feature = "model")]
     pub model: Option<Mutex<next_plaid_onnx::Colbert>>,
@@ -107,6 +110,7 @@ impl AppState {
         Self {
             config,
             indices: RwLock::new(HashMap::new()),
+            index_configs: RwLock::new(HashMap::new()),
         }
     }
 
@@ -126,6 +130,7 @@ impl AppState {
         Self {
             config,
             indices: RwLock::new(HashMap::new()),
+            index_configs: RwLock::new(HashMap::new()),
             model: model.map(Mutex::new),
             model_info,
             cached_model_info,
@@ -199,6 +204,54 @@ impl AppState {
         self.load_index(name)
     }
 
+    /// Get cached index config, loading from disk if not cached.
+    pub fn get_index_config(&self, name: &str) -> Option<IndexConfigStored> {
+        // Check cache first
+        {
+            let configs = self.index_configs.read();
+            if let Some(config) = configs.get(name) {
+                return Some(config.clone());
+            }
+        }
+
+        // Not cached - try to load from disk
+        let config_path = self.index_path(name).join("config.json");
+        let config = std::fs::File::open(&config_path)
+            .ok()
+            .and_then(|f| serde_json::from_reader::<_, IndexConfigStored>(f).ok())?;
+
+        // Cache for future use
+        {
+            let mut configs = self.index_configs.write();
+            configs.insert(name.to_string(), config.clone());
+        }
+
+        Some(config)
+    }
+
+    /// Set cached index config (and persist to disk).
+    pub fn set_index_config(&self, name: &str, config: IndexConfigStored) -> ApiResult<()> {
+        let config_path = self.index_path(name).join("config.json");
+
+        // Persist to disk
+        let config_file = std::fs::File::create(&config_path)
+            .map_err(|e| ApiError::Internal(format!("Failed to create config file: {}", e)))?;
+        serde_json::to_writer_pretty(config_file, &config)
+            .map_err(|e| ApiError::Internal(format!("Failed to write config: {}", e)))?;
+
+        // Update cache
+        let mut configs = self.index_configs.write();
+        configs.insert(name.to_string(), config);
+
+        Ok(())
+    }
+
+    /// Invalidate cached config for an index.
+    pub fn invalidate_config_cache(&self, name: &str) {
+        let mut configs = self.index_configs.write();
+        configs.remove(name);
+    }
+
     /// List all indices (on disk).
     pub fn list_all(&self) -> Vec<String> {
         let mut names = Vec::new();
@@ -263,18 +316,8 @@ impl AppState {
 
         let has_metadata = next_plaid::filtering::exists(&path_str);
 
-        // Read config.json to get max_documents
-        let config_path = path.join("config.json");
-        let max_documents = if config_path.exists() {
-            std::fs::File::open(&config_path)
-                .ok()
-                .and_then(|f| {
-                    serde_json::from_reader::<_, crate::models::IndexConfigStored>(f).ok()
-                })
-                .and_then(|c| c.max_documents)
-        } else {
-            None
-        };
+        // Use cached config to get max_documents (avoids repeated file reads)
+        let max_documents = self.get_index_config(name).and_then(|c| c.max_documents);
 
         Ok(crate::models::IndexSummary {
             name: name.to_string(),

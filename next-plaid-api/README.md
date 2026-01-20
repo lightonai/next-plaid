@@ -11,7 +11,7 @@ A REST API for deploying and querying next-plaid multi-vector search indices.
 - **Auto-Download Models**: Automatically download models from HuggingFace Hub
 - **CUDA Support**: GPU acceleration for encoding
 - **Metadata**: SQLite-based metadata storage with SQL query support
-- **Rate Limiting**: Built-in protection (50 req/sec sustained, 100 burst)
+- **Rate Limiting**: Configurable protection (default: 50 req/sec sustained, 100 burst)
 - **OpenAPI/Swagger**: Interactive API documentation at `/swagger-ui/`
 
 ## Quick Start
@@ -282,11 +282,28 @@ for doc_id, score in zip(results.results[0].document_ids, results.results[0].sco
 
 ## Environment Variables
 
+### General
+
 | Variable          | Default                     | Description                          |
 | ----------------- | --------------------------- | ------------------------------------ |
 | `NEXT_PLAID_DATA` | `~/.local/share/next-plaid` | Local directory for index storage    |
 | `RUST_LOG`        | `info`                      | Log level (debug, info, warn, error) |
 | `HF_TOKEN`        | -                           | HuggingFace token for private models |
+
+### Rate Limiting & Concurrency
+
+| Variable                    | Default | Description                                         |
+| --------------------------- | ------- | --------------------------------------------------- |
+| `RATE_LIMIT_PER_SECOND`     | `50`    | Max requests per second (sustained rate)            |
+| `RATE_LIMIT_BURST_SIZE`     | `100`   | Burst size for rate limiting                        |
+| `CONCURRENCY_LIMIT`         | `100`   | Max concurrent in-flight requests                   |
+| `MAX_QUEUED_TASKS_PER_INDEX`| `10`    | Max queued updates/deletes per index (semaphore)    |
+| `MAX_BATCH_DOCUMENTS`       | `300`   | Max documents to batch before processing            |
+| `BATCH_CHANNEL_SIZE`        | `100`   | Buffer size for document batch queue                |
+| `MAX_BATCH_TEXTS`           | `64`    | Max texts to batch for encoding                     |
+| `ENCODE_BATCH_CHANNEL_SIZE` | `256`   | Buffer size for encode batch queue                  |
+
+These can be set via Docker Compose environment section or `.env` file.
 
 ## Full API Reference
 

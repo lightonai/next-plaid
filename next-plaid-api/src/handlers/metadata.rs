@@ -8,6 +8,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use tokio::task;
 
 use next_plaid::filtering;
 
@@ -45,39 +46,62 @@ pub async fn check_metadata(
         return Err(ApiError::IndexNotFound(name));
     }
 
-    // Check if metadata database exists
-    if !filtering::exists(&path_str) {
-        return Err(ApiError::MetadataNotFound(name));
+    // Fast path: if no IDs requested, return empty result
+    if req.document_ids.is_empty() {
+        return Ok(Json(CheckMetadataResponse {
+            existing_count: 0,
+            missing_count: 0,
+            existing_ids: Vec::new(),
+            missing_ids: Vec::new(),
+        }));
     }
 
-    // Get all document IDs from metadata
-    let all_metadata = filtering::get(&path_str, None, &[], None)
-        .map_err(|e| ApiError::Internal(format!("Failed to query metadata: {}", e)))?;
-
-    // Extract _subset_ IDs
-    let existing_set: std::collections::HashSet<i64> = all_metadata
-        .iter()
-        .filter_map(|m| m.get("_subset_").and_then(|v| v.as_i64()))
-        .collect();
-
-    // Partition requested IDs into existing and missing
-    let mut existing_ids = Vec::new();
-    let mut missing_ids = Vec::new();
-
-    for &doc_id in &req.document_ids {
-        if existing_set.contains(&doc_id) {
-            existing_ids.push(doc_id);
-        } else {
-            missing_ids.push(doc_id);
+    // Run blocking SQLite operations in a separate thread
+    let document_ids = req.document_ids.clone();
+    let result = task::spawn_blocking(move || {
+        // Check if metadata database exists
+        if !filtering::exists(&path_str) {
+            return Err("metadata_not_found".to_string());
         }
-    }
 
-    Ok(Json(CheckMetadataResponse {
-        existing_count: existing_ids.len(),
-        missing_count: missing_ids.len(),
-        existing_ids,
-        missing_ids,
-    }))
+        // Query only the requested IDs (O(k) instead of O(n) where n is total metadata entries)
+        let found_metadata = filtering::get(&path_str, None, &[], Some(&document_ids))
+            .map_err(|e| format!("Failed to query metadata: {}", e))?;
+
+        // Extract the IDs that were actually found
+        let existing_set: std::collections::HashSet<i64> = found_metadata
+            .iter()
+            .filter_map(|m| m.get("_subset_").and_then(|v| v.as_i64()))
+            .collect();
+
+        // Partition requested IDs into existing and missing
+        let mut existing_ids = Vec::with_capacity(existing_set.len());
+        let mut missing_ids =
+            Vec::with_capacity(document_ids.len().saturating_sub(existing_set.len()));
+
+        for &doc_id in &document_ids {
+            if existing_set.contains(&doc_id) {
+                existing_ids.push(doc_id);
+            } else {
+                missing_ids.push(doc_id);
+            }
+        }
+
+        Ok((existing_ids, missing_ids))
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
+
+    match result {
+        Ok((existing_ids, missing_ids)) => Ok(Json(CheckMetadataResponse {
+            existing_count: existing_ids.len(),
+            missing_count: missing_ids.len(),
+            existing_ids,
+            missing_ids,
+        })),
+        Err(e) if e == "metadata_not_found" => Err(ApiError::MetadataNotFound(name)),
+        Err(e) => Err(ApiError::Internal(e)),
+    }
 }
 
 /// Query metadata to get document IDs matching a SQL condition.
@@ -107,14 +131,24 @@ pub async fn query_metadata(
         return Err(ApiError::IndexNotFound(name));
     }
 
-    // Check if metadata database exists
-    if !filtering::exists(&path_str) {
-        return Err(ApiError::MetadataNotFound(name));
-    }
+    // Run blocking SQLite operations in a separate thread
+    let condition = req.condition.clone();
+    let parameters = req.parameters.clone();
+    let name_clone = name.clone();
+    let result = task::spawn_blocking(move || {
+        // Check if metadata database exists
+        if !filtering::exists(&path_str) {
+            return Err(ApiError::MetadataNotFound(name_clone));
+        }
 
-    // Query metadata
-    let document_ids = filtering::where_condition(&path_str, &req.condition, &req.parameters)
-        .map_err(|e| ApiError::BadRequest(format!("Invalid condition: {}", e)))?;
+        // Query metadata
+        filtering::where_condition(&path_str, &condition, &parameters)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid condition: {}", e)))
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
+
+    let document_ids = result?;
 
     tracing::debug!(
         index = %name,
@@ -156,11 +190,6 @@ pub async fn get_metadata(
         return Err(ApiError::IndexNotFound(name));
     }
 
-    // Check if metadata database exists
-    if !filtering::exists(&path_str) {
-        return Err(ApiError::MetadataNotFound(name));
-    }
-
     // Cannot use both document_ids and condition
     if req.document_ids.is_some() && req.condition.is_some() {
         return Err(ApiError::BadRequest(
@@ -168,18 +197,38 @@ pub async fn get_metadata(
         ));
     }
 
-    let mut metadata = filtering::get(
-        &path_str,
-        req.condition.as_deref(),
-        &req.parameters,
-        req.document_ids.as_deref(),
-    )
-    .map_err(|e| ApiError::Internal(format!("Failed to get metadata: {}", e)))?;
+    // Run blocking SQLite operations in a separate thread
+    let condition = req.condition.clone();
+    let parameters = req.parameters.clone();
+    let document_ids = req.document_ids.clone();
+    let limit = req.limit;
+    let name_clone = name.clone();
 
-    // Apply limit if specified
-    if let Some(limit) = req.limit {
-        metadata.truncate(limit);
-    }
+    let result = task::spawn_blocking(move || {
+        // Check if metadata database exists
+        if !filtering::exists(&path_str) {
+            return Err(ApiError::MetadataNotFound(name_clone));
+        }
+
+        let mut metadata = filtering::get(
+            &path_str,
+            condition.as_deref(),
+            &parameters,
+            document_ids.as_deref(),
+        )
+        .map_err(|e| ApiError::Internal(format!("Failed to get metadata: {}", e)))?;
+
+        // Apply limit if specified
+        if let Some(limit) = limit {
+            metadata.truncate(limit);
+        }
+
+        Ok(metadata)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
+
+    let metadata = result?;
 
     Ok(Json(GetMetadataResponse {
         count: metadata.len(),
@@ -211,13 +260,21 @@ pub async fn get_all_metadata(
         return Err(ApiError::IndexNotFound(name));
     }
 
-    // Check if metadata database exists
-    if !filtering::exists(&path_str) {
-        return Err(ApiError::MetadataNotFound(name));
-    }
+    // Run blocking SQLite operations in a separate thread
+    let name_clone = name.clone();
+    let result = task::spawn_blocking(move || {
+        // Check if metadata database exists
+        if !filtering::exists(&path_str) {
+            return Err(ApiError::MetadataNotFound(name_clone));
+        }
 
-    let metadata = filtering::get(&path_str, None, &[], None)
-        .map_err(|e| ApiError::Internal(format!("Failed to get metadata: {}", e)))?;
+        filtering::get(&path_str, None, &[], None)
+            .map_err(|e| ApiError::Internal(format!("Failed to get metadata: {}", e)))
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
+
+    let metadata = result?;
 
     Ok(Json(GetMetadataResponse {
         count: metadata.len(),
@@ -259,23 +316,29 @@ pub async fn add_metadata(
         return Err(ApiError::IndexNotFound(name));
     }
 
-    // Create or update metadata
-    // Compute document IDs starting from current count (for standalone metadata additions)
-    let added = if filtering::exists(&path_str) {
-        // Update existing database - IDs start after current max
-        let current_count = filtering::count(&path_str)
-            .map_err(|e| ApiError::Internal(format!("Failed to get metadata count: {}", e)))?;
-        let doc_ids: Vec<i64> = (current_count..current_count + req.metadata.len())
-            .map(|i| i as i64)
-            .collect();
-        filtering::update(&path_str, &req.metadata, &doc_ids)
-            .map_err(|e| ApiError::Internal(format!("Failed to update metadata: {}", e)))?
-    } else {
-        // Create new database - IDs start from 0
-        let doc_ids: Vec<i64> = (0..req.metadata.len() as i64).collect();
-        filtering::create(&path_str, &req.metadata, &doc_ids)
-            .map_err(|e| ApiError::Internal(format!("Failed to create metadata: {}", e)))?
-    };
+    // Run blocking SQLite operations in a separate thread
+    let metadata = req.metadata.clone();
+    let added = task::spawn_blocking(move || {
+        // Create or update metadata
+        // Compute document IDs starting from current count (for standalone metadata additions)
+        if filtering::exists(&path_str) {
+            // Update existing database - IDs start after current max
+            let current_count = filtering::count(&path_str)
+                .map_err(|e| ApiError::Internal(format!("Failed to get metadata count: {}", e)))?;
+            let doc_ids: Vec<i64> = (current_count..current_count + metadata.len())
+                .map(|i| i as i64)
+                .collect();
+            filtering::update(&path_str, &metadata, &doc_ids)
+                .map_err(|e| ApiError::Internal(format!("Failed to update metadata: {}", e)))
+        } else {
+            // Create new database - IDs start from 0
+            let doc_ids: Vec<i64> = (0..metadata.len() as i64).collect();
+            filtering::create(&path_str, &metadata, &doc_ids)
+                .map_err(|e| ApiError::Internal(format!("Failed to create metadata: {}", e)))
+        }
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))??;
 
     tracing::info!(index = %name, count = added, "Metadata added");
 
@@ -306,13 +369,18 @@ pub async fn get_metadata_count(
         return Err(ApiError::IndexNotFound(name));
     }
 
-    let has_metadata = filtering::exists(&path_str);
-    let count = if has_metadata {
-        filtering::count(&path_str)
-            .map_err(|e| ApiError::Internal(format!("Failed to count metadata: {}", e)))?
-    } else {
-        0
-    };
+    // Run blocking SQLite operations in a separate thread
+    let (has_metadata, count) = task::spawn_blocking(move || {
+        let has_metadata = filtering::exists(&path_str);
+        let count = if has_metadata {
+            filtering::count(&path_str).unwrap_or(0)
+        } else {
+            0
+        };
+        (has_metadata, count)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
 
     Ok(Json(MetadataCountResponse {
         count,

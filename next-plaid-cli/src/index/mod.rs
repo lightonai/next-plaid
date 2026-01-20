@@ -55,8 +55,12 @@ pub struct IndexBuilder {
 
 impl IndexBuilder {
     pub fn new(project_root: &Path, model_path: &Path) -> Result<Self> {
+        Self::with_quantized(project_root, model_path, true)
+    }
+
+    pub fn with_quantized(project_root: &Path, model_path: &Path, quantized: bool) -> Result<Self> {
         let model = Colbert::builder(model_path)
-            .with_quantized(true)
+            .with_quantized(quantized)
             .build()
             .context("Failed to load ColBERT model")?;
 
@@ -993,13 +997,21 @@ pub struct Searcher {
 
 impl Searcher {
     pub fn load(project_root: &Path, model_path: &Path) -> Result<Self> {
+        Self::load_with_quantized(project_root, model_path, true)
+    }
+
+    pub fn load_with_quantized(
+        project_root: &Path,
+        model_path: &Path,
+        quantized: bool,
+    ) -> Result<Self> {
         let index_dir = get_index_dir_for_project(project_root)?;
         let index_path = get_vector_index_path(&index_dir);
         let index_path_str = index_path.to_str().unwrap().to_string();
 
         // Load model
         let model = Colbert::builder(model_path)
-            .with_quantized(true)
+            .with_quantized(quantized)
             .build()
             .context("Failed to load ColBERT model")?;
 
@@ -1015,11 +1027,20 @@ impl Searcher {
 
     /// Load a searcher from a specific index directory (for parent index use)
     pub fn load_from_index_dir(index_dir: &Path, model_path: &Path) -> Result<Self> {
+        Self::load_from_index_dir_with_quantized(index_dir, model_path, true)
+    }
+
+    /// Load a searcher from a specific index directory with quantization option
+    pub fn load_from_index_dir_with_quantized(
+        index_dir: &Path,
+        model_path: &Path,
+        quantized: bool,
+    ) -> Result<Self> {
         let index_path = get_vector_index_path(index_dir);
         let index_path_str = index_path.to_str().unwrap().to_string();
 
         let model = Colbert::builder(model_path)
-            .with_quantized(true)
+            .with_quantized(quantized)
             .build()
             .context("Failed to load ColBERT model")?;
 

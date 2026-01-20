@@ -58,7 +58,6 @@ class BenchmarkConfig:
     nbits: int = 4
     port: int = 8080
     host: str = "127.0.0.1"
-    sequential: bool = False  # Use sequential updates instead of concurrent
     keep_running: bool = False  # Keep container running after benchmark
     compose_file: str = "docker-compose.yml"  # Docker compose file to use
     query_only: bool = False  # Skip indexing, use existing index
@@ -366,77 +365,54 @@ def run_api_benchmark(
 
         start_index = time.perf_counter()
 
-        if config.sequential:
-            print(f"    Adding {total_docs} documents in {num_batches} batches (Sequential)...")
-            indexed = 0
-            for batch_idx in tqdm(range(num_batches), desc="    Indexing"):
-                # Use SDK's add() method with text documents (auto-detects text input)
-                client.add(
+        print(f"    Adding {total_docs} documents in {num_batches} batches (Concurrent)...")
+        print(f"    Sending all {num_batches} update requests...")
+
+        # Lower concurrency for encoding (more CPU intensive)
+        max_workers = min(num_batches, 20)
+
+        def send_batch(batch_idx: int, max_retries: int = 100):
+            # Create a new client for each thread with long timeout for encoding
+            thread_client = NextPlaidClient(base_url, timeout=300.0)
+            try:
+                for attempt in range(max_retries):
+                    try:
+                        return thread_client.add(
+                            index_name,
+                            batches[batch_idx],
+                            metadata=batch_metadata[batch_idx],
+                        )
+                    except NextPlaidConnectionError as e:
+                        # Handle timeout errors with exponential backoff
+                        if e.code == "TIMEOUT_ERROR":
+                            wait_time = min(30, 5 * (2 ** min(attempt, 3)))
+                            print(
+                                f"\n    Batch {batch_idx} timed out (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s..."
+                            )
+                            time.sleep(wait_time)
+                            continue
+                        raise
+                    except NextPlaidError as e:
+                        if "503" in str(e) or "429" in str(e):
+                            time.sleep(5)
+                            continue
+                        raise
+                return thread_client.add(
                     index_name,
                     batches[batch_idx],
                     metadata=batch_metadata[batch_idx],
                 )
-                indexed += len(batches[batch_idx])
-                # Wait for this batch to complete
-                while True:
-                    health = client.health()
-                    for idx_info in health.indices:
-                        if idx_info.name == index_name:
-                            if idx_info.num_documents >= indexed:
-                                break
-                    else:
-                        time.sleep(0.5)
-                        continue
-                    break
-        else:
-            print(f"    Adding {total_docs} documents in {num_batches} batches (Concurrent)...")
-            print(f"    Sending all {num_batches} update requests...")
+            finally:
+                thread_client.close()
 
-            # Lower concurrency for encoding (more CPU intensive)
-            max_workers = min(num_batches, 20)
-
-            def send_batch(batch_idx: int, max_retries: int = 100):
-                # Create a new client for each thread with long timeout for encoding
-                thread_client = NextPlaidClient(base_url, timeout=300.0)
-                try:
-                    for attempt in range(max_retries):
-                        try:
-                            return thread_client.add(
-                                index_name,
-                                batches[batch_idx],
-                                metadata=batch_metadata[batch_idx],
-                            )
-                        except NextPlaidConnectionError as e:
-                            # Handle timeout errors with exponential backoff
-                            if e.code == "TIMEOUT_ERROR":
-                                wait_time = min(30, 5 * (2 ** min(attempt, 3)))
-                                print(
-                                    f"\n    Batch {batch_idx} timed out (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s..."
-                                )
-                                time.sleep(wait_time)
-                                continue
-                            raise
-                        except NextPlaidError as e:
-                            if "503" in str(e) or "429" in str(e):
-                                time.sleep(5)
-                                continue
-                            raise
-                    return thread_client.add(
-                        index_name,
-                        batches[batch_idx],
-                        metadata=batch_metadata[batch_idx],
-                    )
-                finally:
-                    thread_client.close()
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(send_batch, i) for i in range(num_batches)]
-                for future in tqdm(
-                    concurrent.futures.as_completed(futures),
-                    total=len(futures),
-                    desc="    Sending",
-                ):
-                    future.result()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(send_batch, i) for i in range(num_batches)]
+            for future in tqdm(
+                concurrent.futures.as_completed(futures),
+                total=len(futures),
+                desc="    Sending",
+            ):
+                future.result()
 
         # Wait for all async updates to complete
         print(f"    Waiting for all {total_docs} documents to be indexed...")
@@ -537,11 +513,6 @@ def main():
     parser.add_argument("--port", type=int, default=8080, help="API server port")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="API server host")
     parser.add_argument(
-        "--sequential",
-        action="store_true",
-        help="Use sequential updates instead of concurrent",
-    )
-    parser.add_argument(
         "--keep-running",
         action="store_true",
         help="Keep Docker container running after benchmark",
@@ -568,7 +539,6 @@ def main():
         batch_size=args.batch_size,
         port=args.port,
         host=args.host,
-        sequential=args.sequential,
         keep_running=args.keep_running,
         compose_file=args.compose_file,
         query_only=args.query_only,

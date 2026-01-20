@@ -126,6 +126,9 @@ plaid -l "authentication" .
 # --code-only: Skip text/config files (md, txt, yaml, json, toml, etc.)
 plaid --code-only "authentication" .
 
+# -n/--lines: Control context lines (default: 6)
+plaid -n 10 "database connection" .    # Show 10 lines per result
+
 # Combine flags (like grep -rl)
 plaid -r -l --include="*.ts" "fetch API" .
 ```
@@ -181,8 +184,28 @@ plaid -e "(get|set)Value" -E "accessor methods" .
 1. `grep -rl` (or `grep -rlE` with `-E`) finds all files containing the text pattern
 2. Filtering retrieves code unit IDs from those files
 3. Semantic search ranks only those candidates
+4. Exact grep matches are shown at the end with context lines
 
 This is useful when you know a specific term exists in the code but want semantic understanding of the context.
+
+**Context lines (`-n`/`--lines`):**
+
+Control how many lines of code are shown per result:
+
+```bash
+# Default: 6 lines for semantic results, 3+3 for grep matches
+plaid -e "async" "error handling" .
+
+# Custom: 10 lines for semantic, 5+5 for grep
+plaid -e "async" "error handling" -n 10 .
+
+# Minimal: 2 lines for semantic, 1+1 for grep
+plaid -e "async" "error handling" -n 2 .
+```
+
+The `-n` value controls:
+- **Semantic results**: First N lines of each matched function
+- **Grep matches**: N/2 lines before and after each exact match
 
 ### Selective Indexing
 
@@ -443,7 +466,7 @@ Common files that may be skipped:
 
 ## Model
 
-By default, uses [`lightonai/GTE-ModernColBERT-v1-onnx`](https://huggingface.co/lightonai/GTE-ModernColBERT-v1-onnx) (INT8 quantized). The model is automatically downloaded on first use.
+By default, uses [`lightonai/GTE-ModernColBERT-v1-onnx`](https://huggingface.co/lightonai/GTE-ModernColBERT-v1-onnx) with INT8 quantization for fast inference. The model is automatically downloaded on first use. Use `plaid config --fp32` to switch to full-precision mode (see [Configuration](#configuration)).
 
 ### Using a Different Model
 
@@ -530,15 +553,55 @@ cargo install --path . --features coreml
 
 ## Configuration
 
+### Config Command
+
+View and modify configuration settings:
+
+```bash
+# Show current configuration
+plaid config
+
+# Set default number of results
+plaid config --k 20
+
+# Set default context lines
+plaid config --n 10
+
+# Use full-precision (FP32) model instead of INT8 quantized
+plaid config --fp32
+
+# Switch back to INT8 quantized model (default, faster)
+plaid config --int8
+
+# Reset to defaults (use 0)
+plaid config --k 0 --n 0
+```
+
+### Model Precision
+
+By default, plaid uses INT8 quantized models for faster inference with minimal quality loss. You can switch to full-precision (FP32) if needed:
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| **INT8** (default) | `--int8` | ~2x faster inference, smaller model size |
+| **FP32** | `--fp32` | Full precision, slightly better accuracy |
+
+Note: When switching precision, clear existing indexes with `plaid clear --all` since embeddings are generated with different model weights.
+
 ### Config File
 
-User preferences are stored in `~/.config/plaid/config.json`:
+User preferences are stored in `~/.config/plaid/config.json`. Only non-default values are saved:
 
 ```json
 {
-  "default_model": "lightonai/GTE-ModernColBERT-v1-onnx"
+  "default_model": "lightonai/GTE-ModernColBERT-v1-onnx",
+  "fp32": true,
+  "default_k": 20,
+  "default_n": 10
 }
 ```
+
+**Defaults** (when not specified): `k=15`, `n=6`, `fp32=false` (INT8)
 
 ### Environment Variables
 

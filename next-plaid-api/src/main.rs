@@ -148,6 +148,29 @@ use state::{ApiConfig, AppState};
 )]
 struct ApiDoc;
 
+/// Cached sysinfo System for memory usage queries.
+/// Reusing the System object is much faster than creating a new one each time.
+static SYSINFO_SYSTEM: std::sync::OnceLock<std::sync::Mutex<sysinfo::System>> =
+    std::sync::OnceLock::new();
+
+/// Get current process memory usage using cached System object.
+fn get_memory_usage_bytes() -> u64 {
+    let pid = match sysinfo::get_current_pid() {
+        Ok(pid) => pid,
+        Err(_) => return 0,
+    };
+
+    let system_mutex = SYSINFO_SYSTEM.get_or_init(|| std::sync::Mutex::new(sysinfo::System::new()));
+
+    let mut system = match system_mutex.lock() {
+        Ok(guard) => guard,
+        Err(_) => return 0, // Mutex poisoned
+    };
+
+    system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+    system.process(pid).map(|p| p.memory()).unwrap_or(0)
+}
+
 /// Health check and root endpoint.
 ///
 /// Returns service status, version, index directory path, and a list of all available
@@ -161,22 +184,15 @@ struct ApiDoc;
     )
 )]
 async fn health(state: axum::extract::State<Arc<AppState>>) -> Json<HealthResponse> {
-    // Ensure index directory exists
+    // Ensure index directory exists (async-safe: only check, don't block on create)
     if !state.config.index_dir.exists() {
-        std::fs::create_dir_all(&state.config.index_dir).ok();
+        // Spawn blocking task for directory creation to avoid blocking async runtime
+        let dir = state.config.index_dir.clone();
+        tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir).ok());
     }
 
-    // Get current process memory usage
-    let memory_usage_bytes = {
-        let pid = sysinfo::get_current_pid().ok();
-        let mut system = sysinfo::System::new();
-        if let Some(pid) = pid {
-            system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
-            system.process(pid).map(|p| p.memory()).unwrap_or(0)
-        } else {
-            0
-        }
-    };
+    // Get current process memory usage using cached System
+    let memory_usage_bytes = get_memory_usage_bytes();
 
     // Get model info from cached data (no lock required)
     #[cfg(feature = "model")]
@@ -261,10 +277,24 @@ async fn shutdown_signal() {
 
 /// Build the API router.
 fn build_router(state: Arc<AppState>) -> Router {
-    // Configure rate limiting: 50 requests/second with burst of 100
+    // Read rate limit configuration from environment variables
+    let rate_limit_per_second: u64 = std::env::var("RATE_LIMIT_PER_SECOND")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50);
+    let rate_limit_burst_size: u32 = std::env::var("RATE_LIMIT_BURST_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    let concurrency_limit: usize = std::env::var("CONCURRENCY_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+
+    // Configure rate limiting
     let governor_conf = GovernorConfigBuilder::default()
-        .per_second(50)
-        .burst_size(100)
+        .per_second(rate_limit_per_second)
+        .burst_size(rate_limit_burst_size)
         .finish()
         .expect("Failed to build rate limiter config");
 
@@ -319,7 +349,7 @@ fn build_router(state: Arc<AppState>) -> Router {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        .layer(ConcurrencyLimitLayer::new(100))
+        .layer(ConcurrencyLimitLayer::new(concurrency_limit))
         .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
         .with_state(state.clone());
 
@@ -337,7 +367,7 @@ fn build_router(state: Arc<AppState>) -> Router {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        .layer(ConcurrencyLimitLayer::new(100))
+        .layer(ConcurrencyLimitLayer::new(concurrency_limit))
         .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
         .with_state(state.clone());
 
@@ -394,10 +424,10 @@ fn build_router(state: Arc<AppState>) -> Router {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        // Rate limiting: 50 req/sec sustained, burst up to 100
+        // Rate limiting (configurable via RATE_LIMIT_PER_SECOND and RATE_LIMIT_BURST_SIZE)
         .layer(governor_layer)
-        // Global concurrency limit: max 100 in-flight requests
-        .layer(ConcurrencyLimitLayer::new(100))
+        // Global concurrency limit (configurable via CONCURRENCY_LIMIT)
+        .layer(ConcurrencyLimitLayer::new(concurrency_limit))
         // Allow large payloads for embedding uploads (100 MB)
         .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
         .with_state(state);
@@ -737,14 +767,55 @@ Examples:
 
     // Start server
     let addr: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
+    // Read rate limit configuration for logging
+    let rate_limit_per_second: u64 = std::env::var("RATE_LIMIT_PER_SECOND")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50);
+    let rate_limit_burst_size: u32 = std::env::var("RATE_LIMIT_BURST_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    let concurrency_limit: usize = std::env::var("CONCURRENCY_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    let max_queued_tasks: usize = std::env::var("MAX_QUEUED_TASKS_PER_INDEX")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    let max_batch_documents: usize = std::env::var("MAX_BATCH_DOCUMENTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    let max_batch_texts: usize = std::env::var("MAX_BATCH_TEXTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64);
+
     tracing::info!("Listening on http://{}", addr);
     tracing::info!("Swagger UI available at http://{}/swagger-ui", addr);
     tracing::info!(
-        "Rate limiting: 50 req/sec sustained, 100 burst (health, index info, update, encode exempt)"
+        "Rate limiting: {} req/sec sustained, {} burst (health, index info, update, encode exempt)",
+        rate_limit_per_second,
+        rate_limit_burst_size
     );
-    tracing::info!("Concurrency limit: 100 in-flight requests");
-    tracing::info!("Update queue limit: 10 pending tasks per index");
-    tracing::info!("Encode batching: max 64 texts, 10ms timeout");
+    tracing::info!(
+        "Concurrency limit: {} in-flight requests",
+        concurrency_limit
+    );
+    tracing::info!(
+        "Update queue limit: {} pending tasks per index",
+        max_queued_tasks
+    );
+    tracing::info!(
+        "Document batching: max {} documents per batch",
+        max_batch_documents
+    );
+    tracing::info!(
+        "Encode batching: max {} texts, 10ms timeout",
+        max_batch_texts
+    );
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(

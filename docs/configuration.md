@@ -239,16 +239,54 @@ OPTIONS:
 
 ---
 
-## Rate Limiting
+## Rate Limiting & Concurrency
 
-The API implements token bucket rate limiting:
+The API implements configurable rate limiting and concurrency controls via environment variables.
 
-| Setting        | Value              |
-| -------------- | ------------------ |
-| Sustained rate | 50 requests/second |
-| Burst limit    | 100 requests       |
+### Rate Limiting
+
+| Variable                | Default | Description                              |
+| ----------------------- | ------- | ---------------------------------------- |
+| `RATE_LIMIT_PER_SECOND` | `50`    | Max requests per second (sustained rate) |
+| `RATE_LIMIT_BURST_SIZE` | `100`   | Burst size for rate limiting             |
 
 When rate limited, the API returns `429 Too Many Requests`.
+
+### Concurrency Controls
+
+| Variable                     | Default | Description                                      |
+| ---------------------------- | ------- | ------------------------------------------------ |
+| `CONCURRENCY_LIMIT`          | `100`   | Max concurrent in-flight requests                |
+| `MAX_QUEUED_TASKS_PER_INDEX` | `10`    | Max queued updates/deletes per index (semaphore) |
+
+When concurrency limits are exceeded, the API returns `503 Service Unavailable`.
+
+### Document Batching
+
+| Variable              | Default | Description                              |
+| --------------------- | ------- | ---------------------------------------- |
+| `MAX_BATCH_DOCUMENTS` | `300`   | Max documents to batch before processing |
+| `BATCH_CHANNEL_SIZE`  | `100`   | Buffer size for document batch queue     |
+
+### Encode Batching
+
+| Variable                    | Default | Description                        |
+| --------------------------- | ------- | ---------------------------------- |
+| `MAX_BATCH_TEXTS`           | `64`    | Max texts to batch for encoding    |
+| `ENCODE_BATCH_CHANNEL_SIZE` | `256`   | Buffer size for encode batch queue |
+
+### Example Configuration
+
+```bash
+docker run -d \
+  -e RATE_LIMIT_PER_SECOND=100 \
+  -e RATE_LIMIT_BURST_SIZE=200 \
+  -e CONCURRENCY_LIMIT=200 \
+  -e MAX_QUEUED_TASKS_PER_INDEX=20 \
+  -e MAX_BATCH_DOCUMENTS=500 \
+  -p 8080:8080 \
+  ghcr.io/lightonai/next-plaid-api:latest
+```
 
 ---
 

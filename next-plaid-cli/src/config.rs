@@ -26,6 +26,10 @@ pub struct Config {
     /// Default number of context lines (-n)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_n: Option<usize>,
+
+    /// Use full-precision (FP32) model instead of INT8 quantized
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fp32: Option<bool>,
 }
 
 impl Config {
@@ -96,6 +100,21 @@ impl Config {
     /// Clear the default n
     pub fn clear_default_n(&mut self) {
         self.default_n = None;
+    }
+
+    /// Check if FP32 (non-quantized) model should be used
+    pub fn use_fp32(&self) -> bool {
+        self.fp32.unwrap_or(false)
+    }
+
+    /// Set whether to use FP32 (non-quantized) model
+    pub fn set_fp32(&mut self, fp32: bool) {
+        self.fp32 = Some(fp32);
+    }
+
+    /// Clear the FP32 setting (revert to default INT8)
+    pub fn clear_fp32(&mut self) {
+        self.fp32 = None;
     }
 }
 

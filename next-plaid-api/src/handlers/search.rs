@@ -152,6 +152,12 @@ pub async fn search(
     let path_str = state.index_path(&name).to_string_lossy().to_string();
 
     let start = std::time::Instant::now();
+    tracing::info!(
+        index = %name,
+        queries = queries.len(),
+        top_k = top_k,
+        "Starting search"
+    );
 
     // Perform search and collect raw results
     let index = &*idx;

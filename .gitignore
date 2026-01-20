@@ -31,6 +31,7 @@ env/
 *.json
 # Exception: Claude Code plugin files must be tracked
 !next-plaid-cli/src/install/*.json
+!.claude-plugin/marketplace.json
 next-plaid-api/indices/
 *.npz
 

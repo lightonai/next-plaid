@@ -31,20 +31,47 @@ use crate::state::AppState;
 
 // --- Concurrency Control ---
 
-/// Maximum number of queued background tasks per index.
+/// Get the maximum number of queued background tasks per index.
+/// Configurable via MAX_QUEUED_TASKS_PER_INDEX env var (default: 10).
 /// When exceeded, new requests get 503 Service Unavailable.
-const MAX_QUEUED_TASKS_PER_INDEX: usize = 10;
+fn max_queued_tasks_per_index() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("MAX_QUEUED_TASKS_PER_INDEX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10)
+    })
+}
 
 // --- Batch Collection ---
 
-/// Maximum number of documents to batch together before processing.
-const MAX_BATCH_DOCUMENTS: usize = 300;
+/// Get the maximum number of documents to batch together before processing.
+/// Configurable via MAX_BATCH_DOCUMENTS env var (default: 300).
+fn max_batch_documents() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("MAX_BATCH_DOCUMENTS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300)
+    })
+}
 
 /// Maximum time to wait for more documents before processing a batch.
 const BATCH_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Channel buffer size for batch queue.
-const BATCH_CHANNEL_SIZE: usize = 100;
+/// Get the channel buffer size for batch queue.
+/// Configurable via BATCH_CHANNEL_SIZE env var (default: 100).
+fn batch_channel_size() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("BATCH_CHANNEL_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100)
+    })
+}
 
 /// A single item in the batch queue, representing one update request.
 struct BatchItem {
@@ -86,7 +113,7 @@ fn get_index_semaphore(name: &str) -> Arc<Semaphore> {
         INDEX_SEMAPHORES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     let mut map = sems.lock().unwrap();
     map.entry(name.to_string())
-        .or_insert_with(|| Arc::new(Semaphore::new(MAX_QUEUED_TASKS_PER_INDEX)))
+        .or_insert_with(|| Arc::new(Semaphore::new(max_queued_tasks_per_index())))
         .clone()
 }
 
@@ -102,7 +129,7 @@ fn get_or_create_batch_queue(name: &str, state: Arc<AppState>) -> mpsc::Sender<B
     }
 
     // Create new channel and spawn worker
-    let (sender, receiver) = mpsc::channel(BATCH_CHANNEL_SIZE);
+    let (sender, receiver) = mpsc::channel(batch_channel_size());
     let queue = BatchQueue {
         sender: sender.clone(),
     };
@@ -144,7 +171,7 @@ async fn batch_worker(
         let deadline = Instant::now() + BATCH_TIMEOUT;
 
         // Collect more items until timeout or max batch size
-        while doc_count < MAX_BATCH_DOCUMENTS {
+        while doc_count < max_batch_documents() {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
@@ -224,9 +251,11 @@ async fn process_batch(
         let update_config = UpdateConfig::default();
 
         // Run Update
+        tracing::info!(index = %name_inner, num_documents = embeddings.len(), "Starting index update");
         let (mut index, doc_ids) =
             MmapIndex::update_or_create(&embeddings, &path_str, &index_config, &update_config)
                 .map_err(|e| format!("Index update failed: {}", e))?;
+        tracing::info!(index = %name_inner, num_documents = embeddings.len(), "Finished index update");
 
         // Handle Metadata
         if filtering::exists(&path_str) {
@@ -397,12 +426,8 @@ pub async fn create_index(
     std::fs::create_dir_all(&index_path)
         .map_err(|e| ApiError::Internal(format!("Failed to create index directory: {}", e)))?;
 
-    // Store config.json
-    let config_path = index_path.join("config.json");
-    let config_file = std::fs::File::create(&config_path)
-        .map_err(|e| ApiError::Internal(format!("Failed to create config file: {}", e)))?;
-    serde_json::to_writer_pretty(config_file, &stored_config)
-        .map_err(|e| ApiError::Internal(format!("Failed to write config: {}", e)))?;
+    // Store config.json and cache it
+    state.set_index_config(&req.name, stored_config.clone())?;
 
     tracing::info!(index = %req.name, nbits = stored_config.nbits, "Index declared");
 
@@ -430,35 +455,44 @@ pub async fn get_index_info(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> ApiResult<Json<IndexInfoResponse>> {
-    let index = state.get_index(&name)?;
-    let idx = index.read();
-
-    let path_str = idx.path.clone();
-    let has_metadata = filtering::exists(&path_str);
-    let metadata_count = if has_metadata {
-        filtering::count(&path_str).ok()
-    } else {
-        None
+    // Scope the read guard to ensure it's dropped before any await
+    let (path_str, num_documents, num_embeddings, num_partitions, avg_doclen, dimension) = {
+        let index = state.get_index(&name)?;
+        let idx = index.read();
+        (
+            idx.path.clone(),
+            idx.num_documents(),
+            idx.num_embeddings(),
+            idx.num_partitions(),
+            idx.avg_doclen(),
+            idx.embedding_dim(),
+        )
     };
 
-    // Load config to get max_documents
-    let config_path = state.index_path(&name).join("config.json");
-    let max_documents = if config_path.exists() {
-        std::fs::File::open(&config_path)
-            .ok()
-            .and_then(|f| serde_json::from_reader::<_, IndexConfigStored>(f).ok())
-            .and_then(|c| c.max_documents)
-    } else {
-        None
-    };
+    // Get max_documents from cached config (fast, no disk I/O if cached)
+    let max_documents = state.get_index_config(&name).and_then(|c| c.max_documents);
+
+    // Run blocking SQLite operations in a separate thread
+    let (has_metadata, metadata_count) = task::spawn_blocking(move || {
+        let has_metadata = filtering::exists(&path_str);
+        let metadata_count = if has_metadata {
+            filtering::count(&path_str).ok()
+        } else {
+            None
+        };
+
+        (has_metadata, metadata_count)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
 
     Ok(Json(IndexInfoResponse {
         name,
-        num_documents: idx.num_documents(),
-        num_embeddings: idx.num_embeddings(),
-        num_partitions: idx.num_partitions(),
-        avg_doclen: idx.avg_doclen(),
-        dimension: idx.embedding_dim(),
+        num_documents,
+        num_embeddings,
+        num_partitions,
+        avg_doclen,
+        dimension,
         has_metadata,
         metadata_count,
         max_documents,
@@ -475,7 +509,11 @@ pub async fn get_index_info(
     )
 )]
 pub async fn list_indices(State(state): State<Arc<AppState>>) -> Json<Vec<String>> {
-    Json(state.list_all())
+    // Run blocking filesystem iteration in a separate thread
+    let indices = task::spawn_blocking(move || state.list_all())
+        .await
+        .unwrap_or_default();
+    Json(indices)
 }
 
 /// Add documents to an existing index.
@@ -504,7 +542,7 @@ pub async fn add_documents(
         return Err(ApiError::BadRequest("No documents provided".to_string()));
     }
 
-    // Validate metadata length (metadata is required)
+    // Validate metadata length (metadata is required) - cheap check first
     if req.metadata.len() != req.documents.len() {
         return Err(ApiError::BadRequest(format!(
             "Metadata length ({}) must match documents length ({})",
@@ -513,19 +551,35 @@ pub async fn add_documents(
         )));
     }
 
-    // Perform CPU-intensive validation/conversion synchronously to fail fast
+    // Check index existence BEFORE expensive conversion - fail fast
+    let index_arc = state.get_index(&name)?;
+    let expected_dim = {
+        let idx = index_arc.read();
+        idx.embedding_dim()
+    };
+
+    // Check first document's dimension before converting all (fail fast on dimension mismatch)
+    if let Some(first_doc) = req.documents.first() {
+        if first_doc.embeddings.is_empty() {
+            return Err(ApiError::BadRequest("Empty embeddings".to_string()));
+        }
+        let first_dim = first_doc.embeddings[0].len();
+        if first_dim != expected_dim {
+            return Err(ApiError::DimensionMismatch {
+                expected: expected_dim,
+                actual: first_dim,
+            });
+        }
+    }
+
+    // Now perform CPU-intensive validation/conversion (index exists, dimension likely correct)
     let embeddings: Vec<Array2<f32>> = req
         .documents
         .iter()
         .map(to_ndarray)
         .collect::<ApiResult<Vec<_>>>()?;
 
-    // Check index existence and dimensions synchronously
-    let index_arc = state.get_index(&name)?;
-    let expected_dim = {
-        let idx = index_arc.read();
-        idx.embedding_dim()
-    };
+    // Final dimension check for all embeddings (in case documents have mixed dimensions)
     for emb in embeddings.iter() {
         if emb.ncols() != expected_dim {
             return Err(ApiError::DimensionMismatch {
@@ -546,7 +600,8 @@ pub async fn add_documents(
     let permit = semaphore.clone().try_acquire_owned().map_err(|_| {
         ApiError::ServiceUnavailable(format!(
             "Update queue full for index '{}'. Max {} pending updates. Retry later.",
-            name, MAX_QUEUED_TASKS_PER_INDEX
+            name,
+            max_queued_tasks_per_index()
         ))
     })?;
 
@@ -575,7 +630,9 @@ pub async fn add_documents(
 
             // Update with metadata (metadata is required)
             let update_config = UpdateConfig::default();
+            tracing::info!(index = %name_inner, num_documents = embeddings.len(), "Starting index update");
             index.update_with_metadata(&embeddings, &update_config, Some(&metadata))?;
+            tracing::info!(index = %name_inner, num_documents = embeddings.len(), "Finished index update");
 
             // Eviction: Load config to check max_documents
             let config_path = state_clone.index_path(&name_inner).join("config.json");
@@ -682,7 +739,8 @@ pub async fn delete_documents(
     let permit = semaphore.clone().try_acquire_owned().map_err(|_| {
         ApiError::ServiceUnavailable(format!(
             "Delete queue full for index '{}'. Max {} pending deletes. Retry later.",
-            name, MAX_QUEUED_TASKS_PER_INDEX
+            name,
+            max_queued_tasks_per_index()
         ))
     })?;
 
@@ -781,8 +839,9 @@ pub async fn delete_index(
     let lock = get_index_lock(&name);
     let _guard = lock.lock().await;
 
-    // Unload from memory
+    // Unload from memory and invalidate caches
     state.unload_index(&name);
+    state.invalidate_config_cache(&name);
 
     // Delete from disk
     let path = state.index_path(&name);
@@ -874,7 +933,8 @@ pub async fn update_index(
     sender.try_send(batch_item).map_err(|e| match e {
         mpsc::error::TrySendError::Full(_) => ApiError::ServiceUnavailable(format!(
             "Update queue full for index '{}'. Max {} pending items. Retry later.",
-            name, BATCH_CHANNEL_SIZE
+            name,
+            batch_channel_size()
         )),
         mpsc::error::TrySendError::Closed(_) => {
             ApiError::Internal(format!("Batch worker for index '{}' is not running", name))
@@ -917,27 +977,16 @@ pub async fn update_index_config(
     let lock = get_index_lock(&name);
     let _guard = lock.lock().await;
 
-    let index_path = state.index_path(&name);
-    let config_path = index_path.join("config.json");
-
-    if !config_path.exists() {
-        return Err(ApiError::IndexNotFound(name));
-    }
-
-    // Load existing config
-    let config_file = std::fs::File::open(&config_path)
-        .map_err(|e| ApiError::Internal(format!("Failed to open config: {}", e)))?;
-    let mut stored_config: IndexConfigStored = serde_json::from_reader(config_file)
-        .map_err(|e| ApiError::Internal(format!("Failed to parse config: {}", e)))?;
+    // Load existing config from cache (or disk if not cached)
+    let mut stored_config = state
+        .get_index_config(&name)
+        .ok_or_else(|| ApiError::IndexNotFound(name.clone()))?;
 
     // Update max_documents
     stored_config.max_documents = req.max_documents;
 
-    // Save updated config
-    let config_file = std::fs::File::create(&config_path)
-        .map_err(|e| ApiError::Internal(format!("Failed to create config file: {}", e)))?;
-    serde_json::to_writer_pretty(config_file, &stored_config)
-        .map_err(|e| ApiError::Internal(format!("Failed to write config: {}", e)))?;
+    // Save updated config (updates both disk and cache)
+    state.set_index_config(&name, stored_config.clone())?;
 
     let message = match req.max_documents {
         Some(max) => {
@@ -1039,7 +1088,8 @@ pub async fn update_index_with_encoding(
     sender.try_send(batch_item).map_err(|e| match e {
         mpsc::error::TrySendError::Full(_) => ApiError::ServiceUnavailable(format!(
             "Update queue full for index '{}'. Max {} pending items. Retry later.",
-            name, BATCH_CHANNEL_SIZE
+            name,
+            batch_channel_size()
         )),
         mpsc::error::TrySendError::Closed(_) => {
             ApiError::Internal(format!("Batch worker for index '{}' is not running", name))

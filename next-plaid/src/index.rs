@@ -260,9 +260,6 @@ pub fn create_index_files(
     let mut all_codes: Vec<usize> = Vec::with_capacity(total_embeddings);
     let mut doc_lengths: Vec<i64> = Vec::with_capacity(num_documents);
 
-    let progress = indicatif::ProgressBar::new(n_chunks as u64);
-    progress.set_message("Creating index...");
-
     for chunk_idx in 0..n_chunks {
         let start = chunk_idx * config.batch_size;
         let end = (start + config.batch_size).min(num_documents);
@@ -334,10 +331,7 @@ pub fn create_index_files(
         // Save chunk residuals
         let residuals_path = index_dir.join(format!("{}.residuals.npy", chunk_idx));
         batch_packed.write_npy(File::create(&residuals_path)?)?;
-
-        progress.inc(1);
     }
-    progress.finish();
 
     // Update chunk metadata with global offsets
     let mut current_offset = 0usize;

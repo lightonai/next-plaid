@@ -247,6 +247,12 @@ EXAMPLES:
     # Set default context lines
     plaid config --n 10
 
+    # Use full-precision (FP32) model instead of INT8 quantized
+    plaid config --fp32
+
+    # Switch back to INT8 quantized model (default)
+    plaid config --int8
+
     # Set both at once
     plaid config --k 25 --n 8
 
@@ -256,7 +262,8 @@ EXAMPLES:
 NOTES:
     • Values are stored in ~/.config/plaid/config.json
     • Use 0 to reset a value to its default
-    • These values override the CLI defaults when not explicitly specified";
+    • These values override the CLI defaults when not explicitly specified
+    • INT8 quantized is the default (faster inference, smaller model)";
 
 #[derive(Subcommand)]
 enum Commands {
@@ -356,6 +363,14 @@ enum Commands {
         /// Set default context lines (use 0 to reset to default)
         #[arg(long = "n")]
         default_n: Option<usize>,
+
+        /// Use full-precision (FP32) model instead of INT8 quantized
+        #[arg(long, conflicts_with = "int8")]
+        fp32: bool,
+
+        /// Use INT8 quantized model (default, faster inference)
+        #[arg(long, conflicts_with = "fp32")]
+        int8: bool,
     },
 }
 
@@ -441,7 +456,9 @@ fn main() -> Result<()> {
         Some(Commands::Config {
             default_k,
             default_n,
-        }) => cmd_config(default_k, default_n),
+            fp32,
+            int8,
+        }) => cmd_config(default_k, default_n, fp32, int8),
         None => {
             // Default: run search if query is provided
             if let Some(query) = cli.query {
@@ -885,6 +902,9 @@ fn cmd_search(
     // Resolve model: CLI > config > default
     let model = resolve_model(cli_model);
 
+    // Resolve quantized setting from config (default: true = use INT8)
+    let quantized = Config::load().map(|c| !c.use_fp32()).unwrap_or(true);
+
     // Check if index already exists (suppress model output if so)
     let has_existing_index = index_exists(&path) || find_parent_index(&path)?.is_some();
 
@@ -948,7 +968,7 @@ fn cmd_search(
         // Get files matching include patterns
         let include_matched: Option<Vec<PathBuf>> = if !include_patterns.is_empty() && !no_index {
             // We need to scan files to know which ones match the pattern
-            let builder = IndexBuilder::new(&effective_root, &model_path)?;
+            let builder = IndexBuilder::with_quantized(&effective_root, &model_path, quantized)?;
             Some(builder.scan_files_matching_patterns(include_patterns)?)
         } else {
             None
@@ -988,7 +1008,7 @@ fn cmd_search(
 
     // Auto-index: selective if filters present, full otherwise
     if !no_index {
-        let builder = IndexBuilder::new(&effective_root, &model_path)?;
+        let builder = IndexBuilder::with_quantized(&effective_root, &model_path, quantized)?;
 
         if let Some(ref files) = filtered_files {
             // Selective indexing: only index files that match the filters
@@ -1025,8 +1045,10 @@ fn cmd_search(
 
     // Load searcher (from parent index if applicable)
     let searcher = match &parent_info {
-        Some(info) => Searcher::load_from_index_dir(&info.index_dir, &model_path)?,
-        None => Searcher::load(&effective_root, &model_path)?,
+        Some(info) => {
+            Searcher::load_from_index_dir_with_quantized(&info.index_dir, &model_path, quantized)?
+        }
+        None => Searcher::load_with_quantized(&effective_root, &model_path, quantized)?,
     };
 
     // Build subset combining subdirectory filter AND user filters
@@ -1474,34 +1496,47 @@ fn cmd_set_model(model: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_config(default_k: Option<usize>, default_n: Option<usize>) -> Result<()> {
+fn cmd_config(
+    default_k: Option<usize>,
+    default_n: Option<usize>,
+    fp32: bool,
+    int8: bool,
+) -> Result<()> {
     let mut config = Config::load()?;
 
     // If no options provided, show current config
-    if default_k.is_none() && default_n.is_none() {
+    if default_k.is_none() && default_n.is_none() && !fp32 && !int8 {
         println!("Current configuration:");
         println!();
 
         // Model
         match config.get_default_model() {
-            Some(model) => println!("  model: {}", model),
-            None => println!("  model: {} (default)", DEFAULT_MODEL),
+            Some(model) => println!("  model:     {}", model),
+            None => println!("  model:     {} (default)", DEFAULT_MODEL),
+        }
+
+        // Precision
+        if config.use_fp32() {
+            println!("  precision: fp32");
+        } else {
+            println!("  precision: int8 (default)");
         }
 
         // k
         match config.get_default_k() {
-            Some(k) => println!("  k:     {}", k),
-            None => println!("  k:     15 (default)"),
+            Some(k) => println!("  k:         {}", k),
+            None => println!("  k:         15 (default)"),
         }
 
         // n
         match config.get_default_n() {
-            Some(n) => println!("  n:     {}", n),
-            None => println!("  n:     6 (default)"),
+            Some(n) => println!("  n:         {}", n),
+            None => println!("  n:         6 (default)"),
         }
 
         println!();
         println!("Use --k or --n to set values. Use 0 to reset to default.");
+        println!("Use --fp32 or --int8 to change model precision.");
         return Ok(());
     }
 
@@ -1528,6 +1563,17 @@ fn cmd_config(default_k: Option<usize>, default_n: Option<usize>) -> Result<()> 
             config.set_default_n(n);
             println!("✅ Set default n to {}", n);
         }
+        changed = true;
+    }
+
+    // Set fp32 or int8
+    if fp32 {
+        config.set_fp32(true);
+        println!("✅ Set model precision to FP32 (full-precision)");
+        changed = true;
+    } else if int8 {
+        config.clear_fp32();
+        println!("✅ Set model precision to INT8 (quantized, default)");
         changed = true;
     }
 

@@ -591,9 +591,6 @@ pub fn update_index(
     let mut new_doclens_accumulated: Vec<i64> = Vec::new();
     let mut all_residual_norms: Vec<f32> = Vec::new();
 
-    let progress = indicatif::ProgressBar::new(n_new_chunks as u64);
-    progress.set_message("Updating index...");
-
     let packed_dim = embedding_dim * nbits / 8;
 
     for i in 0..n_new_chunks {
@@ -728,10 +725,7 @@ pub fn update_index(
 
         let meta_path = index_dir.join(format!("{}.metadata.json", global_chunk_idx));
         serde_json::to_writer_pretty(BufWriter::new(File::create(&meta_path)?), &chk_meta)?;
-
-        progress.inc(1);
     }
-    progress.finish();
 
     // Update cluster threshold if requested
     if update_threshold && !all_residual_norms.is_empty() {

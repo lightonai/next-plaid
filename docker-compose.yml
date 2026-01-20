@@ -23,6 +23,16 @@
 #   --document-length <N>  Max document length in tokens (default: 300)
 #   --cuda                 Use CUDA (for GPU builds)
 #
+# Rate Limiting & Concurrency (via environment variables):
+#   RATE_LIMIT_PER_SECOND       Max requests per second (default: 50)
+#   RATE_LIMIT_BURST_SIZE       Burst size for rate limiting (default: 100)
+#   CONCURRENCY_LIMIT           Max concurrent in-flight requests (default: 100)
+#   MAX_QUEUED_TASKS_PER_INDEX  Max queued updates/deletes per index (default: 10)
+#   MAX_BATCH_DOCUMENTS         Max documents to batch before processing (default: 300)
+#   BATCH_CHANNEL_SIZE          Buffer size for document batch queue (default: 100)
+#   MAX_BATCH_TEXTS             Max texts to batch for encoding (default: 64)
+#   ENCODE_BATCH_CHANNEL_SIZE   Buffer size for encode batch queue (default: 256)
+#
 # CPU Defaults (optimized for throughput):
 #   --model lightonai/GTE-ModernColBERT-v1-onnx --parallel 8 --batch-size 4
 #
@@ -59,6 +69,17 @@ services:
       - ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}:/models
     environment:
       - RUST_LOG=info
+      # Rate limiting configuration
+      - RATE_LIMIT_PER_SECOND=${RATE_LIMIT_PER_SECOND:-50}
+      - RATE_LIMIT_BURST_SIZE=${RATE_LIMIT_BURST_SIZE:-100}
+      - CONCURRENCY_LIMIT=${CONCURRENCY_LIMIT:-100}
+      # Document processing configuration
+      - MAX_QUEUED_TASKS_PER_INDEX=${MAX_QUEUED_TASKS_PER_INDEX:-10}
+      - MAX_BATCH_DOCUMENTS=${MAX_BATCH_DOCUMENTS:-300}
+      - BATCH_CHANNEL_SIZE=${BATCH_CHANNEL_SIZE:-100}
+      # Encode batching configuration
+      - MAX_BATCH_TEXTS=${MAX_BATCH_TEXTS:-64}
+      - ENCODE_BATCH_CHANNEL_SIZE=${ENCODE_BATCH_CHANNEL_SIZE:-256}
     # CPU defaults: 8 parallel sessions, batch size 4, query_length 48, document_length 300
     command:
       - --host
@@ -69,10 +90,11 @@ services:
       - /data/indices
       - --model
       - lightonai/GTE-ModernColBERT-v1-onnx
+      - --int8
       - --parallel
       - "4"
       - --batch-size
-      - "12"
+      - "32"
       - --query-length
       - "48"
       - --document-length

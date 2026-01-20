@@ -27,7 +27,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 ndarray-npy = "0.9.1"
 fastkmeans-rs = "0.1.4"
-indicatif = "0.18.3"
 memmap2 = "0.9"
 half = "2.4"
 byteorder = "1.5"

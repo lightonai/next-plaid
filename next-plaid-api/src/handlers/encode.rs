@@ -25,19 +25,37 @@ use crate::state::AppState;
 
 // --- Batch Configuration ---
 
-/// Maximum number of texts to batch together before processing.
+/// Get the maximum number of texts to batch together before processing.
+/// Configurable via MAX_BATCH_TEXTS env var (default: 64).
 /// Aligned with typical model batch size for optimal GPU utilization.
 #[cfg(feature = "model")]
-const MAX_BATCH_TEXTS: usize = 64;
+fn max_batch_texts() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("MAX_BATCH_TEXTS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(64)
+    })
+}
 
 /// Maximum time to wait for more requests before processing a batch.
 /// Lower = less latency for single requests, higher = better batching efficiency.
 #[cfg(feature = "model")]
 const BATCH_TIMEOUT: Duration = Duration::from_millis(10);
 
-/// Channel buffer size for batch queue.
+/// Get the channel buffer size for encode batch queue.
+/// Configurable via ENCODE_BATCH_CHANNEL_SIZE env var (default: 256).
 #[cfg(feature = "model")]
-const BATCH_CHANNEL_SIZE: usize = 256;
+fn encode_batch_channel_size() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("ENCODE_BATCH_CHANNEL_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(256)
+    })
+}
 
 // --- Batch Types ---
 
@@ -82,7 +100,7 @@ fn get_or_create_encode_queue(state: Arc<AppState>) -> mpsc::Sender<EncodeBatchI
     }
 
     // Create new channel and spawn worker
-    let (sender, receiver) = mpsc::channel(BATCH_CHANNEL_SIZE);
+    let (sender, receiver) = mpsc::channel(encode_batch_channel_size());
     let queue = EncodeBatchQueue {
         sender: sender.clone(),
     };
@@ -97,7 +115,7 @@ fn get_or_create_encode_queue(state: Arc<AppState>) -> mpsc::Sender<EncodeBatchI
 /// Background worker that collects encode requests and processes them in batches.
 ///
 /// The worker waits for items on the channel and batches them until either:
-/// - The total text count reaches MAX_BATCH_TEXTS, or
+/// - The total text count reaches max_batch_texts() (configurable via MAX_BATCH_TEXTS env var), or
 /// - BATCH_TIMEOUT has elapsed since the first item arrived
 ///
 /// Items are grouped by input_type (query vs document) for correct encoding.
@@ -121,7 +139,7 @@ async fn encode_batch_worker(mut receiver: mpsc::Receiver<EncodeBatchItem>, stat
         let deadline = Instant::now() + BATCH_TIMEOUT;
 
         // Collect more items until timeout or max batch size
-        while total_texts < MAX_BATCH_TEXTS {
+        while total_texts < max_batch_texts() {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 break;
@@ -316,7 +334,12 @@ async fn encode_texts_batch(
 
         let embeddings_result = match input_type {
             InputType::Query => model.encode_queries(&texts_ref),
-            InputType::Document => model.encode_documents(&texts_ref, pool_factor),
+            InputType::Document => {
+                tracing::info!(num_texts = num_texts, "Starting document encoding");
+                let result = model.encode_documents(&texts_ref, pool_factor);
+                tracing::info!(num_texts = num_texts, "Finished document encoding");
+                result
+            }
         };
 
         let embeddings = embeddings_result.map_err(|e| e.to_string())?;

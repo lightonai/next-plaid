@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "lightonai-plaid",
+  "description": "Semantic grep - find code by meaning with hybrid search",
+  "owner": {
+    "name": "LightOn",
+    "email": "raphael.sourty@lighton.ai"
+  },
+  "plugins": [
+    {
+      "name": "plaid",
+      "source": "./plugins/plaid",
+      "description": "Semantic grep with hybrid search - find code by meaning",
+      "version": "0.1.0",
+      "author": {
+        "name": "LightOn"
+      },
+      "skills": ["./skills/plaid"]
+    }
+  ]
+}
