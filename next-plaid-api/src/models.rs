@@ -673,6 +673,67 @@ pub struct UpdateWithEncodingRequest {
 }
 
 // =============================================================================
+// Reranking
+// =============================================================================
+
+/// Request to rerank documents given a query using pre-computed embeddings.
+///
+/// Uses ColBERT's MaxSim scoring: for each query token, find the maximum similarity
+/// with any document token, then sum these maximum similarities.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RerankRequest {
+    /// Query embeddings [num_tokens, dim]
+    #[schema(example = json!([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]))]
+    pub query: Vec<Vec<f32>>,
+    /// List of document embeddings, each [num_tokens, dim]
+    pub documents: Vec<DocumentEmbeddings>,
+}
+
+/// Request to rerank documents using text inputs (requires model to be loaded).
+///
+/// The query and documents will be encoded using the loaded ColBERT model,
+/// then scored using MaxSim.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RerankWithEncodingRequest {
+    /// Query text to encode (only used with "model" feature)
+    #[allow(dead_code)]
+    #[schema(example = "What is the capital of France?")]
+    pub query: String,
+    /// List of document texts to encode and rank (only used with "model" feature)
+    #[allow(dead_code)]
+    #[schema(example = json!(["Paris is the capital of France.", "Berlin is the capital of Germany."]))]
+    pub documents: Vec<String>,
+    /// Optional pool factor for reducing document embeddings via hierarchical clustering.
+    /// When set, token embeddings are clustered and mean-pooled, reducing count by this factor.
+    /// (only used with "model" feature)
+    #[allow(dead_code)]
+    #[serde(default)]
+    #[schema(example = 2)]
+    pub pool_factor: Option<usize>,
+}
+
+/// Single document result in reranking response.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RerankResult {
+    /// Original index of the document in the input list
+    #[schema(example = 0)]
+    pub index: usize,
+    /// MaxSim score (sum of max similarities per query token)
+    #[schema(example = 12.5)]
+    pub score: f32,
+}
+
+/// Response containing reranked documents.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RerankResponse {
+    /// Documents sorted by score in descending order
+    pub results: Vec<RerankResult>,
+    /// Number of documents reranked
+    #[schema(example = 2)]
+    pub num_documents: usize,
+}
+
+// =============================================================================
 // Error
 // =============================================================================
 

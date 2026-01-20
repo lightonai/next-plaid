@@ -22,7 +22,10 @@ use tower_http::cors::{Any, CorsLayer};
 // Import from the API crate
 use next_plaid_api::{
     handlers,
-    models::*,
+    models::{
+        AddMetadataResponse, CheckMetadataResponse, CreateIndexResponse, GetMetadataResponse,
+        IndexInfoResponse, QueryMetadataResponse, RerankResponse, SearchResponse,
+    },
     state::{ApiConfig, AppState},
 };
 
@@ -237,6 +240,9 @@ fn build_test_router(state: Arc<AppState>) -> Router {
         .route("/{name}/metadata/query", post(handlers::query_metadata))
         .route("/{name}/metadata/get", post(handlers::get_metadata));
 
+    // Rerank route (standalone, not under /indices)
+    let rerank_route = Router::new().route("/rerank", post(handlers::rerank));
+
     // Combine all routes under /indices
     let indices_router = Router::new()
         .merge(index_routes)
@@ -255,6 +261,7 @@ fn build_test_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health_handler))
         .nest("/indices", indices_router)
+        .merge(rerank_route)
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
@@ -1907,8 +1914,14 @@ fn build_model_test_router(state: Arc<AppState>) -> Router {
         .route("/{name}/metadata/query", post(handlers::query_metadata))
         .route("/{name}/metadata/get", post(handlers::get_metadata));
 
-    // Encode route
-    let encode_route = Router::new().route("/encode", post(handlers::encode));
+    // Encode and rerank routes
+    let encode_route = Router::new()
+        .route("/encode", post(handlers::encode))
+        .route("/rerank", post(handlers::rerank))
+        .route(
+            "/rerank_with_encoding",
+            post(handlers::rerank_with_encoding),
+        );
 
     // Combine all routes under /indices
     let indices_router = Router::new()
@@ -2477,5 +2490,351 @@ async fn test_rate_limiting_recovery_multiple_requests() {
         success_count >= 1,
         "Expected at least 1 successful request after rate limit recovery, got {}",
         success_count
+    );
+}
+
+// =============================================================================
+// Rerank Tests
+// =============================================================================
+
+/// Test the rerank endpoint with pre-computed embeddings.
+#[tokio::test]
+async fn test_rerank() {
+    let fixture = TestFixture::new().await;
+    let dim = 32;
+
+    // Generate query embeddings (5 tokens)
+    let query_embeddings = generate_embeddings(5, dim);
+
+    // Generate document embeddings (3 documents with 10 tokens each)
+    // We'll make doc 0 most similar to query, doc 2 least similar
+    let documents: Vec<Value> = vec![
+        // Doc 0: High similarity (values close to query)
+        json!({
+            "embeddings": generate_embeddings(10, dim)
+        }),
+        // Doc 1: Medium similarity
+        json!({
+            "embeddings": generate_embeddings(10, dim)
+        }),
+        // Doc 2: Low similarity
+        json!({
+            "embeddings": generate_embeddings(10, dim)
+        }),
+    ];
+
+    // Call rerank endpoint
+    let resp = fixture
+        .client
+        .post(fixture.url("/rerank"))
+        .json(&json!({
+            "query": query_embeddings,
+            "documents": documents
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(
+        resp.status().is_success(),
+        "Rerank failed: {}",
+        resp.status()
+    );
+    let body: RerankResponse = resp.json().await.unwrap();
+
+    // Verify response structure
+    assert_eq!(body.num_documents, 3, "Expected 3 documents in response");
+    assert_eq!(body.results.len(), 3, "Expected 3 results");
+
+    // Verify all document indices are present
+    let indices: Vec<usize> = body.results.iter().map(|r| r.index).collect();
+    assert!(indices.contains(&0), "Missing document 0");
+    assert!(indices.contains(&1), "Missing document 1");
+    assert!(indices.contains(&2), "Missing document 2");
+
+    // Verify scores are in descending order
+    for i in 1..body.results.len() {
+        assert!(
+            body.results[i - 1].score >= body.results[i].score,
+            "Scores not in descending order: {:?}",
+            body.results
+        );
+    }
+}
+
+/// Test rerank with controlled embeddings to verify MaxSim scoring.
+#[tokio::test]
+async fn test_rerank_maxsim_scoring() {
+    let fixture = TestFixture::new().await;
+    let _dim = 4; // Small dimension for controlled test
+
+    // Query with 2 tokens: [1,0,0,0] and [0,1,0,0]
+    let query = vec![vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 1.0, 0.0, 0.0]];
+
+    // Doc 0: Perfect match for both query tokens
+    // Token 1 matches query token 1: [1,0,0,0] -> sim = 1.0
+    // Token 2 matches query token 2: [0,1,0,0] -> sim = 1.0
+    // MaxSim score = 1.0 + 1.0 = 2.0
+    let doc0 = json!({
+        "embeddings": vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0, 0.0],
+        ]
+    });
+
+    // Doc 1: Only matches first query token
+    // Best match for query token 1: [1,0,0,0] -> sim = 1.0
+    // Best match for query token 2: [0,0,1,0] -> sim = 0.0
+    // MaxSim score = 1.0 + 0.0 = 1.0
+    let doc1 = json!({
+        "embeddings": vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 0.0],
+        ]
+    });
+
+    // Doc 2: No match for any query token
+    // Best match for query token 1: [0,0,1,0] -> sim = 0.0
+    // Best match for query token 2: [0,0,0,1] -> sim = 0.0
+    // MaxSim score = 0.0 + 0.0 = 0.0
+    let doc2 = json!({
+        "embeddings": vec![
+            vec![0.0, 0.0, 1.0, 0.0],
+            vec![0.0, 0.0, 0.0, 1.0],
+        ]
+    });
+
+    let resp = fixture
+        .client
+        .post(fixture.url("/rerank"))
+        .json(&json!({
+            "query": query,
+            "documents": [doc0, doc1, doc2]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(resp.status().is_success());
+    let body: RerankResponse = resp.json().await.unwrap();
+
+    // Verify ranking order: doc0 (score 2.0) > doc1 (score 1.0) > doc2 (score 0.0)
+    assert_eq!(body.results[0].index, 0, "Doc 0 should be ranked first");
+    assert_eq!(body.results[1].index, 1, "Doc 1 should be ranked second");
+    assert_eq!(body.results[2].index, 2, "Doc 2 should be ranked third");
+
+    // Verify approximate scores
+    assert!(
+        (body.results[0].score - 2.0).abs() < 0.01,
+        "Doc 0 score should be ~2.0, got {}",
+        body.results[0].score
+    );
+    assert!(
+        (body.results[1].score - 1.0).abs() < 0.01,
+        "Doc 1 score should be ~1.0, got {}",
+        body.results[1].score
+    );
+    assert!(
+        (body.results[2].score - 0.0).abs() < 0.01,
+        "Doc 2 score should be ~0.0, got {}",
+        body.results[2].score
+    );
+}
+
+/// Test rerank validation errors.
+#[tokio::test]
+async fn test_rerank_validation() {
+    let fixture = TestFixture::new().await;
+
+    // Empty query
+    let resp = fixture
+        .client
+        .post(fixture.url("/rerank"))
+        .json(&json!({
+            "query": [],
+            "documents": [{"embeddings": [[1.0, 0.0, 0.0]]}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "Expected 400 for empty query"
+    );
+
+    // Empty documents
+    let resp = fixture
+        .client
+        .post(fixture.url("/rerank"))
+        .json(&json!({
+            "query": [[1.0, 0.0, 0.0]],
+            "documents": []
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "Expected 400 for empty documents"
+    );
+
+    // Dimension mismatch between query and documents
+    let resp = fixture
+        .client
+        .post(fixture.url("/rerank"))
+        .json(&json!({
+            "query": [[1.0, 0.0, 0.0]],  // dim 3
+            "documents": [{"embeddings": [[1.0, 0.0, 0.0, 0.0]]}]  // dim 4
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "Expected 400 for dimension mismatch"
+    );
+}
+
+/// Test rerank_with_encoding: rerank documents using text inputs.
+#[cfg(feature = "model")]
+#[tokio::test]
+async fn test_rerank_with_encoding() {
+    let fixture = ModelTestFixture::new().await;
+
+    // Rerank documents about European capitals with a query about France
+    let resp = fixture
+        .client
+        .post(fixture.url("/rerank_with_encoding"))
+        .json(&json!({
+            "query": "What is the capital of France?",
+            "documents": [
+                "Berlin is the capital of Germany.",
+                "Paris is the capital of France and is known for the Eiffel Tower.",
+                "Tokyo is the capital of Japan.",
+                "London is the capital of the United Kingdom."
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(
+        resp.status().is_success(),
+        "Rerank with encoding failed: {}",
+        resp.status()
+    );
+    let body: RerankResponse = resp.json().await.unwrap();
+
+    // Verify response structure
+    assert_eq!(body.num_documents, 4, "Expected 4 documents in response");
+    assert_eq!(body.results.len(), 4, "Expected 4 results");
+
+    // Verify scores are in descending order
+    for i in 1..body.results.len() {
+        assert!(
+            body.results[i - 1].score >= body.results[i].score,
+            "Scores not in descending order: {:?}",
+            body.results
+        );
+    }
+
+    // The Paris document (index 1) should be ranked first since it's most relevant
+    assert_eq!(
+        body.results[0].index, 1,
+        "Expected Paris document (index 1) to be ranked first, got index {}",
+        body.results[0].index
+    );
+}
+
+/// Test rerank_with_encoding with pool_factor for document compression.
+#[cfg(feature = "model")]
+#[tokio::test]
+async fn test_rerank_with_encoding_pool_factor() {
+    let fixture = ModelTestFixture::new().await;
+
+    // Rerank with pool_factor to compress document embeddings
+    let resp = fixture
+        .client
+        .post(fixture.url("/rerank_with_encoding"))
+        .json(&json!({
+            "query": "machine learning algorithms",
+            "documents": [
+                "Deep learning is a subset of machine learning that uses neural networks.",
+                "Traditional programming requires explicit instructions for every task.",
+                "Natural language processing helps computers understand human language."
+            ],
+            "pool_factor": 2
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert!(
+        resp.status().is_success(),
+        "Rerank with encoding and pool_factor failed: {}",
+        resp.status()
+    );
+    let body: RerankResponse = resp.json().await.unwrap();
+
+    // Verify response structure
+    assert_eq!(body.num_documents, 3);
+    assert_eq!(body.results.len(), 3);
+
+    // Verify scores are in descending order
+    for i in 1..body.results.len() {
+        assert!(
+            body.results[i - 1].score >= body.results[i].score,
+            "Scores not in descending order"
+        );
+    }
+
+    // The machine learning document (index 0) should be ranked first
+    assert_eq!(
+        body.results[0].index, 0,
+        "Expected ML document (index 0) to be ranked first"
+    );
+}
+
+/// Test rerank_with_encoding validation.
+#[cfg(feature = "model")]
+#[tokio::test]
+async fn test_rerank_with_encoding_validation() {
+    let fixture = ModelTestFixture::new().await;
+
+    // Empty query
+    let resp = fixture
+        .client
+        .post(fixture.url("/rerank_with_encoding"))
+        .json(&json!({
+            "query": "",
+            "documents": ["Some document text."]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "Expected 400 for empty query"
+    );
+
+    // Empty documents
+    let resp = fixture
+        .client
+        .post(fixture.url("/rerank_with_encoding"))
+        .json(&json!({
+            "query": "What is AI?",
+            "documents": []
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "Expected 400 for empty documents"
     );
 }

@@ -78,7 +78,8 @@ use state::{ApiConfig, AppState};
         (name = "documents", description = "Document upload and deletion"),
         (name = "search", description = "Search operations"),
         (name = "metadata", description = "Metadata management and filtering"),
-        (name = "encoding", description = "Text encoding operations (requires --model)")
+        (name = "encoding", description = "Text encoding operations (requires --model)"),
+        (name = "reranking", description = "Document reranking with ColBERT MaxSim scoring")
     ),
     paths(
         health,
@@ -96,6 +97,8 @@ use state::{ApiConfig, AppState};
         handlers::search::search_with_encoding,
         handlers::search::search_filtered_with_encoding,
         handlers::encode::encode,
+        handlers::rerank::rerank,
+        handlers::rerank::rerank_with_encoding,
         handlers::metadata::get_all_metadata,
         handlers::metadata::add_metadata,
         handlers::metadata::get_metadata_count,
@@ -144,6 +147,10 @@ use state::{ApiConfig, AppState};
         models::SearchWithEncodingRequest,
         models::FilteredSearchWithEncodingRequest,
         models::UpdateWithEncodingRequest,
+        models::RerankRequest,
+        models::RerankWithEncodingRequest,
+        models::RerankResult,
+        models::RerankResponse,
     ))
 )]
 struct ApiDoc;
@@ -356,6 +363,11 @@ fn build_router(state: Arc<AppState>) -> Router {
     // Encode endpoint - exempt from rate limiting (has internal batching with backpressure)
     let encode_router = Router::new()
         .route("/encode", post(handlers::encode))
+        .route("/rerank", post(handlers::rerank))
+        .route(
+            "/rerank_with_encoding",
+            post(handlers::rerank_with_encoding),
+        )
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
