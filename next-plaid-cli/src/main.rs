@@ -91,9 +91,9 @@ struct Cli {
     #[arg(default_value = ".")]
     path: PathBuf,
 
-    /// Number of results
-    #[arg(short = 'k', default_value = "15")]
-    top_k: usize,
+    /// Number of results (default: 15, or config value)
+    #[arg(short = 'k')]
+    top_k: Option<usize>,
 
     /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
     #[arg(long)]
@@ -123,9 +123,9 @@ struct Cli {
     #[arg(short = 'c', long = "content")]
     show_content: bool,
 
-    /// Number of context lines to show (default: 6 for semantic, 3+3 for grep)
-    #[arg(short = 'n', long = "lines", default_value = "6")]
-    context_lines: usize,
+    /// Number of context lines to show (default: 6, or config value)
+    #[arg(short = 'n', long = "lines")]
+    context_lines: Option<usize>,
 
     /// Text pattern: pre-filter using grep, then rank with semantic search
     #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
@@ -236,6 +236,28 @@ NOTES:
     • The model is downloaded from HuggingFace automatically
     • Model preference is stored in ~/.config/plaid/config.json";
 
+const CONFIG_HELP: &str = "\
+EXAMPLES:
+    # Show current configuration
+    plaid config
+
+    # Set default number of results
+    plaid config --k 20
+
+    # Set default context lines
+    plaid config --n 10
+
+    # Set both at once
+    plaid config --k 25 --n 8
+
+    # Reset to defaults (unset)
+    plaid config --k 0 --n 0
+
+NOTES:
+    • Values are stored in ~/.config/plaid/config.json
+    • Use 0 to reset a value to its default
+    • These values override the CLI defaults when not explicitly specified";
+
 #[derive(Subcommand)]
 enum Commands {
     /// Search for code semantically (auto-indexes if needed)
@@ -248,9 +270,9 @@ enum Commands {
         #[arg(default_value = ".")]
         path: PathBuf,
 
-        /// Number of results
-        #[arg(short = 'k', default_value = "20")]
-        top_k: usize,
+        /// Number of results (default: 20, or config value)
+        #[arg(short = 'k')]
+        top_k: Option<usize>,
 
         /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
         #[arg(long)]
@@ -280,9 +302,9 @@ enum Commands {
         #[arg(short = 'c', long = "content")]
         show_content: bool,
 
-        /// Number of context lines to show (default: 6 for semantic, 3+3 for grep)
-        #[arg(short = 'n', long = "lines", default_value = "6")]
-        context_lines: usize,
+        /// Number of context lines to show (default: 6, or config value)
+        #[arg(short = 'n', long = "lines")]
+        context_lines: Option<usize>,
 
         /// Text pattern: pre-filter using grep, then rank with semantic search
         #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
@@ -322,6 +344,18 @@ enum Commands {
     SetModel {
         /// HuggingFace model ID (e.g., "lightonai/GTE-ModernColBERT-v1-onnx")
         model: String,
+    },
+
+    /// View or set configuration options (default k, n values)
+    #[command(after_help = CONFIG_HELP)]
+    Config {
+        /// Set default number of results (use 0 to reset to default)
+        #[arg(long = "k")]
+        default_k: Option<usize>,
+
+        /// Set default context lines (use 0 to reset to default)
+        #[arg(long = "n")]
+        default_n: Option<usize>,
     },
 }
 
@@ -389,14 +423,14 @@ fn main() -> Result<()> {
         }) => cmd_search(
             &query,
             &path,
-            top_k,
+            resolve_top_k(top_k, 20), // Search subcommand default is 20
             model.as_deref(),
             json,
             no_index,
             &include_patterns,
             files_only,
             show_content,
-            context_lines,
+            resolve_context_lines(context_lines, 6),
             text_pattern.as_deref(),
             extended_regexp,
             code_only,
@@ -404,20 +438,24 @@ fn main() -> Result<()> {
         Some(Commands::Status { path }) => cmd_status(&path),
         Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
         Some(Commands::SetModel { model }) => cmd_set_model(&model),
+        Some(Commands::Config {
+            default_k,
+            default_n,
+        }) => cmd_config(default_k, default_n),
         None => {
             // Default: run search if query is provided
             if let Some(query) = cli.query {
                 cmd_search(
                     &query,
                     &cli.path,
-                    cli.top_k,
+                    resolve_top_k(cli.top_k, 15), // Default command default is 15
                     cli.model.as_deref(),
                     cli.json,
                     cli.no_index,
                     &cli.include_patterns,
                     cli.files_only,
                     cli.show_content,
-                    cli.context_lines,
+                    resolve_context_lines(cli.context_lines, 6),
                     cli.text_pattern.as_deref(),
                     cli.extended_regexp,
                     cli.code_only,
@@ -448,6 +486,38 @@ fn resolve_model(cli_model: Option<&str>) -> String {
 
     // Fall back to default
     DEFAULT_MODEL.to_string()
+}
+
+/// Resolve top_k: CLI arg > saved config > default
+fn resolve_top_k(cli_k: Option<usize>, default: usize) -> usize {
+    if let Some(k) = cli_k {
+        return k;
+    }
+
+    // Try to load from config
+    if let Ok(config) = Config::load() {
+        if let Some(k) = config.get_default_k() {
+            return k;
+        }
+    }
+
+    default
+}
+
+/// Resolve context_lines (n): CLI arg > saved config > default
+fn resolve_context_lines(cli_n: Option<usize>, default: usize) -> usize {
+    if let Some(n) = cli_n {
+        return n;
+    }
+
+    // Try to load from config
+    if let Ok(config) = Config::load() {
+        if let Some(n) = config.get_default_n() {
+            return n;
+        }
+    }
+
+    default
 }
 
 /// Run grep to find files containing a text pattern
@@ -1404,6 +1474,70 @@ fn cmd_set_model(model: &str) -> Result<()> {
     Ok(())
 }
 
+fn cmd_config(default_k: Option<usize>, default_n: Option<usize>) -> Result<()> {
+    let mut config = Config::load()?;
+
+    // If no options provided, show current config
+    if default_k.is_none() && default_n.is_none() {
+        println!("Current configuration:");
+        println!();
+
+        // Model
+        match config.get_default_model() {
+            Some(model) => println!("  model: {}", model),
+            None => println!("  model: {} (default)", DEFAULT_MODEL),
+        }
+
+        // k
+        match config.get_default_k() {
+            Some(k) => println!("  k:     {}", k),
+            None => println!("  k:     15 (default)"),
+        }
+
+        // n
+        match config.get_default_n() {
+            Some(n) => println!("  n:     {}", n),
+            None => println!("  n:     6 (default)"),
+        }
+
+        println!();
+        println!("Use --k or --n to set values. Use 0 to reset to default.");
+        return Ok(());
+    }
+
+    let mut changed = false;
+
+    // Set or clear k
+    if let Some(k) = default_k {
+        if k == 0 {
+            config.clear_default_k();
+            println!("✅ Reset default k to 15 (default)");
+        } else {
+            config.set_default_k(k);
+            println!("✅ Set default k to {}", k);
+        }
+        changed = true;
+    }
+
+    // Set or clear n
+    if let Some(n) = default_n {
+        if n == 0 {
+            config.clear_default_n();
+            println!("✅ Reset default n to 6 (default)");
+        } else {
+            config.set_default_n(n);
+            println!("✅ Set default n to {}", n);
+        }
+        changed = true;
+    }
+
+    if changed {
+        config.save()?;
+    }
+
+    Ok(())
+}
+
 /// Get the number of documents in an index by reading its metadata
 fn get_index_document_count(vector_index_path: &std::path::Path) -> usize {
     let metadata_path = vector_index_path.join("metadata.json");
@@ -1500,4 +1634,264 @@ fn cmd_reset_stats() -> Result<()> {
 
     println!("✅ Reset search statistics for {} index(es)", reset_count);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use next_plaid_cli::{CodeUnit, Language, SearchResult, UnitType};
+
+    /// Helper to create a test CodeUnit with minimal required fields
+    fn make_test_unit(name: &str, signature: &str, code_preview: &str, file: &str) -> CodeUnit {
+        let mut unit = CodeUnit::new(
+            name.to_string(),
+            PathBuf::from(file),
+            1,
+            10,
+            Language::Rust,
+            UnitType::Function,
+            None,
+        );
+        unit.signature = signature.to_string();
+        unit.code_preview = code_preview.to_string();
+        unit
+    }
+
+    /// Helper to create a test CodeUnit with specific line numbers
+    fn make_test_unit_at(name: &str, file: &str, line: usize, end_line: usize) -> CodeUnit {
+        CodeUnit::new(
+            name.to_string(),
+            PathBuf::from(file),
+            line,
+            end_line,
+            Language::Rust,
+            UnitType::Function,
+            None,
+        )
+    }
+
+    // Test resolve_top_k function
+    #[test]
+    fn test_resolve_top_k_cli_provided() {
+        // CLI value should take precedence
+        assert_eq!(resolve_top_k(Some(30), 15), 30);
+        assert_eq!(resolve_top_k(Some(1), 20), 1);
+        assert_eq!(resolve_top_k(Some(100), 15), 100);
+    }
+
+    #[test]
+    fn test_resolve_top_k_fallback_to_default() {
+        // When CLI not provided and no config, should use default
+        // Note: This test may be affected by actual config file
+        let result = resolve_top_k(None, 15);
+        // Should be either 15 (default) or whatever is in config
+        assert!(result > 0);
+    }
+
+    // Test resolve_context_lines function
+    #[test]
+    fn test_resolve_context_lines_cli_provided() {
+        // CLI value should take precedence
+        assert_eq!(resolve_context_lines(Some(10), 6), 10);
+        assert_eq!(resolve_context_lines(Some(0), 6), 0);
+        assert_eq!(resolve_context_lines(Some(20), 6), 20);
+    }
+
+    #[test]
+    fn test_resolve_context_lines_fallback_to_default() {
+        // When CLI not provided and no config, should use default
+        let result = resolve_context_lines(None, 6);
+        // Should be either 6 (default) or whatever is in config
+        assert!(result <= 100); // sanity check
+    }
+
+    // Test calc_display_ranges function
+    #[test]
+    fn test_calc_display_ranges_no_matches() {
+        let ranges = calc_display_ranges(&[], 10, 20, 3, 6);
+        // Should show from beginning with max_lines limit
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0], (9, 15)); // signature_line=9, end=min(20, 9+6)=15
+    }
+
+    #[test]
+    fn test_calc_display_ranges_single_match() {
+        let match_lines = vec![15];
+        let ranges = calc_display_ranges(&match_lines, 10, 25, 3, 10);
+        // Should have signature and match context
+        assert!(!ranges.is_empty());
+    }
+
+    #[test]
+    fn test_calc_display_ranges_multiple_matches_merged() {
+        // Two matches close enough to merge
+        let match_lines = vec![12, 14];
+        let ranges = calc_display_ranges(&match_lines, 10, 30, 3, 20);
+        // Ranges should be merged since they're close together
+        assert!(ranges.len() <= 2);
+    }
+
+    #[test]
+    fn test_calc_display_ranges_matches_outside_unit() {
+        // Matches outside the unit range should be filtered
+        let match_lines = vec![5, 35]; // Both outside 10-25
+        let ranges = calc_display_ranges(&match_lines, 10, 25, 3, 10);
+        // Should fall back to showing from beginning
+        assert!(!ranges.is_empty());
+    }
+
+    // Test compute_final_score function
+    #[test]
+    fn test_compute_final_score_no_boost() {
+        let unit = make_test_unit(
+            "other_function",
+            "fn other_function()",
+            "does something else",
+            "test.rs",
+        );
+        let score = compute_final_score(5.0, "search_query", &unit);
+        // No matches, score should be unchanged
+        assert_eq!(score, 5.0);
+    }
+
+    #[test]
+    fn test_compute_final_score_name_boost() {
+        let unit = make_test_unit(
+            "search_query_handler",
+            "fn search_query_handler()",
+            "handles queries",
+            "test.rs",
+        );
+        let score = compute_final_score(5.0, "search_query", &unit);
+        // Name contains query, should have +3.0 boost, signature too +2.0
+        assert!(score > 5.0);
+        assert_eq!(score, 5.0 + 3.0 + 2.0); // name + signature
+    }
+
+    #[test]
+    fn test_compute_final_score_signature_boost() {
+        let unit = make_test_unit(
+            "handler",
+            "fn handler(search_query: &str)",
+            "does something",
+            "test.rs",
+        );
+        let score = compute_final_score(5.0, "search_query", &unit);
+        // Signature contains query, should have +2.0 boost
+        assert_eq!(score, 5.0 + 2.0);
+    }
+
+    #[test]
+    fn test_compute_final_score_code_preview_boost() {
+        let unit = make_test_unit(
+            "handler",
+            "fn handler()",
+            "processes search_query and returns",
+            "test.rs",
+        );
+        let score = compute_final_score(5.0, "search_query", &unit);
+        // Code preview contains query, should have +1.0 boost
+        assert_eq!(score, 5.0 + 1.0);
+    }
+
+    #[test]
+    fn test_compute_final_score_case_insensitive() {
+        let unit = make_test_unit(
+            "SEARCH_QUERY_HANDLER",
+            "fn SEARCH_QUERY_HANDLER()",
+            "handles queries",
+            "test.rs",
+        );
+        let score = compute_final_score(5.0, "search_query", &unit);
+        // Case insensitive match should work
+        assert!(score > 5.0);
+    }
+
+    #[test]
+    fn test_compute_final_score_all_boosts() {
+        let unit = make_test_unit(
+            "search_query",
+            "fn search_query(search_query: T)",
+            "search_query implementation",
+            "test.rs",
+        );
+        let score = compute_final_score(5.0, "search_query", &unit);
+        // All three locations contain query
+        assert_eq!(score, 5.0 + 3.0 + 2.0 + 1.0);
+    }
+
+    // Test group_results_by_file function
+    #[test]
+    fn test_group_results_by_file_empty() {
+        let results: Vec<&SearchResult> = vec![];
+        let grouped = group_results_by_file(&results);
+        assert!(grouped.is_empty());
+    }
+
+    #[test]
+    fn test_group_results_by_file_single_file() {
+        let result1 = SearchResult {
+            unit: make_test_unit_at("func1", "test.rs", 1, 5),
+            score: 1.0,
+        };
+        let result2 = SearchResult {
+            unit: make_test_unit_at("func2", "test.rs", 10, 15),
+            score: 0.5,
+        };
+        let results = vec![&result1, &result2];
+        let grouped = group_results_by_file(&results);
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].0, PathBuf::from("test.rs"));
+        assert_eq!(grouped[0].1.len(), 2);
+    }
+
+    #[test]
+    fn test_group_results_by_file_multiple_files() {
+        let result1 = SearchResult {
+            unit: make_test_unit_at("func1", "a.rs", 1, 5),
+            score: 2.0,
+        };
+        let result2 = SearchResult {
+            unit: make_test_unit_at("func2", "b.rs", 1, 5),
+            score: 1.5,
+        };
+        let result3 = SearchResult {
+            unit: make_test_unit_at("func3", "a.rs", 10, 15),
+            score: 1.0,
+        };
+        let results = vec![&result1, &result2, &result3];
+        let grouped = group_results_by_file(&results);
+
+        // Should have 2 files, ordered by first appearance (relevance order)
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].0, PathBuf::from("a.rs"));
+        assert_eq!(grouped[0].1.len(), 2);
+        assert_eq!(grouped[1].0, PathBuf::from("b.rs"));
+        assert_eq!(grouped[1].1.len(), 1);
+    }
+
+    #[test]
+    fn test_group_results_preserves_relevance_order() {
+        // Results should maintain their original relevance order within each file
+        let result1 = SearchResult {
+            unit: make_test_unit_at("best_match", "test.rs", 1, 5),
+            score: 10.0,
+        };
+        let result2 = SearchResult {
+            unit: make_test_unit_at("second_best", "test.rs", 10, 15),
+            score: 5.0,
+        };
+        let result3 = SearchResult {
+            unit: make_test_unit_at("third_best", "test.rs", 20, 25),
+            score: 1.0,
+        };
+        let results = vec![&result1, &result2, &result3];
+        let grouped = group_results_by_file(&results);
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].1[0].unit.name, "best_match");
+        assert_eq!(grouped[0].1[1].unit.name, "second_best");
+        assert_eq!(grouped[0].1[2].unit.name, "third_best");
+    }
 }

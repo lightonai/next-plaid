@@ -18,6 +18,14 @@ pub struct Config {
     /// Default model to use (HuggingFace model ID or local path)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+
+    /// Default number of results (-k)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_k: Option<usize>,
+
+    /// Default number of context lines (-n)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_n: Option<usize>,
 }
 
 impl Config {
@@ -59,6 +67,36 @@ impl Config {
     pub fn set_default_model(&mut self, model: impl Into<String>) {
         self.default_model = Some(model.into());
     }
+
+    /// Get the default k (number of results), if set
+    pub fn get_default_k(&self) -> Option<usize> {
+        self.default_k
+    }
+
+    /// Set the default k (number of results)
+    pub fn set_default_k(&mut self, k: usize) {
+        self.default_k = Some(k);
+    }
+
+    /// Clear the default k
+    pub fn clear_default_k(&mut self) {
+        self.default_k = None;
+    }
+
+    /// Get the default n (context lines), if set
+    pub fn get_default_n(&self) -> Option<usize> {
+        self.default_n
+    }
+
+    /// Set the default n (context lines)
+    pub fn set_default_n(&mut self, n: usize) {
+        self.default_n = Some(n);
+    }
+
+    /// Clear the default n
+    pub fn clear_default_n(&mut self) {
+        self.default_n = None;
+    }
 }
 
 /// Get the path to the config file
@@ -80,6 +118,10 @@ mod tests {
         let config = Config::default();
         assert!(config.default_model.is_none());
         assert!(config.get_default_model().is_none());
+        assert!(config.default_k.is_none());
+        assert!(config.get_default_k().is_none());
+        assert!(config.default_n.is_none());
+        assert!(config.get_default_n().is_none());
     }
 
     #[test]
@@ -145,5 +187,80 @@ mod tests {
         assert!(result.is_ok());
         let path = result.unwrap();
         assert!(path.to_string_lossy().contains("config.json"));
+    }
+
+    #[test]
+    fn test_config_default_k() {
+        let config = Config::default();
+        assert!(config.get_default_k().is_none());
+    }
+
+    #[test]
+    fn test_config_set_default_k() {
+        let mut config = Config::default();
+        config.set_default_k(25);
+        assert_eq!(config.get_default_k(), Some(25));
+    }
+
+    #[test]
+    fn test_config_clear_default_k() {
+        let mut config = Config::default();
+        config.set_default_k(25);
+        assert_eq!(config.get_default_k(), Some(25));
+        config.clear_default_k();
+        assert!(config.get_default_k().is_none());
+    }
+
+    #[test]
+    fn test_config_default_n() {
+        let config = Config::default();
+        assert!(config.get_default_n().is_none());
+    }
+
+    #[test]
+    fn test_config_set_default_n() {
+        let mut config = Config::default();
+        config.set_default_n(10);
+        assert_eq!(config.get_default_n(), Some(10));
+    }
+
+    #[test]
+    fn test_config_clear_default_n() {
+        let mut config = Config::default();
+        config.set_default_n(10);
+        assert_eq!(config.get_default_n(), Some(10));
+        config.clear_default_n();
+        assert!(config.get_default_n().is_none());
+    }
+
+    #[test]
+    fn test_config_serialization_with_k_and_n() {
+        let mut config = Config::default();
+        config.set_default_k(20);
+        config.set_default_n(8);
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"default_k\":20"));
+        assert!(json.contains("\"default_n\":8"));
+
+        let deserialized: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.get_default_k(), Some(20));
+        assert_eq!(deserialized.get_default_n(), Some(8));
+    }
+
+    #[test]
+    fn test_config_serialization_skips_none_k_n() {
+        let config = Config::default();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("default_k"));
+        assert!(!json.contains("default_n"));
+    }
+
+    #[test]
+    fn test_config_deserialization_with_k_n() {
+        let json = r#"{"default_k": 30, "default_n": 12}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.get_default_k(), Some(30));
+        assert_eq!(config.get_default_n(), Some(12));
     }
 }
