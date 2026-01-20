@@ -17,6 +17,7 @@ from .models import (
     MetadataResponse,
     MetadataCheckResponse,
     EncodeResponse,
+    RerankResponse,
 )
 
 
@@ -549,6 +550,73 @@ class NextPlaidClient(BaseNextPlaidClient):
             payload["pool_factor"] = pool_factor
         data = self._request("POST", "/encode", json=payload)
         return EncodeResponse.from_dict(data)
+
+    # ==================== Reranking ====================
+
+    def rerank(
+        self,
+        query: Union[str, List[List[float]]],
+        documents: Union[List[str], List[Dict[str, List[List[float]]]]],
+        pool_factor: Optional[int] = None,
+    ) -> RerankResponse:
+        """
+        Rerank documents by relevance to a query. Automatically detects input type.
+
+        Uses ColBERT's MaxSim scoring: for each query token, find the maximum
+        similarity with any document token, then sum these maximum similarities.
+
+        This method accepts either:
+        - Text inputs (str query, List[str] documents): Server encodes them (requires model)
+        - Embedding inputs (List[List[float]] query, List[Dict] documents): Pre-computed embeddings
+
+        Args:
+            query: Either a text string or query embeddings [num_tokens, dim].
+            documents: Either list of text strings or list of dicts with "embeddings" key.
+            pool_factor: Optional factor for reducing document embeddings via hierarchical
+                clustering. Only applies to text input. E.g., pool_factor=2 reduces
+                ~100 tokens to ~50 embeddings.
+
+        Returns:
+            RerankResponse with documents sorted by score in descending order.
+
+        Raises:
+            ModelNotLoadedError: If text input is provided but no model is loaded.
+            ValidationError: If the inputs are invalid or dimensions mismatch.
+
+        Examples:
+            # Rerank with text inputs (requires model on server)
+            result = client.rerank(
+                query="What is the capital of France?",
+                documents=["Paris is the capital of France.", "Berlin is in Germany."]
+            )
+
+            # Rerank with pre-computed embeddings
+            result = client.rerank(
+                query=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],  # query embeddings
+                documents=[
+                    {"embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]},
+                    {"embeddings": [[0.7, 0.8, 0.9], [0.1, 0.2, 0.3]]}
+                ]
+            )
+
+            # Access results
+            for r in result.results:
+                print(f"Document {r.index}: score {r.score}")
+        """
+        is_text = isinstance(query, str)
+
+        if is_text:
+            # Text input - use encoding endpoint
+            payload: Dict[str, Any] = {"query": query, "documents": documents}
+            if pool_factor is not None:
+                payload["pool_factor"] = pool_factor
+            data = self._request("POST", "/rerank_with_encoding", json=payload)
+        else:
+            # Embeddings input - use regular rerank endpoint
+            payload = {"query": query, "documents": documents}
+            data = self._request("POST", "/rerank", json=payload)
+
+        return RerankResponse.from_dict(data)
 
     # ==================== Utility Methods ====================
 

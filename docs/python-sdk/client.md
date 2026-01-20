@@ -368,6 +368,63 @@ print(len(response.embeddings[0]))  # num_tokens
 
 ---
 
+## Reranking
+
+### `rerank(query, documents, pool_factor=None)`
+
+Rerank documents by relevance to a query using ColBERT's MaxSim scoring.
+
+This method accepts either:
+
+- **Text inputs** (`str` query, `List[str]` documents): Server encodes them (requires model)
+- **Embedding inputs** (`List[List[float]]` query, `List[Dict]` documents): Pre-computed embeddings
+
+```python
+# Rerank with text inputs (requires model on server)
+result = client.rerank(
+    query="What is the capital of France?",
+    documents=[
+        "Berlin is the capital of Germany.",
+        "Paris is the capital of France and is known for the Eiffel Tower.",
+        "Tokyo is the largest city in Japan.",
+    ]
+)
+
+# Results are sorted by score (descending)
+for r in result.results:
+    print(f"Document {r.index}: {r.score:.4f}")
+
+# Rerank with pre-computed embeddings
+result = client.rerank(
+    query=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],  # query token embeddings
+    documents=[
+        {"embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]},
+        {"embeddings": [[0.7, 0.8, 0.9], [0.1, 0.2, 0.3]]},
+    ]
+)
+
+# With pool_factor for long documents
+result = client.rerank(
+    query="machine learning",
+    documents=["Long document 1...", "Long document 2..."],
+    pool_factor=2  # Reduces embeddings by 2x
+)
+```
+
+**Parameters:**
+
+| Parameter     | Type                              | Description                                    |
+|---------------|-----------------------------------|------------------------------------------------|
+| `query`       | `str` or `List[List[float]]`      | Query text or embeddings `[num_tokens, dim]`   |
+| `documents`   | `List[str]` or `List[Dict]`       | Document texts or embedding dicts              |
+| `pool_factor` | `int \| None`                     | Embedding reduction factor (text input only)   |
+
+**Returns:** [`RerankResponse`](models.md#rerankresponse)
+
+**Raises:** `ModelNotLoadedError` (for text input), `ValidationError`
+
+---
+
 ## Cleanup
 
 ### `close()`

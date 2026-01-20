@@ -170,6 +170,26 @@ check = await client.check_metadata("my_index", document_ids)
 response = await client.encode(texts, input_type="document")
 ```
 
+### Reranking
+
+```python
+# Rerank with text (requires model on server)
+result = await client.rerank(
+    query="What is the capital of France?",
+    documents=["Paris is in France.", "Berlin is in Germany."]
+)
+
+# Rerank with embeddings
+result = await client.rerank(
+    query=[[0.1, 0.2], [0.3, 0.4]],
+    documents=[{"embeddings": [[0.1, 0.2]]}]
+)
+
+# Access results (sorted by score descending)
+for r in result.results:
+    print(f"Document {r.index}: {r.score}")
+```
+
 ### Cleanup
 
 ```python

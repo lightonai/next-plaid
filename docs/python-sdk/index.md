@@ -143,6 +143,29 @@ results = client.search(
 )
 ```
 
+### Reranking
+
+Rerank documents by relevance using ColBERT's MaxSim scoring:
+
+```python
+# Rerank with text (requires model)
+result = client.rerank(
+    query="What is the capital of France?",
+    documents=[
+        "Berlin is the capital of Germany.",
+        "Paris is the capital of France.",
+        "Tokyo is in Japan.",
+    ]
+)
+
+# Results sorted by score (descending)
+for r in result.results:
+    print(f"Document {r.index}: {r.score:.2f}")
+# Document 1: 15.23  (Paris - most relevant)
+# Document 0: 8.12   (Berlin)
+# Document 2: 3.45   (Tokyo)
+```
+
 ## Configuration
 
 ### Client Options

@@ -170,6 +170,38 @@ result = client.encode(
 )
 ```
 
+### Reranking
+
+The `rerank()` method reorders documents by relevance to a query using ColBERT's MaxSim scoring:
+
+```python
+# Rerank with text inputs (requires model on server)
+result = client.rerank(
+    query="What is the capital of France?",
+    documents=[
+        "Berlin is the capital of Germany.",
+        "Paris is the capital of France.",
+        "Tokyo is the largest city in Japan.",
+    ]
+)
+
+# Results are sorted by score (descending)
+for r in result.results:
+    print(f"Document {r.index}: {r.score:.4f}")
+# Document 1: 15.2341  (Paris - most relevant)
+# Document 0: 8.1234   (Berlin - somewhat relevant)
+# Document 2: 3.4567   (Tokyo - least relevant)
+
+# Rerank with pre-computed embeddings
+result = client.rerank(
+    query=[[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],  # query token embeddings
+    documents=[
+        {"embeddings": [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]},
+        {"embeddings": [[0.7, 0.8, 0.9], [0.1, 0.2, 0.3]]},
+    ]
+)
+```
+
 ## Exception Handling
 
 ```python

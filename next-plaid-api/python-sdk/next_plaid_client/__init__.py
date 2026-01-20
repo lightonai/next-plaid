@@ -21,6 +21,8 @@ from .models import (
     QueryResult,
     Document,
     MetadataResponse,
+    RerankResult,
+    RerankResponse,
 )
 
 __version__ = "0.3.0"
@@ -41,4 +43,6 @@ __all__ = [
     "QueryResult",
     "Document",
     "MetadataResponse",
+    "RerankResult",
+    "RerankResponse",
 ]

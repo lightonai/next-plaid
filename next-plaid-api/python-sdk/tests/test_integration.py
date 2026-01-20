@@ -26,6 +26,8 @@ from next_plaid_client import (
     Document,
     IndexNotFoundError,
     IndexExistsError,
+    RerankResult,
+    RerankResponse,
 )
 
 
@@ -671,3 +673,205 @@ class TestEncoding:
 
         assert result.num_texts == 1
         assert len(result.embeddings) == 1
+
+
+# ==================== Reranking Tests ====================
+
+
+class TestRerank:
+    """Test reranking operations with pre-computed embeddings."""
+
+    def test_rerank_with_embeddings(self, client):
+        """Test reranking documents with pre-computed embeddings."""
+        # Create query embeddings (2 tokens, 128 dimensions)
+        query = [random_embedding(seed=100), random_embedding(seed=101)]
+
+        # Create document embeddings
+        documents = [
+            {"embeddings": [random_embedding(seed=200), random_embedding(seed=201)]},
+            {"embeddings": [random_embedding(seed=100), random_embedding(seed=101)]},  # Similar to query
+            {"embeddings": [random_embedding(seed=300)]},
+        ]
+
+        result = client.rerank(query=query, documents=documents)
+
+        assert isinstance(result, RerankResponse)
+        assert result.num_documents == 3
+        assert len(result.results) == 3
+
+        # Results should be sorted by score descending
+        for i in range(len(result.results) - 1):
+            assert result.results[i].score >= result.results[i + 1].score
+
+        # Each result should have valid index and score
+        for r in result.results:
+            assert isinstance(r, RerankResult)
+            assert 0 <= r.index < 3
+            assert isinstance(r.score, float)
+
+        # Document 1 (similar to query) should rank first
+        assert result.results[0].index == 1
+
+    def test_rerank_single_document(self, client):
+        """Test reranking a single document."""
+        query = [random_embedding(seed=42)]
+        documents = [{"embeddings": [random_embedding(seed=42)]}]
+
+        result = client.rerank(query=query, documents=documents)
+
+        assert result.num_documents == 1
+        assert len(result.results) == 1
+        assert result.results[0].index == 0
+
+    def test_rerank_preserves_original_indices(self, client):
+        """Test that rerank results contain correct original indices."""
+        query = [random_embedding(seed=1)]
+        documents = [
+            {"embeddings": [random_embedding(seed=100)]},
+            {"embeddings": [random_embedding(seed=1)]},  # Most similar (index 1)
+            {"embeddings": [random_embedding(seed=200)]},
+            {"embeddings": [random_embedding(seed=2)]},  # Second most similar (index 3)
+        ]
+
+        result = client.rerank(query=query, documents=documents)
+
+        # Collect all indices from results
+        indices = [r.index for r in result.results]
+
+        # All original indices should be present
+        assert set(indices) == {0, 1, 2, 3}
+
+        # Best match should be first
+        assert result.results[0].index == 1
+
+    def test_rerank_many_documents(self, client):
+        """Test reranking many documents."""
+        query = [random_embedding(seed=0), random_embedding(seed=1)]
+
+        # Create 20 documents
+        documents = [
+            {"embeddings": [random_embedding(seed=i), random_embedding(seed=i + 100)]}
+            for i in range(20)
+        ]
+
+        result = client.rerank(query=query, documents=documents)
+
+        assert result.num_documents == 20
+        assert len(result.results) == 20
+
+        # Document 0 should be most similar (seeds match query)
+        assert result.results[0].index == 0
+
+    @pytest.mark.asyncio
+    async def test_rerank_async(self, async_client):
+        """Test async reranking with embeddings."""
+        query = [random_embedding(seed=50), random_embedding(seed=51)]
+        documents = [
+            {"embeddings": [random_embedding(seed=50), random_embedding(seed=51)]},  # Best match
+            {"embeddings": [random_embedding(seed=200)]},
+        ]
+
+        result = await async_client.rerank(query=query, documents=documents)
+
+        assert isinstance(result, RerankResponse)
+        assert result.num_documents == 2
+        assert result.results[0].index == 0  # Best match first
+
+
+@pytest.mark.skipif(
+    not has_model_loaded(),
+    reason="Server does not have a model loaded for encoding"
+)
+class TestRerankWithEncoding:
+    """Test reranking with text inputs (require model to be loaded)."""
+
+    def test_rerank_with_text(self, client):
+        """Test reranking documents with text inputs."""
+        result = client.rerank(
+            query="What is the capital of France?",
+            documents=[
+                "Berlin is the capital of Germany.",
+                "Paris is the capital of France and is known for the Eiffel Tower.",
+                "Tokyo is the largest city in Japan.",
+            ]
+        )
+
+        assert isinstance(result, RerankResponse)
+        assert result.num_documents == 3
+        assert len(result.results) == 3
+
+        # Paris document should rank first
+        assert result.results[0].index == 1
+
+        # Results should be sorted by score descending
+        for i in range(len(result.results) - 1):
+            assert result.results[i].score >= result.results[i + 1].score
+
+    def test_rerank_with_text_single_document(self, client):
+        """Test reranking a single text document."""
+        result = client.rerank(
+            query="Machine learning applications",
+            documents=["Deep learning is a subset of machine learning."]
+        )
+
+        assert result.num_documents == 1
+        assert len(result.results) == 1
+        assert result.results[0].index == 0
+        assert result.results[0].score > 0
+
+    def test_rerank_with_pool_factor(self, client):
+        """Test reranking with pool_factor for embedding reduction."""
+        result = client.rerank(
+            query="What is artificial intelligence?",
+            documents=[
+                "Artificial intelligence is the simulation of human intelligence by machines.",
+                "Machine learning is a branch of AI that enables computers to learn from data.",
+                "Natural language processing allows computers to understand human language.",
+            ],
+            pool_factor=2
+        )
+
+        assert result.num_documents == 3
+        # AI definition should rank highest for the AI query
+        assert result.results[0].index == 0
+
+    def test_rerank_semantic_relevance(self, client):
+        """Test that reranking captures semantic relevance correctly."""
+        result = client.rerank(
+            query="Programming languages for web development",
+            documents=[
+                "JavaScript is essential for frontend web development.",
+                "The history of ancient Rome spans over a thousand years.",
+                "Python can be used for backend web development with Django.",
+                "Photosynthesis is how plants convert sunlight to energy.",
+            ]
+        )
+
+        assert result.num_documents == 4
+
+        # Web development documents (indices 0 and 2) should rank higher
+        top_two_indices = {result.results[0].index, result.results[1].index}
+        assert top_two_indices == {0, 2}
+
+        # Unrelated documents should rank lower
+        bottom_two_indices = {result.results[2].index, result.results[3].index}
+        assert bottom_two_indices == {1, 3}
+
+    @pytest.mark.asyncio
+    async def test_rerank_with_text_async(self, async_client):
+        """Test async reranking with text inputs."""
+        result = await async_client.rerank(
+            query="Famous European landmarks",
+            documents=[
+                "The Great Wall of China is one of the longest structures ever built.",
+                "The Eiffel Tower in Paris is a famous iron lattice tower.",
+                "The Colosseum in Rome is an ancient amphitheater.",
+            ]
+        )
+
+        assert isinstance(result, RerankResponse)
+        assert result.num_documents == 3
+
+        # European landmarks (indices 1 and 2) should rank higher
+        top_two_indices = {result.results[0].index, result.results[1].index}
+        assert top_two_indices == {1, 2}

@@ -104,6 +104,13 @@ When the server is running, interactive documentation is available at:
 |--------|----------|-------------|
 | <span class="api-method post">POST</span> | `/encode` | Encode text (requires model) |
 
+### Reranking
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| <span class="api-method post">POST</span> | `/rerank` | Rerank with embeddings |
+| <span class="api-method post">POST</span> | `/rerank_with_encoding` | Rerank with text (requires model) |
+
 ---
 
 ## Health Check
@@ -164,3 +171,4 @@ Check server health and get status information.
 - [Documents](documents.md) - Document operations
 - [Search](search.md) - Search endpoints
 - [Metadata](metadata.md) - Metadata operations
+- [Rerank](rerank.md) - Reranking endpoints

@@ -248,3 +248,33 @@ class DeleteDocumentsResponse:
             deleted=data["deleted"],
             remaining=data["remaining"],
         )
+
+
+@dataclass
+class RerankResult:
+    """A single result from the rerank operation."""
+
+    index: int
+    score: float
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RerankResult":
+        return cls(
+            index=data["index"],
+            score=data["score"],
+        )
+
+
+@dataclass
+class RerankResponse:
+    """Response from a rerank operation."""
+
+    results: List[RerankResult]
+    num_documents: int
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RerankResponse":
+        return cls(
+            results=[RerankResult.from_dict(r) for r in data["results"]],
+            num_documents=data["num_documents"],
+        )

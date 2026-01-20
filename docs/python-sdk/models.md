@@ -228,6 +228,44 @@ print(response.embeddings)   # [[[0.1, 0.2, ...], [0.3, 0.4, ...]]]
 
 ---
 
+### RerankResponse
+
+Response from rerank operations.
+
+```python
+result = client.rerank(
+    query="What is the capital of France?",
+    documents=["Paris is in France.", "Berlin is in Germany."]
+)
+print(result.num_documents)  # 2
+for r in result.results:
+    print(f"Document {r.index}: {r.score:.4f}")
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `results` | `List[RerankResult]` | Documents sorted by score (descending) |
+| `num_documents` | `int` | Total number of documents reranked |
+
+---
+
+### RerankResult
+
+A single result from the rerank operation.
+
+```python
+for r in result.results:
+    print(r.index)  # Original document index (e.g., 1)
+    print(r.score)  # MaxSim score (e.g., 15.234)
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `index` | `int` | Original index of document in input list |
+| `score` | `float` | MaxSim relevance score (higher = more relevant) |
+
+---
+
 ### Delete Documents Response
 
 The delete operation is asynchronous and returns a string message indicating how many documents were queued for deletion.
