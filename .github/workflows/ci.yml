@@ -137,6 +137,30 @@ jobs:
         working-directory: next-plaid-cli
         run: cargo clippy --all-targets -- -D warnings
 
+  colgrep-test:
+    name: Colgrep Crate Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run colgrep crate tests
+        working-directory: colgrep
+        run: cargo test
+
+  colgrep-clippy:
+    name: Colgrep Crate Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (colgrep crate)
+        working-directory: colgrep
+        run: cargo clippy --all-targets -- -D warnings
+
   python-sdk-tests:
     name: Python SDK Tests
     runs-on: ubuntu-latest
