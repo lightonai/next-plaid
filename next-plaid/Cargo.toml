@@ -30,7 +30,7 @@ fastkmeans-rs = "0.1.4"
 memmap2 = "0.9"
 half = "2.4"
 byteorder = "1.5"
-rusqlite = { version = "0.38", features = ["bundled"] }
+rusqlite = { version = "0.38", features = ["bundled", "functions"] }
 regex = "1.11"
 
 [dev-dependencies]

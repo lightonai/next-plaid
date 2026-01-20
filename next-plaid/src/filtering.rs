@@ -510,6 +510,81 @@ pub fn where_condition(
     Ok(result)
 }
 
+/// Query document IDs with REGEXP support enabled.
+///
+/// This function is similar to `where_condition` but registers a REGEXP
+/// function that uses Rust's regex crate for pattern matching.
+///
+/// # Arguments
+///
+/// * `index_path` - Path to the index directory
+/// * `condition` - SQL WHERE clause (can use `column REGEXP ?`)
+/// * `parameters` - Values for condition placeholders
+///
+/// # Example
+///
+/// ```ignore
+/// // Find documents where code_preview matches a regex
+/// let ids = filtering::where_condition_regexp(
+///     "my_index",
+///     "code_preview REGEXP ?",
+///     &[json!("async|await")],
+/// )?;
+/// ```
+pub fn where_condition_regexp(
+    index_path: &str,
+    condition: &str,
+    parameters: &[Value],
+) -> Result<Vec<i64>> {
+    let db_path = get_db_path(index_path);
+    if !db_path.exists() {
+        return Err(Error::Filtering(
+            "No metadata database found. Create it first by adding metadata during index creation."
+                .into(),
+        ));
+    }
+
+    let conn = Connection::open(&db_path)?;
+
+    // Register REGEXP function using Rust's regex crate
+    conn.create_scalar_function(
+        "regexp",
+        2,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8
+            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let pattern: String = ctx.get(0)?;
+            let text: String = ctx.get(1)?;
+
+            // Build case-insensitive regex
+            let re = regex::RegexBuilder::new(&pattern)
+                .case_insensitive(true)
+                .build()
+                .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+
+            Ok(re.is_match(&text))
+        },
+    )?;
+
+    let query = format!(
+        "SELECT \"{}\" FROM METADATA WHERE {}",
+        SUBSET_COLUMN, condition
+    );
+
+    let params: Vec<Box<dyn ToSql>> = parameters.iter().map(json_to_sql).collect();
+    let param_refs: Vec<&dyn ToSql> = params.iter().map(|v| v.as_ref()).collect();
+
+    let mut stmt = conn.prepare(&query)?;
+    let rows = stmt.query_map(params_from_iter(param_refs), |row| row.get::<_, i64>(0))?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+
+    Ok(result)
+}
+
 /// Get full metadata rows by condition or subset IDs.
 ///
 /// Returns metadata as JSON objects with the `_subset_` field included.

@@ -246,7 +246,7 @@ fn create_text_unit(
     };
 
     // Full source content for filtering
-    let code_preview = content_lines.join("\n");
+    let code = content_lines.join("\n");
 
     CodeUnit {
         name: name.to_string(),
@@ -268,7 +268,7 @@ fn create_text_unit(
         has_error_handling: false,
         variables: Vec::new(),
         imports: Vec::new(),
-        code_preview,
+        code,
     }
 }
 
@@ -565,7 +565,7 @@ fn extract_function(
 
     // Full source content for filtering
     let content_end = (end_line + 1).min(lines.len());
-    unit.code_preview = lines[start_line..content_end].join("\n");
+    unit.code = lines[start_line..content_end].join("\n");
 
     Some(unit)
 }
@@ -604,7 +604,7 @@ fn extract_class(
 
     // Full source content for filtering
     let content_end = (end_line + 1).min(lines.len());
-    unit.code_preview = lines[start_line..content_end].join("\n");
+    unit.code = lines[start_line..content_end].join("\n");
 
     Some(unit)
 }

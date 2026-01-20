@@ -314,7 +314,7 @@ $ colgrep "control flow" -k 1 --json
         "has_loops"
       ],
       "imports": [],
-      "code_preview": "fn extract_control_flow(...) {\n    let mut complexity = 1;\n    ..."
+      "code": "fn extract_control_flow(...) {\n    let mut complexity = 1;\n    ..."
     },
     "score": 5.44
   }

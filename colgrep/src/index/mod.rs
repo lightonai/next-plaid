@@ -86,8 +86,9 @@ impl IndexBuilder {
         let _lock = acquire_index_lock(&self.index_dir)?;
         let state = IndexState::load(&self.index_dir)?;
         let index_path = get_vector_index_path(&self.index_dir);
+        let index_path_str = index_path.to_str().unwrap();
         let index_exists = index_path.join("metadata.json").exists();
-        let filtering_exists = filtering::exists(index_path.to_str().unwrap());
+        let filtering_exists = filtering::exists(index_path_str);
 
         // Need full rebuild if forced, index doesn't exist, or filtering DB is missing
         if force || !index_exists || !filtering_exists {
@@ -98,6 +99,21 @@ impl IndexBuilder {
         // Do a full rebuild to avoid UNIQUE constraint errors when re-adding existing docs
         if state.files.is_empty() {
             return self.full_rebuild(languages);
+        }
+
+        // Check if metadata DB is in sync with vector index
+        // If document counts don't match, do a full rebuild to avoid UNIQUE constraint errors
+        if let Ok(metadata_count) = filtering::count(index_path_str) {
+            if let Ok(content) = std::fs::read_to_string(index_path.join("metadata.json")) {
+                if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(index_count) = meta.get("num_documents").and_then(|v| v.as_u64()) {
+                        if metadata_count as u64 != index_count {
+                            // Metadata DB and vector index are out of sync
+                            return self.full_rebuild(languages);
+                        }
+                    }
+                }
+            }
         }
 
         self.incremental_update(&state, languages)
@@ -976,6 +992,46 @@ fn build_glob_set(patterns: &[String]) -> Option<GlobSet> {
     builder.build().ok()
 }
 
+/// Convert a glob pattern to a regex pattern
+/// e.g., "*.test.ts" -> ".*\\.test\\.ts$"
+/// e.g., "**/*.rs" -> ".*/.*\\.rs$"
+fn glob_to_regex(pattern: &str) -> String {
+    let mut regex = String::new();
+
+    // If pattern doesn't start with ** or /, match anywhere in path
+    if !pattern.starts_with("**/") && !pattern.starts_with('/') {
+        regex.push_str("(^|.*/)")
+    }
+
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                if chars.peek() == Some(&'*') {
+                    chars.next(); // consume second *
+                    if chars.peek() == Some(&'/') {
+                        chars.next(); // consume /
+                        regex.push_str("(.*/)?");
+                    } else {
+                        regex.push_str(".*");
+                    }
+                } else {
+                    regex.push_str("[^/]*");
+                }
+            }
+            '?' => regex.push('.'),
+            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                regex.push('\\');
+                regex.push(c);
+            }
+            _ => regex.push(c),
+        }
+    }
+
+    regex.push('$');
+    regex
+}
+
 /// Check if a file path matches any of the glob patterns
 fn matches_glob_pattern(path: &Path, patterns: &[String]) -> bool {
     if patterns.is_empty() {
@@ -1101,6 +1157,62 @@ impl Searcher {
         Ok(matching_ids)
     }
 
+    /// Get document IDs for code units that DON'T match exclude patterns (SQL-based)
+    /// Uses REGEXP to filter out files matching any of the glob-like patterns
+    pub fn filter_exclude_by_patterns(&self, patterns: &[String]) -> Result<Vec<i64>> {
+        if patterns.is_empty() {
+            // No exclusions - return all IDs
+            return filtering::where_condition(&self.index_path, "1=1", &[])
+                .map_err(|e| anyhow::anyhow!("{}", e));
+        }
+
+        // Convert glob patterns to regex patterns for SQL REGEXP
+        // e.g., "*.test.ts" -> ".*\\.test\\.ts$"
+        let regex_patterns: Vec<String> = patterns.iter().map(|p| glob_to_regex(p)).collect();
+
+        // Build a combined regex: (pattern1|pattern2|...)
+        let combined_regex = regex_patterns.join("|");
+
+        // Use NOT REGEXP to exclude matching files
+        let subset = filtering::where_condition_regexp(
+            &self.index_path,
+            "NOT (file REGEXP ?)",
+            &[serde_json::json!(combined_regex)],
+        )
+        .unwrap_or_default();
+
+        Ok(subset)
+    }
+
+    /// Get document IDs for code units NOT in excluded directories (SQL-based)
+    /// Uses REGEXP to filter out files in any of the specified directories
+    pub fn filter_exclude_by_dirs(&self, dirs: &[String]) -> Result<Vec<i64>> {
+        if dirs.is_empty() {
+            // No exclusions - return all IDs
+            return filtering::where_condition(&self.index_path, "1=1", &[])
+                .map_err(|e| anyhow::anyhow!("{}", e));
+        }
+
+        // Build regex to match paths containing any of the excluded directories
+        // e.g., ["vendor", "node_modules"] -> "(^|/)vendor/|(^|/)node_modules/"
+        let dir_patterns: Vec<String> = dirs
+            .iter()
+            .map(|d| format!("(^|/){}/", regex::escape(d)))
+            .collect();
+
+        let combined_regex = dir_patterns.join("|");
+
+        // Use NOT REGEXP to exclude files in these directories
+        let subset = filtering::where_condition_regexp(
+            &self.index_path,
+            "NOT (file REGEXP ?)",
+            &[serde_json::json!(combined_regex)],
+        )
+        .unwrap_or_default();
+
+        Ok(subset)
+    }
+
     /// Get document IDs for code units in the given files (exact match)
     pub fn filter_by_files(&self, files: &[String]) -> Result<Vec<i64>> {
         if files.is_empty() {
@@ -1124,35 +1236,52 @@ impl Searcher {
     }
 
     /// Get document IDs for code units containing the given text pattern
-    /// Uses SQL LIKE on the stored code_preview field
-    pub fn filter_by_text_pattern(
+    ///
+    /// Supports grep-compatible pattern matching options:
+    /// - `extended_regexp`: Use extended regular expressions (ERE) - supports `|`, `+`, `?`, `()` etc.
+    /// - `fixed_strings`: Treat pattern as literal string (no regex), takes precedence over extended_regexp
+    /// - `word_regexp`: Match whole words only (add word boundaries)
+    ///
+    /// Pattern matching is always case-insensitive.
+    /// Uses pure SQL queries with REGEXP support for efficient filtering.
+    pub fn filter_by_text_pattern_with_options(
         &self,
         pattern: &str,
-        case_insensitive: bool,
+        extended_regexp: bool,
+        fixed_strings: bool,
+        word_regexp: bool,
     ) -> Result<Vec<i64>> {
         if pattern.is_empty() {
             return Ok(vec![]);
         }
 
-        // Escape SQL LIKE special characters in the pattern
-        let escaped_pattern = pattern
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-
-        let like_pattern = format!("%{}%", escaped_pattern);
-
-        // Use LIKE with ESCAPE clause for proper escaping
-        let condition = if case_insensitive {
-            "LOWER(code_preview) LIKE LOWER(?) ESCAPE '\\'"
+        // Build the regex pattern based on options
+        // -F takes precedence over -E (like grep)
+        let regex_pattern = if fixed_strings {
+            // Escape all regex metacharacters for literal matching
+            let escaped = regex::escape(pattern);
+            if word_regexp {
+                format!(r"\b{}\b", escaped)
+            } else {
+                escaped
+            }
+        } else if word_regexp {
+            // Word boundaries without escaping (user wants regex + word match)
+            format!(r"\b{}\b", pattern)
+        } else if extended_regexp {
+            // Extended regex (ERE) - use pattern as-is
+            // Rust's regex crate already uses ERE-like syntax
+            pattern.to_string()
         } else {
-            "code_preview LIKE ? ESCAPE '\\'"
+            // Default: basic substring matching (escape for safety)
+            regex::escape(pattern)
         };
 
-        let subset = filtering::where_condition(
+        // Use SQL REGEXP for efficient filtering (runs in SQLite with custom function)
+        let subset = filtering::where_condition_regexp(
             &self.index_path,
-            condition,
-            &[serde_json::json!(like_pattern)],
+            "code REGEXP ?",
+            &[serde_json::json!(regex_pattern)],
         )
         .unwrap_or_default();
 

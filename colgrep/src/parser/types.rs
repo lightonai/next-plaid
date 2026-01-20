@@ -125,8 +125,8 @@ pub struct CodeUnit {
     // === Layer 5: Dependencies ===
     pub imports: Vec<String>,
 
-    // === Code Preview ===
-    pub code_preview: String,
+    // === Full Source Code ===
+    pub code: String,
 }
 
 impl CodeUnit {
@@ -164,7 +164,7 @@ impl CodeUnit {
             has_error_handling: false,
             variables: Vec::new(),
             imports: Vec::new(),
-            code_preview: String::new(),
+            code: String::new(),
         }
     }
 }

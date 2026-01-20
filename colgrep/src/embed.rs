@@ -148,9 +148,9 @@ pub fn build_embedding_text(unit: &CodeUnit) -> String {
         parts.push(format!("Uses: {}", unit.imports.join(", ")));
     }
 
-    // === Code Preview ===
-    if !unit.code_preview.is_empty() {
-        parts.push(format!("Code:\n{}", unit.code_preview));
+    // === Full Source Code ===
+    if !unit.code.is_empty() {
+        parts.push(format!("Code:\n{}", unit.code));
     }
 
     // === File Path (shortened for better LLM encoding) ===
