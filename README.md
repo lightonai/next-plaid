@@ -49,23 +49,6 @@ Get started using the pre-built Docker images.
 
 ### Pull and Run
 
-#### CPU Image
-
-```bash
-# Pull the CPU image
-docker pull ghcr.io/lightonai/next-plaid-api:latest
-
-# Run with persistent storage
-docker run -d \
-  --name next-plaid-api \
-  -p 8080:8080 \
-  -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid-api:latest
-
-# Verify it's running
-curl http://localhost:8080/health
-```
-
 #### CUDA Image
 
 ```bash
@@ -79,6 +62,26 @@ docker run -d \
   -p 8080:8080 \
   -v ~/.local/share/next-plaid:/data/indices \
   ghcr.io/lightonai/next-plaid-api:latest-cuda
+  --cuda
+
+# Verify it's running
+curl http://localhost:8080/health
+```
+
+To choose specific GPU devices, replace `--gpus all` with `--gpus '"device=2,3,4"'`.
+
+#### CPU Image
+
+```bash
+# Pull the CPU image
+docker pull ghcr.io/lightonai/next-plaid-api:latest
+
+# Run with persistent storage
+docker run -d \
+  --name next-plaid-api \
+  -p 8080:8080 \
+  -v ~/.local/share/next-plaid:/data/indices \
+  ghcr.io/lightonai/next-plaid-api:latest
 
 # Verify it's running
 curl http://localhost:8080/health
