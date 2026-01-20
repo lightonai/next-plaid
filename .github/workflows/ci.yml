@@ -34,8 +34,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
       - name: Clippy (main crate)
         run: cargo clippy --all-targets --features "openblas" -- -D warnings
-      - name: Clippy (API crate)
-        run: cargo clippy --package next-plaid-api --all-targets -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
@@ -60,9 +58,6 @@ jobs:
       - name: Run tests (macOS)
         if: matrix.os == 'macos-latest'
         run: cargo test --features "accelerate"
-
-      - name: Run API tests
-        run: cargo test --package next-plaid-api
 
   doc:
     name: Documentation
@@ -112,30 +107,17 @@ jobs:
         working-directory: next-plaid-onnx
         run: cargo clippy --all-targets -- -D warnings
 
-  cli-fmt:
-    name: CLI Crate Format
+  colgrep-fmt:
+    name: Colgrep Crate Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Format check (CLI crate)
-        working-directory: next-plaid-cli
+      - name: Format check (colgrep crate)
+        working-directory: colgrep
         run: cargo fmt --all -- --check
-
-  cli-clippy:
-    name: CLI Crate Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Clippy (CLI crate)
-        working-directory: next-plaid-cli
-        run: cargo clippy --all-targets -- -D warnings
 
   colgrep-test:
     name: Colgrep Crate Tests
@@ -160,51 +142,3 @@ jobs:
       - name: Clippy (colgrep crate)
         working-directory: colgrep
         run: cargo clippy --all-targets -- -D warnings
-
-  python-sdk-tests:
-    name: Python SDK Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install OpenBLAS
-        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Build API server
-        run: cargo build --release -p next-plaid-api
-
-      - name: Install Python SDK
-        run: |
-          cd next-plaid-api/python-sdk
-          pip install -e ".[dev]"
-
-      - name: Run Python SDK tests
-        run: |
-          # Start API server in background
-          mkdir -p test_indices
-          ./target/release/next-plaid-api -d test_indices &
-          API_PID=$!
-
-          # Wait for server to be ready
-          for i in {1..30}; do
-            if curl -s http://localhost:8080/health >/dev/null 2>&1; then
-              echo "API server is ready"
-              break
-            fi
-            echo "Waiting for API server... ($i/30)"
-            sleep 1
-          done
-
-          # Run Python SDK tests
-          cd next-plaid-api/python-sdk
-          pytest tests/ -v
-
-          # Cleanup
-          kill $API_PID 2>/dev/null || true
