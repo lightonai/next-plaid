@@ -1023,6 +1023,18 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#rate-limiting-concurrency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rate Limiting &amp; Concurrency
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Rate Limiting &amp; Concurrency">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
   <a href="#rate-limiting" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1030,6 +1042,55 @@
       
     </span>
   </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#concurrency-controls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Concurrency Controls
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#document-batching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Document Batching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#encode-batching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Encode Batching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1521,6 +1582,18 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#rate-limiting-concurrency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rate Limiting &amp; Concurrency
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Rate Limiting &amp; Concurrency">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
   <a href="#rate-limiting" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1528,6 +1601,55 @@
       
     </span>
   </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#concurrency-controls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Concurrency Controls
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#document-batching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Document Batching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#encode-batching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Encode Batching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -2007,27 +2129,108 @@
 </span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--model<span class="w"> </span>lightonai/GTE-ModernColBERT-v1-onnx
 </span></code></pre></div>
 <hr />
-<h2 id="rate-limiting">Rate Limiting<a class="headerlink" href="#rate-limiting" title="Permanent link">&para;</a></h2>
-<p>The API implements token bucket rate limiting:</p>
+<h2 id="rate-limiting-concurrency">Rate Limiting &amp; Concurrency<a class="headerlink" href="#rate-limiting-concurrency" title="Permanent link">&para;</a></h2>
+<p>The API implements configurable rate limiting and concurrency controls via environment variables.</p>
+<h3 id="rate-limiting">Rate Limiting<a class="headerlink" href="#rate-limiting" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
-<th>Setting</th>
-<th>Value</th>
+<th>Variable</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Sustained rate</td>
-<td>50 requests/second</td>
+<td><code>RATE_LIMIT_PER_SECOND</code></td>
+<td><code>50</code></td>
+<td>Max requests per second (sustained rate)</td>
 </tr>
 <tr>
-<td>Burst limit</td>
-<td>100 requests</td>
+<td><code>RATE_LIMIT_BURST_SIZE</code></td>
+<td><code>100</code></td>
+<td>Burst size for rate limiting</td>
 </tr>
 </tbody>
 </table>
 <p>When rate limited, the API returns <code>429 Too Many Requests</code>.</p>
+<h3 id="concurrency-controls">Concurrency Controls<a class="headerlink" href="#concurrency-controls" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CONCURRENCY_LIMIT</code></td>
+<td><code>100</code></td>
+<td>Max concurrent in-flight requests</td>
+</tr>
+<tr>
+<td><code>MAX_QUEUED_TASKS_PER_INDEX</code></td>
+<td><code>10</code></td>
+<td>Max queued updates/deletes per index (semaphore)</td>
+</tr>
+</tbody>
+</table>
+<p>When concurrency limits are exceeded, the API returns <code>503 Service Unavailable</code>.</p>
+<h3 id="document-batching">Document Batching<a class="headerlink" href="#document-batching" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MAX_BATCH_DOCUMENTS</code></td>
+<td><code>300</code></td>
+<td>Max documents to batch before processing</td>
+</tr>
+<tr>
+<td><code>BATCH_CHANNEL_SIZE</code></td>
+<td><code>100</code></td>
+<td>Buffer size for document batch queue</td>
+</tr>
+</tbody>
+</table>
+<h3 id="encode-batching">Encode Batching<a class="headerlink" href="#encode-batching" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MAX_BATCH_TEXTS</code></td>
+<td><code>64</code></td>
+<td>Max texts to batch for encoding</td>
+</tr>
+<tr>
+<td><code>ENCODE_BATCH_CHANNEL_SIZE</code></td>
+<td><code>256</code></td>
+<td>Buffer size for encode batch queue</td>
+</tr>
+</tbody>
+</table>
+<h3 id="example-configuration">Example Configuration<a class="headerlink" href="#example-configuration" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>docker<span class="w"> </span>run<span class="w"> </span>-d<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">RATE_LIMIT_PER_SECOND</span><span class="o">=</span><span class="m">100</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">RATE_LIMIT_BURST_SIZE</span><span class="o">=</span><span class="m">200</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">CONCURRENCY_LIMIT</span><span class="o">=</span><span class="m">200</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">MAX_QUEUED_TASKS_PER_INDEX</span><span class="o">=</span><span class="m">20</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">  </span>-e<span class="w"> </span><span class="nv">MAX_BATCH_DOCUMENTS</span><span class="o">=</span><span class="m">500</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span>-p<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="w">  </span>ghcr.io/lightonai/next-plaid-api:latest
+</span></code></pre></div>
 <hr />
 <h2 id="memory-configuration">💾 Memory Configuration<a class="headerlink" href="#memory-configuration" title="Permanent link">&para;</a></h2>
 <h3 id="estimating-memory-usage">Estimating Memory Usage<a class="headerlink" href="#estimating-memory-usage" title="Permanent link">&para;</a></h3>
@@ -2039,15 +2242,15 @@
 <li><strong>Quantization bits</strong></li>
 </ol>
 <p><strong>Formula:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>Base: ~100 MB
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>Per document: ~(avg_tokens × dim × nbits / 8) bytes
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>Centroids: ~(num_partitions × dim × 4) bytes
+<div class="language-text highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>Base: ~100 MB
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>Per document: ~(avg_tokens × dim × nbits / 8) bytes
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>Centroids: ~(num_partitions × dim × 4) bytes
 </span></code></pre></div>
 <p><strong>Example for 1M documents:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>1M docs × 15 tokens × 128 dim × 4 bits / 8 = 960 MB
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>+ Centroids: 16K × 128 × 4 = 8 MB
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>+ Overhead: ~100 MB
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>Total: ~1.1 GB
+<div class="language-text highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>1M docs × 15 tokens × 128 dim × 4 bits / 8 = 960 MB
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>+ Centroids: 16K × 128 × 4 = 8 MB
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>+ Overhead: ~100 MB
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>Total: ~1.1 GB
 </span></code></pre></div>
 <h3 id="memory-mapped-indices">Memory-Mapped Indices<a class="headerlink" href="#memory-mapped-indices" title="Permanent link">&para;</a></h3>
 <p>For large indices, NextPlaid supports memory mapping:</p>
@@ -2078,14 +2281,14 @@
 </tbody>
 </table>
 <h3 id="resource-limits">Resource Limits<a class="headerlink" href="#resource-limits" title="Permanent link">&para;</a></h3>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">services</span><span class="p">:</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">next-plaid</span><span class="p">:</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nt">deploy</span><span class="p">:</span>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">      </span><span class="nt">resources</span><span class="p">:</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">        </span><span class="nt">limits</span><span class="p">:</span>
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">          </span><span class="nt">memory</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8G</span>
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">        </span><span class="nt">reservations</span><span class="p">:</span>
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">          </span><span class="nt">memory</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1G</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nt">services</span><span class="p">:</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">next-plaid</span><span class="p">:</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span><span class="nt">deploy</span><span class="p">:</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">      </span><span class="nt">resources</span><span class="p">:</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">        </span><span class="nt">limits</span><span class="p">:</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">          </span><span class="nt">memory</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8G</span>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">        </span><span class="nt">reservations</span><span class="p">:</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="w">          </span><span class="nt">memory</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1G</span>
 </span></code></pre></div>
 <p>See <a href="../deployment/docker/">Docker Deployment</a> for complete configuration.</p>
 
