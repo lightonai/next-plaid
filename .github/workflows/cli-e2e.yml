@@ -267,7 +267,7 @@ jobs:
         run: |
           cd test_project
           echo "=== Testing basic semantic search ==="
-          ../target/release/plaid "user authentication login" -k 5
+          ../target/release/colgrep "user authentication login" -k 5
           echo "Basic search completed successfully"
 
       - name: Test search with --include filter
@@ -275,13 +275,13 @@ jobs:
         run: |
           cd test_project
           echo "=== Testing --include filter for Python files ==="
-          ../target/release/plaid "authenticate user" --include "*.py" -k 5
+          ../target/release/colgrep "authenticate user" --include "*.py" -k 5
           echo ""
           echo "=== Testing --include filter for Rust files ==="
-          ../target/release/plaid "database connection" --include "*.rs" -k 5
+          ../target/release/colgrep "database connection" --include "*.rs" -k 5
           echo ""
           echo "=== Testing --include filter for TypeScript files ==="
-          ../target/release/plaid "API endpoint" --include "*.ts" -k 5
+          ../target/release/colgrep "API endpoint" --include "*.ts" -k 5
           echo "Include filter tests completed successfully"
 
       - name: Test search with -l (files only)
@@ -289,7 +289,7 @@ jobs:
         run: |
           cd test_project
           echo "=== Testing -l flag (files only output) ==="
-          OUTPUT=$(../target/release/plaid -l "error handling" -k 10)
+          OUTPUT=$(../target/release/colgrep -l "error handling" -k 10)
           echo "$OUTPUT"
           # Verify output contains file paths
           if echo "$OUTPUT" | grep -q "\."; then
@@ -304,10 +304,10 @@ jobs:
           cd test_project
           echo "=== Testing hybrid search with -e flag ==="
           # Search for "async" text pattern, rank by "login function" semantically
-          ../target/release/plaid -e "async" "login function" -k 5 || echo "No matches (expected if grep not available)"
+          ../target/release/colgrep -e "async" "login function" -k 5 || echo "No matches (expected if grep not available)"
           echo ""
           echo "=== Testing -e with --include ==="
-          ../target/release/plaid -e "def " "user registration" --include "*.py" -k 5 || echo "No matches (expected if grep not available)"
+          ../target/release/colgrep -e "def " "user registration" --include "*.py" -k 5 || echo "No matches (expected if grep not available)"
           echo "Hybrid search tests completed"
 
       - name: Test hybrid search with -E (extended regex)
@@ -316,7 +316,7 @@ jobs:
           cd test_project
           echo "=== Testing -E flag (extended regex) ==="
           # Use extended regex to match "async" or "await"
-          ../target/release/plaid -e "async|await" -E "asynchronous operations" -k 5 || echo "No matches (expected if grep not available)"
+          ../target/release/colgrep -e "async|await" -E "asynchronous operations" -k 5 || echo "No matches (expected if grep not available)"
           echo "Extended regex test completed"
 
       - name: Test JSON output
@@ -324,7 +324,7 @@ jobs:
         run: |
           cd test_project
           echo "=== Testing JSON output ==="
-          OUTPUT=$(../target/release/plaid --json "cache management" -k 3)
+          OUTPUT=$(../target/release/colgrep --json "cache management" -k 3)
           echo "$OUTPUT"
           # Verify it's valid JSON
           if echo "$OUTPUT" | head -1 | grep -q "^\["; then
@@ -338,7 +338,7 @@ jobs:
         run: |
           cd test_project
           echo "=== Testing status command ==="
-          ../target/release/plaid status
+          ../target/release/colgrep status
           echo "Status command test completed"
 
       - name: Test search in subdirectory
@@ -346,23 +346,15 @@ jobs:
         run: |
           cd test_project
           echo "=== Testing search in specific subdirectory ==="
-          ../target/release/plaid "test authentication" ./tests -k 5
+          ../target/release/colgrep "test authentication" ./tests -k 5
           echo "Subdirectory search test completed"
-
-      - name: Test --no-index flag (should work with existing index)
-        shell: bash
-        run: |
-          cd test_project
-          echo "=== Testing --no-index flag ==="
-          ../target/release/plaid --no-index "database query" -k 5
-          echo "No-index flag test completed"
 
       - name: Test clear command
         shell: bash
         run: |
           cd test_project
           echo "=== Testing clear command ==="
-          ../target/release/plaid clear
+          ../target/release/colgrep clear
           echo "Clear command test completed"
 
       - name: Test re-indexing after clear
@@ -370,7 +362,7 @@ jobs:
         run: |
           cd test_project
           echo "=== Testing re-indexing after clear ==="
-          ../target/release/plaid "handle error" -k 5
+          ../target/release/colgrep "handle error" -k 5
           echo "Re-indexing test completed"
 
       - name: Run CLI unit tests

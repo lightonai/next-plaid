@@ -35,20 +35,13 @@ powershell -c "irm https://github.com/lightonai/next-plaid/releases/latest/downl
 
 ### Using Cargo
 
-If you have Rust installed:
+#### MacOS / Linux / Windows (WSL)
 
-```bash
-cargo install colgrep
-```
-
-### Installing Rust
-
-If you don't have Rust installed, install it first:
-
-**macOS / Linux:**
+Install Rust via `rustup` if not already installed, then install `colgrep` using Cargo:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+cargo install colgrep
 ```
 
 **Windows:**
@@ -204,6 +197,7 @@ colgrep -e "async" "error handling" -n 2 .
 ```
 
 The `-n` value controls:
+
 - **Semantic results**: First N lines of each matched function
 - **Grep matches**: N/2 lines before and after each exact match
 
@@ -252,11 +246,11 @@ colgrep --code-only --include="*.py" "database" .
 
 **Files excluded by `--code-only`:**
 
-| Category       | File Types                              |
-| -------------- | --------------------------------------- |
-| Documentation  | Markdown, Plain text, AsciiDoc, Org     |
-| Configuration  | YAML, TOML, JSON, Dockerfile, Makefile  |
-| Shell scripts  | Shell (.sh, .bash, .zsh), PowerShell    |
+| Category      | File Types                             |
+| ------------- | -------------------------------------- |
+| Documentation | Markdown, Plain text, AsciiDoc, Org    |
+| Configuration | YAML, TOML, JSON, Dockerfile, Makefile |
+| Shell scripts | Shell (.sh, .bash, .zsh), PowerShell   |
 
 This is useful when searching for implementation details without results from documentation, config files, or scripts cluttering the output.
 
@@ -325,13 +319,13 @@ $ colgrep "control flow" -k 1 --json
 
 Each code unit (function, method, class) is analyzed across 5 layers:
 
-| Layer               | Data Extracted                                | Example                                  |
-| ------------------- | --------------------------------------------- | ---------------------------------------- |
-| **1. AST**          | Signature, docstring, parameters, return type | `fn foo(x: i32) -> String`               |
-| **2. Call Graph**   | Functions called, functions that call this    | `calls: [bar, baz]`, `called_by: [main]` |
-| **3. Control Flow** | Complexity, loops, branches, error handling   | `complexity: 5, has_loops: true`         |
-| **4. Data Flow**    | Variables defined                             | `variables: [result, temp, config]`      |
-| **5. Dependencies** | Imports used                                  | `imports: [serde, tokio]`                |
+| Layer               | Data Extracted                                    | Example                                    |
+| ------------------- | ------------------------------------------------- | ------------------------------------------ |
+| **1. AST**          | Signature, docstring, parameters, return type     | `fn foo(x: i32) -> String`                 |
+| **2. Call Graph**   | Functions called, functions that call this        | `calls: [bar, baz]`, `called_by: [main]`   |
+| **3. Control Flow** | Complexity, loops, branches, error handling       | `complexity: 5, has_loops: true`           |
+| **4. Data Flow**    | Variables defined                                 | `variables: [result, temp, config]`        |
+| **5. Dependencies** | Imports used                                      | `imports: [serde, tokio]`                  |
 | **+ File Path**     | Normalized path for embedding + original filename | `project / src / utils / parser parser.rs` |
 
 This rich context enables semantic understanding beyond simple text matching.
@@ -367,6 +361,7 @@ This structured format allows the model to understand:
 - **Location** in the codebase (file path)
 
 The file path is processed for better embedding quality:
+
 1. Shortened to include only the filename and up to 3 parent directories
 2. Path separators (`/`, `\`) are surrounded by spaces and normalized to `/`
 3. Underscores, hyphens, and dots are replaced with spaces
@@ -443,7 +438,7 @@ The following directories are always ignored (even without `.gitignore`):
 | **Java**            | `.gradle`, `.m2`                                                                             |
 | **IDE/Editor**      | `.idea`, `.vscode`, `.vs`, `*.xcworkspace`, `*.xcodeproj`                                    |
 | **Coverage**        | `coverage`, `.coverage`, `htmlcov`, `.nyc_output`                                            |
-| **Misc**            | `.colgrep`, `tmp`, `temp`, `logs`, `.DS_Store`                                                 |
+| **Misc**            | `.colgrep`, `tmp`, `temp`, `logs`, `.DS_Store`                                               |
 
 Additionally, all patterns in `.gitignore` are respected.
 
@@ -495,8 +490,8 @@ Your model preference is stored in `~/.config/colgrep/config.json`.
 
 Indexes are stored in a centralized location following the XDG Base Directory specification:
 
-| Platform    | Location                                         |
-| ----------- | ------------------------------------------------ |
+| Platform    | Location                                           |
+| ----------- | -------------------------------------------------- |
 | **Linux**   | `~/.local/share/colgrep/indices/`                  |
 | **macOS**   | `~/Library/Application Support/colgrep/indices/`   |
 | **Windows** | `C:\Users\<user>\AppData\Roaming\colgrep\indices\` |
@@ -581,10 +576,10 @@ colgrep config --k 0 --n 0
 
 By default, colgrep uses INT8 quantized models for faster inference with minimal quality loss. You can switch to full-precision (FP32) if needed:
 
-| Mode | Flag | Description |
-|------|------|-------------|
+| Mode               | Flag     | Description                              |
+| ------------------ | -------- | ---------------------------------------- |
 | **INT8** (default) | `--int8` | ~2x faster inference, smaller model size |
-| **FP32** | `--fp32` | Full precision, slightly better accuracy |
+| **FP32**           | `--fp32` | Full precision, slightly better accuracy |
 
 Note: When switching precision, clear existing indexes with `colgrep clear --all` since embeddings are generated with different model weights.
 
