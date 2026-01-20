@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-scifact-docker benchmark-scifact-docker-keep benchmark-fastplaid-compat benchmark-fastplaid-compat-keep benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 benchmark-onnx-vs-pylate ci-api ci-onnx ci-cli test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-cuda docker-up docker-up-cuda docker-down docker-logs kill-api docs-serve docs-build docs-deploy
+.PHONY: all build test lint fmt check clean doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-scifact-docker benchmark-scifact-docker-keep benchmark-fastplaid-compat benchmark-fastplaid-compat-keep benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 benchmark-onnx-vs-pylate ci-api ci-onnx ci-cli test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-cuda docker-up docker-up-cuda docker-down docker-logs kill-api docs-serve docs-build docs-deploy bump-version
 
 all: fmt lint test
 
@@ -209,3 +209,47 @@ start-cpu-docker-build:
 
 start-cuda-docker-build:
 	docker build -t next-plaid-api:cuda -f next-plaid-api/Dockerfile --target runtime-cuda .
+
+# =============================================================================
+# Version management
+# =============================================================================
+
+# Bump version across all crates and Python packages
+# Usage: make bump-version VERSION=0.3.0
+# This updates:
+#   - Workspace version in Cargo.toml
+#   - Path dependency versions in colgrep/Cargo.toml
+#   - Python SDK version (pyproject.toml and __init__.py)
+#   - ONNX Python package version (pyproject.toml)
+bump-version:
+ifndef VERSION
+	$(error VERSION is required. Usage: make bump-version VERSION=0.3.0)
+endif
+	@echo "Bumping version to $(VERSION)..."
+	@# Update workspace version in root Cargo.toml (line 6 in [workspace.package])
+	@sed -i '' '/^\[workspace\.package\]/,/^\[/{s/^version = "[^"]*"/version = "$(VERSION)"/;}' Cargo.toml
+	@echo "  ✓ Updated workspace version in Cargo.toml"
+	@# Update path dependency versions in colgrep/Cargo.toml
+	@sed -i '' 's/next-plaid = { path = "..\/next-plaid", version = "[^"]*"/next-plaid = { path = "..\/next-plaid", version = "$(VERSION)"/' colgrep/Cargo.toml
+	@sed -i '' 's/next-plaid-onnx = { path = "..\/next-plaid-onnx", version = "[^"]*"/next-plaid-onnx = { path = "..\/next-plaid-onnx", version = "$(VERSION)"/' colgrep/Cargo.toml
+	@echo "  ✓ Updated path dependencies in colgrep/Cargo.toml"
+	@# Update Python SDK version in pyproject.toml (in [project] section)
+	@sed -i '' '/^\[project\]/,/^\[/{s/^version = "[^"]*"/version = "$(VERSION)"/;}' next-plaid-api/python-sdk/pyproject.toml
+	@echo "  ✓ Updated next-plaid-api/python-sdk/pyproject.toml"
+	@# Update Python SDK __version__ in __init__.py
+	@sed -i '' 's/__version__ = "[^"]*"/__version__ = "$(VERSION)"/' next-plaid-api/python-sdk/next_plaid_client/__init__.py
+	@echo "  ✓ Updated next-plaid-api/python-sdk/next_plaid_client/__init__.py"
+	@# Update ONNX Python package version in pyproject.toml (in [project] section)
+	@sed -i '' '/^\[project\]/,/^\[/{s/^version = "[^"]*"/version = "$(VERSION)"/;}' next-plaid-onnx/python/pyproject.toml
+	@echo "  ✓ Updated next-plaid-onnx/python/pyproject.toml"
+	@echo ""
+	@echo "Version bumped to $(VERSION). Files updated:"
+	@echo "  - Cargo.toml (workspace version)"
+	@echo "  - colgrep/Cargo.toml (path dependencies)"
+	@echo "  - next-plaid-api/python-sdk/pyproject.toml"
+	@echo "  - next-plaid-api/python-sdk/next_plaid_client/__init__.py"
+	@echo "  - next-plaid-onnx/python/pyproject.toml"
+	@echo ""
+	@echo "Don't forget to:"
+	@echo "  1. Run 'cargo check' to verify Cargo.lock updates"
+	@echo "  2. Commit the changes"

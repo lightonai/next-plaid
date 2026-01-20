@@ -1,10 +1,10 @@
 [package]
 name = "next-plaid-api"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "REST API for next-plaid multi-vector search"
-license = "Apache-2.0"
-repository = "https://github.com/lightonai/next-plaid"
+license.workspace = true
+repository.workspace = true
 
 [package.metadata.dist]
 dist = false
