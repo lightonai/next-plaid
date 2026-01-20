@@ -586,72 +586,6 @@ fn resolve_context_lines(cli_n: Option<usize>, default: usize) -> usize {
 
 /// Run grep to find files containing a text pattern
 /// Returns a list of file paths (relative to the search path)
-fn grep_files(
-    pattern: &str,
-    path: &std::path::Path,
-    extended_regexp: bool,
-    fixed_strings: bool,
-    word_regexp: bool,
-    exclude_patterns: &[String],
-    exclude_dirs: &[String],
-) -> Result<Vec<String>> {
-    use anyhow::Context;
-    use std::process::Command;
-
-    let mut args = vec![
-        "-rl".to_string(),
-        // Default exclusions
-        "--exclude-dir=.git".to_string(),
-        "--exclude-dir=node_modules".to_string(),
-        "--exclude-dir=target".to_string(),
-        "--exclude-dir=.venv".to_string(),
-        "--exclude-dir=venv".to_string(),
-        "--exclude-dir=__pycache__".to_string(),
-        "--exclude=*.db".to_string(),
-        "--exclude=*.sqlite".to_string(),
-    ];
-
-    // Add user-specified exclude directories
-    for dir in exclude_dirs {
-        args.push(format!("--exclude-dir={}", dir));
-    }
-
-    // Add user-specified exclude patterns
-    for pattern in exclude_patterns {
-        args.push(format!("--exclude={}", pattern));
-    }
-
-    // -F takes precedence over -E (like grep behavior)
-    if fixed_strings {
-        args.push("-F".to_string());
-    } else if extended_regexp {
-        args.push("-E".to_string());
-    }
-
-    if word_regexp {
-        args.push("-w".to_string());
-    }
-
-    args.push("--".to_string()); // End of options, pattern follows
-    args.push(pattern.to_string());
-
-    let output = Command::new("grep")
-        .args(&args)
-        .current_dir(path)
-        .output()
-        .context("Failed to run grep")?;
-
-    // grep returns 1 when no matches found, which is not an error for us
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let files: Vec<String> = stdout
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| l.strip_prefix("./").unwrap_or(l).to_string())
-        .collect();
-
-    Ok(files)
-}
-
 /// Calculate merged display ranges for all matches within a code unit
 /// Returns a vector of (start, end) ranges (0-indexed) that cover all matches with context
 /// Always includes the function signature (first line of unit) for context
@@ -879,7 +813,7 @@ fn compute_final_score(
         score += 2.0;
     }
     // Boost if query appears in code preview (moderate boost)
-    if unit.code_preview.to_lowercase().contains(&query_lower) {
+    if unit.code.to_lowercase().contains(&query_lower) {
         score += 1.0;
     }
 
@@ -1079,30 +1013,22 @@ fn cmd_search(
             combined_ids = Some(subdir_ids);
         }
 
-        // Apply text pattern filter: use grep to find files, then filter_by_files for subset
+        // Apply text pattern filter: search indexed code directly (much faster than grep)
         if let Some(pattern) = text_pattern {
-            // Run grep once to find files containing the pattern
-            let matched_files = grep_files(
+            // Use regex-based filtering with full grep flag support:
+            // -E (extended_regexp): ERE patterns with |, +, ?, () etc.
+            // -F (fixed_strings): literal string matching, takes precedence over -E
+            // -w (word_regexp): whole word matching with \b boundaries
+            let pattern_ids = searcher.filter_by_text_pattern_with_options(
                 pattern,
-                &effective_root,
                 extended_regexp,
                 fixed_strings,
                 word_regexp,
-                exclude_patterns,
-                exclude_dirs,
             )?;
-            if matched_files.is_empty() {
-                if !json && !files_only {
-                    println!("No files contain pattern: {}", pattern);
-                }
-                return Ok(());
-            }
 
-            // Use filtering to get doc IDs for code units in those files
-            let file_ids = searcher.filter_by_files(&matched_files)?;
-            if file_ids.is_empty() {
+            if pattern_ids.is_empty() {
                 if !json && !files_only {
-                    println!("No indexed code units in files matching: {}", pattern);
+                    println!("No indexed code units contain pattern: {}", pattern);
                 }
                 return Ok(());
             }
@@ -1111,13 +1037,13 @@ fn cmd_search(
                 Some(existing) => {
                     let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
                     Some(
-                        file_ids
+                        pattern_ids
                             .into_iter()
                             .filter(|id| existing_set.contains(id))
                             .collect(),
                     )
                 }
-                None => Some(file_ids),
+                None => Some(pattern_ids),
             };
         }
 
@@ -1152,6 +1078,36 @@ fn cmd_search(
             };
         }
 
+        // Apply exclude pattern filter (SQL-based: returns IDs that DON'T match patterns)
+        if !exclude_patterns.is_empty() {
+            let included_ids = searcher.filter_exclude_by_patterns(exclude_patterns)?;
+            let included_set: std::collections::HashSet<_> = included_ids.into_iter().collect();
+            combined_ids = match combined_ids {
+                Some(existing) => Some(
+                    existing
+                        .into_iter()
+                        .filter(|id| included_set.contains(id))
+                        .collect(),
+                ),
+                None => Some(included_set.into_iter().collect()),
+            };
+        }
+
+        // Apply exclude-dir filter (SQL-based: returns IDs NOT in excluded directories)
+        if !exclude_dirs.is_empty() {
+            let included_ids = searcher.filter_exclude_by_dirs(exclude_dirs)?;
+            let included_set: std::collections::HashSet<_> = included_ids.into_iter().collect();
+            combined_ids = match combined_ids {
+                Some(existing) => Some(
+                    existing
+                        .into_iter()
+                        .filter(|id| included_set.contains(id))
+                        .collect(),
+                ),
+                None => Some(included_set.into_iter().collect()),
+            };
+        }
+
         // Check if subset is empty after combining
         if let Some(ref ids) = combined_ids {
             if ids.is_empty() {
@@ -1168,10 +1124,17 @@ fn cmd_search(
     // Search with optional filtering
     // Request more results to allow for re-ranking with query boost and test function demotion
     let search_top_k = if code_only { top_k * 4 } else { top_k * 3 };
-    let results = searcher.search(query, search_top_k, subset.as_deref())?;
+
+    // Enhance semantic query with -e pattern if provided
+    // This helps ColBERT match the pattern even if it's not well represented in the vocabulary
+    let enhanced_query = match text_pattern {
+        Some(pattern) => format!("{} {}", query, pattern),
+        None => query.to_string(),
+    };
+    let results = searcher.search(&enhanced_query, search_top_k, subset.as_deref())?;
 
     // Note: When -e is used, results are already filtered to units containing the pattern
-    // via filter_by_text_pattern() above, so no additional grep filtering needed
+    // via filter_by_text_pattern_with_options() above, which supports -E, -F, -w flags
 
     // Apply query boost and re-sort results
     let mut results: Vec<_> = results
@@ -1246,7 +1209,7 @@ fn cmd_search(
                     .build()
                 {
                     Ok(re) => unit
-                        .code_preview
+                        .code
                         .lines()
                         .enumerate()
                         .filter_map(|(i, line)| {
@@ -1268,7 +1231,7 @@ fn cmd_search(
                     .build()
                 {
                     Ok(re) => unit
-                        .code_preview
+                        .code
                         .lines()
                         .enumerate()
                         .filter_map(|(i, line)| {
@@ -1284,7 +1247,7 @@ fn cmd_search(
             } else {
                 // Simple case-insensitive substring match (fixed string, no word boundary)
                 let pattern_lower = pattern.to_lowercase();
-                unit.code_preview
+                unit.code
                     .lines()
                     .enumerate()
                     .filter_map(|(i, line)| {
@@ -1791,7 +1754,7 @@ mod tests {
     use colgrep::{CodeUnit, Language, SearchResult, UnitType};
 
     /// Helper to create a test CodeUnit with minimal required fields
-    fn make_test_unit(name: &str, signature: &str, code_preview: &str, file: &str) -> CodeUnit {
+    fn make_test_unit(name: &str, signature: &str, code: &str, file: &str) -> CodeUnit {
         let mut unit = CodeUnit::new(
             name.to_string(),
             PathBuf::from(file),
@@ -1802,7 +1765,7 @@ mod tests {
             None,
         );
         unit.signature = signature.to_string();
-        unit.code_preview = code_preview.to_string();
+        unit.code = code.to_string();
         unit
     }
 
@@ -1931,7 +1894,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_final_score_code_preview_boost() {
+    fn test_compute_final_score_code_boost() {
         let unit = make_test_unit(
             "handler",
             "fn handler()",
