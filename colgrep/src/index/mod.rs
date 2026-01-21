@@ -968,14 +968,69 @@ pub struct SearchResult {
     pub score: f32,
 }
 
+/// Expand brace patterns like "*.{rs,md}" into ["*.rs", "*.md"]
+/// Supports multiple brace groups: "{src,lib}/**/*.{rs,md}" expands to all combinations
+fn expand_braces(pattern: &str) -> Vec<String> {
+    // Find the first brace group
+    let Some(start) = pattern.find('{') else {
+        return vec![pattern.to_string()];
+    };
+
+    let Some(end) = pattern[start..].find('}') else {
+        return vec![pattern.to_string()];
+    };
+    let end = start + end;
+
+    // Extract prefix, alternatives, and suffix
+    let prefix = &pattern[..start];
+    let alternatives = &pattern[start + 1..end];
+    let suffix = &pattern[end + 1..];
+
+    // Split alternatives by comma (handle nested braces by counting)
+    let mut results = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+
+    for c in alternatives.chars() {
+        match c {
+            '{' => {
+                depth += 1;
+                current.push(c);
+            }
+            '}' => {
+                depth -= 1;
+                current.push(c);
+            }
+            ',' if depth == 0 => {
+                let expanded = format!("{}{}{}", prefix, current, suffix);
+                // Recursively expand any remaining braces
+                results.extend(expand_braces(&expanded));
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+
+    // Don't forget the last alternative
+    if !current.is_empty() || alternatives.ends_with(',') {
+        let expanded = format!("{}{}{}", prefix, current, suffix);
+        results.extend(expand_braces(&expanded));
+    }
+
+    results
+}
+
 /// Build a GlobSet from patterns for efficient matching
 fn build_glob_set(patterns: &[String]) -> Option<GlobSet> {
     if patterns.is_empty() {
         return None;
     }
 
+    // Expand brace patterns first
+    let expanded_patterns: Vec<String> = patterns.iter().flat_map(|p| expand_braces(p)).collect();
+
     let mut builder = GlobSetBuilder::new();
-    for pattern in patterns {
+    for pattern in &expanded_patterns {
         // Prepend **/ if pattern doesn't start with ** or /
         // This makes "*.rs" match files in any directory
         let normalized = if !pattern.starts_with("**/") && !pattern.starts_with('/') {
@@ -1444,6 +1499,62 @@ mod tests {
         let patterns: Vec<String> = vec![];
         // Empty patterns should match everything
         assert!(matches_glob_pattern(Path::new("any/file.rs"), &patterns));
+    }
+
+    #[test]
+    fn test_expand_braces_simple() {
+        let expanded = expand_braces("*.{rs,md}");
+        assert_eq!(expanded, vec!["*.rs", "*.md"]);
+    }
+
+    #[test]
+    fn test_expand_braces_no_braces() {
+        let expanded = expand_braces("*.rs");
+        assert_eq!(expanded, vec!["*.rs"]);
+    }
+
+    #[test]
+    fn test_expand_braces_with_path() {
+        let expanded = expand_braces("src/**/*.{ts,tsx,js,jsx}");
+        assert_eq!(
+            expanded,
+            vec!["src/**/*.ts", "src/**/*.tsx", "src/**/*.js", "src/**/*.jsx"]
+        );
+    }
+
+    #[test]
+    fn test_expand_braces_prefix() {
+        let expanded = expand_braces("{src,lib}/**/*.rs");
+        assert_eq!(expanded, vec!["src/**/*.rs", "lib/**/*.rs"]);
+    }
+
+    #[test]
+    fn test_expand_braces_multiple_groups() {
+        let expanded = expand_braces("{src,lib}/*.{rs,md}");
+        assert_eq!(
+            expanded,
+            vec!["src/*.rs", "src/*.md", "lib/*.rs", "lib/*.md"]
+        );
+    }
+
+    #[test]
+    fn test_glob_brace_expansion() {
+        // Test that brace expansion works with glob matching
+        let patterns = vec!["*.{rs,py}".to_string()];
+        assert!(matches_glob_pattern(Path::new("main.rs"), &patterns));
+        assert!(matches_glob_pattern(Path::new("main.py"), &patterns));
+        assert!(!matches_glob_pattern(Path::new("main.js"), &patterns));
+    }
+
+    #[test]
+    fn test_glob_brace_expansion_with_directory() {
+        let patterns = vec!["src/**/*.{ts,tsx}".to_string()];
+        assert!(matches_glob_pattern(Path::new("src/app.ts"), &patterns));
+        assert!(matches_glob_pattern(
+            Path::new("src/components/Button.tsx"),
+            &patterns
+        ));
+        assert!(!matches_glob_pattern(Path::new("src/main.js"), &patterns));
     }
 
     #[test]
