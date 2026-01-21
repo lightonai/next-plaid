@@ -335,22 +335,6 @@ pub struct QueryMetadataResponse {
     pub count: usize,
 }
 
-/// Request to add or update metadata.
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct AddMetadataRequest {
-    /// Metadata entries to add
-    #[schema(example = json!([{"title": "Doc 1", "category": "science"}, {"title": "Doc 2", "category": "history"}]))]
-    pub metadata: Vec<serde_json::Value>,
-}
-
-/// Response after adding metadata.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct AddMetadataResponse {
-    /// Number of metadata entries added
-    #[schema(example = 2)]
-    pub added: usize,
-}
-
 /// Metadata count response.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct MetadataCountResponse {

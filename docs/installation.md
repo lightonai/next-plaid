@@ -19,7 +19,7 @@ Run NextPlaid in production using Docker containers. Both images support model i
       -v ~/.local/share/next-plaid:/data/indices \
       -v next-plaid-models:/models \
       ghcr.io/lightonai/next-plaid-api:latest \
-      --model lightonai/GTE-ModernColBERT-v1-onnx
+      --model lightonai/GTE-ModernColBERT-v1
     ```
 
 === "CUDA"
@@ -34,7 +34,7 @@ Run NextPlaid in production using Docker containers. Both images support model i
       -v ~/.local/share/next-plaid:/data/indices \
       -v next-plaid-models:/models \
       ghcr.io/lightonai/next-plaid-api:latest-cuda \
-      --model lightonai/GTE-ModernColBERT-v1-onnx
+      --model lightonai/GTE-ModernColBERT-v1
     ```
 
 ### Docker Compose
@@ -56,12 +56,12 @@ docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d
 
 The index and search always run on CPU. Model inference runs on CPU or GPU depending on the image.
 
-| Tag | Description | Model Inference |
-|-----|-------------|-----------------|
-| `latest` | Latest CPU release | CPU |
-| `X.Y.Z` | Specific version (CPU) | CPU |
-| `latest-cuda` | Latest CUDA release | GPU |
-| `X.Y.Z-cuda` | Specific version (CUDA) | GPU |
+| Tag           | Description             | Model Inference |
+| ------------- | ----------------------- | --------------- |
+| `latest`      | Latest CPU release      | CPU             |
+| `X.Y.Z`       | Specific version (CPU)  | CPU             |
+| `latest-cuda` | Latest CUDA release     | GPU             |
+| `X.Y.Z-cuda`  | Specific version (CUDA) | GPU             |
 
 ---
 
@@ -136,10 +136,10 @@ next-plaid = { git = "https://github.com/lightonai/next-plaid" }
 
 ### Feature Flags
 
-| Feature | Description |
-|---------|-------------|
-| `accelerate` | macOS BLAS acceleration |
-| `openblas` | Linux OpenBLAS acceleration |
+| Feature      | Description                 |
+| ------------ | --------------------------- |
+| `accelerate` | macOS BLAS acceleration     |
+| `openblas`   | Linux OpenBLAS acceleration |
 
 ---
 

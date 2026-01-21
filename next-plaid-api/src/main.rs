@@ -100,7 +100,6 @@ use state::{ApiConfig, AppState};
         handlers::rerank::rerank,
         handlers::rerank::rerank_with_encoding,
         handlers::metadata::get_all_metadata,
-        handlers::metadata::add_metadata,
         handlers::metadata::get_metadata_count,
         handlers::metadata::check_metadata,
         handlers::metadata::query_metadata,
@@ -136,8 +135,6 @@ use state::{ApiConfig, AppState};
         models::GetMetadataResponse,
         models::QueryMetadataRequest,
         models::QueryMetadataResponse,
-        models::AddMetadataRequest,
-        models::AddMetadataResponse,
         models::MetadataCountResponse,
         models::UpdateIndexConfigRequest,
         models::UpdateIndexConfigResponse,
@@ -408,10 +405,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/indices/{name}/search/filtered_with_encoding",
             post(handlers::search_filtered_with_encoding),
         )
-        .route(
-            "/indices/{name}/metadata",
-            get(handlers::get_all_metadata).post(handlers::add_metadata),
-        )
+        .route("/indices/{name}/metadata", get(handlers::get_all_metadata))
         .route(
             "/indices/{name}/metadata/count",
             get(handlers::get_metadata_count),

@@ -58,7 +58,7 @@ set ORT_DYLIB_PATH=C:\path\to\onnxruntime.dll  # Windows
 use next_plaid_onnx::Colbert;
 
 // Load model (auto-detects best available hardware)
-let model = Colbert::new("lightonai/GTE-ModernColBERT-v1-onnx")?;
+let model = Colbert::new("lightonai/GTE-ModernColBERT-v1")?;
 
 // Encode documents - returns Vec<Array2<f32>> with shape [num_tokens, embedding_dim]
 let doc_embeddings = model.encode_documents(&["Paris is the capital of France."], None)?;

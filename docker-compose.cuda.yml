@@ -10,7 +10,7 @@
 #   Downloaded HuggingFace models are cached at ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}
 #
 # CUDA Defaults (optimized for GPU):
-#   --model lightonai/GTE-ModernColBERT-v1-onnx --cuda --batch-size 64
+#   --model lightonai/GTE-ModernColBERT-v1 --cuda --batch-size 64
 #   (no --int8: GPU is fast enough with FP32, no --parallel: GPU handles parallelism)
 #
 # Rate Limiting & Concurrency (via environment variables):
@@ -62,7 +62,7 @@ services:
       - --index-dir
       - /data/indices
       - --model
-      - ${MODEL:-lightonai/GTE-ModernColBERT-v1-onnx}
+      - ${MODEL:-lightonai/GTE-ModernColBERT-v1}
       - --cuda
       - --batch-size
       - "64"

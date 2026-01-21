@@ -127,7 +127,7 @@ docker run -d \
   -v ~/.local/share/next-plaid:/data/indices \
   -v next-plaid-models:/models \
   ghcr.io/lightonai/next-plaid-api:latest \
-  --model lightonai/GTE-ModernColBERT-v1-onnx
+  --model lightonai/GTE-ModernColBERT-v1
 ```
 
 ## License

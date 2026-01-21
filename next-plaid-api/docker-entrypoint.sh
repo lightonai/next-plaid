@@ -21,8 +21,8 @@
 #
 # Examples:
 #   docker-entrypoint.sh --model /models/my-model --parallel 8
-#   docker-entrypoint.sh --model lightonai/GTE-ModernColBERT-v1-onnx --int8
-#   docker-entrypoint.sh --model lightonai/GTE-ModernColBERT-v1-onnx --cuda --batch-size 64
+#   docker-entrypoint.sh --model lightonai/GTE-ModernColBERT-v1 --int8
+#   docker-entrypoint.sh --model lightonai/GTE-ModernColBERT-v1 --cuda --batch-size 64
 #
 # Environment variables:
 #   HF_TOKEN     HuggingFace token for private models

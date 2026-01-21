@@ -20,11 +20,11 @@
 #
 # Auto-download model from HuggingFace Hub:
 #   docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices -v models:/models \
-#     next-plaid-api --model lightonai/GTE-ModernColBERT-v1-onnx
+#     next-plaid-api --model lightonai/GTE-ModernColBERT-v1
 #
 #   # With INT8 quantization (faster):
 #   docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices -v models:/models \
-#     next-plaid-api --model lightonai/GTE-ModernColBERT-v1-onnx --int8
+#     next-plaid-api --model lightonai/GTE-ModernColBERT-v1 --int8
 #
 # Vector Database Persistence:
 #   Default location: ~/.local/share/next-plaid/<index-name>/
@@ -215,7 +215,7 @@ ENV RUST_LOG=info
 ENV INDEX_DIR=/data/indices
 # Memory-mapped indices are always enabled for efficient memory usage
 # Set HF_MODEL_ID to auto-download model from HuggingFace Hub
-# Example: ENV HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1-onnx
+# Example: ENV HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1
 # Use --int8 flag to download INT8 quantized model (handled by entrypoint)
 
 # Health check
@@ -273,7 +273,7 @@ ENV RUST_LOG=info
 ENV INDEX_DIR=/data/indices
 # Memory-mapped indices are always enabled for efficient memory usage
 # Set HF_MODEL_ID to auto-download model from HuggingFace Hub
-# Example: ENV HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1-onnx
+# Example: ENV HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1
 # Use --int8 flag to download INT8 quantized model (handled by entrypoint)
 
 # Health check

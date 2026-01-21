@@ -5,7 +5,7 @@ These tests run against a real API server. To run them:
 
 1. Start the server:
    - Without model: ./target/release/next-plaid-api
-   - With model: ./target/release/next-plaid-api --model lightonai/GTE-ModernColBERT-v1-onnx
+   - With model: ./target/release/next-plaid-api --model lightonai/GTE-ModernColBERT-v1
 
 2. Run integration tests:
    pytest tests/test_integration.py -v
@@ -14,22 +14,21 @@ Note: The API uses lazy index creation - indices only fully exist after document
 are added via the /update endpoint.
 """
 
-import pytest
-import uuid
 import time
+import uuid
 
+import pytest
 from next_plaid_client import (
-    NextPlaidClient,
     AsyncNextPlaidClient,
-    IndexConfig,
-    SearchParams,
     Document,
-    IndexNotFoundError,
+    IndexConfig,
     IndexExistsError,
-    RerankResult,
+    IndexNotFoundError,
+    NextPlaidClient,
     RerankResponse,
+    RerankResult,
+    SearchParams,
 )
-
 
 # Server configuration
 SERVER_URL = "http://localhost:8080"
@@ -61,7 +60,7 @@ def has_model_loaded():
 # Skip all tests in this module if server is not available
 pytestmark = pytest.mark.skipif(
     not is_server_available(),
-    reason="Next Plaid API server is not running at localhost:8080"
+    reason="Next Plaid API server is not running at localhost:8080",
 )
 
 
@@ -75,6 +74,7 @@ def rate_limit_delay():
 def random_embedding(dim=128, seed=None):
     """Generate a random embedding vector."""
     import random
+
     if seed is not None:
         random.seed(seed)
     return [random.random() for _ in range(dim)]
@@ -128,8 +128,7 @@ def create_index_with_documents(client, index_name, num_docs=3, config=None):
 
     # Add documents to actually create the index
     documents = [
-        Document(embeddings=[random_embedding(seed=i)])
-        for i in range(num_docs)
+        Document(embeddings=[random_embedding(seed=i)]) for i in range(num_docs)
     ]
     metadata = [{"doc_id": i, "title": f"Document {i}"} for i in range(num_docs)]
 
@@ -186,7 +185,9 @@ class TestIndexManagement:
         indices = client.list_indices()
         assert unique_index_name not in indices
 
-    def test_create_index_with_documents(self, client, unique_index_name, cleanup_index):
+    def test_create_index_with_documents(
+        self, client, unique_index_name, cleanup_index
+    ):
         """Test creating a fully functional index with documents."""
         cleanup_index(unique_index_name)
 
@@ -274,7 +275,6 @@ class TestIndexManagement:
 
 import asyncio
 
-
 # ==================== Document and Search Tests ====================
 
 
@@ -290,9 +290,17 @@ class TestDocumentsAndSearch:
 
         # Add documents using unified add() method
         documents = [
-            Document(embeddings=[random_embedding(seed=100), random_embedding(seed=101)]),
+            Document(
+                embeddings=[random_embedding(seed=100), random_embedding(seed=101)]
+            ),
             Document(embeddings=[random_embedding(seed=200)]),
-            Document(embeddings=[random_embedding(seed=300), random_embedding(seed=301), random_embedding(seed=302)]),
+            Document(
+                embeddings=[
+                    random_embedding(seed=300),
+                    random_embedding(seed=301),
+                    random_embedding(seed=302),
+                ]
+            ),
         ]
         metadata = [
             {"title": "Document 1", "category": "science"},
@@ -312,9 +320,7 @@ class TestDocumentsAndSearch:
         # Search with a query embedding using unified search() method
         query_embedding = [random_embedding(seed=100)]  # Similar to doc 1
         results = client.search(
-            unique_index_name,
-            queries=[query_embedding],
-            params=SearchParams(top_k=2)
+            unique_index_name, queries=[query_embedding], params=SearchParams(top_k=2)
         )
 
         assert results.num_queries == 1
@@ -328,10 +334,7 @@ class TestDocumentsAndSearch:
 
         client.create_index(unique_index_name, IndexConfig(nbits=2))
 
-        documents = [
-            Document(embeddings=[random_embedding(seed=i)])
-            for i in range(5)
-        ]
+        documents = [Document(embeddings=[random_embedding(seed=i)]) for i in range(5)]
         metadata = [{"doc_id": i} for i in range(5)]
         client.add(unique_index_name, documents, metadata)
         time.sleep(2)
@@ -342,7 +345,7 @@ class TestDocumentsAndSearch:
             unique_index_name,
             queries=[query],
             subset=[0, 2, 4],
-            params=SearchParams(top_k=3)
+            params=SearchParams(top_k=3),
         )
 
         assert results.num_queries == 1
@@ -350,16 +353,15 @@ class TestDocumentsAndSearch:
         for doc_id in results.results[0].document_ids:
             assert doc_id in [0, 2, 4]
 
-    def test_search_with_metadata_filter(self, client, unique_index_name, cleanup_index):
+    def test_search_with_metadata_filter(
+        self, client, unique_index_name, cleanup_index
+    ):
         """Test searching with metadata filtering."""
         cleanup_index(unique_index_name)
 
         client.create_index(unique_index_name, IndexConfig(nbits=2))
 
-        documents = [
-            Document(embeddings=[random_embedding(seed=i)])
-            for i in range(4)
-        ]
+        documents = [Document(embeddings=[random_embedding(seed=i)]) for i in range(4)]
         metadata = [
             {"category": "A", "score": 10},
             {"category": "B", "score": 20},
@@ -376,23 +378,22 @@ class TestDocumentsAndSearch:
             queries=[query],
             filter_condition="category = ?",
             filter_parameters=["A"],
-            params=SearchParams(top_k=10)
+            params=SearchParams(top_k=10),
         )
 
         assert results.num_queries == 1
         # Should only return docs with category A (ids 0, 2)
         assert len(results.results[0].document_ids) <= 2
 
-    def test_delete_documents_by_metadata(self, client, unique_index_name, cleanup_index):
+    def test_delete_documents_by_metadata(
+        self, client, unique_index_name, cleanup_index
+    ):
         """Test deleting documents by metadata filter condition."""
         cleanup_index(unique_index_name)
 
         client.create_index(unique_index_name, IndexConfig(nbits=2))
 
-        documents = [
-            Document(embeddings=[random_embedding(seed=i)])
-            for i in range(4)
-        ]
+        documents = [Document(embeddings=[random_embedding(seed=i)]) for i in range(4)]
         metadata = [
             {"doc_id": 0, "category": "A"},
             {"doc_id": 1, "category": "B"},
@@ -407,9 +408,7 @@ class TestDocumentsAndSearch:
 
         # Delete documents with category A (async - returns message)
         result = client.delete(
-            unique_index_name,
-            condition="category = ?",
-            parameters=["A"]
+            unique_index_name, condition="category = ?", parameters=["A"]
         )
         # Should return a status message
         assert "queued" in result.lower() or "delete" in result.lower()
@@ -423,9 +422,7 @@ class TestDocumentsAndSearch:
 
         # Verify only category B documents remain
         query_result = client.query_metadata(
-            unique_index_name,
-            condition="category = ?",
-            parameters=["B"]
+            unique_index_name, condition="category = ?", parameters=["B"]
         )
         assert query_result["count"] == 2
 
@@ -435,19 +432,14 @@ class TestDocumentsAndSearch:
 
         client.create_index(unique_index_name, IndexConfig(nbits=2))
 
-        documents = [
-            Document(embeddings=[random_embedding(seed=i)])
-            for i in range(2)
-        ]
+        documents = [Document(embeddings=[random_embedding(seed=i)]) for i in range(2)]
         metadata = [{"category": "existing"} for _ in range(2)]
         client.add(unique_index_name, documents, metadata)
         time.sleep(2)
 
         # Delete with condition that matches nothing
         result = client.delete(
-            unique_index_name,
-            condition="category = ?",
-            parameters=["nonexistent"]
+            unique_index_name, condition="category = ?", parameters=["nonexistent"]
         )
         # Should return a message about no matches
         assert "no documents match" in result.lower()
@@ -456,16 +448,15 @@ class TestDocumentsAndSearch:
         info = client.get_index(unique_index_name)
         assert info.num_documents == 2
 
-    def test_delete_documents_complex_condition(self, client, unique_index_name, cleanup_index):
+    def test_delete_documents_complex_condition(
+        self, client, unique_index_name, cleanup_index
+    ):
         """Test delete with complex SQL condition."""
         cleanup_index(unique_index_name)
 
         client.create_index(unique_index_name, IndexConfig(nbits=2))
 
-        documents = [
-            Document(embeddings=[random_embedding(seed=i)])
-            for i in range(5)
-        ]
+        documents = [Document(embeddings=[random_embedding(seed=i)]) for i in range(5)]
         metadata = [
             {"year": 2020, "score": 50},
             {"year": 2021, "score": 100},
@@ -481,7 +472,7 @@ class TestDocumentsAndSearch:
         result = client.delete(
             unique_index_name,
             condition="year < ? AND score < ?",
-            parameters=[2022, 100]
+            parameters=[2022, 100],
         )
         assert "queued" in result.lower() or "delete" in result.lower()
 
@@ -509,7 +500,9 @@ class TestMetadata:
         assert count_result["has_metadata"] is True
 
         # Check metadata exists
-        check_result = client.check_metadata(unique_index_name, document_ids=[0, 1, 999])
+        check_result = client.check_metadata(
+            unique_index_name, document_ids=[0, 1, 999]
+        )
         assert 0 in check_result.existing_ids
         assert 1 in check_result.existing_ids
         assert 999 in check_result.missing_ids
@@ -517,19 +510,6 @@ class TestMetadata:
         # Get metadata by IDs
         get_result = client.get_metadata_by_ids(unique_index_name, document_ids=[0, 1])
         assert get_result.count == 2
-
-    def test_add_extra_metadata(self, client, unique_index_name, cleanup_index):
-        """Test adding additional metadata fields."""
-        cleanup_index(unique_index_name)
-        create_index_with_documents(client, unique_index_name, num_docs=2)
-
-        # Add extra metadata - note: _subset_ is auto-added, use document_id to identify
-        extra_metadata = [
-            {"document_id": 0, "extra_field": "value1"},
-            {"document_id": 1, "extra_field": "value2"},
-        ]
-        result = client.add_metadata(unique_index_name, extra_metadata)
-        assert result["added"] == 2
 
     def test_query_metadata(self, client, unique_index_name, cleanup_index):
         """Test querying metadata with SQL conditions."""
@@ -549,9 +529,7 @@ class TestMetadata:
 
         # Query for tech category
         result = client.query_metadata(
-            unique_index_name,
-            condition="category = ?",
-            parameters=["tech"]
+            unique_index_name, condition="category = ?", parameters=["tech"]
         )
         assert result["count"] == 2
         assert 0 in result["document_ids"]
@@ -562,8 +540,7 @@ class TestMetadata:
 
 
 @pytest.mark.skipif(
-    not has_model_loaded(),
-    reason="Server does not have a model loaded for encoding"
+    not has_model_loaded(), reason="Server does not have a model loaded for encoding"
 )
 class TestEncoding:
     """Test encoding operations (require model to be loaded)."""
@@ -571,8 +548,11 @@ class TestEncoding:
     def test_encode_documents(self, client):
         """Test encoding document texts."""
         result = client.encode(
-            texts=["Paris is the capital of France.", "Machine learning is fascinating."],
-            input_type="document"
+            texts=[
+                "Paris is the capital of France.",
+                "Machine learning is fascinating.",
+            ],
+            input_type="document",
         )
 
         assert result.num_texts == 2
@@ -585,8 +565,7 @@ class TestEncoding:
     def test_encode_queries(self, client):
         """Test encoding query texts."""
         result = client.encode(
-            texts=["What is the capital of France?"],
-            input_type="query"
+            texts=["What is the capital of France?"], input_type="query"
         )
 
         assert result.num_texts == 1
@@ -610,7 +589,7 @@ class TestEncoding:
                 {"title": "Paris", "country": "France"},
                 {"title": "Berlin", "country": "Germany"},
                 {"title": "Tokyo", "country": "Japan"},
-            ]
+            ],
         )
 
         time.sleep(3)  # Wait for encoding and indexing
@@ -619,7 +598,7 @@ class TestEncoding:
         results = client.search(
             unique_index_name,
             queries=["What is the capital of France?"],
-            params=SearchParams(top_k=3)
+            params=SearchParams(top_k=3),
         )
 
         assert results.num_queries == 1
@@ -627,7 +606,9 @@ class TestEncoding:
         # Paris document should be highly ranked (likely first)
         assert results.results[0].scores[0] > 0
 
-    def test_search_filtered_with_encoding(self, client, unique_index_name, cleanup_index):
+    def test_search_filtered_with_encoding(
+        self, client, unique_index_name, cleanup_index
+    ):
         """Test filtered search with text encoding using unified add/search methods."""
         cleanup_index(unique_index_name)
 
@@ -645,7 +626,7 @@ class TestEncoding:
                 {"type": "landmark", "country": "France"},
                 {"type": "landmark", "country": "Germany"},
                 {"type": "nature", "country": "Japan"},
-            ]
+            ],
         )
 
         time.sleep(3)
@@ -656,7 +637,7 @@ class TestEncoding:
             queries=["Famous structures in Europe"],
             filter_condition="type = ?",
             filter_parameters=["landmark"],
-            params=SearchParams(top_k=10)
+            params=SearchParams(top_k=10),
         )
 
         assert results.num_queries == 1
@@ -667,8 +648,7 @@ class TestEncoding:
     async def test_encode_async(self, async_client):
         """Test async encoding."""
         result = await async_client.encode(
-            texts=["Test document for async encoding."],
-            input_type="document"
+            texts=["Test document for async encoding."], input_type="document"
         )
 
         assert result.num_texts == 1
@@ -689,7 +669,9 @@ class TestRerank:
         # Create document embeddings
         documents = [
             {"embeddings": [random_embedding(seed=200), random_embedding(seed=201)]},
-            {"embeddings": [random_embedding(seed=100), random_embedding(seed=101)]},  # Similar to query
+            {
+                "embeddings": [random_embedding(seed=100), random_embedding(seed=101)]
+            },  # Similar to query
             {"embeddings": [random_embedding(seed=300)]},
         ]
 
@@ -767,7 +749,9 @@ class TestRerank:
         """Test async reranking with embeddings."""
         query = [random_embedding(seed=50), random_embedding(seed=51)]
         documents = [
-            {"embeddings": [random_embedding(seed=50), random_embedding(seed=51)]},  # Best match
+            {
+                "embeddings": [random_embedding(seed=50), random_embedding(seed=51)]
+            },  # Best match
             {"embeddings": [random_embedding(seed=200)]},
         ]
 
@@ -779,8 +763,7 @@ class TestRerank:
 
 
 @pytest.mark.skipif(
-    not has_model_loaded(),
-    reason="Server does not have a model loaded for encoding"
+    not has_model_loaded(), reason="Server does not have a model loaded for encoding"
 )
 class TestRerankWithEncoding:
     """Test reranking with text inputs (require model to be loaded)."""
@@ -793,7 +776,7 @@ class TestRerankWithEncoding:
                 "Berlin is the capital of Germany.",
                 "Paris is the capital of France and is known for the Eiffel Tower.",
                 "Tokyo is the largest city in Japan.",
-            ]
+            ],
         )
 
         assert isinstance(result, RerankResponse)
@@ -811,7 +794,7 @@ class TestRerankWithEncoding:
         """Test reranking a single text document."""
         result = client.rerank(
             query="Machine learning applications",
-            documents=["Deep learning is a subset of machine learning."]
+            documents=["Deep learning is a subset of machine learning."],
         )
 
         assert result.num_documents == 1
@@ -828,7 +811,7 @@ class TestRerankWithEncoding:
                 "Machine learning is a branch of AI that enables computers to learn from data.",
                 "Natural language processing allows computers to understand human language.",
             ],
-            pool_factor=2
+            pool_factor=2,
         )
 
         assert result.num_documents == 3
@@ -844,7 +827,7 @@ class TestRerankWithEncoding:
                 "The history of ancient Rome spans over a thousand years.",
                 "Python can be used for backend web development with Django.",
                 "Photosynthesis is how plants convert sunlight to energy.",
-            ]
+            ],
         )
 
         assert result.num_documents == 4
@@ -866,7 +849,7 @@ class TestRerankWithEncoding:
                 "The Great Wall of China is one of the longest structures ever built.",
                 "The Eiffel Tower in Paris is a famous iron lattice tower.",
                 "The Colosseum in Rome is an ancient amphitheater.",
-            ]
+            ],
         )
 
         assert isinstance(result, RerankResponse)

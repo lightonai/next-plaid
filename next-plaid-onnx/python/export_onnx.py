@@ -166,8 +166,11 @@ def export_to_onnx(model_name: str, output_dir: Path) -> None:
     tokenizer.backend_tokenizer.save(str(tokenizer_output_path))
     print(f"Saved tokenizer to: {tokenizer_output_path}")
 
-    # Save config_sentence_transformers.json with model configuration
-    config = {
+    # Get do_lower_case from the transformer module (sentence-transformers preprocessing)
+    do_lower_case = getattr(pylate_model[0], "do_lower_case", False)
+
+    # Save onnx_config.json with ONNX-specific configuration for inference
+    onnx_config = {
         "model_type": "ColBERT",
         "model_name": model_name,
         "model_class": arch_info["model_class"],
@@ -184,11 +187,12 @@ def export_to_onnx(model_name: str, output_dir: Path) -> None:
         "pad_token_id": int(pylate_model.tokenizer.pad_token_id or 0),
         "query_prefix_id": int(pylate_model.query_prefix_id),
         "document_prefix_id": int(pylate_model.document_prefix_id),
+        "do_lower_case": do_lower_case,
     }
-    config_output_path = output_dir / "config_sentence_transformers.json"
-    with open(config_output_path, "w") as f:
-        json.dump(config, f, indent=2)
-    print(f"Saved config to: {config_output_path}")
+    onnx_config_path = output_dir / "onnx_config.json"
+    with open(onnx_config_path, "w") as f:
+        json.dump(onnx_config, f, indent=2)
+    print(f"Saved ONNX config to: {onnx_config_path}")
 
     # Create dummy inputs with reasonable dimensions
     dummy_text = "[D] This is a sample text for ONNX export"
@@ -254,7 +258,7 @@ def export_to_onnx(model_name: str, output_dir: Path) -> None:
     for input_tensor in onnx_model.graph.input:
         print(f"  - {input_tensor.name}")
 
-    return config
+    return onnx_config
 
 
 def main():

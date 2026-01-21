@@ -280,7 +280,7 @@ fn configure_directml(_builder: SessionBuilder) -> Result<SessionBuilder> {
 
 /// Configuration for ColBERT model behavior.
 ///
-/// This is automatically loaded from `config_sentence_transformers.json` when loading a model.
+/// This is automatically loaded from `onnx_config.json` when loading a model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColbertConfig {
     /// Prefix prepended to queries (e.g., "\[Q\] " or "\[unused0\]")
@@ -399,21 +399,21 @@ impl ColbertConfig {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(path.as_ref())
             .with_context(|| format!("Failed to read config from {:?}", path.as_ref()))?;
-        let config: ColbertConfig = serde_json::from_str(&content)
-            .with_context(|| "Failed to parse config_sentence_transformers.json")?;
+        let config: ColbertConfig =
+            serde_json::from_str(&content).with_context(|| "Failed to parse onnx_config.json")?;
         Ok(config)
     }
 
     fn from_model_dir<P: AsRef<Path>>(model_dir: P) -> Result<Self> {
-        let config_path = model_dir.as_ref().join("config_sentence_transformers.json");
-        if config_path.exists() {
-            Self::from_file(&config_path)
-        } else {
-            anyhow::bail!(
-                "config_sentence_transformers.json not found in {:?}. This file is required for ColBERT model configuration.",
-                model_dir.as_ref()
-            )
+        let onnx_config_path = model_dir.as_ref().join("onnx_config.json");
+        if onnx_config_path.exists() {
+            return Self::from_file(&onnx_config_path);
         }
+
+        anyhow::bail!(
+            "onnx_config.json not found in {:?}. This file is required for ColBERT model configuration.",
+            model_dir.as_ref()
+        )
     }
 
     /// Get the model name (if specified in config).
@@ -598,7 +598,7 @@ impl ColbertBuilder {
 
         // Create sessions
         let mut sessions = Vec::with_capacity(self.num_sessions);
-        for i in 0..self.num_sessions {
+        for _ in 0..self.num_sessions {
             let builder = Session::builder()?
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
                 .with_intra_threads(self.threads_per_session)?
@@ -612,16 +612,6 @@ impl ColbertBuilder {
             let session = builder
                 .commit_from_file(&onnx_path)
                 .context("Failed to load ONNX model")?;
-
-            // Auto-detect token_type_ids support from the first session's inputs
-            if i == 0 {
-                let input_names: Vec<_> = session.inputs().iter().map(|i| i.name()).collect();
-                let has_token_type_ids = input_names.contains(&"token_type_ids");
-                if !has_token_type_ids && config.uses_token_type_ids {
-                    // Model doesn't have token_type_ids input, override config
-                    config.uses_token_type_ids = false;
-                }
-            }
 
             sessions.push(Mutex::new(session));
         }

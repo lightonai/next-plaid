@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task;
 use tokio::time::Instant;
 
-use next_plaid::{filtering, IndexConfig, MmapIndex, UpdateConfig};
+use next_plaid::{filtering, IndexConfig, Metadata, MmapIndex, UpdateConfig};
 
 use crate::error::{ApiError, ApiResult};
 use crate::handlers::encode::encode_texts_internal;
@@ -97,7 +97,8 @@ static INDEX_SEMAPHORES: OnceLock<std::sync::Mutex<HashMap<String, Arc<Semaphore
     OnceLock::new();
 
 /// Helper to get (or create) an async mutex for a specific index name.
-fn get_index_lock(name: &str) -> Arc<Mutex<()>> {
+/// Used to serialize updates to a specific index.
+pub fn get_index_lock(name: &str) -> Arc<Mutex<()>> {
     let locks: &std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> =
         INDEX_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     let mut map = locks.lock().unwrap();
@@ -239,6 +240,26 @@ async fn process_batch(
             .map_err(|e| format!("Failed to open config: {}", e))?;
         let stored_config: IndexConfigStored = serde_json::from_reader(config_file)
             .map_err(|e| format!("Failed to parse config: {}", e))?;
+
+        // Check sync before updating: if both index and filtering DB exist, their counts must match
+        let index_path = std::path::Path::new(&path_str);
+        let metadata_json_exists = index_path.join("metadata.json").exists();
+        let filtering_exists = filtering::exists(&path_str);
+
+        if metadata_json_exists && filtering_exists {
+            let index_metadata = Metadata::load_from_path(index_path)
+                .map_err(|e| format!("Failed to load index metadata: {}", e))?;
+            let filtering_count = filtering::count(&path_str)
+                .map_err(|e| format!("Failed to get filtering count: {}", e))?;
+
+            if index_metadata.num_documents != filtering_count {
+                return Err(format!(
+                    "Index out of sync: vector index has {} documents but metadata DB has {}. \
+                     A full rebuild is required.",
+                    index_metadata.num_documents, filtering_count
+                ));
+            }
+        }
 
         // Build IndexConfig
         let index_config = IndexConfig {
@@ -626,6 +647,22 @@ pub async fn add_documents(
                 .index_path(&name_inner)
                 .to_string_lossy()
                 .to_string();
+
+            // Check sync before updating: if filtering DB exists, counts must match
+            let index_path = std::path::Path::new(&path_str);
+            if filtering::exists(&path_str) {
+                let index_metadata = Metadata::load_from_path(index_path)?;
+                let filtering_count = filtering::count(&path_str)?;
+
+                if index_metadata.num_documents != filtering_count {
+                    return Err(ApiError::Internal(format!(
+                        "Index out of sync: vector index has {} documents but metadata DB has {}. \
+                         A full rebuild is required.",
+                        index_metadata.num_documents, filtering_count
+                    )));
+                }
+            }
+
             let mut index = MmapIndex::load(&path_str)?;
 
             // Update with metadata (metadata is required)
@@ -764,6 +801,20 @@ pub async fn delete_documents(
                 .index_path(&name_inner)
                 .to_string_lossy()
                 .to_string();
+
+            // Check sync before deleting: counts must match
+            let index_path = std::path::Path::new(&path_str);
+            let index_metadata = Metadata::load_from_path(index_path)?;
+            let filtering_count = filtering::count(&path_str)?;
+
+            if index_metadata.num_documents != filtering_count {
+                return Err(ApiError::Internal(format!(
+                    "Index out of sync: vector index has {} documents but metadata DB has {}. \
+                     A full rebuild is required.",
+                    index_metadata.num_documents, filtering_count
+                )));
+            }
+
             let mut index = MmapIndex::load(&path_str)?;
 
             // Delete documents by IDs

@@ -13,7 +13,7 @@ docker run -d \
   -v ~/.local/share/next-plaid:/data/indices \
   -v ~/.cache/huggingface/next-plaid:/models \
   ghcr.io/lightonai/next-plaid-api:latest \
-  --model lightonai/GTE-ModernColBERT-v1-onnx
+  --model lightonai/GTE-ModernColBERT-v1
 ```
 
 Verify:
@@ -55,23 +55,23 @@ docker build -t next-plaid-api:cuda -f next-plaid-api/Dockerfile --target runtim
 
 The API accepts the following command-line options:
 
-| Option              | Default                              | Description                               |
-| ------------------- | ------------------------------------ | ----------------------------------------- |
-| `--model <path>`    | -                                    | HuggingFace model ID or local path        |
-| `--int8`            | `false`                              | Use INT8 quantized model (~2x faster CPU) |
-| `--cuda`            | `false`                              | Use CUDA for inference (GPU builds only)  |
-| `--parallel <N>`    | `1`                                  | Number of parallel ONNX sessions          |
-| `--batch-size <N>`  | `1`                                  | Batch size per session                    |
-| `--threads <N>`     | auto                                 | Threads per ONNX session                  |
-| `--query-length`    | `48`                                 | Max query length in tokens                |
-| `--document-length` | `300`                                | Max document length in tokens             |
-| `--host`            | `127.0.0.1`                          | Host to bind                              |
-| `--port`            | `8080`                               | Port to bind                              |
-| `--index-dir`       | `/data/indices`                      | Directory for index storage               |
+| Option              | Default         | Description                               |
+| ------------------- | --------------- | ----------------------------------------- |
+| `--model <path>`    | -               | HuggingFace model ID or local path        |
+| `--int8`            | `false`         | Use INT8 quantized model (~2x faster CPU) |
+| `--cuda`            | `false`         | Use CUDA for inference (GPU builds only)  |
+| `--parallel <N>`    | `1`             | Number of parallel ONNX sessions          |
+| `--batch-size <N>`  | `1`             | Batch size per session                    |
+| `--threads <N>`     | auto            | Threads per ONNX session                  |
+| `--query-length`    | `48`            | Max query length in tokens                |
+| `--document-length` | `300`           | Max document length in tokens             |
+| `--host`            | `127.0.0.1`     | Host to bind                              |
+| `--port`            | `8080`          | Port to bind                              |
+| `--index-dir`       | `/data/indices` | Directory for index storage               |
 
 ### Model Download
 
-When `--model` contains a HuggingFace model ID (e.g., `lightonai/GTE-ModernColBERT-v1-onnx`), the entrypoint script automatically downloads the model to `/models/`. Set `HF_TOKEN` for private models.
+When `--model` contains a HuggingFace model ID (e.g., `lightonai/GTE-ModernColBERT-v1`), the entrypoint script automatically downloads the model to `/models/`. Set `HF_TOKEN` for private models.
 
 ---
 
@@ -115,7 +115,7 @@ services:
       - --index-dir
       - /data/indices
       - --model
-      - lightonai/GTE-ModernColBERT-v1-onnx
+      - lightonai/GTE-ModernColBERT-v1
       - --parallel
       - "4"
       - --batch-size
@@ -125,7 +125,8 @@ services:
       - --document-length
       - "300"
     healthcheck:
-      test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
+      test:
+        ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
       interval: 15s
       timeout: 5s
       retries: 2
@@ -176,7 +177,7 @@ services:
       - --index-dir
       - /data/indices
       - --model
-      - lightonai/GTE-ModernColBERT-v1-onnx
+      - lightonai/GTE-ModernColBERT-v1
       - --cuda
       - --batch-size
       - "64"
@@ -308,7 +309,7 @@ services:
 ```
 
 !!! warning "Replicas and Index Updates"
-    When running multiple replicas, **do not update the index** as NextPlaid does not currently handle replica synchronization. Each replica should either:
+When running multiple replicas, **do not update the index** as NextPlaid does not currently handle replica synchronization. Each replica should either:
 
     - Point to a **read-only** shared index (as shown above)
     - Point to a **distinct index** if write operations are required

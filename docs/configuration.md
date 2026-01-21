@@ -207,7 +207,7 @@ Configure the API server via environment variables.
 docker run -d \
   -e RUST_LOG=debug \
   -e INDEX_DIR=/data/my_indices \
-  -e MODEL=lightonai/GTE-ModernColBERT-v1-onnx \
+  -e MODEL=lightonai/GTE-ModernColBERT-v1 \
   -p 8080:8080 \
   ghcr.io/lightonai/next-plaid-api:latest
 ```
@@ -234,7 +234,7 @@ OPTIONS:
 ./next-plaid-api \
   --index-dir ./my_indices \
   --port 9090 \
-  --model lightonai/GTE-ModernColBERT-v1-onnx
+  --model lightonai/GTE-ModernColBERT-v1
 ```
 
 ---

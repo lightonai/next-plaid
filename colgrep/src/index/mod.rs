@@ -10,7 +10,7 @@ use ignore::gitignore::GitignoreBuilder;
 use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use next_plaid::{
-    delete_from_index, filtering, IndexConfig, MmapIndex, SearchParameters, UpdateConfig,
+    delete_from_index, filtering, IndexConfig, Metadata, MmapIndex, SearchParameters, UpdateConfig,
 };
 use next_plaid_onnx::Colbert;
 use serde::{Deserialize, Serialize};
@@ -103,15 +103,12 @@ impl IndexBuilder {
 
         // Check if metadata DB is in sync with vector index
         // If document counts don't match, do a full rebuild to avoid UNIQUE constraint errors
+        // Use Metadata::load_from_path which infers num_documents from doclens files if missing
         if let Ok(metadata_count) = filtering::count(index_path_str) {
-            if let Ok(content) = std::fs::read_to_string(index_path.join("metadata.json")) {
-                if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(index_count) = meta.get("num_documents").and_then(|v| v.as_u64()) {
-                        if metadata_count as u64 != index_count {
-                            // Metadata DB and vector index are out of sync
-                            return self.full_rebuild(languages);
-                        }
-                    }
+            if let Ok(index_metadata) = Metadata::load_from_path(&index_path) {
+                if metadata_count != index_metadata.num_documents {
+                    // Metadata DB and vector index are out of sync
+                    return self.full_rebuild(languages);
                 }
             }
         }

@@ -23,8 +23,8 @@ use tower_http::cors::{Any, CorsLayer};
 use next_plaid_api::{
     handlers,
     models::{
-        AddMetadataResponse, CheckMetadataResponse, CreateIndexResponse, GetMetadataResponse,
-        IndexInfoResponse, QueryMetadataResponse, RerankResponse, SearchResponse,
+        CheckMetadataResponse, CreateIndexResponse, GetMetadataResponse, IndexInfoResponse,
+        QueryMetadataResponse, RerankResponse, SearchResponse,
     },
     state::{ApiConfig, AppState},
 };
@@ -231,10 +231,7 @@ fn build_test_router(state: Arc<AppState>) -> Router {
 
     // Metadata routes
     let metadata_routes = Router::new()
-        .route(
-            "/{name}/metadata",
-            get(handlers::get_all_metadata).post(handlers::add_metadata),
-        )
+        .route("/{name}/metadata", get(handlers::get_all_metadata))
         .route("/{name}/metadata/count", get(handlers::get_metadata_count))
         .route("/{name}/metadata/check", post(handlers::check_metadata))
         .route("/{name}/metadata/query", post(handlers::query_metadata))
@@ -314,10 +311,7 @@ fn build_rate_limited_test_router(
 
     // Metadata routes
     let metadata_routes = Router::new()
-        .route(
-            "/{name}/metadata",
-            get(handlers::get_all_metadata).post(handlers::add_metadata),
-        )
+        .route("/{name}/metadata", get(handlers::get_all_metadata))
         .route("/{name}/metadata/count", get(handlers::get_metadata_count))
         .route("/{name}/metadata/check", post(handlers::check_metadata))
         .route("/{name}/metadata/query", post(handlers::query_metadata))
@@ -1012,50 +1006,6 @@ async fn test_get_metadata() {
 }
 
 #[tokio::test]
-async fn test_add_metadata_to_existing() {
-    let fixture = TestFixture::new().await;
-    let dim = 32;
-
-    // Create and populate index with initial metadata (metadata is required)
-    let documents = generate_documents(5, 10, dim);
-    let initial_metadata = generate_default_metadata(5);
-    fixture
-        .create_and_populate_index("add_meta_later_test", documents, initial_metadata, None)
-        .await;
-
-    // Add more metadata (appends to existing metadata)
-    let additional_metadata: Vec<Value> = (5..10)
-        .map(|i| json!({"title": format!("Additional Title {}", i)}))
-        .collect();
-
-    let resp = fixture
-        .client
-        .post(fixture.url("/indices/add_meta_later_test/metadata"))
-        .json(&json!({
-            "metadata": additional_metadata
-        }))
-        .send()
-        .await
-        .unwrap();
-
-    assert!(resp.status().is_success());
-    let body: AddMetadataResponse = resp.json().await.unwrap();
-    assert_eq!(body.added, 5);
-
-    // Verify - should have 10 total metadata entries (5 initial + 5 added)
-    let resp = fixture
-        .client
-        .get(fixture.url("/indices/add_meta_later_test/metadata/count"))
-        .send()
-        .await
-        .unwrap();
-
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["count"], 10); // 5 initial + 5 additional
-    assert_eq!(body["has_metadata"], true);
-}
-
-#[tokio::test]
 async fn test_delete_documents() {
     let fixture = TestFixture::new().await;
     let dim = 32;
@@ -1221,18 +1171,6 @@ async fn test_empty_request_validation() {
         .post(fixture.url("/indices/validation_test/documents"))
         .json(&json!({
             "documents": [],
-            "metadata": []
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
-
-    // Empty metadata
-    let resp = fixture
-        .client
-        .post(fixture.url("/indices/validation_test/metadata"))
-        .json(&json!({
             "metadata": []
         }))
         .send()
@@ -1905,10 +1843,7 @@ fn build_model_test_router(state: Arc<AppState>) -> Router {
 
     // Metadata routes
     let metadata_routes = Router::new()
-        .route(
-            "/{name}/metadata",
-            get(handlers::get_all_metadata).post(handlers::add_metadata),
-        )
+        .route("/{name}/metadata", get(handlers::get_all_metadata))
         .route("/{name}/metadata/count", get(handlers::get_metadata_count))
         .route("/{name}/metadata/check", post(handlers::check_metadata))
         .route("/{name}/metadata/query", post(handlers::query_metadata))

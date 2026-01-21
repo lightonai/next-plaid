@@ -248,14 +248,15 @@ fn delete_from_index_impl(doc_ids: &[i64], index_path: &str, clean_buffer: bool)
         0.0
     };
 
-    let final_metadata = serde_json::json!({
-        "num_chunks": num_chunks,
-        "nbits": nbits,
-        "num_partitions": num_partitions,
-        "num_embeddings": total_embeddings,
-        "avg_doclen": final_avg_doclen,
-        "num_documents": final_num_documents,
-    });
+    let final_metadata = Metadata {
+        num_chunks,
+        nbits,
+        num_partitions,
+        num_embeddings: total_embeddings,
+        avg_doclen: final_avg_doclen,
+        num_documents: final_num_documents,
+        next_plaid_compatible: metadata.next_plaid_compatible,
+    };
 
     serde_json::to_writer_pretty(
         BufWriter::new(File::create(&metadata_path)?),

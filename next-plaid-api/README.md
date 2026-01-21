@@ -49,7 +49,7 @@ docker run -d \
   -v ~/.local/share/next-plaid:/data/indices \
   -v next-plaid-models:/models \
   ghcr.io/lightonai/next-plaid-api:latest \
-  --model lightonai/GTE-ModernColBERT-v1-onnx
+  --model lightonai/GTE-ModernColBERT-v1
 
 # Verify it's running
 curl http://localhost:8080/health
@@ -79,7 +79,7 @@ sudo apt install libopenblas-dev
 cargo build --release -p next-plaid-api --features openblas,model
 
 # Run with a model
-./target/release/next-plaid-api -p 8080 -d ./indices --model lightonai/GTE-ModernColBERT-v1-onnx
+./target/release/next-plaid-api -p 8080 -d ./indices --model lightonai/GTE-ModernColBERT-v1
 ```
 
 ## Docker Variants
@@ -101,7 +101,7 @@ docker run -d \
   -v ~/.local/share/next-plaid:/data/indices \
   -v next-plaid-models:/models \
   ghcr.io/lightonai/next-plaid-api:cuda \
-  --model lightonai/GTE-ModernColBERT-v1-onnx --int8 --cuda
+  --model lightonai/GTE-ModernColBERT-v1 --int8 --cuda
 ```
 
 ## API Documentation
@@ -292,16 +292,16 @@ for doc_id, score in zip(results.results[0].document_ids, results.results[0].sco
 
 ### Rate Limiting & Concurrency
 
-| Variable                    | Default | Description                                         |
-| --------------------------- | ------- | --------------------------------------------------- |
-| `RATE_LIMIT_PER_SECOND`     | `50`    | Max requests per second (sustained rate)            |
-| `RATE_LIMIT_BURST_SIZE`     | `100`   | Burst size for rate limiting                        |
-| `CONCURRENCY_LIMIT`         | `100`   | Max concurrent in-flight requests                   |
-| `MAX_QUEUED_TASKS_PER_INDEX`| `10`    | Max queued updates/deletes per index (semaphore)    |
-| `MAX_BATCH_DOCUMENTS`       | `300`   | Max documents to batch before processing            |
-| `BATCH_CHANNEL_SIZE`        | `100`   | Buffer size for document batch queue                |
-| `MAX_BATCH_TEXTS`           | `64`    | Max texts to batch for encoding                     |
-| `ENCODE_BATCH_CHANNEL_SIZE` | `256`   | Buffer size for encode batch queue                  |
+| Variable                     | Default | Description                                      |
+| ---------------------------- | ------- | ------------------------------------------------ |
+| `RATE_LIMIT_PER_SECOND`      | `50`    | Max requests per second (sustained rate)         |
+| `RATE_LIMIT_BURST_SIZE`      | `100`   | Burst size for rate limiting                     |
+| `CONCURRENCY_LIMIT`          | `100`   | Max concurrent in-flight requests                |
+| `MAX_QUEUED_TASKS_PER_INDEX` | `10`    | Max queued updates/deletes per index (semaphore) |
+| `MAX_BATCH_DOCUMENTS`        | `300`   | Max documents to batch before processing         |
+| `BATCH_CHANNEL_SIZE`         | `100`   | Buffer size for document batch queue             |
+| `MAX_BATCH_TEXTS`            | `64`    | Max texts to batch for encoding                  |
+| `ENCODE_BATCH_CHANNEL_SIZE`  | `256`   | Buffer size for encode batch queue               |
 
 These can be set via Docker Compose environment section or `.env` file.
 

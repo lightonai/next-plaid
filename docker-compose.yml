@@ -34,7 +34,7 @@
 #   ENCODE_BATCH_CHANNEL_SIZE   Buffer size for encode batch queue (default: 256)
 #
 # CPU Defaults (optimized for throughput):
-#   --model lightonai/GTE-ModernColBERT-v1-onnx --parallel 8 --batch-size 4
+#   --model lightonai/GTE-ModernColBERT-v1 --parallel 8 --batch-size 4
 #
 # Examples:
 #   # Default configuration
@@ -89,7 +89,7 @@ services:
       - --index-dir
       - /data/indices
       - --model
-      - ${MODEL:-lightonai/GTE-ModernColBERT-v1-onnx}
+      - ${MODEL:-lightonai/GTE-ModernColBERT-v1}
       - --int8
       - --parallel
       - "4"

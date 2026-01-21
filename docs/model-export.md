@@ -90,22 +90,7 @@ pylate-onnx-export lightonai/GTE-ModernColBERT-v1 \
 
 ## ✅ Supported Models
 
-Any PyLate-compatible ColBERT model should work. Tested models:
-
-| Model | HuggingFace ID |
-|-------|----------------|
-| GTE-ModernColBERT | `lightonai/GTE-ModernColBERT-v1` |
-| ColBERT-v2 | `colbert-ir/colbertv2.0` |
-
-### Using Custom Models
-
-Models must have:
-
-- A compatible tokenizer
-- A forward method that returns token embeddings
-- Proper configuration for sequence length
-
----
+Any PyLate-compatible ColBERT model should work.
 
 ## Using Exported Models
 
@@ -126,7 +111,7 @@ Or from HuggingFace:
 docker run -d \
   -p 8080:8080 \
   ghcr.io/lightonai/next-plaid-api:latest \
-  --model lightonai/GTE-ModernColBERT-v1-onnx
+  --model lightonai/GTE-ModernColBERT-v1
 ```
 
 ### With Python SDK
@@ -148,99 +133,3 @@ results = client.search(
     queries=["What is machine learning?"]
 )
 ```
-
----
-
-## Quantization
-
-### Benefits
-
-| Aspect | FP32 | INT8 |
-|--------|------|------|
-| Model size | ~440 MB | ~110 MB |
-| Inference speed | 1x | 2-3x |
-| Quality | Baseline | ~99% of baseline |
-
-### When to Use
-
-- **Use INT8**: Production deployments, CPU inference
-- **Use FP32**: When maximum quality is required
-
-### Quantize Existing Model
-
-If you have an existing ONNX model:
-
-```bash
-colbert-quantize ./model.onnx -o ./model_int8.onnx
-```
-
----
-
-## 🔧 Troubleshooting
-
-### Export Fails
-
-**"Model not found"**
-
-- Check the model ID on HuggingFace
-- Ensure you have network access
-- For private models, set `HF_TOKEN`
-
-**"Out of memory"**
-
-- Reduce batch size: Some models require significant memory during export
-- Use a machine with more RAM
-
-### Model Doesn't Load in NextPlaid
-
-**"Invalid ONNX model"**
-
-- Ensure the model was exported with the correct opset version
-- Try re-exporting with the latest version of the tool
-
-**"Tokenizer error"**
-
-- Ensure `tokenizer.json` is present in the model directory
-- Some models may need tokenizer config adjustments
-
----
-
-## Pre-exported Models
-
-LightOn provides pre-exported models:
-
-| Model | HuggingFace ID |
-|-------|----------------|
-| GTE-ModernColBERT-v1 (ONNX) | `lightonai/GTE-ModernColBERT-v1-onnx` |
-
-Use directly without exporting:
-
-```bash
-docker run -d \
-  -p 8080:8080 \
-  ghcr.io/lightonai/next-plaid-api:latest \
-  --model lightonai/GTE-ModernColBERT-v1-onnx
-```
-
----
-
-## 🚀 Performance Tips
-
-### ONNX Runtime Optimization
-
-The NextPlaid server automatically:
-
-- Uses INT8 quantization when available
-- Enables parallel sessions for throughput
-- Selects optimal execution provider (CPU, CUDA)
-
-### Hardware Acceleration
-
-| Platform | Acceleration |
-|----------|-------------|
-| Intel CPU | OpenVINO / MKL |
-| AMD CPU | Default BLAS |
-| NVIDIA GPU | CUDA / TensorRT |
-| Apple Silicon | CoreML |
-
-The CUDA Docker image includes GPU support automatically.

@@ -1,6 +1,6 @@
 //! Metadata handlers.
 //!
-//! Handles metadata operations: check, query, get, and add.
+//! Handles metadata operations: check, query, and get.
 
 use std::sync::Arc;
 
@@ -14,9 +14,8 @@ use next_plaid::filtering;
 
 use crate::error::{ApiError, ApiResult};
 use crate::models::{
-    AddMetadataRequest, AddMetadataResponse, CheckMetadataRequest, CheckMetadataResponse,
-    ErrorResponse, GetMetadataRequest, GetMetadataResponse, MetadataCountResponse,
-    QueryMetadataRequest, QueryMetadataResponse,
+    CheckMetadataRequest, CheckMetadataResponse, ErrorResponse, GetMetadataRequest,
+    GetMetadataResponse, MetadataCountResponse, QueryMetadataRequest, QueryMetadataResponse,
 };
 use crate::state::AppState;
 
@@ -280,69 +279,6 @@ pub async fn get_all_metadata(
         count: metadata.len(),
         metadata,
     }))
-}
-
-/// Add or update metadata for documents.
-///
-/// Note: This appends metadata entries. The `_subset_` IDs are auto-assigned
-/// starting from the next available ID.
-#[utoipa::path(
-    post,
-    path = "/indices/{name}/metadata",
-    tag = "metadata",
-    params(
-        ("name" = String, Path, description = "Index name")
-    ),
-    request_body = AddMetadataRequest,
-    responses(
-        (status = 200, description = "Metadata added successfully", body = AddMetadataResponse),
-        (status = 400, description = "Invalid request", body = ErrorResponse),
-        (status = 404, description = "Index not found", body = ErrorResponse)
-    )
-)]
-pub async fn add_metadata(
-    State(state): State<Arc<AppState>>,
-    Path(name): Path<String>,
-    Json(req): Json<AddMetadataRequest>,
-) -> ApiResult<Json<AddMetadataResponse>> {
-    if req.metadata.is_empty() {
-        return Err(ApiError::BadRequest("No metadata provided".to_string()));
-    }
-
-    let path_str = state.index_path(&name).to_string_lossy().to_string();
-
-    // Check if index exists
-    if !state.index_exists_on_disk(&name) {
-        return Err(ApiError::IndexNotFound(name));
-    }
-
-    // Run blocking SQLite operations in a separate thread
-    let metadata = req.metadata.clone();
-    let added = task::spawn_blocking(move || {
-        // Create or update metadata
-        // Compute document IDs starting from current count (for standalone metadata additions)
-        if filtering::exists(&path_str) {
-            // Update existing database - IDs start after current max
-            let current_count = filtering::count(&path_str)
-                .map_err(|e| ApiError::Internal(format!("Failed to get metadata count: {}", e)))?;
-            let doc_ids: Vec<i64> = (current_count..current_count + metadata.len())
-                .map(|i| i as i64)
-                .collect();
-            filtering::update(&path_str, &metadata, &doc_ids)
-                .map_err(|e| ApiError::Internal(format!("Failed to update metadata: {}", e)))
-        } else {
-            // Create new database - IDs start from 0
-            let doc_ids: Vec<i64> = (0..metadata.len() as i64).collect();
-            filtering::create(&path_str, &metadata, &doc_ids)
-                .map_err(|e| ApiError::Internal(format!("Failed to create metadata: {}", e)))
-        }
-    })
-    .await
-    .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))??;
-
-    tracing::info!(index = %name, count = added, "Metadata added");
-
-    Ok(Json(AddMetadataResponse { added }))
 }
 
 /// Get the count of metadata entries for an index.

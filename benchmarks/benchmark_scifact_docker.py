@@ -61,7 +61,7 @@ class BenchmarkConfig:
     keep_running: bool = False  # Keep container running after benchmark
     compose_file: str = "docker-compose.yml"  # Docker compose file to use
     query_only: bool = False  # Skip indexing, use existing index
-    model: str = "lightonai/GTE-ModernColBERT-v1-onnx"  # Model to use for encoding
+    model: str = "lightonai/GTE-ModernColBERT-v1"  # Model to use for encoding
 
 
 # Dataset configuration
@@ -84,7 +84,7 @@ class DockerComposeManager:
         self,
         compose_file: str = "docker-compose.yml",
         project_dir: str = None,
-        model: str = "lightonai/GTE-ModernColBERT-v1-onnx",
+        model: str = "lightonai/GTE-ModernColBERT-v1",
     ):
         """Initialize Docker Compose manager.
 
@@ -552,8 +552,8 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="lightonai/GTE-ModernColBERT-v1-onnx",
-        help="HuggingFace model ID to use for encoding (default: lightonai/GTE-ModernColBERT-v1-onnx)",
+        default="lightonai/GTE-ModernColBERT-v1",
+        help="HuggingFace model ID to use for encoding (default: lightonai/GTE-ModernColBERT-v1)",
     )
     args = parser.parse_args()
 

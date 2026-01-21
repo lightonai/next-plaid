@@ -392,26 +392,6 @@ class AsyncNextPlaidClient(BaseNextPlaidClient):
         data = await self._request("GET", f"/indices/{index_name}/metadata")
         return MetadataResponse.from_dict(data)
 
-    async def add_metadata(
-        self, index_name: str, metadata: List[Dict[str, Any]]
-    ) -> Dict[str, int]:
-        """
-        Add or update metadata entries.
-
-        Args:
-            index_name: Name of the index.
-            metadata: List of metadata dicts to add.
-
-        Returns:
-            Dict with count of added entries.
-
-        Raises:
-            IndexNotFoundError: If the index does not exist.
-        """
-        return await self._request(
-            "POST", f"/indices/{index_name}/metadata", json={"metadata": metadata}
-        )
-
     async def get_metadata_count(self, index_name: str) -> Dict[str, Any]:
         """
         Get count of metadata entries.
