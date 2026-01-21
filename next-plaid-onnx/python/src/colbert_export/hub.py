@@ -56,6 +56,7 @@ def push_to_hub(
         "model_int8.onnx",
         "tokenizer.json",
         "config_sentence_transformers.json",
+        "onnx_config.json",
     ]
 
     # Upload each file
