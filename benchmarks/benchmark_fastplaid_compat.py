@@ -28,7 +28,6 @@ import json
 import os
 import shutil
 import signal
-import sqlite3
 import subprocess
 import sys
 import time
@@ -125,22 +124,30 @@ def encode_documents(
 def create_fastplaid_index(
     embeddings: list[torch.Tensor],
     index_path: str,
+    documents: list[dict],
     nbits: int = 4,
     seed: int = 42,
 ) -> None:
-    """Create a fast-plaid index.
+    """Create a fast-plaid index with metadata.
 
     This creates an index using fast-plaid, which can then be loaded
     by next-plaid-api to validate format compatibility.
+
+    Metadata is passed directly to fast-plaid's create() method, which stores
+    it in a SQLite database within the index directory.
     """
     from fast_plaid.search import FastPlaid
 
     print("    Using fast-plaid for index creation")
     os.makedirs(index_path, exist_ok=True)
 
+    # Build metadata list matching fast-plaid's expected format
+    metadata = [{"document_id": doc["id"]} for doc in documents]
+
     index = FastPlaid(index=index_path, device="cpu")
     index.create(
         documents_embeddings=embeddings,
+        metadata=metadata,
         nbits=nbits,
         seed=seed,
     )
@@ -161,7 +168,9 @@ class DockerComposeManager:
 
     def _run_compose(self, *args, check: bool = True, capture_output: bool = False):
         cmd = ["docker", "compose", "-f", self.compose_file] + list(args)
-        return subprocess.run(cmd, cwd=self.project_dir, check=check, capture_output=capture_output, text=True)
+        return subprocess.run(
+            cmd, cwd=self.project_dir, check=check, capture_output=capture_output, text=True
+        )
 
     def is_running(self) -> bool:
         result = self._run_compose("ps", "--format", "json", check=False, capture_output=True)
@@ -185,7 +194,10 @@ class DockerComposeManager:
             for line in result.stdout.strip().split("\n"):
                 if line:
                     container = json.loads(line)
-                    if container.get("State") == "running" and "healthy" in container.get("Status", "").lower():
+                    if (
+                        container.get("State") == "running"
+                        and "healthy" in container.get("Status", "").lower()
+                    ):
                         return True
         except json.JSONDecodeError:
             pass
@@ -244,21 +256,6 @@ class DockerComposeManager:
 # =============================================================================
 
 
-def create_metadata_database(index_path: str, documents: list[dict]) -> None:
-    """Create SQLite metadata database for the index."""
-    db_path = os.path.join(index_path, "metadata.db")
-    if os.path.exists(db_path):
-        os.remove(db_path)
-
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute("CREATE TABLE metadata (_subset_ INTEGER PRIMARY KEY, document_id TEXT)")
-    for idx, doc in enumerate(documents):
-        cursor.execute("INSERT INTO metadata VALUES (?, ?)", (idx, doc["id"]))
-    conn.commit()
-    conn.close()
-
-
 def setup_index(index_path: str, index_name: str, data_dir: str = None) -> str:
     """Copy index to next-plaid data directory and create metadata database."""
     if data_dir is None:
@@ -306,11 +303,13 @@ def run_benchmark(host: str, port: int, index_name: str, queries: dict, qrels: d
         batch = query_texts[i : i + batch_size]
         result = client.search(index_name, batch, params=search_params)
         for j, qr in enumerate(result.results):
-            results.append({
-                "query_id": i + j,
-                "scores": qr.scores,
-                "metadata": qr.metadata or [],
-            })
+            results.append(
+                {
+                    "query_id": i + j,
+                    "scores": qr.scores,
+                    "metadata": qr.metadata or [],
+                }
+            )
         time.sleep(0.3)
 
     search_time = time.perf_counter() - start
@@ -356,7 +355,9 @@ def main():
     parser.add_argument("--port", type=int, default=8080, help="API port")
     parser.add_argument("--keep-running", action="store_true", help="Keep Docker running after")
     parser.add_argument("--no-build", action="store_true", help="Skip Docker build")
-    parser.add_argument("--skip-indexing", action="store_true", help="Skip index creation (use existing)")
+    parser.add_argument(
+        "--skip-indexing", action="store_true", help="Skip index creation (use existing)"
+    )
     args = parser.parse_args()
 
     print("=" * 70)
@@ -391,14 +392,14 @@ def main():
             embeddings = encode_documents(documents, model_name=args.model)
             print(f"    Encoded {len(embeddings)} documents, dim={embeddings[0].shape[-1]}")
 
-            # Step 3: Create fast-plaid index
+            # Step 3: Create fast-plaid index with metadata
             print("\n[3/6] Creating fast-plaid format index...")
-            create_fastplaid_index(embeddings, temp_index_path)
+            create_fastplaid_index(embeddings, temp_index_path, documents)
 
             # Step 4: Setup index for next-plaid
             print("\n[4/6] Setting up index for next-plaid-api...")
             target_path = setup_index(temp_index_path, args.index_name)
-            create_metadata_database(target_path, documents)
+            # Metadata is now handled by fast-plaid's create() method
             print(f"    Index ready at: {target_path}")
         else:
             print("\n[2-4/6] Skipping index creation (--skip-indexing)")
@@ -436,11 +437,15 @@ def main():
             print(f"\n  NDCG@10 is within expected range ({expected} +/- 0.05)")
             print("  Index format compatibility VERIFIED!")
         else:
-            print(f"\n  WARNING: NDCG@10 ({metrics['ndcg@10']:.4f}) differs from expected ({expected})")
+            print(
+                f"\n  WARNING: NDCG@10 ({metrics['ndcg@10']:.4f}) differs from expected ({expected})"
+            )
 
         # Save results
         results = {
-            "compatibility": "verified" if abs(metrics["ndcg@10"] - expected) <= 0.05 else "check_needed",
+            "compatibility": "verified"
+            if abs(metrics["ndcg@10"] - expected) <= 0.05
+            else "check_needed",
             "metrics": {k: round(v, 4) for k, v in metrics.items()},
             "search_time_s": round(output["search_time_s"], 2),
         }
@@ -453,8 +458,9 @@ def main():
         return 0
 
     except Exception as e:
-        print(f"\nERROR: {e}")
+        print(f"\nERROR:   {e}")
         import traceback
+
         traceback.print_exc()
         return 1
 

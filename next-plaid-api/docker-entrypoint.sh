@@ -72,7 +72,7 @@ download_model() {
     log_info "Downloading model from HuggingFace: ${repo_id}"
     mkdir -p "$model_path"
 
-    local files=("tokenizer.json" "config_sentence_transformers.json")
+    local files=("tokenizer.json" "config_sentence_transformers.json" "onnx_config.json")
     if [ "$use_int8" = "true" ]; then
         files+=("model_int8.onnx")
         log_info "Downloading INT8 quantized model"
