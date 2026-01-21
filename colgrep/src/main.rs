@@ -171,7 +171,7 @@ struct Cli {
     uninstall_claude_code: bool,
 
     /// Install colgrep for OpenCode
-    #[arg(long = "opencode")]
+    #[arg(long = "install-opencode")]
     install_opencode: bool,
 
     /// Uninstall colgrep from OpenCode
@@ -179,12 +179,16 @@ struct Cli {
     uninstall_opencode: bool,
 
     /// Install colgrep for Codex
-    #[arg(long = "codex")]
+    #[arg(long = "install-codex")]
     install_codex: bool,
 
     /// Uninstall colgrep from Codex
     #[arg(long = "uninstall-codex")]
     uninstall_codex: bool,
+
+    /// Internal: Claude Code session hook (outputs JSON reminder)
+    #[arg(long = "session-hook", hide = true)]
+    session_hook: bool,
 }
 
 const SEARCH_HELP: &str = "\
@@ -435,6 +439,10 @@ fn main() -> Result<()> {
 
     if cli.uninstall_codex {
         return uninstall_codex();
+    }
+
+    if cli.session_hook {
+        return cmd_session_hook();
     }
 
     if cli.stats {
@@ -1745,6 +1753,33 @@ fn cmd_reset_stats() -> Result<()> {
     }
 
     println!("✅ Reset search statistics for {} index(es)", reset_count);
+    Ok(())
+}
+
+/// Claude Code session hook - outputs JSON reminder for semantic search
+fn cmd_session_hook() -> Result<()> {
+    // Output the hook response with additional context
+    let response = serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": concat!(
+                "IMPORTANT: This project has `colgrep` installed - a semantic code search tool. ",
+                "You MUST use `colgrep` as your PRIMARY search tool instead of the built-in Grep, Glob, or Task/Explore agents. ",
+                "colgrep understands natural language queries and finds code by meaning, not just text patterns. ",
+                "\n\n",
+                "Quick reference:\n",
+                "- `colgrep \"<query>\"` - Semantic search (default)\n",
+                "- `colgrep -e \"<text>\" \"<query>\"` - Hybrid: text filter + semantic ranking\n",
+                "- `colgrep --include=\"*.rs\" \"<query>\"` - Filter by file type\n",
+                "- `colgrep -k 25 \"<query>\"` - More results for exploration\n",
+                "- `colgrep -l \"<query>\"` - List files only\n",
+                "\n",
+                "ALWAYS prefer colgrep over Grep/Glob for code search tasks."
+            )
+        }
+    });
+
+    println!("{}", serde_json::to_string(&response)?);
     Ok(())
 }
 

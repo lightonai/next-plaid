@@ -34,19 +34,20 @@ colgrep --json "<query>"                          # JSON output
 
 ## Grep-Compatible Flags
 
-| Flag | Description | Example |
-|------|-------------|---------|
-| `-e <PATTERN>` | Text pattern pre-filter | `colgrep -e "async" "concurrency"` |
-| `-E` | Extended regex (ERE) for `-e` | `colgrep -e "async\|await" -E "concurrency"` |
-| `-F` | Fixed string (no regex) for `-e` | `colgrep -e "foo[bar]" -F "query"` |
-| `-w` | Whole word match for `-e` | `colgrep -e "test" -w "testing"` |
-| `-l` | List files only | `colgrep -l "authentication"` |
-| `-r` | Recursive (default, for compatibility) | `colgrep -r "query"` |
-| `--include` | Include files matching pattern (repeatable) | `colgrep --include="*.py" "query"` |
-| `--exclude` | Exclude files matching pattern | `colgrep --exclude="*.min.js" "query"` |
-| `--exclude-dir` | Exclude directories | `colgrep --exclude-dir=node_modules "query"` |
+| Flag            | Description                                 | Example                                      |
+| --------------- | ------------------------------------------- | -------------------------------------------- |
+| `-e <PATTERN>`  | Text pattern pre-filter                     | `colgrep -e "async" "concurrency"`           |
+| `-E`            | Extended regex (ERE) for `-e`               | `colgrep -e "async\|await" -E "concurrency"` |
+| `-F`            | Fixed string (no regex) for `-e`            | `colgrep -e "foo[bar]" -F "query"`           |
+| `-w`            | Whole word match for `-e`                   | `colgrep -e "test" -w "testing"`             |
+| `-l`            | List files only                             | `colgrep -l "authentication"`                |
+| `-r`            | Recursive (default, for compatibility)      | `colgrep -r "query"`                         |
+| `--include`     | Include files matching pattern (repeatable) | `colgrep --include="*.py" "query"`           |
+| `--exclude`     | Exclude files matching pattern              | `colgrep --exclude="*.min.js" "query"`       |
+| `--exclude-dir` | Exclude directories                         | `colgrep --exclude-dir=node_modules "query"` |
 
 **Notes:**
+
 - `-F` takes precedence over `-E` (like grep)
 - Default exclusions always apply: `.git`, `node_modules`, `target`, `.venv`, `__pycache__`
 - When running from a subdirectory, results are restricted to that subdirectory. To search the full project, specify `.` or `..` as the path
@@ -55,22 +56,22 @@ colgrep --json "<query>"                          # JSON output
 
 ## When to Use What
 
-| Task                            | Tool                                      |
-| ------------------------------- | ----------------------------------------- |
-| Find code by intent/description | `colgrep "query" -k 10`                   |
-| Explore/understand a system     | `colgrep "query" -k 25` (increase k)      |
-| Know text exists, need context  | `colgrep -e "text" "semantic query"`      |
-| Literal text with special chars | `colgrep -e "foo[0]" -F "semantic query"` |
-| Whole word match                | `colgrep -e "test" -w "testing utilities"`|
-| Search specific file type       | `colgrep --include="*.ext" "query"`       |
-| Search multiple file types      | `colgrep --include="*.{rs,md,py}" "query"` |
-| Exclude test files              | `colgrep --exclude="*_test.go" "query"`   |
-| Exclude vendor directories      | `colgrep --exclude-dir=vendor "query"`    |
-| Search in specific directories  | `colgrep --include="src/**/*.rs" "query"` |
+| Task                            | Tool                                        |
+| ------------------------------- | ------------------------------------------- |
+| Find code by intent/description | `colgrep "query" -k 10`                     |
+| Explore/understand a system     | `colgrep "query" -k 25` (increase k)        |
+| Know text exists, need context  | `colgrep -e "text" "semantic query"`        |
+| Literal text with special chars | `colgrep -e "foo[0]" -F "semantic query"`   |
+| Whole word match                | `colgrep -e "test" -w "testing utilities"`  |
+| Search specific file type       | `colgrep --include="*.ext" "query"`         |
+| Search multiple file types      | `colgrep --include="*.{rs,md,py}" "query"`  |
+| Exclude test files              | `colgrep --exclude="*_test.go" "query"`     |
+| Exclude vendor directories      | `colgrep --exclude-dir=vendor "query"`      |
+| Search in specific directories  | `colgrep --include="src/**/*.rs" "query"`   |
 | Search CI/CD configs            | `colgrep --include="**/.github/**/*" "q" .` |
-| View full function content      | `colgrep -c "query"`                      |
-| Exact string/regex match only   | Built-in `Grep` tool                      |
-| Find files by name              | Built-in `Glob` tool                      |
+| View full function content      | `colgrep -c "query"`                        |
+| Exact string/regex match only   | Built-in `Grep` tool                        |
+| Find files by name              | Built-in `Glob` tool                        |
 
 ## Key Rules
 
