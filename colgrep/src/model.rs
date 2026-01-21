@@ -10,6 +10,7 @@ const REQUIRED_FILES: &[&str] = &[
     "tokenizer.json",
     "config_sentence_transformers.json",
     "config.json",
+    "onnx_config.json",
 ];
 
 /// Optional files (non-quantized model)
