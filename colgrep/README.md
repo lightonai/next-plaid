@@ -461,7 +461,7 @@ Common files that may be skipped:
 
 ## Model
 
-By default, uses [`lightonai/GTE-ModernColBERT-v1-onnx`](https://huggingface.co/lightonai/GTE-ModernColBERT-v1-onnx) with INT8 quantization for fast inference. The model is automatically downloaded on first use. Use `colgrep config --fp32` to switch to full-precision mode (see [Configuration](#configuration)).
+By default, uses [`lightonai/LateOn-Code-v0-edge`](https://huggingface.co/lightonai/LateOn-Code-v0-edge) with FP32 (full-precision) for best accuracy. The model is automatically downloaded on first use. Use `colgrep config --int8` to switch to INT8 quantized mode for faster inference (see [Configuration](#configuration)).
 
 ### Using a Different Model
 
@@ -562,11 +562,11 @@ colgrep config --k 20
 # Set default context lines
 colgrep config --n 10
 
-# Use full-precision (FP32) model instead of INT8 quantized
-colgrep config --fp32
-
-# Switch back to INT8 quantized model (default, faster)
+# Switch to INT8 quantized model (faster inference)
 colgrep config --int8
+
+# Switch back to full-precision (FP32) model (default)
+colgrep config --fp32
 
 # Reset to defaults (use 0)
 colgrep config --k 0 --n 0
@@ -574,12 +574,12 @@ colgrep config --k 0 --n 0
 
 ### Model Precision
 
-By default, colgrep uses INT8 quantized models for faster inference with minimal quality loss. You can switch to full-precision (FP32) if needed:
+By default, colgrep uses FP32 (full-precision) models for best accuracy. You can switch to INT8 quantized mode for faster inference:
 
 | Mode               | Flag     | Description                              |
 | ------------------ | -------- | ---------------------------------------- |
-| **INT8** (default) | `--int8` | ~2x faster inference, smaller model size |
-| **FP32**           | `--fp32` | Full precision, slightly better accuracy |
+| **FP32** (default) | `--fp32` | Full precision, best accuracy            |
+| **INT8**           | `--int8` | ~2x faster inference, smaller model size |
 
 Note: When switching precision, clear existing indexes with `colgrep clear --all` since embeddings are generated with different model weights.
 
@@ -589,14 +589,14 @@ User preferences are stored in `~/.config/colgrep/config.json`. Only non-default
 
 ```json
 {
-  "default_model": "lightonai/GTE-ModernColBERT-v1-onnx",
+  "default_model": "lightonai/LateOn-Code-v0-edge",
   "fp32": true,
   "default_k": 20,
   "default_n": 10
 }
 ```
 
-**Defaults** (when not specified): `k=15`, `n=6`, `fp32=false` (INT8)
+**Defaults** (when not specified): `k=15`, `n=6`, `fp32=true` (FP32)
 
 ### Environment Variables
 

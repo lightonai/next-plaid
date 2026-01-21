@@ -104,7 +104,7 @@ impl Config {
 
     /// Check if FP32 (non-quantized) model should be used
     pub fn use_fp32(&self) -> bool {
-        self.fp32.unwrap_or(false)
+        self.fp32.unwrap_or(true)
     }
 
     /// Set whether to use FP32 (non-quantized) model
@@ -112,7 +112,7 @@ impl Config {
         self.fp32 = Some(fp32);
     }
 
-    /// Clear the FP32 setting (revert to default INT8)
+    /// Clear the FP32 setting (revert to default FP32)
     pub fn clear_fp32(&mut self) {
         self.fp32 = None;
     }
@@ -160,15 +160,15 @@ mod tests {
     #[test]
     fn test_config_serialization() {
         let mut config = Config::default();
-        config.set_default_model("lightonai/GTE-ModernColBERT-v1-onnx");
+        config.set_default_model("lightonai/LateOn-Code-v0-edge");
 
         let json = serde_json::to_string(&config).unwrap();
-        assert!(json.contains("lightonai/GTE-ModernColBERT-v1-onnx"));
+        assert!(json.contains("lightonai/LateOn-Code-v0-edge"));
 
         let deserialized: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(
             deserialized.get_default_model(),
-            Some("lightonai/GTE-ModernColBERT-v1-onnx")
+            Some("lightonai/LateOn-Code-v0-edge")
         );
     }
 

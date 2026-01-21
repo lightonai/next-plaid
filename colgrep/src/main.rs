@@ -51,7 +51,7 @@ EXAMPLES:
     colgrep clear --all
 
     # Change default model
-    colgrep set-model lightonai/GTE-ModernColBERT-v1-onnx
+    colgrep set-model lightonai/LateOn-Code-v0
 
 SUPPORTED LANGUAGES:
     Python, Rust, TypeScript, JavaScript, Go, Java, C, C++, C#, Ruby,
@@ -248,7 +248,7 @@ EXAMPLES:
 const SET_MODEL_HELP: &str = "\
 EXAMPLES:
     # Set default model
-    colgrep set-model lightonai/GTE-ModernColBERT-v1-onnx
+    colgrep set-model lightonai/LateOn-Code-v0
 
 NOTES:
     • Changing models clears all existing indexes (dimensions differ)
@@ -266,11 +266,11 @@ EXAMPLES:
     # Set default context lines
     colgrep config --n 10
 
-    # Use full-precision (FP32) model instead of INT8 quantized
-    colgrep config --fp32
-
-    # Switch back to INT8 quantized model (default)
+    # Switch to INT8 quantized model (faster inference)
     colgrep config --int8
+
+    # Switch back to full-precision (FP32) model (default)
+    colgrep config --fp32
 
     # Set both at once
     colgrep config --k 25 --n 8
@@ -282,7 +282,7 @@ NOTES:
     • Values are stored in ~/.config/colgrep/config.json
     • Use 0 to reset a value to its default
     • These values override the CLI defaults when not explicitly specified
-    • INT8 quantized is the default (faster inference, smaller model)";
+    • FP32 (full-precision) is the default";
 
 #[derive(Subcommand)]
 enum Commands {
@@ -384,7 +384,7 @@ enum Commands {
     /// Set the default ColBERT model to use for indexing and search
     #[command(after_help = SET_MODEL_HELP)]
     SetModel {
-        /// HuggingFace model ID (e.g., "lightonai/GTE-ModernColBERT-v1-onnx")
+        /// HuggingFace model ID (e.g., "lightonai/LateOn-Code-v0")
         model: String,
     },
 
@@ -399,11 +399,11 @@ enum Commands {
         #[arg(long = "n")]
         default_n: Option<usize>,
 
-        /// Use full-precision (FP32) model instead of INT8 quantized
+        /// Use full-precision (FP32) model (default)
         #[arg(long, conflicts_with = "int8")]
         fp32: bool,
 
-        /// Use INT8 quantized model (default, faster inference)
+        /// Use INT8 quantized model (faster inference)
         #[arg(long, conflicts_with = "fp32")]
         int8: bool,
     },
@@ -887,8 +887,8 @@ fn cmd_search(
     // Resolve model: CLI > config > default
     let model = resolve_model(cli_model);
 
-    // Resolve quantized setting from config (default: true = use INT8)
-    let quantized = Config::load().map(|c| !c.use_fp32()).unwrap_or(true);
+    // Resolve quantized setting from config (default: false = use FP32)
+    let quantized = Config::load().map(|c| !c.use_fp32()).unwrap_or(false);
 
     // Check if index already exists (suppress model output if so)
     let has_existing_index = index_exists(&path) || find_parent_index(&path)?.is_some();
@@ -1583,9 +1583,9 @@ fn cmd_config(
 
         // Precision
         if config.use_fp32() {
-            println!("  precision: fp32");
+            println!("  precision: fp32 (default)");
         } else {
-            println!("  precision: int8 (default)");
+            println!("  precision: int8");
         }
 
         // k
@@ -1634,12 +1634,12 @@ fn cmd_config(
 
     // Set fp32 or int8
     if fp32 {
-        config.set_fp32(true);
-        println!("✅ Set model precision to FP32 (full-precision)");
+        config.clear_fp32();
+        println!("✅ Set model precision to FP32 (full-precision, default)");
         changed = true;
     } else if int8 {
-        config.clear_fp32();
-        println!("✅ Set model precision to INT8 (quantized, default)");
+        config.set_fp32(false);
+        println!("✅ Set model precision to INT8 (quantized)");
         changed = true;
     }
 

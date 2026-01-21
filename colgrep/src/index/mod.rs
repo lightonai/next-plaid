@@ -55,7 +55,7 @@ pub struct IndexBuilder {
 
 impl IndexBuilder {
     pub fn new(project_root: &Path, model_path: &Path) -> Result<Self> {
-        Self::with_quantized(project_root, model_path, true)
+        Self::with_quantized(project_root, model_path, false)
     }
 
     pub fn with_quantized(project_root: &Path, model_path: &Path, quantized: bool) -> Result<Self> {
@@ -1108,7 +1108,7 @@ pub struct Searcher {
 
 impl Searcher {
     pub fn load(project_root: &Path, model_path: &Path) -> Result<Self> {
-        Self::load_with_quantized(project_root, model_path, true)
+        Self::load_with_quantized(project_root, model_path, false)
     }
 
     pub fn load_with_quantized(
@@ -1138,7 +1138,7 @@ impl Searcher {
 
     /// Load a searcher from a specific index directory (for parent index use)
     pub fn load_from_index_dir(index_dir: &Path, model_path: &Path) -> Result<Self> {
-        Self::load_from_index_dir_with_quantized(index_dir, model_path, true)
+        Self::load_from_index_dir_with_quantized(index_dir, model_path, false)
     }
 
     /// Load a searcher from a specific index directory with quantization option
