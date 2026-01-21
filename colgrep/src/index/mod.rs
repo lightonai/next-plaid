@@ -82,6 +82,7 @@ impl IndexBuilder {
     /// - Creates index if none exists
     /// - Updates incrementally if files changed
     /// - Full rebuild if `force = true`
+    /// - Full rebuild if CLI version changed (clears outdated index)
     pub fn index(&self, languages: Option<&[Language]>, force: bool) -> Result<UpdateStats> {
         let _lock = acquire_index_lock(&self.index_dir)?;
         let state = IndexState::load(&self.index_dir)?;
@@ -90,8 +91,14 @@ impl IndexBuilder {
         let index_exists = index_path.join("metadata.json").exists();
         let filtering_exists = filtering::exists(index_path_str);
 
-        // Need full rebuild if forced, index doesn't exist, or filtering DB is missing
-        if force || !index_exists || !filtering_exists {
+        // Check if CLI version changed - if so, clear and rebuild the index
+        let current_version = env!("CARGO_PKG_VERSION");
+        let version_mismatch =
+            index_exists && !state.cli_version.is_empty() && state.cli_version != current_version;
+
+        // Need full rebuild if forced, index doesn't exist, filtering DB is missing,
+        // or CLI version changed
+        if force || !index_exists || !filtering_exists || version_mismatch {
             return self.full_rebuild(languages);
         }
 
@@ -750,7 +757,14 @@ const IGNORED_DIRS: &[&str] = &[
 ];
 
 /// Hidden directories that should be indexed (exceptions to hidden file filtering)
-const ALLOWED_HIDDEN_DIRS: &[&str] = &[".github", ".gitlab", ".circleci", ".buildkite"];
+const ALLOWED_HIDDEN_DIRS: &[&str] = &[
+    ".github",
+    ".gitlab",
+    ".circleci",
+    ".buildkite",
+    ".claude",
+    ".claude-plugin",
+];
 
 /// Hidden files that should be indexed (exceptions to hidden file filtering)
 const ALLOWED_HIDDEN_FILES: &[&str] = &[".gitlab-ci.yml", ".gitlab-ci.yaml", ".travis.yml"];
