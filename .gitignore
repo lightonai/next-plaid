@@ -32,6 +32,7 @@ env/
 !.claude-plugin/marketplace.json
 next-plaid-api/indices/
 *.npz
+next-plaid-onnx/python/build/
 
 # Test artifacts
 *.npy
