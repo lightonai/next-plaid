@@ -86,6 +86,7 @@ pub fn build_embedding_text(unit: &CodeUnit) -> String {
         UnitType::Function => "Function",
         UnitType::Method => "Method",
         UnitType::Class => "Class",
+        UnitType::Constant => "Constant",
         UnitType::Document => "Document",
         UnitType::Section => "Section",
     };
@@ -107,7 +108,13 @@ pub fn build_embedding_text(unit: &CodeUnit) -> String {
 
     if let Some(ret) = &unit.return_type {
         if !ret.is_empty() {
-            parts.push(format!("Returns: {}", ret));
+            // For constants, show "Type:" instead of "Returns:"
+            let label = if unit.unit_type == UnitType::Constant {
+                "Type"
+            } else {
+                "Returns"
+            };
+            parts.push(format!("{}: {}", label, ret));
         }
     }
 

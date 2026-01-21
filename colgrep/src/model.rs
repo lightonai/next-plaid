@@ -2,7 +2,7 @@ use anyhow::Result;
 use hf_hub::api::sync::Api;
 use std::path::PathBuf;
 
-pub const DEFAULT_MODEL: &str = "lightonai/GTE-ModernColBERT-v1-onnx";
+pub const DEFAULT_MODEL: &str = "lightonai/LateOn-Code-v0-edge";
 
 /// Files required for ColBERT model
 const REQUIRED_FILES: &[&str] = &[

@@ -87,6 +87,7 @@ pub enum UnitType {
     Function,
     Method,
     Class,
+    Constant,
     Document,
     Section,
 }

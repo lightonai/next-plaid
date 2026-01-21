@@ -598,7 +598,7 @@ impl ColbertBuilder {
 
         // Create sessions
         let mut sessions = Vec::with_capacity(self.num_sessions);
-        for _ in 0..self.num_sessions {
+        for i in 0..self.num_sessions {
             let builder = Session::builder()?
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
                 .with_intra_threads(self.threads_per_session)?
@@ -612,6 +612,17 @@ impl ColbertBuilder {
             let session = builder
                 .commit_from_file(&onnx_path)
                 .context("Failed to load ONNX model")?;
+
+            // Auto-detect token_type_ids support from the first session's inputs
+            if i == 0 {
+                let input_names: Vec<_> = session.inputs().iter().map(|i| i.name()).collect();
+                let has_token_type_ids = input_names.contains(&"token_type_ids");
+                if !has_token_type_ids && config.uses_token_type_ids {
+                    // Model doesn't have token_type_ids input, override config
+                    config.uses_token_type_ids = false;
+                }
+            }
+
             sessions.push(Mutex::new(session));
         }
 

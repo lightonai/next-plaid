@@ -320,6 +320,14 @@ fn extract_from_node(
             return; // Don't recurse again for class nodes
         }
     }
+    // Check if this is a top-level constant/static declaration (only at module level)
+    else if parent_class.is_none() && is_constant_node(kind, lang) {
+        if let Some(unit) = extract_constant(node, path, lines, bytes, lang, file_imports) {
+            units.push(unit);
+        }
+        // Don't recurse into constant declarations
+        return;
+    }
 
     // Recurse into children
     for child in node.children(&mut node.walk()) {
@@ -425,6 +433,34 @@ fn is_class_node(kind: &str, lang: Language) -> bool {
         Language::Haskell => matches!(kind, "type_alias" | "newtype" | "adt"),
         Language::Ocaml => matches!(kind, "type_definition" | "module_definition"),
         // C and text/config formats
+        _ => false,
+    }
+}
+
+/// Check if a node is a top-level constant/static declaration
+fn is_constant_node(kind: &str, lang: Language) -> bool {
+    match lang {
+        Language::Rust => matches!(kind, "const_item" | "static_item"),
+        Language::TypeScript | Language::JavaScript => {
+            // lexical_declaration covers const/let at module level
+            // variable_declaration covers var at module level
+            matches!(kind, "lexical_declaration" | "variable_declaration")
+        }
+        Language::Go => matches!(kind, "const_declaration" | "var_declaration"),
+        Language::C | Language::Cpp => kind == "declaration",
+        Language::Python => {
+            // Python doesn't have const, but we capture module-level assignments
+            // We'll filter for UPPER_CASE names in extract_constant
+            kind == "expression_statement"
+        }
+        Language::Kotlin => kind == "property_declaration",
+        Language::Swift => matches!(kind, "constant_declaration" | "variable_declaration"),
+        Language::Scala => matches!(kind, "val_definition" | "var_definition"),
+        Language::Php => kind == "const_declaration",
+        Language::Elixir => kind == "unary_operator", // @ for module attributes
+        Language::Haskell => kind == "function",      // top-level bindings
+        Language::Ocaml => kind == "let_binding",
+        // Java, CSharp, Ruby, Lua don't have clear top-level constants
         _ => false,
     }
 }
@@ -607,6 +643,263 @@ fn extract_class(
     unit.code = lines[start_line..content_end].join("\n");
 
     Some(unit)
+}
+
+fn extract_constant(
+    node: Node,
+    path: &Path,
+    lines: &[&str],
+    bytes: &[u8],
+    lang: Language,
+    file_imports: &[String],
+) -> Option<CodeUnit> {
+    let start_line = node.start_position().row;
+    let end_line = node.end_position().row;
+
+    // Get constant name based on language
+    let name = get_constant_name(node, bytes, lang)?;
+
+    // For Python, only capture UPPER_CASE names (convention for constants)
+    if lang == Language::Python && !is_python_constant_name(&name) {
+        return None;
+    }
+
+    let mut unit = CodeUnit::new(
+        name,
+        path.to_path_buf(),
+        start_line + 1,
+        end_line + 1,
+        lang,
+        UnitType::Constant,
+        None,
+    );
+
+    // Layer 1: AST
+    unit.signature = lines
+        .get(start_line)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    // Extract type annotation if available
+    unit.return_type = get_constant_type(node, bytes, lang);
+
+    // Layer 5: Dependencies
+    unit.imports = file_imports.to_vec();
+
+    // Full source content
+    let content_end = (end_line + 1).min(lines.len());
+    unit.code = lines[start_line..content_end].join("\n");
+
+    Some(unit)
+}
+
+/// Get the name of a constant declaration
+fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String> {
+    match lang {
+        Language::Rust => {
+            // const NAME: Type = value; or static NAME: Type = value;
+            node.child_by_field_name("name")
+                .and_then(|n| n.utf8_text(bytes).ok())
+                .map(|s| s.to_string())
+        }
+        Language::TypeScript | Language::JavaScript => {
+            // const NAME = value; or let NAME = value;
+            // Find the variable_declarator child
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "variable_declarator" {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        if let Ok(text) = name_node.utf8_text(bytes) {
+                            return Some(text.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Language::Go => {
+            // const NAME = value or var NAME = value
+            // Go const_declaration has const_spec children
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "const_spec" || child.kind() == "var_spec" {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        if let Ok(text) = name_node.utf8_text(bytes) {
+                            return Some(text.to_string());
+                        }
+                    }
+                    // If no field name, try first identifier
+                    for spec_child in child.children(&mut child.walk()) {
+                        if spec_child.kind() == "identifier" {
+                            if let Ok(text) = spec_child.utf8_text(bytes) {
+                                return Some(text.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Language::Python => {
+            // NAME = value (expression_statement -> assignment)
+            let assignment = node.child(0)?;
+            if assignment.kind() == "assignment" {
+                let left = assignment.child_by_field_name("left")?;
+                return left.utf8_text(bytes).ok().map(|s| s.to_string());
+            }
+            None
+        }
+        Language::C | Language::Cpp => {
+            // const TYPE NAME = value; or TYPE NAME = value;
+            // Find the declarator
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "init_declarator" || child.kind() == "declarator" {
+                    if let Some(name_node) = child.child_by_field_name("declarator") {
+                        if let Ok(text) = name_node.utf8_text(bytes) {
+                            return Some(text.to_string());
+                        }
+                    }
+                    // Direct identifier
+                    if child.kind() == "identifier" {
+                        if let Ok(text) = child.utf8_text(bytes) {
+                            return Some(text.to_string());
+                        }
+                    }
+                }
+            }
+            // Try finding first identifier
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "identifier" {
+                    if let Ok(text) = child.utf8_text(bytes) {
+                        return Some(text.to_string());
+                    }
+                }
+            }
+            None
+        }
+        Language::Kotlin => {
+            node.child_by_field_name("name")
+                .or_else(|| {
+                    // Find first identifier in variable_declaration
+                    for child in node.children(&mut node.walk()) {
+                        if child.kind() == "variable_declaration" {
+                            for subchild in child.children(&mut child.walk()) {
+                                if subchild.kind() == "simple_identifier" {
+                                    return Some(subchild);
+                                }
+                            }
+                        }
+                    }
+                    None
+                })
+                .and_then(|n| n.utf8_text(bytes).ok())
+                .map(|s| s.to_string())
+        }
+        Language::Swift => {
+            // let NAME = value or var NAME = value
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "pattern_initializer" {
+                    for subchild in child.children(&mut child.walk()) {
+                        if subchild.kind() == "identifier_pattern"
+                            || subchild.kind() == "simple_identifier"
+                        {
+                            if let Ok(text) = subchild.utf8_text(bytes) {
+                                return Some(text.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Language::Scala => node
+            .child_by_field_name("pattern")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map(|s| s.to_string()),
+        Language::Php => {
+            // const NAME = value;
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "const_element" {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        if let Ok(text) = name_node.utf8_text(bytes) {
+                            return Some(text.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Language::Elixir => {
+            // @name value
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "call" {
+                    if let Some(target) = child.child_by_field_name("target") {
+                        if let Ok(text) = target.utf8_text(bytes) {
+                            return Some(format!("@{}", text));
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Language::Haskell | Language::Ocaml => node
+            .child_by_field_name("name")
+            .or_else(|| node.child_by_field_name("pattern"))
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+/// Check if a Python name follows the constant naming convention (UPPER_CASE)
+fn is_python_constant_name(name: &str) -> bool {
+    // Must have at least one letter
+    if !name.chars().any(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    // All letters must be uppercase, allow digits and underscores
+    name.chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Get the type annotation of a constant if available
+fn get_constant_type(node: Node, bytes: &[u8], lang: Language) -> Option<String> {
+    match lang {
+        Language::Rust => node
+            .child_by_field_name("type")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map(|s| s.to_string()),
+        Language::TypeScript => {
+            // const NAME: TYPE = value;
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "variable_declarator" {
+                    if let Some(type_node) = child.child_by_field_name("type") {
+                        return type_node.utf8_text(bytes).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        }
+        Language::Go => {
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "const_spec" || child.kind() == "var_spec" {
+                    if let Some(type_node) = child.child_by_field_name("type") {
+                        return type_node.utf8_text(bytes).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        }
+        Language::Python => {
+            // NAME: TYPE = value
+            let assignment = node.child(0)?;
+            if assignment.kind() == "assignment" {
+                if let Some(type_node) = assignment.child_by_field_name("type") {
+                    return type_node.utf8_text(bytes).ok().map(|s| s.to_string());
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<String> {
@@ -1797,5 +2090,143 @@ def complex_function(x, y):
             Language::from_str("unknown"),
             Err("Unknown language: unknown".to_string())
         );
+    }
+
+    // ==================== constant extraction tests ====================
+
+    #[test]
+    fn test_extract_rust_const() {
+        let source = r#"
+const MAX_SIZE: usize = 1024;
+const NAME: &str = "test";
+
+fn main() {
+    println!("{}", MAX_SIZE);
+}
+"#;
+        let units = extract_units(Path::new("test.rs"), source, Language::Rust);
+        assert!(units
+            .iter()
+            .any(|u| u.name == "MAX_SIZE" && u.unit_type == UnitType::Constant));
+        assert!(units
+            .iter()
+            .any(|u| u.name == "NAME" && u.unit_type == UnitType::Constant));
+        assert!(units
+            .iter()
+            .any(|u| u.name == "main" && u.unit_type == UnitType::Function));
+    }
+
+    #[test]
+    fn test_extract_rust_static() {
+        let source = r#"
+static COUNTER: i32 = 0;
+
+fn increment() {
+    // ...
+}
+"#;
+        let units = extract_units(Path::new("test.rs"), source, Language::Rust);
+        assert!(units
+            .iter()
+            .any(|u| u.name == "COUNTER" && u.unit_type == UnitType::Constant));
+        assert!(units
+            .iter()
+            .any(|u| u.name == "increment" && u.unit_type == UnitType::Function));
+    }
+
+    #[test]
+    fn test_extract_typescript_const() {
+        let source = r#"
+const API_URL = "https://api.example.com";
+const MAX_RETRIES: number = 3;
+
+function fetchData() {
+    return fetch(API_URL);
+}
+"#;
+        let units = extract_units(Path::new("test.ts"), source, Language::TypeScript);
+        assert!(units
+            .iter()
+            .any(|u| u.name == "API_URL" && u.unit_type == UnitType::Constant));
+        assert!(units
+            .iter()
+            .any(|u| u.name == "MAX_RETRIES" && u.unit_type == UnitType::Constant));
+        assert!(units
+            .iter()
+            .any(|u| u.name == "fetchData" && u.unit_type == UnitType::Function));
+    }
+
+    #[test]
+    fn test_extract_go_const() {
+        let source = r#"
+package main
+
+const MaxSize = 1024
+const DefaultName string = "test"
+
+func main() {
+    println(MaxSize)
+}
+"#;
+        let units = extract_units(Path::new("test.go"), source, Language::Go);
+        // Go constants should be extracted
+        assert!(units.iter().any(|u| u.unit_type == UnitType::Constant));
+        assert!(units
+            .iter()
+            .any(|u| u.name == "main" && u.unit_type == UnitType::Function));
+    }
+
+    #[test]
+    fn test_extract_python_constant() {
+        let source = r#"
+MAX_SIZE = 1024
+DEFAULT_NAME = "test"
+regular_var = "not a constant"
+
+def process():
+    pass
+"#;
+        let units = extract_units(Path::new("test.py"), source, Language::Python);
+        // Python constants are UPPER_CASE by convention
+        assert!(units
+            .iter()
+            .any(|u| u.name == "MAX_SIZE" && u.unit_type == UnitType::Constant));
+        assert!(units
+            .iter()
+            .any(|u| u.name == "DEFAULT_NAME" && u.unit_type == UnitType::Constant));
+        // regular_var should NOT be extracted as constant (not UPPER_CASE)
+        assert!(!units.iter().any(|u| u.name == "regular_var"));
+        assert!(units
+            .iter()
+            .any(|u| u.name == "process" && u.unit_type == UnitType::Function));
+    }
+
+    #[test]
+    fn test_is_python_constant_name() {
+        // Valid constant names
+        assert!(is_python_constant_name("MAX_SIZE"));
+        assert!(is_python_constant_name("API_URL"));
+        assert!(is_python_constant_name("DEFAULT_VALUE_123"));
+        assert!(is_python_constant_name("A"));
+        assert!(is_python_constant_name("ABC123"));
+
+        // Invalid constant names (should not be treated as constants)
+        assert!(!is_python_constant_name("maxSize"));
+        assert!(!is_python_constant_name("my_variable"));
+        assert!(!is_python_constant_name("MaxSize"));
+        assert!(!is_python_constant_name("123"));
+        assert!(!is_python_constant_name("_"));
+    }
+
+    #[test]
+    fn test_extract_rust_const_with_type() {
+        let source = r#"
+const BUFFER_SIZE: usize = 4096;
+"#;
+        let units = extract_units(Path::new("test.rs"), source, Language::Rust);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].name, "BUFFER_SIZE");
+        assert_eq!(units[0].unit_type, UnitType::Constant);
+        assert_eq!(units[0].return_type, Some("usize".to_string()));
     }
 }
