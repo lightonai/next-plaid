@@ -233,22 +233,35 @@ endif
 	@sed -i '' 's/next-plaid = { path = "..\/next-plaid", version = "[^"]*"/next-plaid = { path = "..\/next-plaid", version = "$(VERSION)"/' colgrep/Cargo.toml
 	@sed -i '' 's/next-plaid-onnx = { path = "..\/next-plaid-onnx", version = "[^"]*"/next-plaid-onnx = { path = "..\/next-plaid-onnx", version = "$(VERSION)"/' colgrep/Cargo.toml
 	@echo "  ✓ Updated path dependencies in colgrep/Cargo.toml"
+	@# Update Claude plugin versions
+	@sed -i '' 's/"version": "[^"]*"/"version": "$(VERSION)"/' colgrep/src/install/plugin.json
+	@sed -i '' 's/"version": "[^"]*"/"version": "$(VERSION)"/' colgrep/src/install/marketplace.json
+	@sed -i '' 's/"version": "[^"]*"/"version": "$(VERSION)"/' .claude-plugin/marketplace.json
+	@echo "  ✓ Updated Claude plugin versions"
+	@# Update OpenAPI version in next-plaid-api/src/main.rs
+	@sed -i '' 's/version = "[^"]*",/version = "$(VERSION)",/' next-plaid-api/src/main.rs
+	@echo "  ✓ Updated OpenAPI version in next-plaid-api/src/main.rs"
 	@# Update Python SDK version in pyproject.toml (in [project] section)
 	@sed -i '' '/^\[project\]/,/^\[/{s/^version = "[^"]*"/version = "$(VERSION)"/;}' next-plaid-api/python-sdk/pyproject.toml
 	@echo "  ✓ Updated next-plaid-api/python-sdk/pyproject.toml"
 	@# Update Python SDK __version__ in __init__.py
 	@sed -i '' 's/__version__ = "[^"]*"/__version__ = "$(VERSION)"/' next-plaid-api/python-sdk/next_plaid_client/__init__.py
 	@echo "  ✓ Updated next-plaid-api/python-sdk/next_plaid_client/__init__.py"
-	@# Update ONNX Python package version in pyproject.toml (in [project] section)
+	@# Update ONNX Python package versions
 	@sed -i '' '/^\[project\]/,/^\[/{s/^version = "[^"]*"/version = "$(VERSION)"/;}' next-plaid-onnx/python/pyproject.toml
-	@echo "  ✓ Updated next-plaid-onnx/python/pyproject.toml"
+	@sed -i '' 's/__version__ = "[^"]*"/__version__ = "$(VERSION)"/' next-plaid-onnx/python/src/colbert_export/__init__.py
+	@sed -i '' 's/version="%(prog)s [^"]*"/version="%(prog)s $(VERSION)"/' next-plaid-onnx/python/src/colbert_export/cli.py
+	@sed -i '' 's/assert "[0-9]*\.[0-9]*\.[0-9]*" in result.stdout/assert "$(VERSION)" in result.stdout/' next-plaid-onnx/python/tests/test_cli.py
+	@echo "  ✓ Updated next-plaid-onnx/python versions"
 	@echo ""
 	@echo "Version bumped to $(VERSION). Files updated:"
 	@echo "  - Cargo.toml (workspace version)"
 	@echo "  - colgrep/Cargo.toml (path dependencies)"
-	@echo "  - next-plaid-api/python-sdk/pyproject.toml"
-	@echo "  - next-plaid-api/python-sdk/next_plaid_client/__init__.py"
-	@echo "  - next-plaid-onnx/python/pyproject.toml"
+	@echo "  - colgrep/src/install/{plugin,marketplace}.json"
+	@echo "  - .claude-plugin/marketplace.json"
+	@echo "  - next-plaid-api/src/main.rs (OpenAPI)"
+	@echo "  - next-plaid-api/python-sdk/{pyproject.toml,__init__.py}"
+	@echo "  - next-plaid-onnx/python/{pyproject.toml,__init__.py,cli.py,test}"
 	@echo ""
 	@echo "Don't forget to:"
 	@echo "  1. Run 'cargo check' to verify Cargo.lock updates"

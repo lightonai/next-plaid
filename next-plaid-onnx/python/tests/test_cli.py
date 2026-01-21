@@ -40,7 +40,7 @@ class TestCLIHelp:
             text=True,
         )
         assert result.returncode == 0
-        assert "0.1.0" in result.stdout
+        assert "0.4.0" in result.stdout
 
     def test_quantize_help(self):
         """Test that colbert-quantize --help works."""
