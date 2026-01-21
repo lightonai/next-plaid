@@ -57,6 +57,7 @@ pub async fn check_metadata(
 
     // Run blocking SQLite operations in a separate thread
     let document_ids = req.document_ids.clone();
+    let name_clone = name.clone();
     let result = task::spawn_blocking(move || {
         // Check if metadata database exists
         if !filtering::exists(&path_str) {
@@ -64,8 +65,16 @@ pub async fn check_metadata(
         }
 
         // Query only the requested IDs (O(k) instead of O(n) where n is total metadata entries)
+        let sql_query_start = std::time::Instant::now();
         let found_metadata = filtering::get(&path_str, None, &[], Some(&document_ids))
             .map_err(|e| format!("Failed to query metadata: {}", e))?;
+        let sql_query_duration_ms = sql_query_start.elapsed().as_millis() as u64;
+        tracing::info!(
+            index = %name_clone,
+            num_ids = document_ids.len(),
+            sql_query_duration_ms = sql_query_duration_ms,
+            "Metadata check query completed"
+        );
 
         // Extract the IDs that were actually found
         let existing_set: std::collections::HashSet<i64> = found_metadata
@@ -134,6 +143,8 @@ pub async fn query_metadata(
     let condition = req.condition.clone();
     let parameters = req.parameters.clone();
     let name_clone = name.clone();
+    let name_for_log = name.clone();
+    let condition_for_log = req.condition.clone();
     let result = task::spawn_blocking(move || {
         // Check if metadata database exists
         if !filtering::exists(&path_str) {
@@ -141,20 +152,23 @@ pub async fn query_metadata(
         }
 
         // Query metadata
-        filtering::where_condition(&path_str, &condition, &parameters)
-            .map_err(|e| ApiError::BadRequest(format!("Invalid condition: {}", e)))
+        let sql_query_start = std::time::Instant::now();
+        let document_ids = filtering::where_condition(&path_str, &condition, &parameters)
+            .map_err(|e| ApiError::BadRequest(format!("Invalid condition: {}", e)))?;
+        let sql_query_duration_ms = sql_query_start.elapsed().as_millis() as u64;
+        tracing::info!(
+            index = %name_for_log,
+            condition = %condition_for_log,
+            results = document_ids.len(),
+            sql_query_duration_ms = sql_query_duration_ms,
+            "Metadata where_condition query completed"
+        );
+        Ok(document_ids)
     })
     .await
     .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
 
     let document_ids = result?;
-
-    tracing::debug!(
-        index = %name,
-        condition = %req.condition,
-        results = document_ids.len(),
-        "Metadata queried"
-    );
 
     Ok(Json(QueryMetadataResponse {
         count: document_ids.len(),
@@ -202,6 +216,7 @@ pub async fn get_metadata(
     let document_ids = req.document_ids.clone();
     let limit = req.limit;
     let name_clone = name.clone();
+    let name_for_log = name.clone();
 
     let result = task::spawn_blocking(move || {
         // Check if metadata database exists
@@ -209,6 +224,7 @@ pub async fn get_metadata(
             return Err(ApiError::MetadataNotFound(name_clone));
         }
 
+        let sql_query_start = std::time::Instant::now();
         let mut metadata = filtering::get(
             &path_str,
             condition.as_deref(),
@@ -216,6 +232,13 @@ pub async fn get_metadata(
             document_ids.as_deref(),
         )
         .map_err(|e| ApiError::Internal(format!("Failed to get metadata: {}", e)))?;
+        let sql_query_duration_ms = sql_query_start.elapsed().as_millis() as u64;
+        tracing::info!(
+            index = %name_for_log,
+            results = metadata.len(),
+            sql_query_duration_ms = sql_query_duration_ms,
+            "Metadata get query completed"
+        );
 
         // Apply limit if specified
         if let Some(limit) = limit {
@@ -261,14 +284,24 @@ pub async fn get_all_metadata(
 
     // Run blocking SQLite operations in a separate thread
     let name_clone = name.clone();
+    let name_for_log = name.clone();
     let result = task::spawn_blocking(move || {
         // Check if metadata database exists
         if !filtering::exists(&path_str) {
             return Err(ApiError::MetadataNotFound(name_clone));
         }
 
-        filtering::get(&path_str, None, &[], None)
-            .map_err(|e| ApiError::Internal(format!("Failed to get metadata: {}", e)))
+        let sql_query_start = std::time::Instant::now();
+        let metadata = filtering::get(&path_str, None, &[], None)
+            .map_err(|e| ApiError::Internal(format!("Failed to get metadata: {}", e)))?;
+        let sql_query_duration_ms = sql_query_start.elapsed().as_millis() as u64;
+        tracing::info!(
+            index = %name_for_log,
+            results = metadata.len(),
+            sql_query_duration_ms = sql_query_duration_ms,
+            "Get all metadata query completed"
+        );
+        Ok(metadata)
     })
     .await
     .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
@@ -306,10 +339,20 @@ pub async fn get_metadata_count(
     }
 
     // Run blocking SQLite operations in a separate thread
+    let name_for_log = name.clone();
     let (has_metadata, count) = task::spawn_blocking(move || {
         let has_metadata = filtering::exists(&path_str);
         let count = if has_metadata {
-            filtering::count(&path_str).unwrap_or(0)
+            let sql_query_start = std::time::Instant::now();
+            let count = filtering::count(&path_str).unwrap_or(0);
+            let sql_query_duration_ms = sql_query_start.elapsed().as_millis() as u64;
+            tracing::info!(
+                index = %name_for_log,
+                count = count,
+                sql_query_duration_ms = sql_query_duration_ms,
+                "Metadata count query completed"
+            );
+            count
         } else {
             0
         };

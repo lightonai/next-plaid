@@ -161,6 +161,7 @@ pub async fn search(
 
     // Perform search and collect raw results
     let index = &*idx;
+    let index_query_start = std::time::Instant::now();
     let raw_results: Vec<(usize, Vec<i64>, Vec<f32>)> = if queries.len() == 1 {
         let result = index.search(&queries[0], &params, req.subset.as_deref())?;
         vec![(result.query_id, result.passage_ids, result.scores)]
@@ -171,8 +172,16 @@ pub async fn search(
             .map(|r| (r.query_id, r.passage_ids, r.scores))
             .collect()
     };
+    let index_query_duration_ms = index_query_start.elapsed().as_millis() as u64;
+    tracing::info!(
+        index = %name,
+        queries = queries.len(),
+        index_query_duration_ms = index_query_duration_ms,
+        "Index query completed"
+    );
 
     // Enrich results with metadata
+    let metadata_fetch_start = std::time::Instant::now();
     let results: Vec<QueryResultResponse> = raw_results
         .into_iter()
         .map(|(query_id, document_ids, scores)| {
@@ -185,13 +194,20 @@ pub async fn search(
             }
         })
         .collect();
+    let metadata_fetch_duration_ms = metadata_fetch_start.elapsed().as_millis() as u64;
+    tracing::info!(
+        index = %name,
+        queries = queries.len(),
+        metadata_fetch_duration_ms = metadata_fetch_duration_ms,
+        "Metadata fetch completed"
+    );
 
     let duration = start.elapsed();
     tracing::info!(
         index = %name,
         queries = queries.len(),
         top_k = top_k,
-        duration_ms = duration.as_millis() as u64,
+        total_search_duration_ms = duration.as_millis() as u64,
         "Search completed"
     );
 
@@ -234,18 +250,21 @@ pub async fn search_filtered(
         return Err(ApiError::MetadataNotFound(name.clone()));
     }
 
+    let sql_filter_start = std::time::Instant::now();
     let subset = next_plaid::filtering::where_condition(
         &path_str,
         &req.filter_condition,
         &req.filter_parameters,
     )
     .map_err(|e| ApiError::BadRequest(format!("Invalid filter condition: {}", e)))?;
+    let sql_filter_duration_ms = sql_filter_start.elapsed().as_millis() as u64;
 
-    tracing::debug!(
+    tracing::info!(
         index = %name,
         filter = %req.filter_condition,
         matching_docs = subset.len(),
-        "Filter applied"
+        sql_filter_duration_ms = sql_filter_duration_ms,
+        "SQL filter applied"
     );
 
     // Convert to standard search request with subset

@@ -332,15 +332,19 @@ async fn encode_texts_batch(
 
         let texts_ref: Vec<&str> = texts_owned.iter().map(|s| s.as_str()).collect();
 
+        let encode_start = std::time::Instant::now();
         let embeddings_result = match input_type {
             InputType::Query => model.encode_queries(&texts_ref),
-            InputType::Document => {
-                tracing::info!(num_texts = num_texts, "Starting document encoding");
-                let result = model.encode_documents(&texts_ref, pool_factor);
-                tracing::info!(num_texts = num_texts, "Finished document encoding");
-                result
-            }
+            InputType::Document => model.encode_documents(&texts_ref, pool_factor),
         };
+        let encode_duration_ms = encode_start.elapsed().as_millis() as u64;
+
+        tracing::info!(
+            input_type = ?input_type,
+            num_texts = num_texts,
+            encode_duration_ms = encode_duration_ms,
+            "Encoding completed"
+        );
 
         let embeddings = embeddings_result.map_err(|e| e.to_string())?;
 

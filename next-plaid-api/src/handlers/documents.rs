@@ -272,13 +272,20 @@ async fn process_batch(
         let update_config = UpdateConfig::default();
 
         // Run Update
-        tracing::info!(index = %name_inner, num_documents = embeddings.len(), "Starting index update");
+        let index_update_start = std::time::Instant::now();
         let (mut index, doc_ids) =
             MmapIndex::update_or_create(&embeddings, &path_str, &index_config, &update_config)
                 .map_err(|e| format!("Index update failed: {}", e))?;
-        tracing::info!(index = %name_inner, num_documents = embeddings.len(), "Finished index update");
+        let index_update_duration_ms = index_update_start.elapsed().as_millis() as u64;
+        tracing::info!(
+            index = %name_inner,
+            num_documents = embeddings.len(),
+            index_update_duration_ms = index_update_duration_ms,
+            "Index update completed"
+        );
 
         // Handle Metadata
+        let metadata_update_start = std::time::Instant::now();
         if filtering::exists(&path_str) {
             filtering::update(&path_str, &metadata, &doc_ids)
                 .map_err(|e| format!("Failed to update metadata: {}", e))?;
@@ -286,6 +293,13 @@ async fn process_batch(
             filtering::create(&path_str, &metadata, &doc_ids)
                 .map_err(|e| format!("Failed to create metadata: {}", e))?;
         }
+        let metadata_update_duration_ms = metadata_update_start.elapsed().as_millis() as u64;
+        tracing::info!(
+            index = %name_inner,
+            num_documents = embeddings.len(),
+            metadata_update_duration_ms = metadata_update_duration_ms,
+            "Metadata update completed"
+        );
 
         // Eviction: Check if over max_documents limit
         if let Some(max_docs) = stored_config.max_documents {
@@ -667,9 +681,15 @@ pub async fn add_documents(
 
             // Update with metadata (metadata is required)
             let update_config = UpdateConfig::default();
-            tracing::info!(index = %name_inner, num_documents = embeddings.len(), "Starting index update");
+            let index_update_start = std::time::Instant::now();
             index.update_with_metadata(&embeddings, &update_config, Some(&metadata))?;
-            tracing::info!(index = %name_inner, num_documents = embeddings.len(), "Finished index update");
+            let index_update_duration_ms = index_update_start.elapsed().as_millis() as u64;
+            tracing::info!(
+                index = %name_inner,
+                num_documents = embeddings.len(),
+                index_update_duration_ms = index_update_duration_ms,
+                "Index update with metadata completed"
+            );
 
             // Eviction: Load config to check max_documents
             let config_path = state_clone.index_path(&name_inner).join("config.json");
