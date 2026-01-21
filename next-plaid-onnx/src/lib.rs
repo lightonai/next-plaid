@@ -334,6 +334,9 @@ pub struct ColbertConfig {
     attend_to_expansion_tokens: bool,
     query_prefix_id: Option<u32>,
     document_prefix_id: Option<u32>,
+    /// Whether to lowercase text before tokenization (matches sentence-transformers preprocessing)
+    #[serde(default)]
+    pub do_lower_case: bool,
 }
 
 fn default_model_type() -> String {
@@ -386,6 +389,7 @@ impl Default for ColbertConfig {
             pad_token_id: default_pad_token_id(),
             query_prefix_id: None,
             document_prefix_id: None,
+            do_lower_case: false,
         }
     }
 }
@@ -936,10 +940,18 @@ fn encode_batch_with_session(
         })?,
     };
 
+    // Apply lowercasing if configured (matches sentence-transformers preprocessing)
+    let processed_texts: Vec<String> = if config.do_lower_case {
+        texts.iter().map(|t| t.to_lowercase()).collect()
+    } else {
+        texts.iter().map(|t| t.to_string()).collect()
+    };
+    let texts_to_encode: Vec<&str> = processed_texts.iter().map(|s| s.as_str()).collect();
+
     // Tokenize texts WITHOUT the prefix first (matching PyLate's approach)
     // PyLate tokenizes with max_length - 1 to reserve space for the prefix token
     let batch_encodings = tokenizer
-        .encode_batch(texts.to_vec(), true)
+        .encode_batch(texts_to_encode, true)
         .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
 
     let mut encodings: Vec<BatchEncoding> = Vec::with_capacity(texts.len());

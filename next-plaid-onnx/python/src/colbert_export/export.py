@@ -55,7 +55,7 @@ class ColBERTForONNX(nn.Module):
     """Combined ColBERT model for ONNX export.
 
     Uses pylate's model which has extended vocabulary with [Q] and [D] tokens.
-    Combines transformer + linear projection + L2 normalization.
+    Combines transformer + linear projection layers + L2 normalization.
     """
 
     def __init__(self, pylate_model: pylate_models.ColBERT, uses_token_type_ids: bool = True):
@@ -63,8 +63,13 @@ class ColBERTForONNX(nn.Module):
         # Get the transformer from pylate (already has extended embeddings)
         self.bert = pylate_model[0].auto_model
 
-        # Get the linear projection layer from pylate
-        self.linear = pylate_model[1].linear
+        # Collect all Dense projection layers (there can be multiple)
+        # Skip the Transformer module (index 0)
+        self.projection_layers = nn.ModuleList()
+        for i in range(1, len(pylate_model)):
+            module = pylate_model[i]
+            if hasattr(module, 'linear'):
+                self.projection_layers.append(module.linear)
 
         self.uses_token_type_ids = uses_token_type_ids
 
@@ -74,7 +79,7 @@ class ColBERTForONNX(nn.Module):
         attention_mask: torch.Tensor,
         token_type_ids: torch.Tensor = None,
     ) -> torch.Tensor:
-        """Forward pass: transformer -> linear projection -> L2 normalization.
+        """Forward pass: transformer -> linear projections -> L2 normalization.
 
         Returns per-token embeddings [batch_size, seq_len, embedding_dim].
         """
@@ -92,8 +97,10 @@ class ColBERTForONNX(nn.Module):
             )
         hidden_states = outputs.last_hidden_state
 
-        # Apply linear projection
-        projected = self.linear(hidden_states)
+        # Apply all projection layers in sequence
+        projected = hidden_states
+        for layer in self.projection_layers:
+            projected = layer(projected)
 
         # L2 normalize along embedding dimension
         normalized = torch.nn.functional.normalize(projected, p=2, dim=-1)
@@ -200,6 +207,9 @@ def export_model(
         print(f"Saved tokenizer to: {tokenizer_output_path}")
 
     # Save config_sentence_transformers.json with model configuration
+    # Get do_lower_case from the transformer module (sentence-transformers preprocessing)
+    do_lower_case = getattr(pylate_model[0], "do_lower_case", False)
+
     config = {
         "model_type": "ColBERT",
         "model_name": model_name,
@@ -217,6 +227,7 @@ def export_model(
         "pad_token_id": int(pylate_model.tokenizer.pad_token_id or 0),
         "query_prefix_id": int(pylate_model.query_prefix_id),
         "document_prefix_id": int(pylate_model.document_prefix_id),
+        "do_lower_case": do_lower_case,
     }
     config_output_path = output_dir / "config_sentence_transformers.json"
     with open(config_output_path, "w") as f:
