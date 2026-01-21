@@ -89,7 +89,7 @@ services:
       - --index-dir
       - /data/indices
       - --model
-      - lightonai/GTE-ModernColBERT-v1-onnx
+      - ${MODEL:-lightonai/GTE-ModernColBERT-v1-onnx}
       - --int8
       - --parallel
       - "4"

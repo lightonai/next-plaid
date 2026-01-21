@@ -61,6 +61,7 @@ class BenchmarkConfig:
     keep_running: bool = False  # Keep container running after benchmark
     compose_file: str = "docker-compose.yml"  # Docker compose file to use
     query_only: bool = False  # Skip indexing, use existing index
+    model: str = "lightonai/GTE-ModernColBERT-v1-onnx"  # Model to use for encoding
 
 
 # Dataset configuration
@@ -79,29 +80,43 @@ DATASET_CONFIG = {
 class DockerComposeManager:
     """Manages Docker Compose lifecycle for benchmarking."""
 
-    def __init__(self, compose_file: str = "docker-compose.yml", project_dir: str = None):
+    def __init__(
+        self,
+        compose_file: str = "docker-compose.yml",
+        project_dir: str = None,
+        model: str = "lightonai/GTE-ModernColBERT-v1-onnx",
+    ):
         """Initialize Docker Compose manager.
 
         Args:
             compose_file: Path to docker-compose.yml file
             project_dir: Directory containing the compose file (defaults to repo root)
+            model: HuggingFace model ID to use for encoding
         """
         self.compose_file = compose_file
         # Find repo root (parent of benchmarks directory)
         self.project_dir = project_dir or str(Path(__file__).parent.parent)
         self.container_name = "next-plaid-api-1"
+        self.model = model
 
     def _run_compose(
-        self, *args, check: bool = True, capture_output: bool = False
+        self, *args, check: bool = True, capture_output: bool = False, env: dict = None
     ) -> subprocess.CompletedProcess:
         """Run a docker compose command."""
+        import os
+
         cmd = ["docker", "compose", "-f", self.compose_file] + list(args)
+        # Merge environment variables with current environment
+        run_env = os.environ.copy()
+        if env:
+            run_env.update(env)
         return subprocess.run(
             cmd,
             cwd=self.project_dir,
             check=check,
             capture_output=capture_output,
             text=True,
+            env=run_env,
         )
 
     def is_running(self) -> bool:
@@ -139,11 +154,12 @@ class DockerComposeManager:
 
     def start(self, build: bool = False) -> None:
         """Start the Docker container."""
-        print("    Starting Docker container...")
+        print(f"    Starting Docker container with model: {self.model}")
+        env = {"MODEL": self.model}
         if build:
             print("    Building Docker image (this may take a while)...")
-            self._run_compose("build")
-        self._run_compose("up", "-d")
+            self._run_compose("build", env=env)
+        self._run_compose("up", "-d", env=env)
 
     def stop(self) -> None:
         """Stop and remove the Docker container."""
@@ -533,6 +549,12 @@ def main():
         action="store_true",
         help="Skip indexing and run queries against existing index",
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="lightonai/GTE-ModernColBERT-v1-onnx",
+        help="HuggingFace model ID to use for encoding (default: lightonai/GTE-ModernColBERT-v1-onnx)",
+    )
     args = parser.parse_args()
 
     config = BenchmarkConfig(
@@ -542,18 +564,20 @@ def main():
         keep_running=args.keep_running,
         compose_file=args.compose_file,
         query_only=args.query_only,
+        model=args.model,
     )
 
     dataset_name = "scifact"
     ds_config = DATASET_CONFIG[dataset_name]
 
     # Initialize Docker manager
-    docker = DockerComposeManager(compose_file=config.compose_file)
+    docker = DockerComposeManager(compose_file=config.compose_file, model=config.model)
 
     print("=" * 70)
     print("  SciFact Docker Benchmark: Server-Side Encoding with SDK")
     print("=" * 70)
     print("\nConfiguration:")
+    print(f"  Model:             {config.model}")
     print(f"  Batch size:        {config.batch_size} documents per API call")
     print(f"  Top-k:             {config.top_k}")
     print(f"  n_ivf_probe:       {config.n_ivf_probe}")
@@ -665,6 +689,7 @@ def main():
             "environment": "docker",
             "encoding": "server-side",
             "sdk": "next_plaid_client",
+            "model": config.model,
             "config": {
                 "batch_size": config.batch_size,
                 "top_k": config.top_k,
