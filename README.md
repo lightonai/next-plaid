@@ -212,7 +212,7 @@ docker run -d \
   -v ~/.cache/huggingface/next-plaid:/models \
   ghcr.io/lightonai/next-plaid-api:latest \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
-  --model lightonai/GTE-ModernColBERT-v1 \
+  --model lightonai/mxbai-edge-colbert-v0-32m-onnx \
   --int8 \
   --parallel 8 \
   --batch-size 4
