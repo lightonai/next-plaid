@@ -12,7 +12,7 @@ const COLGREP_MARKER_END: &str = "<!-- COLGREP_END -->";
 /// Get the OpenCode directory
 fn get_opencode_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().context("Could not determine home directory")?;
-    Ok(home.join(".opencode"))
+    Ok(home.join(".config").join("opencode"))
 }
 
 /// Get the AGENTS.md path for OpenCode
