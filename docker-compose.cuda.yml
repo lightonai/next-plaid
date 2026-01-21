@@ -9,8 +9,8 @@
 # Model Cache:
 #   Downloaded HuggingFace models are cached at ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}
 #
-# CUDA Defaults (optimized for GPU):
-#   --model lightonai/GTE-ModernColBERT-v1 --cuda --batch-size 64
+# CUDA Defaults (optimized for GPU, high throughput):
+#   --model lightonai/GTE-ModernColBERT-v1 --cuda --batch-size 128
 #   (no --int8: GPU is fast enough with FP32, no --parallel: GPU handles parallelism)
 #
 # Rate Limiting & Concurrency (via environment variables):
@@ -43,16 +43,16 @@ services:
       - RUST_LOG=info
       - NVIDIA_VISIBLE_DEVICES=all
       # Rate limiting configuration
-      - RATE_LIMIT_PER_SECOND=${RATE_LIMIT_PER_SECOND:-50}
-      - RATE_LIMIT_BURST_SIZE=${RATE_LIMIT_BURST_SIZE:-100}
-      - CONCURRENCY_LIMIT=${CONCURRENCY_LIMIT:-100}
+      - RATE_LIMIT_PER_SECOND=${RATE_LIMIT_PER_SECOND:-100}
+      - RATE_LIMIT_BURST_SIZE=${RATE_LIMIT_BURST_SIZE:-200}
+      - CONCURRENCY_LIMIT=${CONCURRENCY_LIMIT:-200}
       # Document processing configuration
-      - MAX_QUEUED_TASKS_PER_INDEX=${MAX_QUEUED_TASKS_PER_INDEX:-10}
-      - MAX_BATCH_DOCUMENTS=${MAX_BATCH_DOCUMENTS:-300}
-      - BATCH_CHANNEL_SIZE=${BATCH_CHANNEL_SIZE:-100}
+      - MAX_QUEUED_TASKS_PER_INDEX=${MAX_QUEUED_TASKS_PER_INDEX:-20}
+      - MAX_BATCH_DOCUMENTS=${MAX_BATCH_DOCUMENTS:-500}
+      - BATCH_CHANNEL_SIZE=${BATCH_CHANNEL_SIZE:-200}
       # Encode batching configuration
-      - MAX_BATCH_TEXTS=${MAX_BATCH_TEXTS:-64}
-      - ENCODE_BATCH_CHANNEL_SIZE=${ENCODE_BATCH_CHANNEL_SIZE:-256}
+      - MAX_BATCH_TEXTS=${MAX_BATCH_TEXTS:-128}
+      - ENCODE_BATCH_CHANNEL_SIZE=${ENCODE_BATCH_CHANNEL_SIZE:-512}
     # CUDA defaults: FP32 model (GPU is fast), large batches, single session
     command:
       - --host
@@ -65,7 +65,7 @@ services:
       - ${MODEL:-lightonai/GTE-ModernColBERT-v1}
       - --cuda
       - --batch-size
-      - "64"
+      - "128"
       - --query-length
       - "48"
       - --document-length
