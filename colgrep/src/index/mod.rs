@@ -32,7 +32,19 @@ const MAX_FILE_SIZE: u64 = 512 * 1024;
 
 /// Number of documents to process before writing to the index.
 /// Larger values reduce I/O overhead but use more memory.
-const INDEX_CHUNK_SIZE: usize = 500;
+const INDEX_CHUNK_SIZE: usize = 1000;
+
+/// Threshold for switching to higher pool factor (fewer embeddings per doc).
+/// When encoding more than this many units, use LARGE_BATCH_POOL_FACTOR.
+const LARGE_BATCH_THRESHOLD: usize = 10_000;
+
+/// Pool factor to use for large batches (> LARGE_BATCH_THRESHOLD units).
+/// Higher value = fewer embeddings = faster indexing and smaller index.
+const LARGE_BATCH_POOL_FACTOR: usize = 3;
+
+/// Threshold for small incremental updates.
+/// When encoding this many or fewer units, use the default pool factor.
+const SMALL_BATCH_THRESHOLD: usize = 300;
 
 #[derive(Debug)]
 pub struct UpdateStats {
@@ -91,6 +103,24 @@ impl IndexBuilder {
     /// Get the path to the index directory
     pub fn index_dir(&self) -> &Path {
         &self.index_dir
+    }
+
+    /// Compute the effective pool factor based on the number of units to encode.
+    ///
+    /// - For large batches (> 10,000 units): use pool_factor = 3 for faster indexing
+    /// - For small batches (≤ 300 units): use the configured default pool factor
+    /// - Otherwise: use the configured pool factor
+    fn effective_pool_factor(&self, num_units: usize) -> Option<usize> {
+        if num_units > LARGE_BATCH_THRESHOLD {
+            // Large batch: use higher pool factor for efficiency
+            Some(LARGE_BATCH_POOL_FACTOR)
+        } else if num_units <= SMALL_BATCH_THRESHOLD {
+            // Small incremental update: use default pool factor for better precision
+            self.pool_factor
+        } else {
+            // Medium batch: use configured pool factor
+            self.pool_factor
+        }
     }
 
     /// Single entry point for indexing.
@@ -249,10 +279,11 @@ impl IndexBuilder {
         let pb = ProgressBar::new(files_to_index.len() as u64);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
                 .unwrap()
                 .progress_chars("█▓░"),
         );
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
         pb.set_message("Parsing files...");
 
         for path in &files_to_index {
@@ -300,6 +331,7 @@ impl IndexBuilder {
                 .unwrap()
                 .progress_chars("█▓░"),
         );
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
         pb.set_message("Encoding...");
 
         // Create or update index
@@ -309,23 +341,48 @@ impl IndexBuilder {
 
         let encode_batch_size = 64;
 
+        // Compute effective pool factor based on batch size
+        let effective_pool_factor = self.effective_pool_factor(new_units.len());
+
+        // Track encoding time separately to compute accurate ETA (excluding write time)
+        let mut encoding_duration = std::time::Duration::ZERO;
+        let mut processed = 0usize;
+
         for (chunk_idx, unit_chunk) in new_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
             let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
 
             let mut chunk_embeddings = Vec::new();
             for batch in text_refs.chunks(encode_batch_size) {
+                let batch_start = std::time::Instant::now();
                 let batch_embeddings = self
                     .model
-                    .encode_documents(batch, self.pool_factor)
+                    .encode_documents(batch, effective_pool_factor)
                     .context("Failed to encode documents")?;
+                encoding_duration += batch_start.elapsed();
+                let batch_len = batch_embeddings.len();
                 chunk_embeddings.extend(batch_embeddings);
+                processed += batch_len;
 
                 let progress = chunk_idx * INDEX_CHUNK_SIZE + chunk_embeddings.len();
                 pb.set_position(progress.min(new_units.len()) as u64);
+
+                // Compute manual ETA based on encoding time only (excludes write time)
+                if processed > 0 {
+                    let time_per_doc = encoding_duration.as_secs_f64() / processed as f64;
+                    let remaining = new_units.len().saturating_sub(processed);
+                    let eta_secs = (time_per_doc * remaining as f64) as u64;
+                    let eta_mins = eta_secs / 60;
+                    let eta_secs_rem = eta_secs % 60;
+                    if eta_mins > 0 {
+                        pb.set_message(format!("Encoding... ({}m {}s)", eta_mins, eta_secs_rem));
+                    } else {
+                        pb.set_message(format!("Encoding... ({}s)", eta_secs));
+                    }
+                }
             }
 
-            // Write this chunk to the index
+            // Write this chunk to the index (time not counted in ETA)
             let (_, doc_ids) = MmapIndex::update_or_create(
                 &chunk_embeddings,
                 index_path_str,
@@ -392,10 +449,11 @@ impl IndexBuilder {
         let pb = ProgressBar::new(files.len() as u64);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
                 .unwrap()
                 .progress_chars("█▓░"),
         );
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
         pb.set_message("Parsing files...");
 
         // Extract units from all files
@@ -515,10 +573,11 @@ impl IndexBuilder {
             let pb = ProgressBar::new(files_to_index.len() as u64);
             pb.set_style(
                 ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
                     .unwrap()
                     .progress_chars("█▓░"),
             );
+            pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb.set_message("Parsing files...");
             Some(pb)
         } else {
@@ -569,6 +628,7 @@ impl IndexBuilder {
                     .unwrap()
                     .progress_chars("█▓░"),
             );
+            pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb.set_message("Encoding...");
 
             let config = IndexConfig::default();
@@ -576,23 +636,51 @@ impl IndexBuilder {
 
             let encode_batch_size = 64;
 
+            // Compute effective pool factor based on batch size
+            let effective_pool_factor = self.effective_pool_factor(new_units.len());
+
+            // Track encoding time separately to compute accurate ETA (excluding write time)
+            let mut encoding_duration = std::time::Duration::ZERO;
+            let mut processed = 0usize;
+
             for (chunk_idx, unit_chunk) in new_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
                 let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
                 let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
 
                 let mut chunk_embeddings = Vec::new();
                 for batch in text_refs.chunks(encode_batch_size) {
+                    let batch_start = std::time::Instant::now();
                     let batch_embeddings = self
                         .model
-                        .encode_documents(batch, self.pool_factor)
+                        .encode_documents(batch, effective_pool_factor)
                         .context("Failed to encode documents")?;
+                    encoding_duration += batch_start.elapsed();
+                    let batch_len = batch_embeddings.len();
                     chunk_embeddings.extend(batch_embeddings);
+                    processed += batch_len;
 
                     let progress = chunk_idx * INDEX_CHUNK_SIZE + chunk_embeddings.len();
                     pb.set_position(progress.min(new_units.len()) as u64);
+
+                    // Compute manual ETA based on encoding time only (excludes write time)
+                    if processed > 0 {
+                        let time_per_doc = encoding_duration.as_secs_f64() / processed as f64;
+                        let remaining = new_units.len().saturating_sub(processed);
+                        let eta_secs = (time_per_doc * remaining as f64) as u64;
+                        let eta_mins = eta_secs / 60;
+                        let eta_secs_rem = eta_secs % 60;
+                        if eta_mins > 0 {
+                            pb.set_message(format!(
+                                "Encoding... ({}m {}s)",
+                                eta_mins, eta_secs_rem
+                            ));
+                        } else {
+                            pb.set_message(format!("Encoding... ({}s)", eta_secs));
+                        }
+                    }
                 }
 
-                // Write this chunk to the index
+                // Write this chunk to the index (time not counted in ETA)
                 let (_, doc_ids) = MmapIndex::update_or_create(
                     &chunk_embeddings,
                     index_path_str,
@@ -914,6 +1002,7 @@ impl IndexBuilder {
                     .unwrap()
                     .progress_chars("█▓░"),
             );
+            pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb.set_message("Encoding...");
             Some(pb)
         } else {
@@ -925,6 +1014,13 @@ impl IndexBuilder {
 
         let encode_batch_size = 64;
 
+        // Compute effective pool factor based on batch size
+        let effective_pool_factor = self.effective_pool_factor(units.len());
+
+        // Track encoding time separately to compute accurate ETA (excluding write time)
+        let mut encoding_duration = std::time::Duration::ZERO;
+        let mut processed = 0usize;
+
         for (chunk_idx, unit_chunk) in units.chunks(INDEX_CHUNK_SIZE).enumerate() {
             // Build embedding text for this chunk
             let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
@@ -933,19 +1029,40 @@ impl IndexBuilder {
             // Encode in smaller batches within the chunk
             let mut chunk_embeddings = Vec::new();
             for batch in text_refs.chunks(encode_batch_size) {
+                let batch_start = std::time::Instant::now();
                 let batch_embeddings = self
                     .model
-                    .encode_documents(batch, self.pool_factor)
+                    .encode_documents(batch, effective_pool_factor)
                     .context("Failed to encode documents")?;
+                encoding_duration += batch_start.elapsed();
+                let batch_len = batch_embeddings.len();
                 chunk_embeddings.extend(batch_embeddings);
+                processed += batch_len;
 
                 if let Some(ref pb) = pb {
                     let progress = chunk_idx * INDEX_CHUNK_SIZE + chunk_embeddings.len();
                     pb.set_position(progress.min(units.len()) as u64);
+
+                    // Compute manual ETA based on encoding time only (excludes write time)
+                    if processed > 0 {
+                        let time_per_doc = encoding_duration.as_secs_f64() / processed as f64;
+                        let remaining = units.len().saturating_sub(processed);
+                        let eta_secs = (time_per_doc * remaining as f64) as u64;
+                        let eta_mins = eta_secs / 60;
+                        let eta_secs_rem = eta_secs % 60;
+                        if eta_mins > 0 {
+                            pb.set_message(format!(
+                                "Encoding... ({}m {}s)",
+                                eta_mins, eta_secs_rem
+                            ));
+                        } else {
+                            pb.set_message(format!("Encoding... ({}s)", eta_secs));
+                        }
+                    }
                 }
             }
 
-            // Write this chunk to the index
+            // Write this chunk to the index (time not counted in ETA)
             let (_, doc_ids) = MmapIndex::update_or_create(
                 &chunk_embeddings,
                 index_path_str,
