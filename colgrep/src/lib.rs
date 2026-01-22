@@ -12,6 +12,7 @@ pub mod install;
 pub mod model;
 pub mod onnx_runtime;
 pub mod parser;
+pub mod signal;
 
 pub use config::{Config, DEFAULT_POOL_FACTOR};
 pub use embed::build_embedding_text;
@@ -31,4 +32,10 @@ pub use parser::{
 pub use install::{
     install_claude_code, install_codex, install_opencode, uninstall_claude_code, uninstall_codex,
     uninstall_opencode,
+};
+
+// Signal handling
+pub use signal::{
+    check_interrupted, is_interrupted, is_interrupted_outside_critical, setup_signal_handler,
+    CriticalSectionGuard,
 };

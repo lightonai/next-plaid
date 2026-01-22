@@ -80,6 +80,9 @@ fs2 = "0.4"
 # === Hashing ===
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
+# === Signal handling ===
+ctrlc = "3.4"
+
 # === Ndarray (for embeddings) ===
 ndarray = "0.16"
 

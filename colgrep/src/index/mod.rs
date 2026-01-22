@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::embed::build_embedding_text;
 use crate::parser::{build_call_graph, detect_language, extract_units, CodeUnit, Language};
+use crate::signal::{is_interrupted, is_interrupted_outside_critical, CriticalSectionGuard};
 
 use paths::{
     acquire_index_lock, get_index_dir_for_project, get_vector_index_path, ProjectMetadata,
@@ -340,6 +341,7 @@ impl IndexBuilder {
         // Track encoding time separately to compute accurate ETA (excluding write time)
         let mut encoding_duration = std::time::Duration::ZERO;
         let mut processed = 0usize;
+        let mut was_interrupted = false;
 
         for (chunk_idx, unit_chunk) in new_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
             let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
@@ -347,6 +349,12 @@ impl IndexBuilder {
 
             let mut chunk_embeddings = Vec::new();
             for batch in text_refs.chunks(encode_batch_size) {
+                // Check for interrupt before each encoding batch (immediate response)
+                if is_interrupted_outside_critical() {
+                    was_interrupted = true;
+                    break;
+                }
+
                 let batch_start = std::time::Instant::now();
                 let batch_embeddings = self
                     .model
@@ -375,30 +383,43 @@ impl IndexBuilder {
                 }
             }
 
-            // Write this chunk to the index (time not counted in ETA)
-            let (_, doc_ids) = MmapIndex::update_or_create(
-                &chunk_embeddings,
-                index_path_str,
-                &config,
-                &update_config,
-            )?;
+            // If interrupted during encoding, break out of chunk loop
+            if was_interrupted {
+                break;
+            }
 
-            // Store metadata for this chunk
-            let metadata: Vec<serde_json::Value> = unit_chunk
-                .iter()
-                .map(|u| serde_json::to_value(u).unwrap())
-                .collect();
+            // Write this chunk to the index (protected by critical section)
+            // Interrupts are deferred during index writes to ensure data consistency
+            {
+                let _guard = CriticalSectionGuard::new();
+                let (_, doc_ids) = MmapIndex::update_or_create(
+                    &chunk_embeddings,
+                    index_path_str,
+                    &config,
+                    &update_config,
+                )?;
 
-            if filtering::exists(index_path_str) {
-                filtering::update(index_path_str, &metadata, &doc_ids)?;
-            } else {
-                filtering::create(index_path_str, &metadata, &doc_ids)?;
+                // Store metadata for this chunk
+                let metadata: Vec<serde_json::Value> = unit_chunk
+                    .iter()
+                    .map(|u| serde_json::to_value(u).unwrap())
+                    .collect();
+
+                if filtering::exists(index_path_str) {
+                    filtering::update(index_path_str, &metadata, &doc_ids)?;
+                } else {
+                    filtering::create(index_path_str, &metadata, &doc_ids)?;
+                }
             }
         }
 
         pb.finish_and_clear();
 
         new_state.save(&self.index_dir)?;
+
+        if was_interrupted || is_interrupted() {
+            anyhow::bail!("Indexing interrupted by user");
+        }
 
         Ok(UpdateStats {
             added: files_added.len(),
@@ -450,7 +471,14 @@ impl IndexBuilder {
         pb.set_message("Parsing files...");
 
         // Extract units from all files
+        let mut parsing_interrupted = false;
         for path in &files {
+            // Check for interrupt during parsing
+            if is_interrupted() {
+                parsing_interrupted = true;
+                break;
+            }
+
             let full_path = self.project_root.join(path);
             let lang = match detect_language(&full_path) {
                 Some(l) => l,
@@ -475,16 +503,27 @@ impl IndexBuilder {
         }
         pb.finish_and_clear();
 
+        if parsing_interrupted {
+            eprintln!("⚠️  Indexing interrupted during parsing. Partial index not saved.");
+            anyhow::bail!("Indexing interrupted by user");
+        }
+
         // Build call graph to populate called_by
         build_call_graph(&mut all_units);
 
-        if !all_units.is_empty() {
-            self.write_index_with_progress(&all_units)?;
-        }
+        let was_interrupted = if !all_units.is_empty() {
+            self.write_index_with_progress(&all_units)?
+        } else {
+            false
+        };
 
-        // Save state and project metadata
+        // Save state and project metadata (even if interrupted, save what we have)
         state.save(&self.index_dir)?;
         ProjectMetadata::new(&self.project_root).save(&self.index_dir)?;
+
+        if was_interrupted {
+            anyhow::bail!("Indexing interrupted by user");
+        }
 
         Ok(UpdateStats {
             added: files.len(),
@@ -577,7 +616,14 @@ impl IndexBuilder {
             None
         };
 
+        let mut parsing_interrupted = false;
         for path in &files_to_index {
+            // Check for interrupt during parsing
+            if is_interrupted() {
+                parsing_interrupted = true;
+                break;
+            }
+
             let full_path = self.project_root.join(path);
             let lang = match detect_language(&full_path) {
                 Some(l) => l,
@@ -608,7 +654,15 @@ impl IndexBuilder {
             pb.finish_and_clear();
         }
 
+        if parsing_interrupted {
+            // Save partial state before exiting
+            state.save(&self.index_dir)?;
+            eprintln!("⚠️  Indexing interrupted during parsing. Partial state saved.");
+            anyhow::bail!("Indexing interrupted by user");
+        }
+
         // 3. Add new units to index
+        let mut was_interrupted = false;
         if !new_units.is_empty() {
             // Build call graph for new units
             build_call_graph(&mut new_units);
@@ -642,6 +696,12 @@ impl IndexBuilder {
 
                 let mut chunk_embeddings = Vec::new();
                 for batch in text_refs.chunks(encode_batch_size) {
+                    // Check for interrupt before each encoding batch (immediate response)
+                    if is_interrupted_outside_critical() {
+                        was_interrupted = true;
+                        break;
+                    }
+
                     let batch_start = std::time::Instant::now();
                     let batch_embeddings = self
                         .model
@@ -673,26 +733,39 @@ impl IndexBuilder {
                     }
                 }
 
-                // Write this chunk to the index (time not counted in ETA)
-                let (_, doc_ids) = MmapIndex::update_or_create(
-                    &chunk_embeddings,
-                    index_path_str,
-                    &config,
-                    &update_config,
-                )?;
+                // If interrupted during encoding, break out of chunk loop
+                if was_interrupted {
+                    break;
+                }
 
-                // Store metadata for this chunk
-                let metadata: Vec<serde_json::Value> = unit_chunk
-                    .iter()
-                    .map(|u| serde_json::to_value(u).unwrap())
-                    .collect();
-                filtering::update(index_path_str, &metadata, &doc_ids)?;
+                // Write this chunk to the index (protected by critical section)
+                // Interrupts are deferred during index writes to ensure data consistency
+                {
+                    let _guard = CriticalSectionGuard::new();
+                    let (_, doc_ids) = MmapIndex::update_or_create(
+                        &chunk_embeddings,
+                        index_path_str,
+                        &config,
+                        &update_config,
+                    )?;
+
+                    // Store metadata for this chunk
+                    let metadata: Vec<serde_json::Value> = unit_chunk
+                        .iter()
+                        .map(|u| serde_json::to_value(u).unwrap())
+                        .collect();
+                    filtering::update(index_path_str, &metadata, &doc_ids)?;
+                }
             }
 
             pb.finish_and_clear();
         }
 
         state.save(&self.index_dir)?;
+
+        if was_interrupted || is_interrupted() {
+            anyhow::bail!("Indexing interrupted by user");
+        }
 
         Ok(UpdateStats {
             added: plan.added.len(),
@@ -973,15 +1046,15 @@ impl IndexBuilder {
     }
 
     #[allow(dead_code)]
-    fn write_index(&self, units: &[CodeUnit]) -> Result<()> {
+    fn write_index(&self, units: &[CodeUnit]) -> Result<bool> {
         self.write_index_impl(units, false)
     }
 
-    fn write_index_with_progress(&self, units: &[CodeUnit]) -> Result<()> {
+    fn write_index_with_progress(&self, units: &[CodeUnit]) -> Result<bool> {
         self.write_index_impl(units, true)
     }
 
-    fn write_index_impl(&self, units: &[CodeUnit], show_progress: bool) -> Result<()> {
+    fn write_index_impl(&self, units: &[CodeUnit], show_progress: bool) -> Result<bool> {
         let index_path = get_vector_index_path(&self.index_dir);
         let index_path_str = index_path.to_str().unwrap();
         std::fs::create_dir_all(&index_path)?;
@@ -1013,6 +1086,7 @@ impl IndexBuilder {
         // Track encoding time separately to compute accurate ETA (excluding write time)
         let mut encoding_duration = std::time::Duration::ZERO;
         let mut processed = 0usize;
+        let mut was_interrupted = false;
 
         for (chunk_idx, unit_chunk) in units.chunks(INDEX_CHUNK_SIZE).enumerate() {
             // Build embedding text for this chunk
@@ -1022,6 +1096,12 @@ impl IndexBuilder {
             // Encode in smaller batches within the chunk
             let mut chunk_embeddings = Vec::new();
             for batch in text_refs.chunks(encode_batch_size) {
+                // Check for interrupt before each encoding batch (immediate response)
+                if is_interrupted_outside_critical() {
+                    was_interrupted = true;
+                    break;
+                }
+
                 let batch_start = std::time::Instant::now();
                 let batch_embeddings = self
                     .model
@@ -1055,24 +1135,33 @@ impl IndexBuilder {
                 }
             }
 
-            // Write this chunk to the index (time not counted in ETA)
-            let (_, doc_ids) = MmapIndex::update_or_create(
-                &chunk_embeddings,
-                index_path_str,
-                &config,
-                &update_config,
-            )?;
+            // If interrupted during encoding, break out of chunk loop
+            if was_interrupted {
+                break;
+            }
 
-            // Store metadata for this chunk
-            let metadata: Vec<serde_json::Value> = unit_chunk
-                .iter()
-                .map(|u| serde_json::to_value(u).unwrap())
-                .collect();
+            // Write this chunk to the index (protected by critical section)
+            // Interrupts are deferred during index writes to ensure data consistency
+            {
+                let _guard = CriticalSectionGuard::new();
+                let (_, doc_ids) = MmapIndex::update_or_create(
+                    &chunk_embeddings,
+                    index_path_str,
+                    &config,
+                    &update_config,
+                )?;
 
-            if filtering::exists(index_path_str) {
-                filtering::update(index_path_str, &metadata, &doc_ids)?;
-            } else {
-                filtering::create(index_path_str, &metadata, &doc_ids)?;
+                // Store metadata for this chunk
+                let metadata: Vec<serde_json::Value> = unit_chunk
+                    .iter()
+                    .map(|u| serde_json::to_value(u).unwrap())
+                    .collect();
+
+                if filtering::exists(index_path_str) {
+                    filtering::update(index_path_str, &metadata, &doc_ids)?;
+                } else {
+                    filtering::create(index_path_str, &metadata, &doc_ids)?;
+                }
             }
         }
 
@@ -1080,7 +1169,8 @@ impl IndexBuilder {
             pb.finish_and_clear();
         }
 
-        Ok(())
+        // Check if interrupted after all processing (including deferred interrupts)
+        Ok(was_interrupted || is_interrupted())
     }
 
     /// Get index status (what would be updated)

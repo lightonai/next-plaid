@@ -12,9 +12,9 @@ use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 use colgrep::{
     acquire_index_lock, ensure_model, ensure_onnx_runtime, find_parent_index, get_colgrep_data_dir,
     get_index_dir_for_project, get_vector_index_path, index_exists, install_claude_code,
-    install_codex, install_opencode, is_text_format, uninstall_claude_code, uninstall_codex,
-    uninstall_opencode, Config, IndexBuilder, IndexState, ProjectMetadata, Searcher, DEFAULT_MODEL,
-    DEFAULT_POOL_FACTOR,
+    install_codex, install_opencode, is_text_format, setup_signal_handler, uninstall_claude_code,
+    uninstall_codex, uninstall_opencode, Config, IndexBuilder, IndexState, ProjectMetadata,
+    Searcher, DEFAULT_MODEL, DEFAULT_POOL_FACTOR,
 };
 
 const MAIN_HELP: &str = "\
@@ -444,6 +444,10 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // Set up Ctrl+C handler for graceful interruption during indexing
+    // This is non-fatal if it fails (e.g., in environments without signal support)
+    let _ = setup_signal_handler();
+
     let cli = Cli::parse();
 
     // Handle global flags before subcommands
@@ -1533,15 +1537,23 @@ fn cmd_clear(path: &PathBuf, all: bool) -> Result<()> {
         let path = std::fs::canonicalize(path)?;
         let index_dir = get_index_dir_for_project(&path)?;
 
-        if !index_dir.exists() {
+        if index_dir.exists() {
+            // Exact match found - clear it
+            let _lock = acquire_index_lock(&index_dir)?;
+            std::fs::remove_dir_all(&index_dir)?;
+            println!("🗑️  Cleared index for {}", path.display());
+        } else if let Some(parent_info) = find_parent_index(&path)? {
+            // We're in a subdirectory of an indexed project - clear the parent index
+            let _lock = acquire_index_lock(&parent_info.index_dir)?;
+            std::fs::remove_dir_all(&parent_info.index_dir)?;
+            println!(
+                "🗑️  Cleared index for {} (parent of current directory)",
+                parent_info.project_path.display()
+            );
+        } else {
             println!("No index found for {}", path.display());
             return Ok(());
         }
-
-        // Acquire lock before deleting
-        let _lock = acquire_index_lock(&index_dir)?;
-        std::fs::remove_dir_all(&index_dir)?;
-        println!("🗑️  Cleared index for {}", path.display());
     }
 
     Ok(())
