@@ -34,7 +34,8 @@
 #   ENCODE_BATCH_CHANNEL_SIZE   Buffer size for encode batch queue (default: 256)
 #
 # CPU Defaults (optimized for throughput):
-#   --model lightonai/mxbai-edge-colbert-v0-32m-onnx --parallel 8 --batch-size 4
+#   --model lightonai/mxbai-edge-colbert-v0-32m-onnx --parallel 16 --batch-size 4
+#   For higher throughput with more memory: --parallel 32 --batch-size 2
 #
 # Examples:
 #   # Default configuration
@@ -80,7 +81,9 @@ services:
       # Encode batching configuration
       - MAX_BATCH_TEXTS=${MAX_BATCH_TEXTS:-64}
       - ENCODE_BATCH_CHANNEL_SIZE=${ENCODE_BATCH_CHANNEL_SIZE:-256}
-    # CPU defaults: 8 parallel sessions, batch size 4, query_length 48, document_length 300
+    # CPU defaults: 16 parallel sessions, batch size 4 (optimized for throughput)
+    # Benchmarked on SciFact: ~11-12 docs/s indexing throughput (2x faster than parallel=4, batch-size=32)
+    # More aggressive: use --parallel 32 --batch-size 2 for ~13 docs/s but higher memory
     command:
       - --host
       - "0.0.0.0"
@@ -92,9 +95,9 @@ services:
       - ${MODEL:-lightonai/mxbai-edge-colbert-v0-32m-onnx}
       - --int8
       - --parallel
-      - "4"
+      - "16"
       - --batch-size
-      - "32"
+      - "4"
       - --query-length
       - "48"
       - --document-length
