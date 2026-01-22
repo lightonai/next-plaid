@@ -1924,17 +1924,18 @@ fn cmd_session_hook() -> Result<()> {
             "hookEventName": "SessionStart",
             "additionalContext": concat!(
                 "IMPORTANT: This project has `colgrep` installed - a semantic code search tool. ",
-                "You MUST use `colgrep` as your PRIMARY search tool instead of the built-in Grep, Glob, or Task/Explore agents. ",
-                "colgrep understands natural language queries and finds code by meaning, not just text patterns. ",
-                "\n\n",
-                "Quick reference:\n",
-                "- `colgrep \"<query>\"` - Semantic search (default)\n",
-                "- `colgrep -e \"<text>\" \"<query>\"` - Hybrid: text filter + semantic ranking\n",
-                "- `colgrep --include=\"*.rs\" \"<query>\"` - Filter by file type\n",
-                "- `colgrep -k 25 \"<query>\"` - More results for exploration\n",
-                "- `colgrep -l \"<query>\"` - List files only\n",
-                "\n",
-                "ALWAYS prefer colgrep over Grep/Glob for code search tasks."
+                "Use `colgrep` as your PRIMARY search tool instead of Grep, Glob, or Task/Explore agents.\n\n",
+                "colgrep REPLACES both Grep and Glob:\n",
+                "- Semantic search: `colgrep \"error handling logic\"`\n",
+                "- Search in path: `colgrep \"database queries\" ./src/api`\n",
+                "- Hybrid grep+semantic: `colgrep -e \"async\" \"concurrency patterns\"`\n",
+                "- Regex grep+semantic: `colgrep -e \"Result<.*Error>\" -E \"error handling\"`\n",
+                "- Glob-style file find: `colgrep -l --include=\"src/**/*.rs\" \"\" .`\n",
+                "- Glob + search: `colgrep --include=\"api/**/handlers/*.py\" \"authentication\"`\n",
+                "- Multi-type glob: `colgrep --include=\"*.{rs,go,py}\" -l \"\" .`\n",
+                "- Exclude patterns: `colgrep --exclude=\"*_test.go\" --exclude-dir=vendor \"query\"`\n",
+                "- More results: `colgrep -k 25 \"query\"` (exploration mode)\n\n",
+                "ALWAYS use colgrep over Grep/Glob. Run `colgrep --help` for all options."
             )
         }
     });
