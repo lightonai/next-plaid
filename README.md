@@ -26,7 +26,7 @@ If you are looking for an efficient multi-vector index running on GPU then consi
 
 ## ColGREP
 
-**ColGREP** is a powerful code search tool dedicated to **coding agents**. Compatible with Claude Code, Codex and OpenCode, it parse your project in real time to enhance your agent. Grep-like filtering to help your model find relevant code snippets quickly and accurately. It work at the **function level** and rely on syntactic analysis to provide **precise results**.
+**ColGREP** is a powerful code search tool dedicated to **coding agents** and based on Next-Plaid. Compatible with Claude Code, Codex and OpenCode, it parse your project in real time to enhance your agent. Grep-like filtering to help your model find relevant code snippets quickly and accurately. It work at the **function level** and rely on syntactic analysis to provide **precise results**.
 
 ### Installation:
 

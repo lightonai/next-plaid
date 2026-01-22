@@ -15,7 +15,10 @@ categories = ["science", "algorithms"]
 [dependencies]
 ndarray = { workspace = true }
 blas-src = { version = "0.14", optional = true }
-openblas-src = { version = "0.10", features = ["cblas", "system"], optional = true }
+openblas-src = { version = "0.10", features = [
+    "cblas",
+    "system",
+], optional = true }
 accelerate-src = { version = "0.3", optional = true }
 ndarray-rand = "0.15"
 rand = "0.8"
@@ -26,7 +29,7 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ndarray-npy = "0.9.1"
-fastkmeans-rs = "0.1.4"
+fastkmeans-rs = "0.1.5"
 memmap2 = "0.9"
 half = "2.4"
 byteorder = "1.5"
@@ -40,6 +43,15 @@ tempfile = "3.10"
 
 [features]
 default = []
-accelerate = ["blas-src", "accelerate-src", "ndarray/blas", "fastkmeans-rs/accelerate"]
-openblas = ["blas-src", "openblas-src", "ndarray/blas", "fastkmeans-rs/openblas"]
-
+accelerate = [
+    "blas-src",
+    "accelerate-src",
+    "ndarray/blas",
+    "fastkmeans-rs/accelerate",
+]
+openblas = [
+    "blas-src",
+    "openblas-src",
+    "ndarray/blas",
+    "fastkmeans-rs/openblas",
+]

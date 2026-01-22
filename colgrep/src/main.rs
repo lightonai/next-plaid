@@ -1192,13 +1192,74 @@ fn cmd_search(
     // Request more results to allow for re-ranking with query boost and test function demotion
     let search_top_k = if code_only { top_k * 4 } else { top_k * 3 };
 
-    // Enhance semantic query with -e pattern if provided
-    // This helps ColBERT match the pattern even if it's not well represented in the vocabulary
-    let enhanced_query = match text_pattern {
-        Some(pattern) => format!("{} {}", query, pattern),
-        None => query.to_string(),
+    // When no -e flag is provided, run BOTH semantic search and hybrid search (query as text pattern)
+    // This ensures exact matches are found even if the vector database doesn't rank them highly
+    let results = if text_pattern.is_none() {
+        // 1. Run pure semantic search
+        let semantic_results = searcher.search(query, search_top_k, subset.as_deref())?;
+
+        // 2. Run hybrid search: filter by query text, then semantic rank
+        // Use fixed_strings mode to treat the query as a literal pattern
+        let text_filtered_ids =
+            searcher.filter_by_text_pattern_with_options(query, false, true, false)?;
+
+        let hybrid_results = if !text_filtered_ids.is_empty() {
+            // Intersect with existing subset if any
+            let hybrid_subset: Vec<i64> = match &subset {
+                Some(existing) => {
+                    let existing_set: std::collections::HashSet<_> =
+                        existing.iter().copied().collect();
+                    text_filtered_ids
+                        .into_iter()
+                        .filter(|id| existing_set.contains(id))
+                        .collect()
+                }
+                None => text_filtered_ids,
+            };
+
+            if !hybrid_subset.is_empty() {
+                searcher.search(query, search_top_k, Some(&hybrid_subset))?
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
+        // 3. Merge results: keep max score for each unique code unit (by file + line)
+        let mut merged: HashMap<(PathBuf, usize), colgrep::SearchResult> = HashMap::new();
+
+        for result in semantic_results {
+            let key = (result.unit.file.clone(), result.unit.line);
+            merged
+                .entry(key)
+                .and_modify(|existing| {
+                    if result.score > existing.score {
+                        *existing = result.clone();
+                    }
+                })
+                .or_insert(result);
+        }
+
+        for result in hybrid_results {
+            let key = (result.unit.file.clone(), result.unit.line);
+            merged
+                .entry(key)
+                .and_modify(|existing| {
+                    if result.score > existing.score {
+                        *existing = result.clone();
+                    }
+                })
+                .or_insert(result);
+        }
+
+        merged.into_values().collect::<Vec<_>>()
+    } else {
+        // -e flag provided: use existing hybrid search logic
+        // Enhance semantic query with -e pattern
+        let enhanced_query = format!("{} {}", query, text_pattern.unwrap());
+        searcher.search(&enhanced_query, search_top_k, subset.as_deref())?
     };
-    let results = searcher.search(&enhanced_query, search_top_k, subset.as_deref())?;
 
     // Note: When -e is used, results are already filtered to units containing the pattern
     // via filter_by_text_pattern_with_options() above, which supports -E, -F, -w flags

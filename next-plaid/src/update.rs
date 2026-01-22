@@ -351,35 +351,68 @@ pub fn update_cluster_threshold(
 /// Find outlier embeddings that are far from all existing centroids.
 ///
 /// Returns indices of embeddings where min L2² distance > threshold².
+///
+/// Uses batch matrix multiplication for efficiency:
+/// ||a - b||² = ||a||² + ||b||² - 2*a·b
 fn find_outliers(
     flat_embeddings: &Array2<f32>,
     centroids: &Array2<f32>,
     threshold_sq: f32,
 ) -> Vec<usize> {
-    flat_embeddings
+    let n = flat_embeddings.nrows();
+    let k = centroids.nrows();
+
+    if n == 0 || k == 0 {
+        return Vec::new();
+    }
+
+    // Pre-compute squared norms for embeddings and centroids
+    let emb_norms_sq: Vec<f32> = flat_embeddings
         .axis_iter(Axis(0))
         .into_par_iter()
-        .enumerate()
-        .filter_map(|(i, emb)| {
-            // Find minimum squared distance to any centroid
-            let min_dist_sq = centroids
-                .axis_iter(Axis(0))
-                .map(|c| {
-                    // L2 squared distance
-                    emb.iter()
-                        .zip(c.iter())
-                        .map(|(a, b)| (a - b).powi(2))
-                        .sum::<f32>()
-                })
+        .map(|row| row.dot(&row))
+        .collect();
+
+    let centroid_norms_sq: Vec<f32> = centroids
+        .axis_iter(Axis(0))
+        .into_par_iter()
+        .map(|row| row.dot(&row))
+        .collect();
+
+    // Batch matrix multiplication: [n, d] @ [d, k] -> [n, k]
+    // This computes dot products: similarities[i, j] = embeddings[i] · centroids[j]
+    // Process in batches to limit memory usage
+    let batch_size = (2 * 1024 * 1024 * 1024 / (k * std::mem::size_of::<f32>())).clamp(1, 4096);
+
+    let mut outlier_indices = Vec::new();
+
+    for batch_start in (0..n).step_by(batch_size) {
+        let batch_end = (batch_start + batch_size).min(n);
+        let batch = flat_embeddings.slice(s![batch_start..batch_end, ..]);
+
+        // Compute dot products: [batch, k]
+        let dot_products = batch.dot(&centroids.t());
+
+        // Find min L2² distance for each embedding in batch
+        for (batch_idx, row) in dot_products.axis_iter(Axis(0)).enumerate() {
+            let global_idx = batch_start + batch_idx;
+            let emb_norm_sq = emb_norms_sq[global_idx];
+
+            // L2² = ||a||² + ||b||² - 2*a·b
+            // Find minimum over all centroids
+            let min_dist_sq = row
+                .iter()
+                .zip(centroid_norms_sq.iter())
+                .map(|(&dot, &c_norm_sq)| emb_norm_sq + c_norm_sq - 2.0 * dot)
                 .fold(f32::INFINITY, f32::min);
 
             if min_dist_sq > threshold_sq {
-                Some(i)
-            } else {
-                None
+                outlier_indices.push(global_idx);
             }
-        })
-        .collect()
+        }
+    }
+
+    outlier_indices
 }
 
 /// Expand centroids by clustering embeddings far from existing centroids.
