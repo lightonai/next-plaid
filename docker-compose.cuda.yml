@@ -1,31 +1,52 @@
 # =============================================================================
-# Docker Compose override for CUDA support
-# Usage: docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d
-# Or: make docker-up-cuda
+# Next-Plaid API Docker Compose - CUDA
+# =============================================================================
+# Standalone configuration with GPU/CUDA support.
+# Usage: docker compose -f docker-compose.cuda.yml up -d
 #
 # Vector Database Storage:
 #   Indices are persisted at ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}
+#   Each index is stored as a subdirectory: <data-dir>/<index-name>/
+#   On container restart, existing indices are automatically loaded.
 #
 # Model Cache:
 #   Downloaded HuggingFace models are cached at ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}
+#   Models are only downloaded once and reused on subsequent container starts.
+#
+# Model Configuration (via command arguments):
+#   --model <id>           HuggingFace model ID or local path
+#   --cuda                 Use CUDA (required for GPU)
+#   --batch-size <N>       Batch size per session
+#   --query-length <N>     Max query length in tokens (default: 48)
+#   --document-length <N>  Max document length in tokens (default: 300)
+#
+# Rate Limiting & Concurrency (via environment variables):
+#   RATE_LIMIT_PER_SECOND       Max requests per second (default: 100)
+#   RATE_LIMIT_BURST_SIZE       Burst size for rate limiting (default: 200)
+#   CONCURRENCY_LIMIT           Max concurrent in-flight requests (default: 200)
+#   MAX_QUEUED_TASKS_PER_INDEX  Max queued updates/deletes per index (default: 20)
+#   MAX_BATCH_DOCUMENTS         Max documents to batch before processing (default: 500)
+#   BATCH_CHANNEL_SIZE          Buffer size for document batch queue (default: 200)
+#   MAX_BATCH_TEXTS             Max texts to batch for encoding (default: 128)
+#   ENCODE_BATCH_CHANNEL_SIZE   Buffer size for encode batch queue (default: 512)
 #
 # CUDA Defaults (optimized for GPU, high throughput):
 #   --model lightonai/GTE-ModernColBERT-v1 --cuda --batch-size 128
 #   (no --int8: GPU is fast enough with FP32, no --parallel: GPU handles parallelism)
 #
-# Rate Limiting & Concurrency (via environment variables):
-#   RATE_LIMIT_PER_SECOND       Max requests per second (default: 50)
-#   RATE_LIMIT_BURST_SIZE       Burst size for rate limiting (default: 100)
-#   CONCURRENCY_LIMIT           Max concurrent in-flight requests (default: 100)
-#   MAX_QUEUED_TASKS_PER_INDEX  Max queued updates/deletes per index (default: 10)
-#   MAX_BATCH_DOCUMENTS         Max documents to batch before processing (default: 300)
-#   BATCH_CHANNEL_SIZE          Buffer size for document batch queue (default: 100)
-#   MAX_BATCH_TEXTS             Max texts to batch for encoding (default: 64)
-#   ENCODE_BATCH_CHANNEL_SIZE   Buffer size for encode batch queue (default: 256)
+# Examples:
+#   # Default CUDA configuration
+#   docker compose -f docker-compose.cuda.yml up -d
 #
-# Override with docker-compose.override.yml or run directly:
+#   # Custom model (override command in docker-compose.override.yml)
+#   # Or run directly:
 #   docker run -p 8080:8080 --gpus all -v ~/.local/share/next-plaid:/data/indices \
+#     -v ~/.cache/huggingface/next-plaid:/models \
 #     next-plaid-api:cuda --model my-org/my-model --cuda --batch-size 128
+#
+# To customize storage locations, create a .env file with:
+#   NEXT_PLAID_DATA=/path/to/indices
+#   NEXT_PLAID_MODELS=/path/to/models
 # =============================================================================
 
 services:
@@ -34,10 +55,16 @@ services:
       context: .
       dockerfile: next-plaid-api/Dockerfile
       target: runtime-cuda
+    ports:
+      - "8080:8080"
     volumes:
-      # Persistent vector database storage (default: ~/.local/share/next-plaid)
+      # Persistent vector database storage
+      # Default: ~/.local/share/next-plaid (XDG standard for user data)
+      # Override with NEXT_PLAID_DATA environment variable
       - ${NEXT_PLAID_DATA:-~/.local/share/next-plaid}:/data/indices
       # Persistent model cache (auto-downloaded from HuggingFace)
+      # Default: ~/.cache/huggingface (standard HF cache location)
+      # Override with NEXT_PLAID_MODELS environment variable
       - ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}:/models
     environment:
       - RUST_LOG=info
@@ -71,7 +98,12 @@ services:
       - --document-length
       - "300"
     healthcheck:
+      test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 2
       start_period: 120s  # Longer start period for model download + CUDA initialization
+    restart: unless-stopped
     deploy:
       resources:
         limits:
