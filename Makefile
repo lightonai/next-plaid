@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean doc example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-scifact-docker benchmark-scifact-docker-keep benchmark-fastplaid-compat benchmark-fastplaid-compat-keep benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 benchmark-onnx-vs-pylate ci-api ci-onnx ci-cli test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-cuda docker-up docker-up-cuda docker-down docker-logs kill-api docs-serve docs-build docs-deploy bump-version
+.PHONY: all build test lint fmt check clean example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-scifact-docker benchmark-scifact-docker-keep benchmark-fastplaid-compat benchmark-fastplaid-compat-keep benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 benchmark-onnx-vs-pylate ci-api ci-onnx ci-cli test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-cuda docker-up docker-up-cuda docker-down docker-logs kill-api bump-version
 
 all: fmt lint test
 
@@ -37,14 +37,6 @@ fmt:
 check:
 	cargo check
 
-# Build documentation
-doc:
-	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
-
-# Open documentation in browser
-doc-open:
-	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --open
-
 # Clean build artifacts
 clean:
 	cargo clean
@@ -54,7 +46,7 @@ example:
 	cargo run --example basic --release
 
 # Run all CI checks locally
-ci: doc ci-index ci-api ci-onnx ci-cli lint-python
+ci: ci-index ci-api ci-onnx ci-cli lint-python
 	@echo "All CI checks passed!"
 
 # Kill any existing API process on port 8080
@@ -143,7 +135,7 @@ onnx-fmt:
 # Benchmark SciFact via Docker container with server-side encoding
 # Uses next-plaid SDK, starts docker compose, runs benchmark, then stops container
 benchmark-scifact-docker:
-	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_docker.py --batch-size 30 --model lightonai/GTE-ModernColBERT-v1
+	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_docker.py --model lightonai/mxbai-edge-colbert-v0-32m-onnx
 
 # Benchmark SciFact via Docker container (keeps container running after)
 benchmark-scifact-docker-keep:
@@ -182,27 +174,6 @@ docker-down:
 # View Docker Compose logs
 docker-logs:
 	docker compose logs -f
-
-# =============================================================================
-# Documentation targets
-# =============================================================================
-
-# Serve documentation locally (hot-reload) on an available port
-docs-serve:
-	pip install mkdocs-material -q
-	@PORT=$$(python -c "import socket; s=socket.socket(); s.bind(('',0)); port=s.getsockname()[1]; s.close(); print(port)"); \
-	echo "Starting docs server on port $$PORT..."; \
-	mkdocs serve -a 127.0.0.1:$$PORT
-
-# Build documentation
-docs-build:
-	pip install mkdocs-material -q
-	mkdocs build
-
-# Deploy documentation to GitHub Pages
-docs-deploy:
-	pip install mkdocs-material -q
-	mkdocs gh-deploy --force
 
 start-cpu-docker-build:
 	docker build -t next-plaid-api -f next-plaid-api/Dockerfile --target runtime-cpu .
