@@ -88,8 +88,14 @@ tempfile = "3"
 
 [features]
 default = []
+# Model inference acceleration (ONNX Runtime execution providers)
 cuda = ["next-plaid-onnx/cuda"]
 coreml = ["next-plaid-onnx/coreml"]
+tensorrt = ["next-plaid-onnx/tensorrt"]
+directml = ["next-plaid-onnx/directml"]
+# Vector search acceleration (BLAS backends)
+accelerate = ["next-plaid/accelerate"]
+openblas = ["next-plaid/openblas"]
 
 [target.'cfg(windows)'.dependencies]
 zip = "2"

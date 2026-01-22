@@ -8,7 +8,7 @@ This repository has `colgrep` installed - a semantic code search CLI.
 
 ```bash
 # Basic semantic search
-colgrep "<natural language query>" -k 10          # Basic search
+colgrep "<natural language query>" --results 10   # Basic search
 colgrep "<query>" -k 25                           # Exploration (more results)
 colgrep "<query>" ./src/parser                    # Search in specific folder
 
@@ -40,6 +40,7 @@ colgrep --json "<query>"                          # JSON output
 | `-E`            | Extended regex (ERE) for `-e`               | `colgrep -e "async\|await" -E "concurrency"` |
 | `-F`            | Fixed string (no regex) for `-e`            | `colgrep -e "foo[bar]" -F "query"`           |
 | `-w`            | Whole word match for `-e`                   | `colgrep -e "test" -w "testing"`             |
+| `-k, --results` | Number of results to return                 | `colgrep --results 20 "query"`               |
 | `-l`            | List files only                             | `colgrep -l "authentication"`                |
 | `-r`            | Recursive (default, for compatibility)      | `colgrep -r "query"`                         |
 | `--include`     | Include files matching pattern (repeatable) | `colgrep --include="*.py" "query"`           |
@@ -76,7 +77,7 @@ colgrep --json "<query>"                          # JSON output
 ## Key Rules
 
 1. **Default to `colgrep`** for any code search
-2. **Increase `-k`** when exploring (20-30 results)
+2. **Increase `--results`** (or `-k`) when exploring (20-30 results)
 3. **Use `-e`** for hybrid text+semantic filtering
 4. **Use `-E`** with `-e` for extended regex (alternation `|`, quantifiers `+?`, grouping `()`)
 5. **Use `-F`** with `-e` when pattern contains regex special characters you want literal

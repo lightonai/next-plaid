@@ -13,7 +13,7 @@ pub mod model;
 pub mod onnx_runtime;
 pub mod parser;
 
-pub use config::Config;
+pub use config::{Config, DEFAULT_POOL_FACTOR};
 pub use embed::build_embedding_text;
 pub use index::paths::{
     acquire_index_lock, find_parent_index, get_colgrep_data_dir, get_index_dir_for_project,

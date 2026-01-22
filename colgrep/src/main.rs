@@ -14,6 +14,7 @@ use colgrep::{
     get_index_dir_for_project, get_vector_index_path, index_exists, install_claude_code,
     install_codex, install_opencode, is_text_format, uninstall_claude_code, uninstall_codex,
     uninstall_opencode, Config, IndexBuilder, IndexState, ProjectMetadata, Searcher, DEFAULT_MODEL,
+    DEFAULT_POOL_FACTOR,
 };
 
 const MAIN_HELP: &str = "\
@@ -91,7 +92,7 @@ struct Cli {
     path: PathBuf,
 
     /// Number of results (default: 15, or config value)
-    #[arg(short = 'k')]
+    #[arg(short = 'k', long = "results")]
     top_k: Option<usize>,
 
     /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
@@ -189,6 +190,14 @@ struct Cli {
     /// Internal: Claude Code session hook (outputs JSON reminder)
     #[arg(long = "session-hook", hide = true)]
     session_hook: bool,
+
+    /// Disable embedding pooling (use full embeddings, slower but more precise)
+    #[arg(long = "no-pool")]
+    no_pool: bool,
+
+    /// Set embedding pool factor (default: 2, higher = fewer embeddings = faster)
+    #[arg(long = "pool-factor", value_name = "FACTOR")]
+    pool_factor: Option<usize>,
 }
 
 const SEARCH_HELP: &str = "\
@@ -247,6 +256,7 @@ EXAMPLES:
     colgrep clear ~/projects/myapp
 
     # Clear ALL indexes
+    colgrep clear -a
     colgrep clear --all";
 
 const SET_MODEL_HELP: &str = "\
@@ -265,10 +275,10 @@ EXAMPLES:
     colgrep config
 
     # Set default number of results
-    colgrep config --k 20
+    colgrep config --default-results 20
 
     # Set default context lines
-    colgrep config --n 10
+    colgrep config --default-lines 10
 
     # Switch to INT8 quantized model (faster inference)
     colgrep config --int8
@@ -276,17 +286,24 @@ EXAMPLES:
     # Switch back to full-precision (FP32) model (default)
     colgrep config --fp32
 
+    # Set embedding pool factor (smaller index, faster search)
+    colgrep config --pool-factor 2
+
+    # Disable embedding pooling (larger index, more precise)
+    colgrep config --pool-factor 1
+
     # Set both at once
-    colgrep config --k 25 --n 8
+    colgrep config --default-results 25 --default-lines 8
 
     # Reset to defaults (unset)
-    colgrep config --k 0 --n 0
+    colgrep config --default-results 0 --default-lines 0
 
 NOTES:
     • Values are stored in ~/.config/colgrep/config.json
     • Use 0 to reset a value to its default
     • These values override the CLI defaults when not explicitly specified
-    • FP32 (full-precision) is the default";
+    • FP32 (full-precision) is the default
+    • Pool factor 2 (default) reduces index size by ~50%. Use 1 to disable pooling";
 
 #[derive(Subcommand)]
 enum Commands {
@@ -301,7 +318,7 @@ enum Commands {
         path: PathBuf,
 
         /// Number of results (default: 20, or config value)
-        #[arg(short = 'k')]
+        #[arg(short = 'k', long = "results")]
         top_k: Option<usize>,
 
         /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
@@ -363,6 +380,14 @@ enum Commands {
         /// Only search code files, skip text/config files (md, txt, yaml, json, toml, etc.)
         #[arg(long)]
         code_only: bool,
+
+        /// Disable embedding pooling (use full embeddings, slower but more precise)
+        #[arg(long = "no-pool")]
+        no_pool: bool,
+
+        /// Set embedding pool factor (default: 2, higher = fewer embeddings = faster)
+        #[arg(long = "pool-factor", value_name = "FACTOR")]
+        pool_factor: Option<usize>,
     },
 
     /// Show index status for a project
@@ -381,7 +406,7 @@ enum Commands {
         path: PathBuf,
 
         /// Clear all indexes for all projects
-        #[arg(long)]
+        #[arg(short = 'a', long)]
         all: bool,
     },
 
@@ -396,11 +421,11 @@ enum Commands {
     #[command(after_help = CONFIG_HELP)]
     Config {
         /// Set default number of results (use 0 to reset to default)
-        #[arg(long = "k")]
+        #[arg(long = "default-results")]
         default_k: Option<usize>,
 
         /// Set default context lines (use 0 to reset to default)
-        #[arg(long = "n")]
+        #[arg(long = "default-lines")]
         default_n: Option<usize>,
 
         /// Use full-precision (FP32) model (default)
@@ -410,6 +435,11 @@ enum Commands {
         /// Use INT8 quantized model (faster inference)
         #[arg(long, conflicts_with = "fp32")]
         int8: bool,
+
+        /// Set default pool factor for embedding compression (use 0 to reset to default 2)
+        /// Higher values = faster search, fewer embeddings. Use 1 to disable pooling.
+        #[arg(long = "pool-factor", value_name = "FACTOR")]
+        pool_factor: Option<usize>,
     },
 }
 
@@ -482,6 +512,8 @@ fn main() -> Result<()> {
             exclude_patterns,
             exclude_dirs,
             code_only,
+            no_pool,
+            pool_factor,
         }) => cmd_search(
             &query,
             &path,
@@ -500,6 +532,7 @@ fn main() -> Result<()> {
             &exclude_patterns,
             &exclude_dirs,
             code_only,
+            resolve_pool_factor(pool_factor, no_pool),
         ),
         Some(Commands::Status { path }) => cmd_status(&path),
         Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
@@ -509,7 +542,8 @@ fn main() -> Result<()> {
             default_n,
             fp32,
             int8,
-        }) => cmd_config(default_k, default_n, fp32, int8),
+            pool_factor,
+        }) => cmd_config(default_k, default_n, fp32, int8, pool_factor),
         None => {
             // Default: run search if query is provided
             if let Some(query) = cli.query {
@@ -531,6 +565,7 @@ fn main() -> Result<()> {
                     &cli.exclude_patterns,
                     &cli.exclude_dirs,
                     cli.code_only,
+                    resolve_pool_factor(cli.pool_factor, cli.no_pool),
                 )
             } else {
                 // No query provided - show help
@@ -592,8 +627,25 @@ fn resolve_context_lines(cli_n: Option<usize>, default: usize) -> usize {
     default
 }
 
-/// Run grep to find files containing a text pattern
-/// Returns a list of file paths (relative to the search path)
+/// Resolve pool_factor: --no-pool > --pool-factor > config > default (2)
+fn resolve_pool_factor(cli_pool_factor: Option<usize>, no_pool: bool) -> Option<usize> {
+    if no_pool {
+        return Some(1); // Disable pooling
+    }
+
+    if let Some(factor) = cli_pool_factor {
+        return Some(factor.max(1)); // Minimum is 1
+    }
+
+    // Try to load from config
+    if let Ok(config) = Config::load() {
+        return Some(config.get_pool_factor());
+    }
+
+    // Default pool factor
+    Some(DEFAULT_POOL_FACTOR)
+}
+
 /// Calculate merged display ranges for all matches within a code unit
 /// Returns a vector of (start, end) ranges (0-indexed) that cover all matches with context
 /// Always includes the function signature (first line of unit) for context
@@ -889,6 +941,7 @@ fn cmd_search(
     exclude_patterns: &[String],
     exclude_dirs: &[String],
     code_only: bool,
+    pool_factor: Option<usize>,
 ) -> Result<()> {
     let path = std::fs::canonicalize(path)?;
 
@@ -945,7 +998,8 @@ fn cmd_search(
 
     // Get files matching include patterns (for file-type filtering)
     let include_files: Option<Vec<String>> = if !include_patterns.is_empty() && !no_index {
-        let builder = IndexBuilder::with_quantized(&effective_root, &model_path, quantized)?;
+        let builder =
+            IndexBuilder::with_options(&effective_root, &model_path, quantized, pool_factor)?;
         let paths = builder.scan_files_matching_patterns(include_patterns)?;
         Some(
             paths
@@ -959,7 +1013,8 @@ fn cmd_search(
 
     // Auto-index: always do incremental update (no grep-based selective indexing)
     if !no_index {
-        let builder = IndexBuilder::with_quantized(&effective_root, &model_path, quantized)?;
+        let builder =
+            IndexBuilder::with_options(&effective_root, &model_path, quantized, pool_factor)?;
         let needs_index = !index_exists(&effective_root);
 
         if needs_index {
@@ -1575,42 +1630,58 @@ fn cmd_config(
     default_n: Option<usize>,
     fp32: bool,
     int8: bool,
+    pool_factor: Option<usize>,
 ) -> Result<()> {
     let mut config = Config::load()?;
 
     // If no options provided, show current config
-    if default_k.is_none() && default_n.is_none() && !fp32 && !int8 {
+    if default_k.is_none() && default_n.is_none() && !fp32 && !int8 && pool_factor.is_none() {
         println!("Current configuration:");
         println!();
 
         // Model
         match config.get_default_model() {
-            Some(model) => println!("  model:     {}", model),
-            None => println!("  model:     {} (default)", DEFAULT_MODEL),
+            Some(model) => println!("  model:       {}", model),
+            None => println!("  model:       {} (default)", DEFAULT_MODEL),
         }
 
         // Precision
         if config.use_fp32() {
-            println!("  precision: fp32 (default)");
+            println!("  precision:   fp32 (default)");
         } else {
-            println!("  precision: int8");
+            println!("  precision:   int8");
+        }
+
+        // Pool factor
+        let pf = config.get_pool_factor();
+        if config.pool_factor.is_some() {
+            if pf == 1 {
+                println!("  pool-factor: {} (pooling disabled)", pf);
+            } else {
+                println!("  pool-factor: {}", pf);
+            }
+        } else {
+            println!("  pool-factor: {} (default)", DEFAULT_POOL_FACTOR);
         }
 
         // k
         match config.get_default_k() {
-            Some(k) => println!("  k:         {}", k),
-            None => println!("  k:         15 (default)"),
+            Some(k) => println!("  k:           {}", k),
+            None => println!("  k:           15 (default)"),
         }
 
         // n
         match config.get_default_n() {
-            Some(n) => println!("  n:         {}", n),
-            None => println!("  n:         6 (default)"),
+            Some(n) => println!("  n:           {}", n),
+            None => println!("  n:           6 (default)"),
         }
 
         println!();
-        println!("Use --k or --n to set values. Use 0 to reset to default.");
+        println!(
+            "Use --default-results or --default-lines to set values. Use 0 to reset to default."
+        );
         println!("Use --fp32 or --int8 to change model precision.");
+        println!("Use --pool-factor to set embedding compression (1=disabled, 2+=enabled). Use 0 to reset.");
         return Ok(());
     }
 
@@ -1648,6 +1719,22 @@ fn cmd_config(
     } else if int8 {
         config.set_fp32(false);
         println!("✅ Set model precision to INT8 (quantized)");
+        changed = true;
+    }
+
+    // Set or clear pool factor
+    if let Some(pf) = pool_factor {
+        if pf == 0 {
+            config.clear_pool_factor();
+            println!("✅ Reset pool factor to {} (default)", DEFAULT_POOL_FACTOR);
+        } else {
+            config.set_pool_factor(pf);
+            if pf == 1 {
+                println!("✅ Set pool factor to {} (pooling disabled)", pf);
+            } else {
+                println!("✅ Set pool factor to {}", pf);
+            }
+        }
         changed = true;
     }
 

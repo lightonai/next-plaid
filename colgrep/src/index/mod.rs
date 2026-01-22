@@ -32,7 +32,7 @@ const MAX_FILE_SIZE: u64 = 512 * 1024;
 
 /// Number of documents to process before writing to the index.
 /// Larger values reduce I/O overhead but use more memory.
-const INDEX_CHUNK_SIZE: usize = 5000;
+const INDEX_CHUNK_SIZE: usize = 500;
 
 #[derive(Debug)]
 pub struct UpdateStats {
@@ -55,14 +55,24 @@ pub struct IndexBuilder {
     model: Colbert,
     project_root: PathBuf,
     index_dir: PathBuf,
+    pool_factor: Option<usize>,
 }
 
 impl IndexBuilder {
     pub fn new(project_root: &Path, model_path: &Path) -> Result<Self> {
-        Self::with_quantized(project_root, model_path, false)
+        Self::with_options(project_root, model_path, false, None)
     }
 
     pub fn with_quantized(project_root: &Path, model_path: &Path, quantized: bool) -> Result<Self> {
+        Self::with_options(project_root, model_path, quantized, None)
+    }
+
+    pub fn with_options(
+        project_root: &Path,
+        model_path: &Path,
+        quantized: bool,
+        pool_factor: Option<usize>,
+    ) -> Result<Self> {
         let model = Colbert::builder(model_path)
             .with_quantized(quantized)
             .build()
@@ -74,6 +84,7 @@ impl IndexBuilder {
             model,
             project_root: project_root.to_path_buf(),
             index_dir,
+            pool_factor,
         })
     }
 
@@ -306,7 +317,7 @@ impl IndexBuilder {
             for batch in text_refs.chunks(encode_batch_size) {
                 let batch_embeddings = self
                     .model
-                    .encode_documents(batch, None)
+                    .encode_documents(batch, self.pool_factor)
                     .context("Failed to encode documents")?;
                 chunk_embeddings.extend(batch_embeddings);
 
@@ -573,7 +584,7 @@ impl IndexBuilder {
                 for batch in text_refs.chunks(encode_batch_size) {
                     let batch_embeddings = self
                         .model
-                        .encode_documents(batch, None)
+                        .encode_documents(batch, self.pool_factor)
                         .context("Failed to encode documents")?;
                     chunk_embeddings.extend(batch_embeddings);
 
@@ -924,7 +935,7 @@ impl IndexBuilder {
             for batch in text_refs.chunks(encode_batch_size) {
                 let batch_embeddings = self
                     .model
-                    .encode_documents(batch, None)
+                    .encode_documents(batch, self.pool_factor)
                     .context("Failed to encode documents")?;
                 chunk_embeddings.extend(batch_embeddings);
 

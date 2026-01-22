@@ -12,6 +12,9 @@ use crate::index::paths::get_colgrep_data_dir;
 
 const CONFIG_FILE: &str = "config.json";
 
+/// Default pool factor for embedding compression (2 = 50% of tokens)
+pub const DEFAULT_POOL_FACTOR: usize = 2;
+
 /// User configuration stored in the colgrep data directory
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -30,6 +33,12 @@ pub struct Config {
     /// Use full-precision (FP32) model instead of INT8 quantized
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fp32: Option<bool>,
+
+    /// Pool factor for embedding compression (default: 2)
+    /// Higher values = fewer embeddings = faster search but less precision
+    /// Set to 1 to disable pooling
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool_factor: Option<usize>,
 }
 
 impl Config {
@@ -115,6 +124,23 @@ impl Config {
     /// Clear the FP32 setting (revert to default FP32)
     pub fn clear_fp32(&mut self) {
         self.fp32 = None;
+    }
+
+    /// Get the pool factor for embedding compression
+    /// Returns the configured value or the default (2)
+    pub fn get_pool_factor(&self) -> usize {
+        self.pool_factor.unwrap_or(DEFAULT_POOL_FACTOR)
+    }
+
+    /// Set the pool factor for embedding compression
+    /// Use 1 to disable pooling, 2+ to enable compression
+    pub fn set_pool_factor(&mut self, factor: usize) {
+        self.pool_factor = Some(factor.max(1)); // Minimum is 1 (no pooling)
+    }
+
+    /// Clear the pool factor setting (revert to default)
+    pub fn clear_pool_factor(&mut self) {
+        self.pool_factor = None;
     }
 }
 
