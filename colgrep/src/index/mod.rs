@@ -42,10 +42,6 @@ const LARGE_BATCH_THRESHOLD: usize = 10_000;
 /// Higher value = fewer embeddings = faster indexing and smaller index.
 const LARGE_BATCH_POOL_FACTOR: usize = 3;
 
-/// Threshold for small incremental updates.
-/// When encoding this many or fewer units, use the default pool factor.
-const SMALL_BATCH_THRESHOLD: usize = 300;
-
 #[derive(Debug)]
 pub struct UpdateStats {
     pub added: usize,
@@ -114,11 +110,8 @@ impl IndexBuilder {
         if num_units > LARGE_BATCH_THRESHOLD {
             // Large batch: use higher pool factor for efficiency
             Some(LARGE_BATCH_POOL_FACTOR)
-        } else if num_units <= SMALL_BATCH_THRESHOLD {
-            // Small incremental update: use default pool factor for better precision
-            self.pool_factor
         } else {
-            // Medium batch: use configured pool factor
+            // Use configured pool factor
             self.pool_factor
         }
     }
