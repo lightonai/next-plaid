@@ -135,7 +135,7 @@ onnx-fmt:
 # Benchmark SciFact via Docker container with server-side encoding
 # Uses next-plaid SDK, starts docker compose, runs benchmark, then stops container
 benchmark-scifact-docker:
-	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_docker.py --model lightonai/mxbai-edge-colbert-v0-32m-onnx
+	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_docker.py --model lightonai/GTE-ModernColBERT-v1 --batch-size 30
 
 # Benchmark SciFact via Docker container (keeps container running after)
 benchmark-scifact-docker-keep:
