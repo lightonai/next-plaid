@@ -30,6 +30,10 @@ use state::{get_mtime, hash_file, FileInfo, IndexState};
 /// - Indexing non-source files (binaries, data files)
 const MAX_FILE_SIZE: u64 = 512 * 1024;
 
+/// Number of documents to process before writing to the index.
+/// Larger values reduce I/O overhead but use more memory.
+const INDEX_CHUNK_SIZE: usize = 5000;
+
 #[derive(Debug)]
 pub struct UpdateStats {
     pub added: usize,
@@ -292,11 +296,9 @@ impl IndexBuilder {
         let config = IndexConfig::default();
         let update_config = UpdateConfig::default();
 
-        // Process in chunks of 500 documents to avoid RAM issues
-        const CHUNK_SIZE: usize = 500;
         let encode_batch_size = 64;
 
-        for (chunk_idx, unit_chunk) in new_units.chunks(CHUNK_SIZE).enumerate() {
+        for (chunk_idx, unit_chunk) in new_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
             let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
 
@@ -308,7 +310,7 @@ impl IndexBuilder {
                     .context("Failed to encode documents")?;
                 chunk_embeddings.extend(batch_embeddings);
 
-                let progress = chunk_idx * CHUNK_SIZE + chunk_embeddings.len();
+                let progress = chunk_idx * INDEX_CHUNK_SIZE + chunk_embeddings.len();
                 pb.set_position(progress.min(new_units.len()) as u64);
             }
 
@@ -561,11 +563,9 @@ impl IndexBuilder {
             let config = IndexConfig::default();
             let update_config = UpdateConfig::default();
 
-            // Process in chunks of 500 documents to avoid RAM issues
-            const CHUNK_SIZE: usize = 500;
             let encode_batch_size = 64;
 
-            for (chunk_idx, unit_chunk) in new_units.chunks(CHUNK_SIZE).enumerate() {
+            for (chunk_idx, unit_chunk) in new_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
                 let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
                 let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
 
@@ -577,7 +577,7 @@ impl IndexBuilder {
                         .context("Failed to encode documents")?;
                     chunk_embeddings.extend(batch_embeddings);
 
-                    let progress = chunk_idx * CHUNK_SIZE + chunk_embeddings.len();
+                    let progress = chunk_idx * INDEX_CHUNK_SIZE + chunk_embeddings.len();
                     pb.set_position(progress.min(new_units.len()) as u64);
                 }
 
@@ -912,12 +912,9 @@ impl IndexBuilder {
         let config = IndexConfig::default();
         let update_config = UpdateConfig::default();
 
-        // Process in chunks of 500 documents to avoid RAM issues
-        // Each chunk is encoded and written to the index before processing the next
-        const CHUNK_SIZE: usize = 500;
         let encode_batch_size = 64;
 
-        for (chunk_idx, unit_chunk) in units.chunks(CHUNK_SIZE).enumerate() {
+        for (chunk_idx, unit_chunk) in units.chunks(INDEX_CHUNK_SIZE).enumerate() {
             // Build embedding text for this chunk
             let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
@@ -932,7 +929,7 @@ impl IndexBuilder {
                 chunk_embeddings.extend(batch_embeddings);
 
                 if let Some(ref pb) = pb {
-                    let progress = chunk_idx * CHUNK_SIZE + chunk_embeddings.len();
+                    let progress = chunk_idx * INDEX_CHUNK_SIZE + chunk_embeddings.len();
                     pb.set_position(progress.min(units.len()) as u64);
                 }
             }
