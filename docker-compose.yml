@@ -70,6 +70,7 @@ services:
       - ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}:/models
     environment:
       - RUST_LOG=info
+      - RUST_BACKTRACE=1
       # Rate limiting configuration
       - RATE_LIMIT_PER_SECOND=${RATE_LIMIT_PER_SECOND:-50}
       - RATE_LIMIT_BURST_SIZE=${RATE_LIMIT_BURST_SIZE:-100}

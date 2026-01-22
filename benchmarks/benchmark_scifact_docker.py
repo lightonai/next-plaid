@@ -61,7 +61,7 @@ class BenchmarkConfig:
     keep_running: bool = False  # Keep container running after benchmark
     compose_file: str = "docker-compose.yml"  # Docker compose file to use
     query_only: bool = False  # Skip indexing, use existing index
-    model: str = "lightonai/GTE-ModernColBERT-v1"  # Model to use for encoding
+    model: str = "lightonai/mxbai-edge-colbert-v0-32m-onnx"  # Model to use for encoding
 
 
 # Dataset configuration
@@ -84,7 +84,7 @@ class DockerComposeManager:
         self,
         compose_file: str = "docker-compose.yml",
         project_dir: str = None,
-        model: str = "lightonai/GTE-ModernColBERT-v1",
+        model: str = "lightonai/mxbai-edge-colbert-v0-32m-onnx",
     ):
         """Initialize Docker Compose manager.
 
@@ -409,7 +409,7 @@ def run_api_benchmark(
                             continue
                         raise
                     except NextPlaidError as e:
-                        if "503" in str(e) or "429" in str(e):
+                        if e.status_code in (503, 429):
                             time.sleep(5)
                             continue
                         raise
@@ -552,8 +552,8 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="lightonai/GTE-ModernColBERT-v1",
-        help="HuggingFace model ID to use for encoding (default: lightonai/GTE-ModernColBERT-v1)",
+        default="lightonai/mxbai-edge-colbert-v0-32m-onnx",
+        help="HuggingFace model ID to use for encoding (default: lightonai/mxbai-edge-colbert-v0-32m-onnx)",
     )
     args = parser.parse_args()
 

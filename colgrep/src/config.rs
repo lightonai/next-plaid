@@ -12,8 +12,8 @@ use crate::index::paths::get_colgrep_data_dir;
 
 const CONFIG_FILE: &str = "config.json";
 
-/// Default pool factor for embedding compression (2 = 50% of tokens)
-pub const DEFAULT_POOL_FACTOR: usize = 2;
+/// Default pool factor for embedding compression: 1 (no pooling)
+pub const DEFAULT_POOL_FACTOR: usize = 1;
 
 /// User configuration stored in the colgrep data directory
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

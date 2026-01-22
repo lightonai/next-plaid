@@ -41,7 +41,7 @@ const LARGE_BATCH_THRESHOLD: usize = 10_000;
 
 /// Pool factor to use for large batches (> LARGE_BATCH_THRESHOLD units).
 /// Higher value = fewer embeddings = faster indexing and smaller index.
-const LARGE_BATCH_POOL_FACTOR: usize = 3;
+const LARGE_BATCH_POOL_FACTOR: usize = 2;
 
 #[derive(Debug)]
 pub struct UpdateStats {
