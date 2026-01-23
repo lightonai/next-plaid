@@ -1194,7 +1194,12 @@ fn cmd_search(
 
     // When no -e flag is provided, run BOTH semantic search and hybrid search (query as text pattern)
     // This ensures exact matches are found even if the vector database doesn't rank them highly
-    let results = if text_pattern.is_none() {
+    let results = if let Some(pattern) = &text_pattern {
+        // -e flag provided: use existing hybrid search logic
+        // Enhance semantic query with -e pattern
+        let enhanced_query = format!("{} {}", query, pattern);
+        searcher.search(&enhanced_query, search_top_k, subset.as_deref())?
+    } else {
         // 1. Run pure semantic search
         let semantic_results = searcher.search(query, search_top_k, subset.as_deref())?;
 
@@ -1254,11 +1259,6 @@ fn cmd_search(
         }
 
         merged.into_values().collect::<Vec<_>>()
-    } else {
-        // -e flag provided: use existing hybrid search logic
-        // Enhance semantic query with -e pattern
-        let enhanced_query = format!("{} {}", query, text_pattern.unwrap());
-        searcher.search(&enhanced_query, search_top_k, subset.as_deref())?
     };
 
     // Note: When -e is used, results are already filtered to units containing the pattern

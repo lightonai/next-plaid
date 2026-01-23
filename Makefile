@@ -49,6 +49,23 @@ example:
 ci: ci-index ci-api ci-onnx ci-cli lint-python
 	@echo "All CI checks passed!"
 
+# Run quick CI checks (no integration tests) - used by pre-commit hook
+ci-quick:
+	cd next-plaid && cargo fmt --all -- --check
+	cd next-plaid && cargo clippy --all-targets -- -D warnings
+	cd next-plaid && cargo test --lib
+	cd next-plaid-api && cargo fmt --all -- --check
+	cd next-plaid-api && cargo clippy --all-targets -- -D warnings
+	cd next-plaid-onnx && cargo fmt --all -- --check
+	cd next-plaid-onnx && cargo clippy --all-targets -- -D warnings
+	cd next-plaid-onnx && cargo test --lib
+	cd next-plaid-onnx/python && uv run --extra dev ruff check .
+	cd colgrep && cargo fmt --all -- --check
+	cd colgrep && cargo clippy --all-targets -- -D warnings
+	cd colgrep && cargo test --lib
+	cd benchmarks && uv run --extra dev ruff check .
+	@echo "All quick CI checks passed!"
+
 # Kill any existing API process on port 8080
 kill-api:
 	@if lsof -t -i:8080 >/dev/null 2>&1; then \

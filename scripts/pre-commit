@@ -1,13 +1,14 @@
 #!/bin/sh
 #
-# Pre-commit hook that runs the same checks as CI
+# Pre-commit hook that runs quick checks (no integration tests)
 # To skip this hook, use: git commit --no-verify
+# To run full CI, use: make ci
 #
 # Install this hook by running: make install-hooks
 
 set -e
 
 echo "Running pre-commit checks..."
-make ci
+make ci-quick
 
 echo "All pre-commit checks passed!"
