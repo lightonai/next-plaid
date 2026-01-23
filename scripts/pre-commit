@@ -2,69 +2,12 @@
 #
 # Pre-commit hook that runs the same checks as CI
 # To skip this hook, use: git commit --no-verify
+#
+# Install this hook by running: make install-hooks
 
 set -e
 
-# Get repository root directory
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
-
 echo "Running pre-commit checks..."
-
-# Build documentation (with warnings as errors)
-echo "Building documentation..."
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
-
-# Index crate checks (next-plaid)
-echo "Checking index crate formatting..."
-cd next-plaid && cargo fmt --all -- --check
-
-echo "Running index crate clippy..."
-cargo clippy --all-targets -- -D warnings
-
-echo "Running index crate tests..."
-cargo test
-
-cd "$REPO_ROOT"
-
-# API crate checks
-echo "Checking API crate formatting..."
-cd next-plaid-api && cargo fmt --all -- --check
-
-echo "Running API crate clippy..."
-cargo clippy --all-targets -- -D warnings
-
-echo "Running API crate tests (sequential to avoid port conflicts)..."
-cargo test -- --test-threads=1
-
-cd "$REPO_ROOT"
-
-# ONNX crate checks
-echo "Checking ONNX crate formatting..."
-cd next-plaid-onnx && cargo fmt --all -- --check
-
-echo "Running ONNX crate clippy..."
-cargo clippy --all-targets -- -D warnings
-
-echo "Running ONNX crate tests..."
-cargo test
-
-# Lint ONNX Python code
-echo "Linting ONNX Python code..."
-cd python && uv run --extra dev ruff check .
-
-cd "$REPO_ROOT"
-
-# CLI crate checks
-echo "Checking CLI crate formatting..."
-cd colgrep && cargo fmt --all -- --check
-
-echo "Running CLI crate clippy..."
-cargo clippy --all-targets -- -D warnings
-
-echo "Running CLI crate tests..."
-cargo test
-
-cd "$REPO_ROOT"
+make ci
 
 echo "All pre-commit checks passed!"
