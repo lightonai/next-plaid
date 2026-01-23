@@ -91,7 +91,7 @@ struct Cli {
     #[arg(default_value = ".")]
     path: PathBuf,
 
-    /// Number of results (default: 15, or config value)
+    /// Number of results (default: 25, or config value)
     #[arg(short = 'k', long = "results")]
     top_k: Option<usize>,
 
@@ -528,7 +528,7 @@ fn main() -> Result<()> {
             &include_patterns,
             files_only,
             show_content,
-            resolve_context_lines(context_lines, 6),
+            resolve_context_lines(context_lines, 20),
             text_pattern.as_deref(),
             extended_regexp,
             fixed_strings,
@@ -554,14 +554,14 @@ fn main() -> Result<()> {
                 cmd_search(
                     &query,
                     &cli.path,
-                    resolve_top_k(cli.top_k, 15), // Default command default is 15
+                    resolve_top_k(cli.top_k, 25), // Default command default is 25
                     cli.model.as_deref(),
                     cli.json,
                     cli.no_index,
                     &cli.include_patterns,
                     cli.files_only,
                     cli.show_content,
-                    resolve_context_lines(cli.context_lines, 6),
+                    resolve_context_lines(cli.context_lines, 20),
                     cli.text_pattern.as_deref(),
                     cli.extended_regexp,
                     cli.fixed_strings,
@@ -1740,7 +1740,7 @@ fn cmd_config(
         // k
         match config.get_default_k() {
             Some(k) => println!("  k:           {}", k),
-            None => println!("  k:           15 (default)"),
+            None => println!("  k:           25 (default)"),
         }
 
         // n
@@ -1764,7 +1764,7 @@ fn cmd_config(
     if let Some(k) = default_k {
         if k == 0 {
             config.clear_default_k();
-            println!("✅ Reset default k to 15 (default)");
+            println!("✅ Reset default k to 25 (default)");
         } else {
             config.set_default_k(k);
             println!("✅ Set default k to {}", k);
@@ -1992,7 +1992,7 @@ mod tests {
         // When CLI not provided and no config, should use default
         // Note: This test may be affected by actual config file
         let result = resolve_top_k(None, 15);
-        // Should be either 15 (default) or whatever is in config
+        // Should be either 25 (default) or whatever is in config
         assert!(result > 0);
     }
 
@@ -2000,16 +2000,16 @@ mod tests {
     #[test]
     fn test_resolve_context_lines_cli_provided() {
         // CLI value should take precedence
-        assert_eq!(resolve_context_lines(Some(10), 6), 10);
-        assert_eq!(resolve_context_lines(Some(0), 6), 0);
-        assert_eq!(resolve_context_lines(Some(20), 6), 20);
+        assert_eq!(resolve_context_lines(Some(10), 20), 10);
+        assert_eq!(resolve_context_lines(Some(0), 20), 0);
+        assert_eq!(resolve_context_lines(Some(30), 20), 30);
     }
 
     #[test]
     fn test_resolve_context_lines_fallback_to_default() {
         // When CLI not provided and no config, should use default
-        let result = resolve_context_lines(None, 6);
-        // Should be either 6 (default) or whatever is in config
+        let result = resolve_context_lines(None, 20);
+        // Should be either 20 (default) or whatever is in config
         assert!(result <= 100); // sanity check
     }
 
