@@ -543,6 +543,54 @@ fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String> {
     })
 }
 
+/// Find the start line including preceding attributes/decorators.
+/// This looks backwards from the node's start line to find consecutive attribute lines.
+/// Supports:
+/// - Rust: #[...], #![...]
+/// - Python: @decorator
+/// - Java/Kotlin: @Annotation
+/// - C#: [Attribute]
+fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: Language) -> usize {
+    if node_start_line == 0 {
+        return 0;
+    }
+
+    let mut start = node_start_line;
+
+    // Look backwards for attribute/decorator lines
+    for i in (0..node_start_line).rev() {
+        let line = lines.get(i).map(|s| s.trim()).unwrap_or("");
+
+        // Skip empty lines between attributes
+        if line.is_empty() {
+            continue;
+        }
+
+        let is_attribute = match lang {
+            // Rust: #[...] or #![...]
+            Language::Rust => line.starts_with("#[") || line.starts_with("#!["),
+            // Python: @decorator
+            Language::Python => line.starts_with('@'),
+            // Java, Kotlin, Scala: @Annotation
+            Language::Java | Language::Kotlin | Language::Scala => line.starts_with('@'),
+            // C#: [Attribute]
+            Language::CSharp => line.starts_with('[') && line.ends_with(']'),
+            // TypeScript/JavaScript: @decorator (when using decorators)
+            Language::TypeScript | Language::JavaScript => line.starts_with('@'),
+            _ => false,
+        };
+
+        if is_attribute {
+            start = i;
+        } else {
+            // Stop when we hit a non-attribute, non-empty line
+            break;
+        }
+    }
+
+    start
+}
+
 fn extract_function(
     node: Node,
     path: &Path,
@@ -599,9 +647,10 @@ fn extract_function(
     // Layer 5: Dependencies
     unit.imports = filter_used_imports(&unit.calls, file_imports);
 
-    // Full source content for filtering
+    // Full source content for filtering (including preceding attributes)
+    let code_start = find_start_with_attributes(start_line, lines, lang);
     let content_end = (end_line + 1).min(lines.len());
-    unit.code = lines[start_line..content_end].join("\n");
+    unit.code = lines[code_start..content_end].join("\n");
 
     Some(unit)
 }
@@ -638,9 +687,10 @@ fn extract_class(
     // Layer 5: Dependencies (classes can have imports)
     unit.imports = file_imports.to_vec();
 
-    // Full source content for filtering
+    // Full source content for filtering (including preceding attributes)
+    let code_start = find_start_with_attributes(start_line, lines, lang);
     let content_end = (end_line + 1).min(lines.len());
-    unit.code = lines[start_line..content_end].join("\n");
+    unit.code = lines[code_start..content_end].join("\n");
 
     Some(unit)
 }
@@ -686,9 +736,10 @@ fn extract_constant(
     // Layer 5: Dependencies
     unit.imports = file_imports.to_vec();
 
-    // Full source content
+    // Full source content (including preceding attributes)
+    let code_start = find_start_with_attributes(start_line, lines, lang);
     let content_end = (end_line + 1).min(lines.len());
-    unit.code = lines[start_line..content_end].join("\n");
+    unit.code = lines[code_start..content_end].join("\n");
 
     Some(unit)
 }
@@ -2228,5 +2279,54 @@ const BUFFER_SIZE: usize = 4096;
         assert_eq!(units[0].name, "BUFFER_SIZE");
         assert_eq!(units[0].unit_type, UnitType::Constant);
         assert_eq!(units[0].return_type, Some("usize".to_string()));
+    }
+
+    #[test]
+    fn test_extract_rust_function_with_attributes() {
+        let source = r#"
+#[test]
+#[ignore]
+fn test_something() {
+    assert!(true);
+}
+"#;
+        let units = extract_units(Path::new("test.rs"), source, Language::Rust);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].name, "test_something");
+        // Verify that attributes are included in the code
+        assert!(units[0].code.contains("#[test]"));
+        assert!(units[0].code.contains("#[ignore]"));
+    }
+
+    #[test]
+    fn test_extract_rust_struct_with_derive() {
+        let source = r#"
+#[derive(Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MyStruct {
+    field: String,
+}
+"#;
+        let units = extract_units(Path::new("test.rs"), source, Language::Rust);
+        // Should have the struct
+        let struct_unit = units.iter().find(|u| u.name == "MyStruct").unwrap();
+        assert!(struct_unit.code.contains("#[derive(Debug, Clone)]"));
+        assert!(struct_unit.code.contains("#[serde(rename_all"));
+    }
+
+    #[test]
+    fn test_extract_python_function_with_decorator() {
+        let source = r#"
+@pytest.fixture
+@some_decorator
+def my_fixture():
+    return 42
+"#;
+        let units = extract_units(Path::new("test.py"), source, Language::Python);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].name, "my_fixture");
+        // Verify that decorators are included in the code
+        assert!(units[0].code.contains("@pytest.fixture"));
+        assert!(units[0].code.contains("@some_decorator"));
     }
 }

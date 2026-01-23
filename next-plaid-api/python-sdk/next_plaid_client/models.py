@@ -2,8 +2,8 @@
 Data models for the NextPlaid SDK.
 """
 
-from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 
 @dataclass

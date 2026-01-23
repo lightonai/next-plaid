@@ -531,6 +531,11 @@ pub fn where_condition(
 ///     &[json!("async|await")],
 /// )?;
 /// ```
+///
+/// # Security
+///
+/// The regex is compiled with size limits (10MB) to prevent ReDoS attacks.
+/// Invalid regex patterns return an error with a descriptive message.
 pub fn where_condition_regexp(
     index_path: &str,
     condition: &str,
@@ -544,23 +549,39 @@ pub fn where_condition_regexp(
         ));
     }
 
+    // For REGEXP queries, extract and pre-compile the pattern once (not per-row)
+    // This provides both performance and security benefits
+    let regex_pattern = parameters
+        .first()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Error::Filtering("REGEXP requires a pattern parameter".into()))?;
+
+    // Compile regex with protections:
+    // - size_limit: Prevents ReDoS by limiting compiled regex size (10MB)
+    // - case_insensitive: Standard grep-like behavior
+    let compiled_regex = std::sync::Arc::new(
+        regex::RegexBuilder::new(regex_pattern)
+            .case_insensitive(true)
+            .size_limit(10 * (1 << 20)) // 10MB limit for ReDoS protection
+            .build()
+            .map_err(|e| {
+                Error::Filtering(format!("Invalid regex pattern '{}': {}", regex_pattern, e))
+            })?,
+    );
+
     let conn = Connection::open(&db_path)?;
 
-    // Register REGEXP function using Rust's regex crate
+    // Register REGEXP function with pre-compiled regex (compiled once, used for all rows)
+    let re = compiled_regex.clone();
     conn.create_scalar_function(
         "regexp",
         2,
         rusqlite::functions::FunctionFlags::SQLITE_UTF8
             | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
-        |ctx| {
-            let pattern: String = ctx.get(0)?;
+        move |ctx| {
+            // Pattern argument from SQL is ignored - we use the pre-compiled regex
+            let _pattern: String = ctx.get(0)?;
             let text: String = ctx.get(1)?;
-
-            // Build case-insensitive regex
-            let re = regex::RegexBuilder::new(&pattern)
-                .case_insensitive(true)
-                .build()
-                .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
 
             Ok(re.is_match(&text))
         },
