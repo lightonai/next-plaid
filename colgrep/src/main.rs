@@ -26,6 +26,10 @@ EXAMPLES:
     # Search in a specific directory
     colgrep \"API endpoints\" ./backend
 
+    # Search in multiple directories (results are merged by score)
+    colgrep \"error handling\" ./src ./lib ./api
+    colgrep -e \"Result\" \"error\" ./crate-a ./crate-b -k 20
+
     # Filter by file type (grep-like)
     colgrep \"parse config\" --include \"*.rs\"
     colgrep \"test helpers\" --include \"*_test.go\"
@@ -87,9 +91,9 @@ struct Cli {
     #[arg(value_name = "QUERY")]
     query: Option<String>,
 
-    /// Project directory to search in (default: current directory)
-    #[arg(default_value = ".")]
-    path: PathBuf,
+    /// Project directories to search in (default: current directory)
+    #[arg(value_name = "PATH")]
+    paths: Vec<PathBuf>,
 
     /// Number of results (default: 25, or config value)
     #[arg(short = 'k', long = "results")]
@@ -313,9 +317,9 @@ enum Commands {
         /// Natural language query (optional if -e pattern is provided)
         query: Option<String>,
 
-        /// Project directory to search in (default: current directory)
-        #[arg(default_value = ".")]
-        path: PathBuf,
+        /// Project directories to search in (default: current directory)
+        #[arg(value_name = "PATH")]
+        paths: Vec<PathBuf>,
 
         /// Number of results (default: 20, or config value)
         #[arg(short = 'k', long = "results")]
@@ -499,7 +503,7 @@ fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Search {
             query,
-            path,
+            paths,
             top_k,
             model,
             json,
@@ -522,9 +526,15 @@ fn main() -> Result<()> {
             // If only -e pattern is given without a query, use the pattern as the query too
             let query = query.or_else(|| text_pattern.clone());
             if let Some(query) = query {
+                // Default to current directory if no paths provided
+                let paths = if paths.is_empty() {
+                    vec![PathBuf::from(".")]
+                } else {
+                    paths
+                };
                 cmd_search(
                     &query,
-                    &path,
+                    &paths,
                     resolve_top_k(top_k, 20), // Search subcommand default is 20
                     model.as_deref(),
                     json,
@@ -565,9 +575,15 @@ fn main() -> Result<()> {
             // If only -e pattern is given without a query, use the pattern as the query too
             let query = cli.query.or_else(|| cli.text_pattern.clone());
             if let Some(query) = query {
+                // Default to current directory if no paths provided
+                let paths = if cli.paths.is_empty() {
+                    vec![PathBuf::from(".")]
+                } else {
+                    cli.paths
+                };
                 cmd_search(
                     &query,
-                    &cli.path,
+                    &paths,
                     resolve_top_k(cli.top_k, 25), // Default command default is 25
                     cli.model.as_deref(),
                     cli.json,
@@ -948,7 +964,7 @@ fn should_search_from_root(
 #[allow(clippy::too_many_arguments)]
 fn cmd_search(
     query: &str,
-    path: &PathBuf,
+    paths: &[PathBuf],
     top_k: usize,
     cli_model: Option<&str>,
     json: bool,
@@ -966,6 +982,342 @@ fn cmd_search(
     code_only: bool,
     pool_factor: Option<usize>,
 ) -> Result<()> {
+    // Collect results from all paths
+    let mut all_results: Vec<colgrep::SearchResult> = Vec::new();
+
+    for path in paths {
+        let results = search_single_path(
+            query,
+            path,
+            top_k,
+            cli_model,
+            json,
+            no_index,
+            include_patterns,
+            files_only,
+            text_pattern,
+            extended_regexp,
+            fixed_strings,
+            word_regexp,
+            exclude_patterns,
+            exclude_dirs,
+            code_only,
+            pool_factor,
+        )?;
+        all_results.extend(results);
+    }
+
+    // Sort all results by score and take top_k
+    all_results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Filter out text/config files if --code-only is enabled, then take top_k
+    let results: Vec<_> = if code_only {
+        all_results
+            .into_iter()
+            .filter(|r| !is_text_format(r.unit.language))
+            .take(top_k)
+            .collect()
+    } else {
+        all_results.into_iter().take(top_k).collect()
+    };
+
+    // When -e is used without -F, automatically enable regex mode (ERE)
+    let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
+
+    // Output
+    if files_only {
+        // -l mode: show only unique filenames
+        let mut seen_files = std::collections::HashSet::new();
+        for result in &results {
+            let file_str = result.unit.file.display().to_string();
+            if seen_files.insert(file_str.clone()) {
+                println!("{}", file_str);
+            }
+        }
+    } else if json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else {
+        if results.is_empty() {
+            println!("No results found for: {}", query);
+            return Ok(());
+        }
+
+        // Helper to find matching line numbers within a code unit's content
+        let find_matches_in_unit = |unit: &colgrep::CodeUnit,
+                                    pattern: &str,
+                                    use_regex: bool,
+                                    is_fixed: bool,
+                                    is_word: bool|
+         -> Vec<usize> {
+            let effective_use_regex = use_regex && !is_fixed;
+
+            let literal_match = |pattern: &str| -> Vec<usize> {
+                let pattern_lower = pattern.to_lowercase();
+                unit.code
+                    .lines()
+                    .enumerate()
+                    .filter_map(|(i, line)| {
+                        if line.to_lowercase().contains(&pattern_lower) {
+                            Some(unit.line + i)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+
+            if effective_use_regex {
+                let ere_pattern = bre_to_ere(pattern);
+                let regex_pattern = if is_word {
+                    format!(r"\b{}\b", ere_pattern)
+                } else {
+                    ere_pattern
+                };
+                let regex_matches: Vec<usize> = match regex::RegexBuilder::new(&regex_pattern)
+                    .case_insensitive(true)
+                    .size_limit(10 * (1 << 20))
+                    .build()
+                {
+                    Ok(re) => unit
+                        .code
+                        .lines()
+                        .enumerate()
+                        .filter_map(|(i, line)| {
+                            if re.is_match(line) {
+                                Some(unit.line + i)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    Err(_) => vec![],
+                };
+
+                if regex_matches.is_empty() {
+                    literal_match(pattern)
+                } else {
+                    regex_matches
+                }
+            } else if is_word {
+                let escaped = regex::escape(pattern);
+                let word_pattern = format!(r"\b{}\b", escaped);
+                match regex::RegexBuilder::new(&word_pattern)
+                    .case_insensitive(true)
+                    .size_limit(10 * (1 << 20))
+                    .build()
+                {
+                    Ok(re) => unit
+                        .code
+                        .lines()
+                        .enumerate()
+                        .filter_map(|(i, line)| {
+                            if re.is_match(line) {
+                                Some(unit.line + i)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    Err(_) => vec![],
+                }
+            } else {
+                literal_match(pattern)
+            }
+        };
+
+        // Separate results into code files and documents/config files
+        let (code_results, doc_results): (Vec<_>, Vec<_>) = results
+            .iter()
+            .partition(|r| !is_text_format(r.unit.language));
+
+        let half_context = context_lines / 2;
+        let has_text_pattern = text_pattern.is_some();
+
+        // Calculate max line number across all results for consistent alignment
+        let max_line_num = results.iter().map(|r| r.unit.end_line).max().unwrap_or(1);
+        let line_num_width = max_line_num.to_string().len().max(4);
+
+        // Display code results first, grouped by file
+        if !code_results.is_empty() {
+            let grouped = group_results_by_file(&code_results);
+            for (file, file_results) in grouped {
+                // Print file header (file paths are absolute from search_single_path)
+                println!("file: {}", file.display().to_string().cyan());
+                for result in file_results {
+                    let file_to_read = &result.unit.file;
+                    if let Ok(content) = std::fs::read_to_string(file_to_read) {
+                        let lines: Vec<&str> = content.lines().collect();
+                        let end = result.unit.end_line.min(lines.len());
+                        let max_lines = if show_content {
+                            usize::MAX
+                        } else {
+                            context_lines
+                        };
+
+                        if has_text_pattern {
+                            let file_matches = find_matches_in_unit(
+                                &result.unit,
+                                text_pattern.unwrap(),
+                                effective_extended_regexp,
+                                fixed_strings,
+                                word_regexp,
+                            );
+                            let ranges = calc_display_ranges(
+                                &file_matches,
+                                result.unit.line,
+                                end,
+                                half_context,
+                                max_lines,
+                                true,
+                            );
+                            print_highlighted_ranges(
+                                file_to_read,
+                                &lines,
+                                &ranges,
+                                end,
+                                line_num_width,
+                            );
+                        } else {
+                            let query_matches =
+                                find_matches_in_unit(&result.unit, query, false, true, false);
+                            if !query_matches.is_empty() {
+                                let ranges = calc_display_ranges(
+                                    &query_matches,
+                                    result.unit.line,
+                                    end,
+                                    half_context,
+                                    max_lines,
+                                    true,
+                                );
+                                print_highlighted_ranges(
+                                    file_to_read,
+                                    &lines,
+                                    &ranges,
+                                    end,
+                                    line_num_width,
+                                );
+                            } else {
+                                let start = result.unit.line.saturating_sub(1);
+                                if start < lines.len() {
+                                    print_highlighted_content(
+                                        file_to_read,
+                                        &lines,
+                                        start,
+                                        max_lines,
+                                        end,
+                                        line_num_width,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                println!();
+            }
+        }
+
+        // Display document/config results after, grouped by file
+        if !doc_results.is_empty() {
+            let grouped = group_results_by_file(&doc_results);
+            for (file, file_results) in grouped {
+                println!("file: {}", file.display().to_string().cyan());
+                for result in file_results {
+                    let file_to_read = &result.unit.file;
+                    if let Ok(content) = std::fs::read_to_string(file_to_read) {
+                        let lines: Vec<&str> = content.lines().collect();
+                        let end = result.unit.end_line.min(lines.len());
+                        let max_lines = if show_content { 250 } else { context_lines };
+
+                        if has_text_pattern {
+                            let file_matches = find_matches_in_unit(
+                                &result.unit,
+                                text_pattern.unwrap(),
+                                effective_extended_regexp,
+                                fixed_strings,
+                                word_regexp,
+                            );
+                            let ranges = calc_display_ranges(
+                                &file_matches,
+                                result.unit.line,
+                                end,
+                                half_context,
+                                max_lines,
+                                true,
+                            );
+                            print_highlighted_ranges(
+                                file_to_read,
+                                &lines,
+                                &ranges,
+                                end,
+                                line_num_width,
+                            );
+                        } else {
+                            let query_matches =
+                                find_matches_in_unit(&result.unit, query, false, true, false);
+                            if !query_matches.is_empty() {
+                                let ranges = calc_display_ranges(
+                                    &query_matches,
+                                    result.unit.line,
+                                    end,
+                                    half_context,
+                                    max_lines,
+                                    true,
+                                );
+                                print_highlighted_ranges(
+                                    file_to_read,
+                                    &lines,
+                                    &ranges,
+                                    end,
+                                    line_num_width,
+                                );
+                            } else {
+                                let start = result.unit.line.saturating_sub(1);
+                                if start < lines.len() {
+                                    print_highlighted_content(
+                                        file_to_read,
+                                        &lines,
+                                        start,
+                                        max_lines,
+                                        end,
+                                        line_num_width,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                println!();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Search a single path and return results with absolute file paths
+#[allow(clippy::too_many_arguments)]
+fn search_single_path(
+    query: &str,
+    path: &PathBuf,
+    top_k: usize,
+    cli_model: Option<&str>,
+    json: bool,
+    no_index: bool,
+    include_patterns: &[String],
+    files_only: bool,
+    text_pattern: Option<&str>,
+    extended_regexp: bool,
+    fixed_strings: bool,
+    word_regexp: bool,
+    exclude_patterns: &[String],
+    exclude_dirs: &[String],
+    code_only: bool,
+    pool_factor: Option<usize>,
+) -> Result<Vec<colgrep::SearchResult>> {
     let path = std::fs::canonicalize(path)?;
 
     // When -e is used without -F, automatically enable regex mode (ERE)
@@ -1093,12 +1445,12 @@ fn cmd_search(
             let subdir_ids = searcher.filter_by_path_prefix(subdir)?;
             if subdir_ids.is_empty() {
                 if !json && !files_only {
-                    println!(
+                    eprintln!(
                         "No indexed code units in subdirectory: {}",
                         subdir.display()
                     );
                 }
-                return Ok(());
+                return Ok(vec![]);
             }
             combined_ids = Some(subdir_ids);
         }
@@ -1118,9 +1470,9 @@ fn cmd_search(
 
             if pattern_ids.is_empty() {
                 if !json && !files_only {
-                    println!("No indexed code units contain pattern: {}", pattern);
+                    eprintln!("No indexed code units contain pattern: {}", pattern);
                 }
-                return Ok(());
+                return Ok(vec![]);
             }
 
             combined_ids = match combined_ids {
@@ -1202,9 +1554,9 @@ fn cmd_search(
         if let Some(ref ids) = combined_ids {
             if ids.is_empty() {
                 if !json && !files_only {
-                    println!("No indexed code units match the specified filters");
+                    eprintln!("No indexed code units match the specified filters");
                 }
-                return Ok(());
+                return Ok(vec![]);
             }
         }
 
@@ -1301,17 +1653,6 @@ fn cmd_search(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Filter out text/config files if --code-only is enabled, then take top_k
-    let results: Vec<_> = if code_only {
-        results
-            .into_iter()
-            .filter(|r| !is_text_format(r.unit.language))
-            .take(top_k)
-            .collect()
-    } else {
-        results.into_iter().take(top_k).collect()
-    };
-
     // Increment search count
     let index_dir = get_index_dir_for_project(&effective_root)?;
     if let Ok(mut state) = IndexState::load(&index_dir) {
@@ -1319,326 +1660,18 @@ fn cmd_search(
         let _ = state.save(&index_dir);
     }
 
-    // Output
-    if files_only {
-        // -l mode: show only unique filenames
-        let mut seen_files = std::collections::HashSet::new();
-        for result in &results {
-            let file_str = result.unit.file.display().to_string();
-            if seen_files.insert(file_str.clone()) {
-                println!("{}", file_str);
+    // Convert file paths to absolute for proper display when merging results from multiple paths
+    let results: Vec<colgrep::SearchResult> = results
+        .into_iter()
+        .map(|mut r| {
+            if !r.unit.file.is_absolute() {
+                r.unit.file = effective_root.join(&r.unit.file);
             }
-        }
-    } else if json {
-        println!("{}", serde_json::to_string_pretty(&results)?);
-    } else {
-        if results.is_empty() {
-            println!("No results found for: {}", query);
-            return Ok(());
-        }
+            r
+        })
+        .collect();
 
-        // Helper to find matching line numbers within a code unit's content
-        // Supports: regex (default with -e), fixed strings (-F), whole word (-w)
-        // Uses size_limit for ReDoS protection (consistent with SQLite REGEXP)
-        // Falls back to literal matching if regex matches nothing (handles regex special chars)
-        let find_matches_in_unit = |unit: &colgrep::CodeUnit,
-                                    pattern: &str,
-                                    use_regex: bool,
-                                    is_fixed: bool,
-                                    is_word: bool|
-         -> Vec<usize> {
-            // -F takes precedence over -E (like grep)
-            let effective_use_regex = use_regex && !is_fixed;
-
-            // Helper for literal substring matching
-            let literal_match = |pattern: &str| -> Vec<usize> {
-                let pattern_lower = pattern.to_lowercase();
-                unit.code
-                    .lines()
-                    .enumerate()
-                    .filter_map(|(i, line)| {
-                        if line.to_lowercase().contains(&pattern_lower) {
-                            Some(unit.line + i)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            };
-
-            if effective_use_regex {
-                // Convert BRE to ERE and build regex pattern, optionally with word boundaries
-                let ere_pattern = bre_to_ere(pattern);
-                let regex_pattern = if is_word {
-                    format!(r"\b{}\b", ere_pattern)
-                } else {
-                    ere_pattern
-                };
-                let regex_matches: Vec<usize> = match regex::RegexBuilder::new(&regex_pattern)
-                    .case_insensitive(true)
-                    .size_limit(10 * (1 << 20)) // 10MB limit for ReDoS protection
-                    .build()
-                {
-                    Ok(re) => unit
-                        .code
-                        .lines()
-                        .enumerate()
-                        .filter_map(|(i, line)| {
-                            if re.is_match(line) {
-                                Some(unit.line + i)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect(),
-                    Err(_) => vec![], // Invalid regex
-                };
-
-                // If regex matched nothing, fall back to literal matching
-                // This handles patterns with unescaped special chars that the user
-                // intended as literals (e.g., "func(arg)?;" should match literally)
-                if regex_matches.is_empty() {
-                    literal_match(pattern)
-                } else {
-                    regex_matches
-                }
-            } else if is_word {
-                // Word match with fixed string: use regex with escaped pattern
-                let escaped = regex::escape(pattern);
-                let word_pattern = format!(r"\b{}\b", escaped);
-                match regex::RegexBuilder::new(&word_pattern)
-                    .case_insensitive(true)
-                    .size_limit(10 * (1 << 20)) // 10MB limit for ReDoS protection
-                    .build()
-                {
-                    Ok(re) => unit
-                        .code
-                        .lines()
-                        .enumerate()
-                        .filter_map(|(i, line)| {
-                            if re.is_match(line) {
-                                Some(unit.line + i)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect(),
-                    Err(_) => vec![],
-                }
-            } else {
-                // Simple case-insensitive substring match (fixed string, no word boundary)
-                literal_match(pattern)
-            }
-        };
-
-        // Separate results into code files and documents/config files
-        let (code_results, doc_results): (Vec<_>, Vec<_>) = results
-            .iter()
-            .partition(|r| !is_text_format(r.unit.language));
-
-        let half_context = context_lines / 2;
-        let has_text_pattern = text_pattern.is_some();
-
-        // Calculate max line number across all results for consistent alignment
-        let max_line_num = results.iter().map(|r| r.unit.end_line).max().unwrap_or(1);
-        let line_num_width = max_line_num.to_string().len().max(4); // At least 4 chars
-
-        // Display code results first, grouped by file
-        if !code_results.is_empty() {
-            let grouped = group_results_by_file(&code_results);
-            for (file, file_results) in grouped {
-                // Print file header with absolute path
-                let abs_path = if file.is_absolute() {
-                    file.clone()
-                } else {
-                    effective_root.join(&file)
-                };
-                println!("file: {}", abs_path.display().to_string().cyan());
-                for result in file_results {
-                    // Show content - resolve path relative to effective_root for parent index support
-                    let file_to_read = if result.unit.file.is_absolute() {
-                        result.unit.file.clone()
-                    } else {
-                        effective_root.join(&result.unit.file)
-                    };
-                    if let Ok(content) = std::fs::read_to_string(&file_to_read) {
-                        let lines: Vec<&str> = content.lines().collect();
-                        let end = result.unit.end_line.min(lines.len());
-                        let max_lines = if show_content {
-                            usize::MAX
-                        } else {
-                            context_lines
-                        };
-
-                        if has_text_pattern {
-                            // Show all match occurrences with context
-                            let file_matches = find_matches_in_unit(
-                                &result.unit,
-                                text_pattern.unwrap(),
-                                effective_extended_regexp,
-                                fixed_strings,
-                                word_regexp,
-                            );
-                            let ranges = calc_display_ranges(
-                                &file_matches,
-                                result.unit.line,
-                                end,
-                                half_context,
-                                max_lines,
-                                true, // include signature
-                            );
-                            print_highlighted_ranges(
-                                &file_to_read,
-                                &lines,
-                                &ranges,
-                                end,
-                                line_num_width,
-                            );
-                        } else {
-                            // No -e flag: check if query exists literally in the unit
-                            // If found, highlight matching lines (with signature for context)
-                            let query_matches = find_matches_in_unit(
-                                &result.unit,
-                                query,
-                                false, // not extended regexp
-                                true,  // fixed_strings (literal match)
-                                false, // not word_regexp
-                            );
-                            if !query_matches.is_empty() {
-                                // Query found literally - show signature + matching lines
-                                let ranges = calc_display_ranges(
-                                    &query_matches,
-                                    result.unit.line,
-                                    end,
-                                    half_context,
-                                    max_lines,
-                                    true, // include signature for context
-                                );
-                                print_highlighted_ranges(
-                                    &file_to_read,
-                                    &lines,
-                                    &ranges,
-                                    end,
-                                    line_num_width,
-                                );
-                            } else {
-                                // No literal match, show from beginning
-                                let start = result.unit.line.saturating_sub(1);
-                                if start < lines.len() {
-                                    print_highlighted_content(
-                                        &file_to_read,
-                                        &lines,
-                                        start,
-                                        max_lines,
-                                        end,
-                                        line_num_width,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                println!();
-            }
-        }
-
-        // Display document/config results after, grouped by file
-        if !doc_results.is_empty() {
-            let grouped = group_results_by_file(&doc_results);
-            for (file, file_results) in grouped {
-                // Print file header with absolute path
-                let abs_path = if file.is_absolute() {
-                    file.clone()
-                } else {
-                    effective_root.join(&file)
-                };
-                println!("file: {}", abs_path.display().to_string().cyan());
-                for result in file_results {
-                    // Show content - resolve path relative to effective_root for parent index support
-                    let file_to_read = if result.unit.file.is_absolute() {
-                        result.unit.file.clone()
-                    } else {
-                        effective_root.join(&result.unit.file)
-                    };
-                    if let Ok(content) = std::fs::read_to_string(&file_to_read) {
-                        let lines: Vec<&str> = content.lines().collect();
-                        let end = result.unit.end_line.min(lines.len());
-                        let max_lines = if show_content { 250 } else { context_lines };
-
-                        if has_text_pattern {
-                            // Show all match occurrences with context
-                            let file_matches = find_matches_in_unit(
-                                &result.unit,
-                                text_pattern.unwrap(),
-                                effective_extended_regexp,
-                                fixed_strings,
-                                word_regexp,
-                            );
-                            let ranges = calc_display_ranges(
-                                &file_matches,
-                                result.unit.line,
-                                end,
-                                half_context,
-                                max_lines,
-                                true, // include signature
-                            );
-                            print_highlighted_ranges(
-                                &file_to_read,
-                                &lines,
-                                &ranges,
-                                end,
-                                line_num_width,
-                            );
-                        } else {
-                            // No -e flag: check if query exists literally in the unit
-                            // If found, highlight matching lines (with signature for context)
-                            let query_matches = find_matches_in_unit(
-                                &result.unit,
-                                query,
-                                false, // not extended regexp
-                                true,  // fixed_strings (literal match)
-                                false, // not word_regexp
-                            );
-                            if !query_matches.is_empty() {
-                                // Query found literally - show signature + matching lines
-                                let ranges = calc_display_ranges(
-                                    &query_matches,
-                                    result.unit.line,
-                                    end,
-                                    half_context,
-                                    max_lines,
-                                    true, // include signature for context
-                                );
-                                print_highlighted_ranges(
-                                    &file_to_read,
-                                    &lines,
-                                    &ranges,
-                                    end,
-                                    line_num_width,
-                                );
-                            } else {
-                                // No literal match, show from beginning
-                                let start = result.unit.line.saturating_sub(1);
-                                if start < lines.len() {
-                                    print_highlighted_content(
-                                        &file_to_read,
-                                        &lines,
-                                        start,
-                                        max_lines,
-                                        end,
-                                        line_num_width,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                println!();
-            }
-        }
-    }
-
-    Ok(())
+    Ok(results)
 }
 
 fn cmd_status(path: &PathBuf) -> Result<()> {
@@ -2028,6 +2061,8 @@ fn cmd_session_hook() -> Result<()> {
                 "colgrep REPLACES both Grep and Glob:\n",
                 "- Semantic search: `colgrep \"error handling logic\"`\n",
                 "- Search in path: `colgrep \"database queries\" ./src/api`\n",
+                "- Search multiple paths: `colgrep \"error\" ./crate-a ./crate-b -k 20`\n",
+                "- Pattern-only search: `colgrep -e \"async fn\"` (no semantic query needed)\n",
                 "- Hybrid grep+semantic: `colgrep -e \"async\" \"concurrency patterns\"`\n",
                 "- Regex grep+semantic: `colgrep -e \"Result<.*Error>\" -E \"error handling\"`\n",
                 "- Glob-style file find: `colgrep -l --include=\"src/**/*.rs\" \"\" .`\n",
