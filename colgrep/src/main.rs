@@ -310,8 +310,8 @@ enum Commands {
     /// Search for code semantically (auto-indexes if needed)
     #[command(after_help = SEARCH_HELP)]
     Search {
-        /// Natural language query
-        query: String,
+        /// Natural language query (optional if -e pattern is provided)
+        query: Option<String>,
 
         /// Project directory to search in (default: current directory)
         #[arg(default_value = ".")]
@@ -518,26 +518,38 @@ fn main() -> Result<()> {
             code_only,
             no_pool,
             pool_factor,
-        }) => cmd_search(
-            &query,
-            &path,
-            resolve_top_k(top_k, 20), // Search subcommand default is 20
-            model.as_deref(),
-            json,
-            no_index,
-            &include_patterns,
-            files_only,
-            show_content,
-            resolve_context_lines(context_lines, 20),
-            text_pattern.as_deref(),
-            extended_regexp,
-            fixed_strings,
-            word_regexp,
-            &exclude_patterns,
-            &exclude_dirs,
-            code_only,
-            resolve_pool_factor(pool_factor, no_pool),
-        ),
+        }) => {
+            // If only -e pattern is given without a query, use the pattern as the query too
+            let query = query.or_else(|| text_pattern.clone());
+            if let Some(query) = query {
+                cmd_search(
+                    &query,
+                    &path,
+                    resolve_top_k(top_k, 20), // Search subcommand default is 20
+                    model.as_deref(),
+                    json,
+                    no_index,
+                    &include_patterns,
+                    files_only,
+                    show_content,
+                    resolve_context_lines(context_lines, 20),
+                    text_pattern.as_deref(),
+                    extended_regexp,
+                    fixed_strings,
+                    word_regexp,
+                    &exclude_patterns,
+                    &exclude_dirs,
+                    code_only,
+                    resolve_pool_factor(pool_factor, no_pool),
+                )
+            } else {
+                // No query or text_pattern provided - show help
+                use clap::CommandFactory;
+                Cli::command().print_help()?;
+                println!();
+                Ok(())
+            }
+        }
         Some(Commands::Status { path }) => cmd_status(&path),
         Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
         Some(Commands::SetModel { model }) => cmd_set_model(&model),
@@ -550,7 +562,9 @@ fn main() -> Result<()> {
         }) => cmd_config(default_k, default_n, fp32, int8, pool_factor),
         None => {
             // Default: run search if query is provided
-            if let Some(query) = cli.query {
+            // If only -e pattern is given without a query, use the pattern as the query too
+            let query = cli.query.or_else(|| cli.text_pattern.clone());
+            if let Some(query) = query {
                 cmd_search(
                     &query,
                     &cli.path,
