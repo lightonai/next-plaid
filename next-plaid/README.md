@@ -222,7 +222,7 @@ pub struct SearchParameters {
     pub top_k: usize,                             // Results to return, default: 10
     pub n_ivf_probe: usize,                       // IVF cells to probe, default: 8
     pub centroid_batch_size: usize,               // Centroid scoring batch, default: 100_000
-    pub centroid_score_threshold: Option<f32>,    // Pruning threshold, default: Some(0.4)
+    pub centroid_score_threshold: Option<f32>,    // Pruning threshold, default: None (disabled)
 }
 ```
 
@@ -235,7 +235,7 @@ SearchParameters {
     top_k: 10,
     n_ivf_probe: 8,
     centroid_batch_size: 100_000,
-    centroid_score_threshold: Some(0.4),
+    centroid_score_threshold: None,  // Disabled by default
 }
 ```
 

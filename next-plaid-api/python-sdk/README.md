@@ -344,7 +344,7 @@ SearchParams(
     top_k=10,                      # Results per query (default: 10)
     n_ivf_probe=8,                 # IVF cells to probe (default: 8)
     n_full_scores=4096,            # Re-ranking candidates (default: 4096)
-    centroid_score_threshold=0.4   # Pruning threshold (None to disable)
+    centroid_score_threshold=None  # Pruning threshold (disabled by default, set to e.g. 0.4 to enable)
 )
 ```
 
@@ -353,7 +353,7 @@ SearchParams(
 | `top_k` | `int` | `10` | Results per query |
 | `n_ivf_probe` | `int` | `8` | IVF cells to probe |
 | `n_full_scores` | `int` | `4096` | Candidates for exact scoring |
-| `centroid_score_threshold` | `Optional[float]` | `0.4` | Centroid pruning threshold |
+| `centroid_score_threshold` | `Optional[float]` | `None` | Centroid pruning threshold (disabled by default) |
 
 **Returns:** `SearchResult`
 
@@ -598,7 +598,7 @@ class SearchParams:
     top_k: int = 10
     n_ivf_probe: int = 8
     n_full_scores: int = 4096
-    centroid_score_threshold: Optional[float] = 0.4
+    centroid_score_threshold: Optional[float] = None  # Disabled by default
 ```
 
 ### SearchResult / QueryResult

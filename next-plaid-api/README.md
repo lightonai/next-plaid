@@ -659,7 +659,7 @@ Content-Type: application/json
     "top_k": 10,                      # Results per query (default: 10)
     "n_ivf_probe": 8,                 # IVF cells to probe (default: 8)
     "n_full_scores": 4096,            # Candidates for re-ranking (default: 4096)
-    "centroid_score_threshold": 0.4   # Pruning threshold (null to disable)
+    "centroid_score_threshold": null   # Pruning threshold (disabled by default, set to e.g. 0.4 to enable)
   },
   "subset": [0, 5, 10, 15]  # Optional: search within specific doc IDs
 }

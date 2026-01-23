@@ -79,7 +79,7 @@ class ColBERTForONNX(nn.Module):
     """Combined ColBERT model for ONNX export.
 
     Uses pylate's model which has extended vocabulary with [Q] and [D] tokens.
-    Combines transformer + linear projection + L2 normalization.
+    Combines transformer + all linear projection layers + L2 normalization.
     """
 
     def __init__(self, pylate_model: pylate_models.ColBERT, uses_token_type_ids: bool = True):
@@ -87,8 +87,13 @@ class ColBERTForONNX(nn.Module):
         # Get the transformer from pylate (already has extended embeddings)
         self.bert = pylate_model[0].auto_model
 
-        # Get the linear projection layer from pylate
-        self.linear = pylate_model[1].linear
+        # Collect ALL linear projection layers from pylate (there can be multiple Dense layers)
+        # Skip the Transformer module (index 0), collect all Dense layers
+        self.projection_layers = nn.ModuleList()
+        for i in range(1, len(pylate_model)):
+            module = pylate_model[i]
+            if hasattr(module, "linear"):
+                self.projection_layers.append(module.linear)
 
         self.uses_token_type_ids = uses_token_type_ids
 
@@ -98,7 +103,7 @@ class ColBERTForONNX(nn.Module):
         attention_mask: torch.Tensor,
         token_type_ids: torch.Tensor = None,
     ) -> torch.Tensor:
-        """Forward pass: transformer -> linear projection -> L2 normalization.
+        """Forward pass: transformer -> all linear projections -> L2 normalization.
 
         Returns per-token embeddings [batch_size, seq_len, embedding_dim].
         """
@@ -116,8 +121,10 @@ class ColBERTForONNX(nn.Module):
             )
         hidden_states = outputs.last_hidden_state
 
-        # Apply linear projection
-        projected = self.linear(hidden_states)
+        # Apply all linear projection layers in sequence
+        projected = hidden_states
+        for layer in self.projection_layers:
+            projected = layer(projected)
 
         # L2 normalize along embedding dimension
         normalized = torch.nn.functional.normalize(projected, p=2, dim=-1)

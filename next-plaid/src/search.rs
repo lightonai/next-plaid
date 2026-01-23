@@ -45,7 +45,7 @@ fn default_centroid_batch_size() -> usize {
 }
 
 fn default_centroid_score_threshold() -> Option<f32> {
-    Some(0.4)
+    None // Disabled by default - threshold can cause issues with smaller models
 }
 
 impl Default for SearchParameters {
@@ -695,6 +695,6 @@ mod tests {
         assert_eq!(params.n_full_scores, 4096);
         assert_eq!(params.top_k, 10);
         assert_eq!(params.n_ivf_probe, 8);
-        assert_eq!(params.centroid_score_threshold, Some(0.4));
+        assert_eq!(params.centroid_score_threshold, None); // Disabled by default
     }
 }
