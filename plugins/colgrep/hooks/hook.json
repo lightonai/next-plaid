@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "colgrep --session-hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

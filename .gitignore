@@ -26,13 +26,16 @@ venv/
 ENV/
 env/
 .uv/
-*.json
 # Exception: Claude Code plugin files must be tracked
 !colgrep/src/install/*.json
 !.claude-plugin/marketplace.json
+!.claude-plugin/manifest.json
+!claude-plugin/icon.png
 next-plaid-api/indices/
 *.npz
 next-plaid-onnx/python/build/
+/benchmarks/*.json
+/next-plaid-onnx/**/*.json
 
 # Test artifacts
 *.npy
