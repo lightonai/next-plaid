@@ -61,6 +61,9 @@ client.add(
     metadata=[{"id": "doc_1"}, {"id": "doc_2"}],
 )
 results = client.search("docs", ["What is the capital of France?"])
+results = client.search("docs", ["French city"], filter_condition="id = ?", filter_parameters=["doc_1"])
+client.delete("docs", "id = ?", ["doc_1"])
+client.delete("docs", "id IN (?, ?)", ["doc_1", "doc_2"])
 ```
 
 ### Rust crate
@@ -81,7 +84,7 @@ NextPlaid can load FastPlaid-generated indexes directly.
 
 **Coding agents spend most of their time searching. ColGREP makes that search meaningful.**
 
-It parses your codebase with tree-sitter, indexes functions, methods, and classes, and embeds each unit with the [LateOn-Code model](lightonai/LateOn-Code-v0-edge) model trained on code. Searches combine **regex filtering** with **semantic ranking**.
+It parses your codebase with tree-sitter, indexes functions, methods, and classes, and embeds each unit with [LateOn-Code](lightonai/LateOn-Code-v0-edge) which has 17M parameters. Searches combine **regex filtering** with **semantic ranking**.
 
 The index lives locally. Your code never leaves your machine.
 
@@ -97,6 +100,17 @@ Or via Cargo:
 cargo install colgrep
 ```
 
+With features:
+
+```bash
+# macOS with Apple Accelerate (recommended for M1/M2/M3)
+cargo install colgrep --features accelerate
+# Linux with OpenBLAS
+cargo install colgrep --features openblas
+# Linux with CUDA GPU support
+cargo install colgrep --features cuda
+```
+
 ### Agent integrations
 
 | Tool        | Install                         | Uninstall                         |
@@ -107,11 +121,13 @@ cargo install colgrep
 
 ### Usage
 
+Start searching within your codebase to index the project, or let your agent do it for you:
+
 ```bash
 colgrep "database connection pooling"
 ```
 
-The first search builds the index. After that, only modified files are re-indexed.
+The first search builds the index, it might take few minutes on large codebase. After that, only modified files are re-indexed.
 
 Regex meets semantics:
 
@@ -132,6 +148,18 @@ For higher accuracy you can switch to `lightonai/LateOn-Code-v0`:
 
 ```bash
 colgrep set-model lightonai/LateOn-Code-v0
+```
+
+To clear the index for the current project:
+
+```bash
+colgrep clear
+```
+
+To clear all the indexes:
+
+```bash
+colgrep clear --all
 ```
 
 ---
