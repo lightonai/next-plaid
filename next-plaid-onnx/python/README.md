@@ -112,13 +112,13 @@ output_dir = export_model(
 
 **Parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `model_name` | `str` | required | HuggingFace model name or local path |
-| `output_dir` | `Path \| None` | `None` | Output directory |
-| `quantize` | `bool` | `False` | Create INT8 quantized version |
-| `verbose` | `bool` | `True` | Print progress messages |
-| `force` | `bool` | `False` | Re-export even if exists |
+| Parameter    | Type           | Default  | Description                          |
+| ------------ | -------------- | -------- | ------------------------------------ |
+| `model_name` | `str`          | required | HuggingFace model name or local path |
+| `output_dir` | `Path \| None` | `None`   | Output directory                     |
+| `quantize`   | `bool`         | `False`  | Create INT8 quantized version        |
+| `verbose`    | `bool`         | `True`   | Print progress messages              |
+| `force`      | `bool`         | `False`  | Re-export even if exists             |
 
 **Returns:** `Path` to output directory
 
@@ -137,10 +137,10 @@ quantized_path = quantize_model(
 
 **Parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
+| Parameter   | Type   | Default  | Description                       |
+| ----------- | ------ | -------- | --------------------------------- |
 | `model_dir` | `Path` | required | Directory containing `model.onnx` |
-| `verbose` | `bool` | `True` | Print progress messages |
+| `verbose`   | `bool` | `True`   | Print progress messages           |
 
 **Returns:** `Path` to quantized model (`model_int8.onnx`)
 
@@ -167,12 +167,12 @@ repo_url = push_to_hub(
 
 **Parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
+| Parameter   | Type   | Default  | Description                         |
+| ----------- | ------ | -------- | ----------------------------------- |
 | `model_dir` | `Path` | required | Directory containing exported model |
-| `repo_id` | `str` | required | HuggingFace Hub repository ID |
-| `private` | `bool` | `False` | Make repository private |
-| `verbose` | `bool` | `True` | Print progress messages |
+| `repo_id`   | `str`  | required | HuggingFace Hub repository ID       |
+| `private`   | `bool` | `False`  | Make repository private             |
+| `verbose`   | `bool` | `True`   | Print progress messages             |
 
 **Returns:** `str` URL of the uploaded model
 
@@ -181,7 +181,7 @@ repo_url = push_to_hub(
 - `model.onnx` - FP32 model
 - `model_int8.onnx` - INT8 model (if exists)
 - `tokenizer.json` - Tokenizer configuration
-- `config_sentence_transformers.json` - Model configuration
+- `onnx_config.json` - Model configuration
 - `README.md` - Auto-generated model card
 
 ---
@@ -193,10 +193,10 @@ models/<model-name>/
 ├── model.onnx                        # FP32 ONNX model
 ├── model_int8.onnx                   # INT8 quantized (with --quantize)
 ├── tokenizer.json                    # HuggingFace fast tokenizer
-└── config_sentence_transformers.json # Model configuration
+└── onnx_config.json # Model configuration
 ```
 
-### `config_sentence_transformers.json` Schema
+### `onnx_config.json` Schema
 
 ```json
 {
@@ -220,24 +220,24 @@ models/<model-name>/
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `model_type` | `str` | Always `"ColBERT"` |
-| `model_name` | `str` | Source HuggingFace model name |
-| `model_class` | `str` | Transformer class (e.g., `ModernBertModel`) |
-| `uses_token_type_ids` | `bool` | Whether model uses token type IDs (BERT: true, ModernBERT: false) |
-| `query_prefix` | `str` | Prefix for queries (e.g., `"[Q] "`) |
-| `document_prefix` | `str` | Prefix for documents (e.g., `"[D] "`) |
-| `query_length` | `int` | Maximum query sequence length |
-| `document_length` | `int` | Maximum document sequence length |
-| `do_query_expansion` | `bool` | Expand queries with MASK tokens |
-| `skiplist_words` | `list[str]` | Punctuation tokens to filter from documents |
-| `embedding_dim` | `int` | Output embedding dimension |
-| `mask_token_id` | `int` | MASK token ID for query expansion |
-| `pad_token_id` | `int` | PAD token ID |
-| `query_prefix_id` | `int` | Token ID for query prefix |
-| `document_prefix_id` | `int` | Token ID for document prefix |
-| `do_lower_case` | `bool` | Lowercase text before tokenization |
+| Field                 | Type        | Description                                                       |
+| --------------------- | ----------- | ----------------------------------------------------------------- |
+| `model_type`          | `str`       | Always `"ColBERT"`                                                |
+| `model_name`          | `str`       | Source HuggingFace model name                                     |
+| `model_class`         | `str`       | Transformer class (e.g., `ModernBertModel`)                       |
+| `uses_token_type_ids` | `bool`      | Whether model uses token type IDs (BERT: true, ModernBERT: false) |
+| `query_prefix`        | `str`       | Prefix for queries (e.g., `"[Q] "`)                               |
+| `document_prefix`     | `str`       | Prefix for documents (e.g., `"[D] "`)                             |
+| `query_length`        | `int`       | Maximum query sequence length                                     |
+| `document_length`     | `int`       | Maximum document sequence length                                  |
+| `do_query_expansion`  | `bool`      | Expand queries with MASK tokens                                   |
+| `skiplist_words`      | `list[str]` | Punctuation tokens to filter from documents                       |
+| `embedding_dim`       | `int`       | Output embedding dimension                                        |
+| `mask_token_id`       | `int`       | MASK token ID for query expansion                                 |
+| `pad_token_id`        | `int`       | PAD token ID                                                      |
+| `query_prefix_id`     | `int`       | Token ID for query prefix                                         |
+| `document_prefix_id`  | `int`       | Token ID for document prefix                                      |
+| `do_lower_case`       | `bool`      | Lowercase text before tokenization                                |
 
 ---
 
@@ -245,18 +245,18 @@ models/<model-name>/
 
 ### Inputs
 
-| Name | Shape | Type | Description |
-|------|-------|------|-------------|
-| `input_ids` | `[batch, seq_len]` | `int64` | Tokenized input IDs |
+| Name             | Shape              | Type    | Description                      |
+| ---------------- | ------------------ | ------- | -------------------------------- |
+| `input_ids`      | `[batch, seq_len]` | `int64` | Tokenized input IDs              |
 | `attention_mask` | `[batch, seq_len]` | `int64` | Attention mask (1=attend, 0=pad) |
-| `token_type_ids` | `[batch, seq_len]` | `int64` | Token type IDs (BERT only) |
+| `token_type_ids` | `[batch, seq_len]` | `int64` | Token type IDs (BERT only)       |
 
 Note: `token_type_ids` is only present for BERT-based models. ModernBERT models do not use this input.
 
 ### Output
 
-| Name | Shape | Type | Description |
-|------|-------|------|-------------|
+| Name     | Shape                   | Type      | Description                    |
+| -------- | ----------------------- | --------- | ------------------------------ |
 | `output` | `[batch, seq_len, dim]` | `float32` | L2-normalized token embeddings |
 
 ### Export Details
@@ -299,13 +299,14 @@ INT8 quantization (optional)
 
 ## Supported Models
 
-Any PyLate-compatible ColBERT model from HuggingFace:
+Any PyLate-compatible ColBERT model from HuggingFace including onnx ready models:
 
-| Model | Embedding Dim | Architecture | Notes |
-|-------|---------------|--------------|-------|
-| `lightonai/GTE-ModernColBERT-v1` | 128 | ModernBERT | Recommended, no token_type_ids |
-
----
+```sh
+lightonai/GTE-ModernColBERT-v1 (text retrieval, lightweight)
+lightonai/answerai-colbert-small-v1-onnx (text retrieval, more accurate)
+lightonai/LateOn-Code-v0-edge (code search, lightweight)
+lightonai/LateOn-Code-v0 (code search, more accurate)
+```
 
 ## License
 

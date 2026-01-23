@@ -92,8 +92,8 @@ services:
       - --index-dir
       - /data/indices
       - --model
-      - ${MODEL:-lightonai/GTE-ModernColBERT-v1}
-      - --int8
+      - ${MODEL:-lightonai/answerai-colbert-small-v1-onnx}
+      - --int8  # Reduce precision for faster CPU inference, optional, you can remove this flag to use full precision
       - --parallel
       - "16"
       - --batch-size

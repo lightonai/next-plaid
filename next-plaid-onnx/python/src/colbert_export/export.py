@@ -68,7 +68,7 @@ class ColBERTForONNX(nn.Module):
         self.projection_layers = nn.ModuleList()
         for i in range(1, len(pylate_model)):
             module = pylate_model[i]
-            if hasattr(module, 'linear'):
+            if hasattr(module, "linear"):
                 self.projection_layers.append(module.linear)
 
         self.uses_token_type_ids = uses_token_type_ids
@@ -229,12 +229,15 @@ def export_model(
         "document_prefix_id": int(pylate_model.document_prefix_id),
         "do_lower_case": do_lower_case,
     }
-    config_output_path = output_dir / "config_sentence_transformers.json"
-    with open(config_output_path, "w") as f:
+    # Save onnx_config.json (required by Rust inference code)
+    # Note: We only save onnx_config.json, not config_sentence_transformers.json,
+    # to avoid overwriting any custom config that may exist on HuggingFace
+    onnx_config_output_path = output_dir / "onnx_config.json"
+    with open(onnx_config_output_path, "w") as f:
         json.dump(config, f, indent=2)
 
     if verbose:
-        print(f"Saved config to: {config_output_path}")
+        print(f"Saved ONNX config to: {onnx_config_output_path}")
 
     # Create dummy inputs with reasonable dimensions
     dummy_text = "[D] This is a sample text for ONNX export"

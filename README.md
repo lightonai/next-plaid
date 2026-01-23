@@ -22,7 +22,9 @@
 
 **NextPlaid** is a multi-vector database. It can be launched as a REST API server using Docker, and accessed via a Python SDK. It supports indexing, searching and filtering documents represented as multiple embeddings (token-level embeddings). It's built for **deployments** of **multi-vector models**. It's fully written in Rust.
 
-If you are looking for an efficient multi-vector index running on GPU then consider [FastPlaid](https://github.com/lightonai/fast-plaid). If you want a lightweight API running on CPU then **NextPlaid** is great.
+If you are looking for an efficient multi-vector index running on GPU then consider [FastPlaid](https://github.com/lightonai/fast-plaid). If you want a lightweight API running on CPU then **NextPlaid** is great. Please note that Next-Plaid can load FastPlaid indexes as well.
+
+Get started with the [LLM documentation]().
 
 ## ColGREP
 
