@@ -34,8 +34,8 @@ cd next-plaid-api && cargo fmt --all -- --check
 echo "Running API crate clippy..."
 cargo clippy --all-targets -- -D warnings
 
-echo "Running API crate tests..."
-cargo test
+echo "Running API crate tests (sequential to avoid port conflicts)..."
+cargo test -- --test-threads=1
 
 cd "$REPO_ROOT"
 

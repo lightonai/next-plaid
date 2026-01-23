@@ -63,10 +63,11 @@ ci-index:
 	cd next-plaid && cargo test
 
 # Run CI checks for api crate (using cross-platform features only)
+# Note: API integration tests run sequentially to avoid port conflicts
 ci-api:
 	cd next-plaid-api && cargo fmt --all -- --check
 	cd next-plaid-api && cargo clippy --all-targets -- -D warnings
-	cd next-plaid-api && cargo test
+	cd next-plaid-api && cargo test -- --test-threads=1
 
 # Run CI checks for onnx crate (using cross-platform features only)
 ci-onnx:
