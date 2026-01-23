@@ -1187,6 +1187,53 @@ pub struct SearchResult {
     pub score: f32,
 }
 
+/// Convert BRE (Basic Regular Expression) patterns to ERE (Extended Regular Expression).
+///
+/// This allows users to write grep-style patterns like "foo\|bar" which use BRE syntax,
+/// and have them work correctly with Rust's regex crate which uses ERE syntax.
+///
+/// Conversions:
+/// - `\|` → `|` (alternation)
+/// - `\+` → `+` (one or more)
+/// - `\?` → `?` (zero or one)
+/// - `\(` → `(` (group start)
+/// - `\)` → `)` (group end)
+/// - `\{` → `{` (quantifier start)
+/// - `\}` → `}` (quantifier end)
+pub fn bre_to_ere(pattern: &str) -> String {
+    let mut result = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                match next {
+                    // BRE escape sequences that become unescaped in ERE
+                    '|' | '+' | '?' | '(' | ')' | '{' | '}' => {
+                        result.push(chars.next().unwrap());
+                    }
+                    // Escaped backslash - keep both
+                    '\\' => {
+                        result.push(c);
+                        result.push(chars.next().unwrap());
+                    }
+                    // Other escapes - keep as-is
+                    _ => {
+                        result.push(c);
+                    }
+                }
+            } else {
+                // Trailing backslash
+                result.push(c);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
 /// Expand brace patterns like "*.{rs,md}" into ["*.rs", "*.md"]
 /// Supports multiple brace groups: "{src,lib}/**/*.{rs,md}" expands to all combinations
 fn expand_braces(pattern: &str) -> Vec<String> {
@@ -1518,6 +1565,11 @@ impl Searcher {
     ///
     /// Pattern matching is always case-insensitive.
     /// Uses pure SQL queries with REGEXP support for efficient filtering.
+    /// Automatically converts BRE (Basic Regular Expression) patterns to ERE.
+    ///
+    /// When not in fixed_strings mode, this function runs BOTH regex and literal searches,
+    /// combining and deduplicating results. This handles cases where users search for code
+    /// containing regex metacharacters (like parentheses) without escaping them.
     pub fn filter_by_text_pattern_with_options(
         &self,
         pattern: &str,
@@ -1529,37 +1581,78 @@ impl Searcher {
             return Ok(vec![]);
         }
 
-        // Build the regex pattern based on options
-        // -F takes precedence over -E (like grep)
-        let regex_pattern = if fixed_strings {
-            // Escape all regex metacharacters for literal matching
+        // When -F is explicitly set, only do literal matching
+        if fixed_strings {
+            let escaped = regex::escape(pattern);
+            let regex_pattern = if word_regexp {
+                format!(r"\b{}\b", escaped)
+            } else {
+                escaped
+            };
+            return filtering::where_condition_regexp(
+                &self.index_path,
+                "code REGEXP ?",
+                &[serde_json::json!(regex_pattern)],
+            )
+            .map_err(|e| anyhow::anyhow!("{}", e));
+        }
+
+        // Build the regex pattern for regex-mode search
+        let regex_pattern = if word_regexp {
+            // Word boundaries without escaping (user wants regex + word match)
+            let ere_pattern = bre_to_ere(pattern);
+            format!(r"\b{}\b", ere_pattern)
+        } else if extended_regexp {
+            // Extended regex (ERE) - convert BRE escapes to ERE
+            bre_to_ere(pattern)
+        } else {
+            // Default: basic substring matching (escape for safety)
+            regex::escape(pattern)
+        };
+
+        // Build the fixed-string pattern for literal search
+        let fixed_pattern = {
             let escaped = regex::escape(pattern);
             if word_regexp {
                 format!(r"\b{}\b", escaped)
             } else {
                 escaped
             }
-        } else if word_regexp {
-            // Word boundaries without escaping (user wants regex + word match)
-            format!(r"\b{}\b", pattern)
-        } else if extended_regexp {
-            // Extended regex (ERE) - use pattern as-is
-            // Rust's regex crate already uses ERE-like syntax
-            pattern.to_string()
-        } else {
-            // Default: basic substring matching (escape for safety)
-            regex::escape(pattern)
         };
 
-        // Use SQL REGEXP for efficient filtering (runs in SQLite with custom function)
-        let subset = filtering::where_condition_regexp(
+        // Run regex search first (may fail if pattern is invalid regex)
+        let regex_results = filtering::where_condition_regexp(
             &self.index_path,
             "code REGEXP ?",
             &[serde_json::json!(regex_pattern)],
+        );
+
+        // If regex pattern equals fixed pattern, no need to run both searches
+        if regex_pattern == fixed_pattern {
+            return regex_results.map_err(|e| anyhow::anyhow!("{}", e));
+        }
+
+        // Run fixed-string search (always succeeds since pattern is escaped)
+        let fixed_results = filtering::where_condition_regexp(
+            &self.index_path,
+            "code REGEXP ?",
+            &[serde_json::json!(fixed_pattern)],
         )
         .unwrap_or_default();
 
-        Ok(subset)
+        // Combine results: union of both searches, deduplicated via HashSet
+        match regex_results {
+            Ok(regex_ids) => {
+                // Both succeeded - combine and deduplicate
+                let mut combined: std::collections::HashSet<i64> = regex_ids.into_iter().collect();
+                combined.extend(fixed_results);
+                Ok(combined.into_iter().collect())
+            }
+            Err(_) => {
+                // Regex failed (invalid pattern) - return fixed results only
+                Ok(fixed_results)
+            }
+        }
     }
 
     /// Get metadata for specific document IDs
@@ -1838,5 +1931,114 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_bre_to_ere_alternation() {
+        // BRE alternation \| should become ERE |
+        assert_eq!(bre_to_ere(r"foo\|bar"), "foo|bar");
+        assert_eq!(bre_to_ere(r"a\|b\|c"), "a|b|c");
+    }
+
+    #[test]
+    fn test_bre_to_ere_quantifiers() {
+        // BRE quantifiers should become ERE
+        assert_eq!(bre_to_ere(r"a\+"), "a+");
+        assert_eq!(bre_to_ere(r"a\?"), "a?");
+        assert_eq!(bre_to_ere(r"a\{2,3\}"), "a{2,3}");
+    }
+
+    #[test]
+    fn test_bre_to_ere_grouping() {
+        // BRE grouping should become ERE
+        assert_eq!(bre_to_ere(r"\(foo\)"), "(foo)");
+        assert_eq!(bre_to_ere(r"\(a\|b\)"), "(a|b)");
+    }
+
+    #[test]
+    fn test_bre_to_ere_escaped_backslash() {
+        // Escaped backslash should be preserved
+        assert_eq!(bre_to_ere(r"foo\\bar"), r"foo\\bar");
+        assert_eq!(bre_to_ere(r"\\|"), r"\\|"); // escaped backslash + literal pipe
+    }
+
+    #[test]
+    fn test_bre_to_ere_no_change() {
+        // Patterns without BRE escapes should pass through unchanged
+        assert_eq!(bre_to_ere("foo|bar"), "foo|bar");
+        assert_eq!(bre_to_ere("a+b?"), "a+b?");
+        assert_eq!(bre_to_ere(r"foo\.bar"), r"foo\.bar"); // escaped dot stays
+    }
+
+    #[test]
+    fn test_bre_to_ere_mixed() {
+        // Mixed BRE/ERE patterns (user's actual use case)
+        assert_eq!(
+            bre_to_ere(r"default.*25\|top_k.*25"),
+            "default.*25|top_k.*25"
+        );
+    }
+
+    #[test]
+    fn test_bre_to_ere_trailing_backslash() {
+        // Trailing backslash should be preserved
+        assert_eq!(bre_to_ere(r"foo\"), r"foo\");
+    }
+
+    #[test]
+    fn test_combine_search_results_no_duplicates() {
+        // Simulate the deduplication logic used in filter_by_text_pattern_with_options
+        // when combining regex and fixed-string search results
+
+        // Case 1: Overlapping results (same IDs from both searches)
+        let regex_ids: Vec<i64> = vec![1, 2, 3, 4, 5];
+        let fixed_ids: Vec<i64> = vec![3, 4, 5, 6, 7];
+
+        let mut combined: std::collections::HashSet<i64> = regex_ids.into_iter().collect();
+        combined.extend(fixed_ids);
+        let result: Vec<i64> = combined.into_iter().collect();
+
+        // Assert no duplicates
+        let mut sorted = result.clone();
+        sorted.sort();
+        assert!(
+            sorted.windows(2).all(|w| w[0] != w[1]),
+            "Combined results contain duplicates"
+        );
+
+        // Assert we have the union of both sets
+        assert_eq!(sorted.len(), 7); // {1, 2, 3, 4, 5, 6, 7}
+
+        // Case 2: Identical results (both searches return same IDs)
+        let regex_ids: Vec<i64> = vec![10, 20, 30];
+        let fixed_ids: Vec<i64> = vec![10, 20, 30];
+
+        let mut combined: std::collections::HashSet<i64> = regex_ids.into_iter().collect();
+        combined.extend(fixed_ids);
+        let result: Vec<i64> = combined.into_iter().collect();
+
+        let mut sorted = result.clone();
+        sorted.sort();
+        assert!(
+            sorted.windows(2).all(|w| w[0] != w[1]),
+            "Identical results produced duplicates"
+        );
+        assert_eq!(sorted.len(), 3);
+
+        // Case 3: Disjoint results (no overlap)
+        let regex_ids: Vec<i64> = vec![1, 2, 3];
+        let fixed_ids: Vec<i64> = vec![4, 5, 6];
+
+        let mut combined: std::collections::HashSet<i64> = regex_ids.into_iter().collect();
+        combined.extend(fixed_ids);
+        let result: Vec<i64> = combined.into_iter().collect();
+
+        let mut sorted = result.clone();
+        sorted.sort();
+        assert!(
+            sorted.windows(2).all(|w| w[0] != w[1]),
+            "Disjoint results produced duplicates"
+        );
+        assert_eq!(sorted.len(), 6);
     }
 }

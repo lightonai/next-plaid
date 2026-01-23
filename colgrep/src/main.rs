@@ -1475,17 +1475,44 @@ fn cmd_search(
                                 line_num_width,
                             );
                         } else {
-                            // No -e flag, show from beginning
-                            let start = result.unit.line.saturating_sub(1);
-                            if start < lines.len() {
-                                print_highlighted_content(
+                            // No -e flag: check if query exists literally in the unit
+                            // If found, highlight matching lines like -e does
+                            let query_matches = find_matches_in_unit(
+                                &result.unit,
+                                query,
+                                false, // not extended regexp
+                                true,  // fixed_strings (literal match)
+                                false, // not word_regexp
+                            );
+                            if !query_matches.is_empty() {
+                                // Query found literally - show with highlighting
+                                let ranges = calc_display_ranges(
+                                    &query_matches,
+                                    result.unit.line,
+                                    end,
+                                    half_context,
+                                    max_lines,
+                                );
+                                print_highlighted_ranges(
                                     &file_to_read,
                                     &lines,
-                                    start,
-                                    max_lines,
+                                    &ranges,
                                     end,
                                     line_num_width,
                                 );
+                            } else {
+                                // No literal match, show from beginning
+                                let start = result.unit.line.saturating_sub(1);
+                                if start < lines.len() {
+                                    print_highlighted_content(
+                                        &file_to_read,
+                                        &lines,
+                                        start,
+                                        max_lines,
+                                        end,
+                                        line_num_width,
+                                    );
+                                }
                             }
                         }
                     }
@@ -1541,17 +1568,44 @@ fn cmd_search(
                                 line_num_width,
                             );
                         } else {
-                            // No -e flag, show from beginning
-                            let start = result.unit.line.saturating_sub(1);
-                            if start < lines.len() {
-                                print_highlighted_content(
+                            // No -e flag: check if query exists literally in the unit
+                            // If found, highlight matching lines like -e does
+                            let query_matches = find_matches_in_unit(
+                                &result.unit,
+                                query,
+                                false, // not extended regexp
+                                true,  // fixed_strings (literal match)
+                                false, // not word_regexp
+                            );
+                            if !query_matches.is_empty() {
+                                // Query found literally - show with highlighting
+                                let ranges = calc_display_ranges(
+                                    &query_matches,
+                                    result.unit.line,
+                                    end,
+                                    half_context,
+                                    max_lines,
+                                );
+                                print_highlighted_ranges(
                                     &file_to_read,
                                     &lines,
-                                    start,
-                                    max_lines,
+                                    &ranges,
                                     end,
                                     line_num_width,
                                 );
+                            } else {
+                                // No literal match, show from beginning
+                                let start = result.unit.line.saturating_sub(1);
+                                if start < lines.len() {
+                                    print_highlighted_content(
+                                        &file_to_read,
+                                        &lines,
+                                        start,
+                                        max_lines,
+                                        end,
+                                        line_num_width,
+                                    );
+                                }
                             }
                         }
                     }
