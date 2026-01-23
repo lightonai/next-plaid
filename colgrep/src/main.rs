@@ -652,13 +652,14 @@ fn resolve_pool_factor(cli_pool_factor: Option<usize>, no_pool: bool) -> Option<
 
 /// Calculate merged display ranges for all matches within a code unit
 /// Returns a vector of (start, end) ranges (0-indexed) that cover all matches with context
-/// Always includes the function signature (first line of unit) for context
+/// If include_signature is true, always includes the function signature (first line of unit)
 fn calc_display_ranges(
     match_lines: &[usize],
     unit_start: usize,
     unit_end: usize,
     half_context: usize,
     max_lines: usize,
+    include_signature: bool,
 ) -> Vec<(usize, usize)> {
     let signature_line = unit_start.saturating_sub(1); // 0-indexed first line of unit
 
@@ -683,12 +684,14 @@ fn calc_display_ranges(
     }
 
     // Calculate ranges for each match (with context)
+    // When not including signature, allow ranges to start before unit_start
+    let min_start = if include_signature { signature_line } else { 0 };
     let mut ranges: Vec<(usize, usize)> = Vec::new();
     for &match_line in &matches_in_range {
         let start = match_line
             .saturating_sub(1)
             .saturating_sub(half_context)
-            .max(signature_line);
+            .max(min_start);
         let end = (match_line.saturating_sub(1) + half_context + 1).min(unit_end);
         ranges.push((start, end));
     }
@@ -708,13 +711,15 @@ fn calc_display_ranges(
         }
     }
 
-    // Ensure signature line is always included
+    // Ensure signature line is always included (only when include_signature is true)
     // If first range doesn't start at signature, prepend a signature-only range
-    if let Some(first) = merged.first() {
-        if first.0 > signature_line {
-            // Add signature line as separate range (just the first line or two)
-            let sig_end = (signature_line + 2).min(first.0); // Show 1-2 lines of signature
-            merged.insert(0, (signature_line, sig_end));
+    if include_signature {
+        if let Some(first) = merged.first() {
+            if first.0 > signature_line {
+                // Add signature line as separate range (just the first line or two)
+                let sig_end = (signature_line + 2).min(first.0); // Show 1-2 lines of signature
+                merged.insert(0, (signature_line, sig_end));
+            }
         }
     }
 
@@ -1466,6 +1471,7 @@ fn cmd_search(
                                 end,
                                 half_context,
                                 max_lines,
+                                true, // include signature
                             );
                             print_highlighted_ranges(
                                 &file_to_read,
@@ -1476,7 +1482,7 @@ fn cmd_search(
                             );
                         } else {
                             // No -e flag: check if query exists literally in the unit
-                            // If found, highlight matching lines like -e does
+                            // If found, highlight matching lines (with signature for context)
                             let query_matches = find_matches_in_unit(
                                 &result.unit,
                                 query,
@@ -1485,13 +1491,14 @@ fn cmd_search(
                                 false, // not word_regexp
                             );
                             if !query_matches.is_empty() {
-                                // Query found literally - show with highlighting
+                                // Query found literally - show signature + matching lines
                                 let ranges = calc_display_ranges(
                                     &query_matches,
                                     result.unit.line,
                                     end,
                                     half_context,
                                     max_lines,
+                                    true, // include signature for context
                                 );
                                 print_highlighted_ranges(
                                     &file_to_read,
@@ -1559,6 +1566,7 @@ fn cmd_search(
                                 end,
                                 half_context,
                                 max_lines,
+                                true, // include signature
                             );
                             print_highlighted_ranges(
                                 &file_to_read,
@@ -1569,7 +1577,7 @@ fn cmd_search(
                             );
                         } else {
                             // No -e flag: check if query exists literally in the unit
-                            // If found, highlight matching lines like -e does
+                            // If found, highlight matching lines (with signature for context)
                             let query_matches = find_matches_in_unit(
                                 &result.unit,
                                 query,
@@ -1578,13 +1586,14 @@ fn cmd_search(
                                 false, // not word_regexp
                             );
                             if !query_matches.is_empty() {
-                                // Query found literally - show with highlighting
+                                // Query found literally - show signature + matching lines
                                 let ranges = calc_display_ranges(
                                     &query_matches,
                                     result.unit.line,
                                     end,
                                     half_context,
                                     max_lines,
+                                    true, // include signature for context
                                 );
                                 print_highlighted_ranges(
                                     &file_to_read,
@@ -2093,7 +2102,7 @@ mod tests {
     // Test calc_display_ranges function
     #[test]
     fn test_calc_display_ranges_no_matches() {
-        let ranges = calc_display_ranges(&[], 10, 20, 3, 6);
+        let ranges = calc_display_ranges(&[], 10, 20, 3, 6, true);
         // Should show from beginning with max_lines limit
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0], (9, 15)); // signature_line=9, end=min(20, 9+6)=15
@@ -2102,7 +2111,7 @@ mod tests {
     #[test]
     fn test_calc_display_ranges_single_match() {
         let match_lines = vec![15];
-        let ranges = calc_display_ranges(&match_lines, 10, 25, 3, 10);
+        let ranges = calc_display_ranges(&match_lines, 10, 25, 3, 10, true);
         // Should have signature and match context
         assert!(!ranges.is_empty());
     }
@@ -2111,7 +2120,7 @@ mod tests {
     fn test_calc_display_ranges_multiple_matches_merged() {
         // Two matches close enough to merge
         let match_lines = vec![12, 14];
-        let ranges = calc_display_ranges(&match_lines, 10, 30, 3, 20);
+        let ranges = calc_display_ranges(&match_lines, 10, 30, 3, 20, true);
         // Ranges should be merged since they're close together
         assert!(ranges.len() <= 2);
     }
@@ -2120,7 +2129,7 @@ mod tests {
     fn test_calc_display_ranges_matches_outside_unit() {
         // Matches outside the unit range should be filtered
         let match_lines = vec![5, 35]; // Both outside 10-25
-        let ranges = calc_display_ranges(&match_lines, 10, 25, 3, 10);
+        let ranges = calc_display_ranges(&match_lines, 10, 25, 3, 10, true);
         // Should fall back to showing from beginning
         assert!(!ranges.is_empty());
     }
