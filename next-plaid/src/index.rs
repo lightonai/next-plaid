@@ -943,38 +943,46 @@ impl MmapIndex {
         if self.metadata.num_documents <= config.start_from_scratch {
             // Load existing embeddings if available
             let existing_embeddings = load_embeddings_npy(index_path)?;
-            // New documents start after existing documents
-            let start_doc_id = existing_embeddings.len() as i64;
 
-            // Combine existing + new embeddings
-            let combined_embeddings: Vec<Array2<f32>> = existing_embeddings
-                .into_iter()
-                .chain(embeddings.iter().cloned())
-                .collect();
+            // Check if embeddings.npy is in sync with the index.
+            // If not (e.g., after delete when index was above threshold), we can't do
+            // start-from-scratch mode because we don't have all the old embeddings.
+            // Fall through to buffer mode instead.
+            if existing_embeddings.len() == self.metadata.num_documents {
+                // New documents start after existing documents
+                let start_doc_id = existing_embeddings.len() as i64;
 
-            // Build IndexConfig from UpdateConfig for create_with_kmeans
-            let index_config = IndexConfig {
-                nbits: self.metadata.nbits,
-                batch_size: config.batch_size,
-                seed: Some(config.seed),
-                kmeans_niters: config.kmeans_niters,
-                max_points_per_centroid: config.max_points_per_centroid,
-                n_samples_kmeans: config.n_samples_kmeans,
-                start_from_scratch: config.start_from_scratch,
-            };
+                // Combine existing + new embeddings
+                let combined_embeddings: Vec<Array2<f32>> = existing_embeddings
+                    .into_iter()
+                    .chain(embeddings.iter().cloned())
+                    .collect();
 
-            // Rebuild index from scratch with fresh K-means
-            *self = Self::create_with_kmeans(&combined_embeddings, &path_str, &index_config)?;
+                // Build IndexConfig from UpdateConfig for create_with_kmeans
+                let index_config = IndexConfig {
+                    nbits: self.metadata.nbits,
+                    batch_size: config.batch_size,
+                    seed: Some(config.seed),
+                    kmeans_niters: config.kmeans_niters,
+                    max_points_per_centroid: config.max_points_per_centroid,
+                    n_samples_kmeans: config.n_samples_kmeans,
+                    start_from_scratch: config.start_from_scratch,
+                };
 
-            // If we've crossed the threshold, clear embeddings.npy
-            if combined_embeddings.len() > config.start_from_scratch
-                && embeddings_npy_exists(index_path)
-            {
-                clear_embeddings_npy(index_path)?;
+                // Rebuild index from scratch with fresh K-means
+                *self = Self::create_with_kmeans(&combined_embeddings, &path_str, &index_config)?;
+
+                // If we've crossed the threshold, clear embeddings.npy
+                if combined_embeddings.len() > config.start_from_scratch
+                    && embeddings_npy_exists(index_path)
+                {
+                    clear_embeddings_npy(index_path)?;
+                }
+
+                // Return the document IDs assigned to the new embeddings
+                return Ok((start_doc_id..start_doc_id + num_new_docs as i64).collect());
             }
-
-            // Return the document IDs assigned to the new embeddings
-            return Ok((start_doc_id..start_doc_id + num_new_docs as i64).collect());
+            // else: embeddings.npy is out of sync, fall through to buffer mode
         }
 
         // Load buffer

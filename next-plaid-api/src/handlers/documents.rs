@@ -44,6 +44,94 @@ fn max_queued_tasks_per_index() -> usize {
     })
 }
 
+// --- Index/DB Sync Repair ---
+
+/// Automatically repair sync issues between the vector index and metadata DB.
+///
+/// This function handles two cases:
+/// 1. DB has more records than index: Delete extra DB records (IDs >= index count)
+/// 2. Index has more documents than DB: Delete extra documents from index (IDs >= DB count)
+///
+/// Returns Ok(true) if repair was performed, Ok(false) if no repair needed.
+fn repair_index_db_sync(index_path: &str) -> Result<bool, String> {
+    let path = std::path::Path::new(index_path);
+
+    // Check if both exist
+    if !path.join("metadata.json").exists() {
+        return Ok(false); // No index yet
+    }
+    if !filtering::exists(index_path) {
+        return Ok(false); // No DB yet
+    }
+
+    let index_metadata = Metadata::load_from_path(path)
+        .map_err(|e| format!("Failed to load index metadata: {}", e))?;
+    let db_count =
+        filtering::count(index_path).map_err(|e| format!("Failed to get DB count: {}", e))?;
+
+    let index_count = index_metadata.num_documents;
+
+    if index_count == db_count {
+        return Ok(false); // Already in sync
+    }
+
+    tracing::warn!(
+        "Index/DB sync mismatch detected: index has {} documents, DB has {} records. Attempting automatic repair.",
+        index_count,
+        db_count
+    );
+
+    if db_count > index_count {
+        // DB has extra records - delete them
+        // Extra records have IDs >= index_count
+        let extra_ids: Vec<i64> = (index_count as i64..db_count as i64).collect();
+        tracing::info!(
+            "Deleting {} extra DB records (IDs {} to {})",
+            extra_ids.len(),
+            index_count,
+            db_count - 1
+        );
+        filtering::delete(index_path, &extra_ids)
+            .map_err(|e| format!("Failed to delete extra DB records: {}", e))?;
+    } else {
+        // Index has extra documents - delete them from index
+        // Extra documents have IDs >= db_count
+        let extra_ids: Vec<i64> = (db_count as i64..index_count as i64).collect();
+        tracing::info!(
+            "Deleting {} extra index documents (IDs {} to {})",
+            extra_ids.len(),
+            db_count,
+            index_count - 1
+        );
+        let mut index = MmapIndex::load(index_path)
+            .map_err(|e| format!("Failed to load index for repair: {}", e))?;
+        // Use delete_with_options with delete_metadata=false since DB doesn't have these
+        index
+            .delete_with_options(&extra_ids, false)
+            .map_err(|e| format!("Failed to delete extra index documents: {}", e))?;
+    }
+
+    // Verify repair succeeded
+    let new_index_metadata = Metadata::load_from_path(path)
+        .map_err(|e| format!("Failed to reload index metadata after repair: {}", e))?;
+    let new_db_count = filtering::count(index_path)
+        .map_err(|e| format!("Failed to get DB count after repair: {}", e))?;
+
+    if new_index_metadata.num_documents != new_db_count {
+        return Err(format!(
+            "Repair failed: index still has {} documents but DB has {} records",
+            new_index_metadata.num_documents, new_db_count
+        ));
+    }
+
+    tracing::info!(
+        "Index/DB sync repair successful. Both now have {} documents.",
+        new_db_count
+    );
+
+    Ok(true)
+}
+
 // --- Batch Collection ---
 
 /// Get the maximum number of documents to batch together before processing.
@@ -241,24 +329,14 @@ async fn process_batch(
         let stored_config: IndexConfigStored = serde_json::from_reader(config_file)
             .map_err(|e| format!("Failed to parse config: {}", e))?;
 
-        // Check sync before updating: if both index and filtering DB exist, their counts must match
-        let index_path = std::path::Path::new(&path_str);
-        let metadata_json_exists = index_path.join("metadata.json").exists();
-        let filtering_exists = filtering::exists(&path_str);
-
-        if metadata_json_exists && filtering_exists {
-            let index_metadata = Metadata::load_from_path(index_path)
-                .map_err(|e| format!("Failed to load index metadata: {}", e))?;
-            let filtering_count = filtering::count(&path_str)
-                .map_err(|e| format!("Failed to get filtering count: {}", e))?;
-
-            if index_metadata.num_documents != filtering_count {
-                return Err(format!(
-                    "Index out of sync: vector index has {} documents but metadata DB has {}. \
-                     A full rebuild is required.",
-                    index_metadata.num_documents, filtering_count
-                ));
-            }
+        // Check and automatically repair sync issues between index and DB
+        if let Err(e) = repair_index_db_sync(&path_str) {
+            tracing::error!(
+                index = %name_inner,
+                "Failed to repair index/DB sync: {}",
+                e
+            );
+            return Err(format!("Index/DB sync repair failed: {}", e));
         }
 
         // Build IndexConfig
@@ -271,32 +349,64 @@ async fn process_batch(
         };
         let update_config = UpdateConfig::default();
 
-        // Run Update
+        let num_new_docs = embeddings.len();
+
+        // STEP 1: Update vector index FIRST
+        // The index knows its true state and will assign correct document IDs.
+        // This is critical after delete operations, which compact/renumber IDs.
         let index_update_start = std::time::Instant::now();
-        let (mut index, doc_ids) =
-            MmapIndex::update_or_create(&embeddings, &path_str, &index_config, &update_config)
-                .map_err(|e| format!("Index update failed: {}", e))?;
+        let index_result =
+            MmapIndex::update_or_create(&embeddings, &path_str, &index_config, &update_config);
+
+        let (mut index, doc_ids) = match index_result {
+            Ok((idx, ids)) => (idx, ids),
+            Err(e) => {
+                return Err(format!("Index update failed: {}", e));
+            }
+        };
+
         let index_update_duration_ms = index_update_start.elapsed().as_millis() as u64;
         tracing::info!(
             index = %name_inner,
-            num_documents = embeddings.len(),
+            num_documents = num_new_docs,
+            first_doc_id = ?doc_ids.first(),
+            last_doc_id = ?doc_ids.last(),
             index_update_duration_ms = index_update_duration_ms,
             "Index update completed"
         );
 
-        // Handle Metadata
+        // STEP 2: Update metadata DB using the ACTUAL doc_ids from the index
+        // If this fails, we need to rollback the index changes
         let metadata_update_start = std::time::Instant::now();
-        if filtering::exists(&path_str) {
+        let db_existed = filtering::exists(&path_str);
+        let db_result = if db_existed {
             filtering::update(&path_str, &metadata, &doc_ids)
-                .map_err(|e| format!("Failed to update metadata: {}", e))?;
         } else {
             filtering::create(&path_str, &metadata, &doc_ids)
-                .map_err(|e| format!("Failed to create metadata: {}", e))?;
+        };
+
+        if let Err(e) = db_result {
+            // ROLLBACK: Remove the documents we just added to the index
+            tracing::warn!(
+                index = %name_inner,
+                "Metadata DB update failed, rolling back index changes: {}",
+                e
+            );
+            if let Err(rollback_err) = index.delete_with_options(&doc_ids, false) {
+                tracing::error!(
+                    index = %name_inner,
+                    "Failed to rollback index after metadata failure: {}. \
+                     Index may be out of sync and require rebuild.",
+                    rollback_err
+                );
+            }
+            return Err(format!("Failed to update metadata: {}", e));
         }
+
         let metadata_update_duration_ms = metadata_update_start.elapsed().as_millis() as u64;
         tracing::info!(
             index = %name_inner,
-            num_documents = embeddings.len(),
+            num_documents = num_new_docs,
             metadata_update_duration_ms = metadata_update_duration_ms,
             "Metadata update completed"
         );
@@ -822,16 +932,16 @@ pub async fn delete_documents(
                 .to_string_lossy()
                 .to_string();
 
-            // Check sync before deleting: counts must match
-            let index_path = std::path::Path::new(&path_str);
-            let index_metadata = Metadata::load_from_path(index_path)?;
-            let filtering_count = filtering::count(&path_str)?;
-
-            if index_metadata.num_documents != filtering_count {
+            // Check and automatically repair sync issues between index and DB
+            if let Err(e) = repair_index_db_sync(&path_str) {
+                tracing::error!(
+                    index = %name_inner,
+                    "Failed to repair index/DB sync: {}",
+                    e
+                );
                 return Err(ApiError::Internal(format!(
-                    "Index out of sync: vector index has {} documents but metadata DB has {}. \
-                     A full rebuild is required.",
-                    index_metadata.num_documents, filtering_count
+                    "Index/DB sync repair failed: {}",
+                    e
                 )));
             }
 

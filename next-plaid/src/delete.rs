@@ -263,6 +263,9 @@ fn delete_from_index_impl(doc_ids: &[i64], index_path: &str, clean_buffer: bool)
         &final_metadata,
     )?;
 
+    // Clear merged files to force regeneration on next load
+    crate::mmap::clear_merged_files(index_dir)?;
+
     // Clean up buffer.npy and embeddings.npy (start-from-scratch files)
     // These files store raw embeddings by document index, so we need to filter them
     // Skip this when called from update operations that need to preserve the buffer

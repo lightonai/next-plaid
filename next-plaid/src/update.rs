@@ -867,6 +867,10 @@ pub fn update_index(
 
     serde_json::to_writer_pretty(BufWriter::new(File::create(&metadata_path)?), &new_metadata)?;
 
+    // Clear merged files to force regeneration on next load.
+    // This ensures the merged files are consistent with the new chunk data.
+    crate::mmap::clear_merged_files(index_dir)?;
+
     Ok(num_new_documents)
 }
 

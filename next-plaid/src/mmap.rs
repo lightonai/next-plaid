@@ -990,27 +990,79 @@ pub struct ChunkManifestEntry {
     pub mtime: f64,
 }
 
-/// Manifest for merged files
+/// Manifest for merged files, including metadata about the merge
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MergeManifest {
+    /// Chunk information
+    pub chunks: HashMap<String, ChunkManifestEntry>,
+    /// Number of padding rows used in the merge
+    #[serde(default)]
+    pub padding_rows: usize,
+    /// Total rows in the merged file (including padding)
+    #[serde(default)]
+    pub total_rows: usize,
+    /// Number of columns (for 2D arrays like residuals)
+    #[serde(default)]
+    pub ncols: usize,
+}
+
+/// Legacy manifest type (for backwards compatibility during migration)
 pub type ChunkManifest = HashMap<String, ChunkManifestEntry>;
 
 /// Load manifest from disk if it exists
-fn load_manifest(manifest_path: &Path) -> Option<ChunkManifest> {
+/// Handles both new MergeManifest format and legacy ChunkManifest format
+fn load_merge_manifest(manifest_path: &Path) -> Option<MergeManifest> {
     if manifest_path.exists() {
         if let Ok(file) = File::open(manifest_path) {
-            if let Ok(manifest) = serde_json::from_reader(BufReader::new(file)) {
+            // Try to load as new format first
+            let reader = BufReader::new(file);
+            if let Ok(manifest) = serde_json::from_reader::<_, MergeManifest>(reader) {
                 return Some(manifest);
+            }
+            // Try legacy format
+            if let Ok(file) = File::open(manifest_path) {
+                if let Ok(chunks) =
+                    serde_json::from_reader::<_, ChunkManifest>(BufReader::new(file))
+                {
+                    // Convert legacy format - missing padding info means we need to regenerate
+                    return Some(MergeManifest {
+                        chunks,
+                        padding_rows: 0,
+                        total_rows: 0,
+                        ncols: 0,
+                    });
+                }
             }
         }
     }
     None
 }
 
-/// Save manifest to disk
-fn save_manifest(manifest_path: &Path, manifest: &ChunkManifest) -> Result<()> {
-    let file = File::create(manifest_path)
-        .map_err(|e| Error::IndexLoad(format!("Failed to create manifest: {}", e)))?;
-    serde_json::to_writer(BufWriter::new(file), manifest)
+/// Save manifest to disk atomically (write to temp file, then rename)
+fn save_merge_manifest(manifest_path: &Path, manifest: &MergeManifest) -> Result<()> {
+    let temp_path = manifest_path.with_extension("manifest.json.tmp");
+
+    // Write to temp file
+    let file = File::create(&temp_path)
+        .map_err(|e| Error::IndexLoad(format!("Failed to create temp manifest: {}", e)))?;
+    let mut writer = BufWriter::new(file);
+    serde_json::to_writer(&mut writer, manifest)
         .map_err(|e| Error::IndexLoad(format!("Failed to write manifest: {}", e)))?;
+    writer
+        .flush()
+        .map_err(|e| Error::IndexLoad(format!("Failed to flush manifest: {}", e)))?;
+
+    // Sync to disk
+    writer
+        .into_inner()
+        .map_err(|e| Error::IndexLoad(format!("Failed to get inner file: {}", e)))?
+        .sync_all()
+        .map_err(|e| Error::IndexLoad(format!("Failed to sync manifest: {}", e)))?;
+
+    // Atomic rename
+    fs::rename(&temp_path, manifest_path)
+        .map_err(|e| Error::IndexLoad(format!("Failed to rename manifest: {}", e)))?;
+
     Ok(())
 }
 
@@ -1113,6 +1165,7 @@ struct ChunkInfo {
 /// Merge chunked codes NPY files into a single merged file.
 ///
 /// Uses incremental persistence with manifest tracking to skip unchanged chunks.
+/// Uses atomic writes to prevent corruption from interrupted writes.
 /// Returns the path to the merged file.
 pub fn merge_codes_chunks(
     index_path: &Path,
@@ -1123,9 +1176,10 @@ pub fn merge_codes_chunks(
 
     let merged_path = index_path.join("merged_codes.npy");
     let manifest_path = index_path.join("merged_codes.manifest.json");
+    let temp_path = index_path.join("merged_codes.npy.tmp");
 
     // Load previous manifest
-    let old_manifest = load_manifest(&manifest_path);
+    let old_manifest = load_merge_manifest(&manifest_path);
 
     // Scan chunks and detect changes
     let mut chunks: Vec<ChunkInfo> = Vec::new();
@@ -1150,6 +1204,7 @@ pub fn merge_codes_chunks(
                 // Check if this chunk changed
                 let is_clean = if let Some(ref manifest) = old_manifest {
                     manifest
+                        .chunks
                         .get(&filename)
                         .is_some_and(|entry| entry.mtime == mtime && entry.rows == rows)
                 } else {
@@ -1176,38 +1231,101 @@ pub fn merge_codes_chunks(
 
     let final_rows = total_rows + padding_rows;
 
-    // Check if we need to rewrite
-    let needs_full_rewrite = !merged_path.exists() || chain_broken;
+    // Check if we need to rewrite:
+    // 1. Merged file doesn't exist
+    // 2. Chunks have changed
+    // 3. Padding has changed (stored in manifest)
+    // 4. Total rows don't match (safety check)
+    let padding_changed = old_manifest
+        .as_ref()
+        .map(|m| m.padding_rows != padding_rows)
+        .unwrap_or(true);
+    let total_rows_mismatch = old_manifest
+        .as_ref()
+        .map(|m| m.total_rows != final_rows)
+        .unwrap_or(true);
+
+    let needs_full_rewrite =
+        !merged_path.exists() || chain_broken || padding_changed || total_rows_mismatch;
 
     if needs_full_rewrite {
-        // Create new merged file
-        let file = File::create(&merged_path)?;
+        // Write to temp file first (atomic write pattern)
+        let file = File::create(&temp_path)
+            .map_err(|e| Error::IndexLoad(format!("Failed to create temp merged file: {}", e)))?;
         let mut writer = BufWriter::new(file);
 
         // Write header
-        write_npy_header_1d(&mut writer, final_rows, "<i8")?;
+        let header_size = write_npy_header_1d(&mut writer, final_rows, "<i8")?;
 
         // Write chunk data
+        let mut written_rows = 0usize;
         for chunk in &chunks {
             let file = File::open(&chunk.path)?;
             let arr: Array1<i64> = Array1::read_npy(file)?;
             for &val in arr.iter() {
                 writer.write_all(&val.to_le_bytes())?;
             }
+            written_rows += arr.len();
         }
 
         // Write padding zeros
         for _ in 0..padding_rows {
             writer.write_all(&0i64.to_le_bytes())?;
         }
+        written_rows += padding_rows;
 
-        writer.flush()?;
+        // Flush and sync to disk
+        writer
+            .flush()
+            .map_err(|e| Error::IndexLoad(format!("Failed to flush merged file: {}", e)))?;
+        let file = writer
+            .into_inner()
+            .map_err(|e| Error::IndexLoad(format!("Failed to get inner file: {}", e)))?;
+        file.sync_all()
+            .map_err(|e| Error::IndexLoad(format!("Failed to sync merged file to disk: {}", e)))?;
+
+        // Verify file size before renaming
+        let expected_size = header_size + written_rows * 8;
+        let actual_size = fs::metadata(&temp_path)
+            .map_err(|e| Error::IndexLoad(format!("Failed to get temp file metadata: {}", e)))?
+            .len() as usize;
+
+        if actual_size != expected_size {
+            // Clean up temp file and return error
+            let _ = fs::remove_file(&temp_path);
+            return Err(Error::IndexLoad(format!(
+                "Merged codes file size mismatch: expected {} bytes, got {} bytes",
+                expected_size, actual_size
+            )));
+        }
+
+        // Atomic rename (overwrites existing file)
+        fs::rename(&temp_path, &merged_path)
+            .map_err(|e| Error::IndexLoad(format!("Failed to rename merged file: {}", e)))?;
+    } else {
+        // Validate existing merged file before using it
+        if merged_path.exists() {
+            let file_size = fs::metadata(&merged_path)
+                .map_err(|e| {
+                    Error::IndexLoad(format!("Failed to get merged file metadata: {}", e))
+                })?
+                .len() as usize;
+
+            // NPY header is at least 64 bytes, data is final_rows * 8 bytes
+            let min_expected_size = 64 + final_rows * 8;
+            if file_size < min_expected_size {
+                // File is corrupted, force regeneration by recursing with empty manifest
+                let _ = fs::remove_file(&merged_path);
+                let _ = fs::remove_file(&manifest_path);
+                return merge_codes_chunks(index_path, num_chunks, padding_rows);
+            }
+        }
     }
 
-    // Save manifest
-    let mut new_manifest = ChunkManifest::new();
+    // Build and save manifest with full metadata
+    let mut chunk_map = HashMap::new();
     for chunk in &chunks {
-        new_manifest.insert(
+        chunk_map.insert(
             chunk.filename.clone(),
             ChunkManifestEntry {
                 rows: chunk.rows,
@@ -1215,12 +1333,20 @@ pub fn merge_codes_chunks(
             },
         );
     }
-    save_manifest(&manifest_path, &new_manifest)?;
+    let new_manifest = MergeManifest {
+        chunks: chunk_map,
+        padding_rows,
+        total_rows: final_rows,
+        ncols: 0, // Not used for 1D codes array
+    };
+    save_merge_manifest(&manifest_path, &new_manifest)?;
 
     Ok(merged_path)
 }
 
 /// Merge chunked residuals NPY files into a single merged file.
+///
+/// Uses atomic writes to prevent corruption from interrupted writes.
 pub fn merge_residuals_chunks(
     index_path: &Path,
     num_chunks: usize,
@@ -1230,9 +1356,10 @@ pub fn merge_residuals_chunks(
 
     let merged_path = index_path.join("merged_residuals.npy");
     let manifest_path = index_path.join("merged_residuals.manifest.json");
+    let temp_path = index_path.join("merged_residuals.npy.tmp");
 
     // Load previous manifest
-    let old_manifest = load_manifest(&manifest_path);
+    let old_manifest = load_merge_manifest(&manifest_path);
 
     // Scan chunks and detect changes
     let mut chunks: Vec<ChunkInfo> = Vec::new();
@@ -1258,6 +1385,7 @@ pub fn merge_residuals_chunks(
 
                 let is_clean = if let Some(ref manifest) = old_manifest {
                     manifest
+                        .chunks
                         .get(&filename)
                         .is_some_and(|entry| entry.mtime == mtime && entry.rows == rows)
                 } else {
@@ -1284,22 +1412,48 @@ pub fn merge_residuals_chunks(
 
     let final_rows = total_rows + padding_rows;
 
-    let needs_full_rewrite = !merged_path.exists() || chain_broken;
+    // Check if we need to rewrite:
+    // 1. Merged file doesn't exist
+    // 2. Chunks have changed
+    // 3. Padding has changed
+    // 4. Total rows or ncols don't match
+    let padding_changed = old_manifest
+        .as_ref()
+        .map(|m| m.padding_rows != padding_rows)
+        .unwrap_or(true);
+    let total_rows_mismatch = old_manifest
+        .as_ref()
+        .map(|m| m.total_rows != final_rows)
+        .unwrap_or(true);
+    let ncols_mismatch = old_manifest
+        .as_ref()
+        .map(|m| m.ncols != ncols && m.ncols != 0)
+        .unwrap_or(false);
+
+    let needs_full_rewrite = !merged_path.exists()
+        || chain_broken
+        || padding_changed
+        || total_rows_mismatch
+        || ncols_mismatch;
 
     if needs_full_rewrite {
-        let file = File::create(&merged_path)?;
+        // Write to temp file first (atomic write pattern)
+        let file = File::create(&temp_path)
+            .map_err(|e| Error::IndexLoad(format!("Failed to create temp merged file: {}", e)))?;
         let mut writer = BufWriter::new(file);
 
         // Write header
-        write_npy_header_2d(&mut writer, final_rows, ncols, "|u1")?;
+        let header_size = write_npy_header_2d(&mut writer, final_rows, ncols, "|u1")?;
 
         // Write chunk data
+        let mut written_rows = 0usize;
         for chunk in &chunks {
             let file = File::open(&chunk.path)?;
             let arr: Array2<u8> = Array2::read_npy(file)?;
             for row in arr.rows() {
                 writer.write_all(row.as_slice().unwrap())?;
             }
+            written_rows += arr.nrows();
         }
 
         // Write padding zeros
@@ -1307,14 +1461,61 @@ pub fn merge_residuals_chunks(
         for _ in 0..padding_rows {
             writer.write_all(&zero_row)?;
         }
+        written_rows += padding_rows;
 
-        writer.flush()?;
+        // Flush and sync to disk
+        writer
+            .flush()
+            .map_err(|e| Error::IndexLoad(format!("Failed to flush merged residuals: {}", e)))?;
+        let file = writer
+            .into_inner()
+            .map_err(|e| Error::IndexLoad(format!("Failed to get inner file: {}", e)))?;
+        file.sync_all().map_err(|e| {
+            Error::IndexLoad(format!("Failed to sync merged residuals to disk: {}", e))
+        })?;
+
+        // Verify file size before renaming
+        let expected_size = header_size + written_rows * ncols;
+        let actual_size = fs::metadata(&temp_path)
+            .map_err(|e| Error::IndexLoad(format!("Failed to get temp file metadata: {}", e)))?
+            .len() as usize;
+
+        if actual_size != expected_size {
+            // Clean up temp file and return error
+            let _ = fs::remove_file(&temp_path);
+            return Err(Error::IndexLoad(format!(
+                "Merged residuals file size mismatch: expected {} bytes, got {} bytes",
+                expected_size, actual_size
+            )));
+        }
+
+        // Atomic rename
+        fs::rename(&temp_path, &merged_path)
+            .map_err(|e| Error::IndexLoad(format!("Failed to rename merged residuals: {}", e)))?;
+    } else {
+        // Validate existing merged file before using it
+        if merged_path.exists() {
+            let file_size = fs::metadata(&merged_path)
+                .map_err(|e| {
+                    Error::IndexLoad(format!("Failed to get merged file metadata: {}", e))
+                })?
+                .len() as usize;
+
+            // NPY header is at least 64 bytes, data is final_rows * ncols bytes
+            let min_expected_size = 64 + final_rows * ncols;
+            if file_size < min_expected_size {
+                // File is corrupted, force regeneration
+                let _ = fs::remove_file(&merged_path);
+                let _ = fs::remove_file(&manifest_path);
+                return merge_residuals_chunks(index_path, num_chunks, padding_rows);
+            }
+        }
     }
 
-    // Save manifest
-    let mut new_manifest = ChunkManifest::new();
+    // Build and save manifest with full metadata
+    let mut chunk_map = HashMap::new();
     for chunk in &chunks {
-        new_manifest.insert(
+        chunk_map.insert(
             chunk.filename.clone(),
             ChunkManifestEntry {
                 rows: chunk.rows,
@@ -1322,9 +1523,43 @@ pub fn merge_residuals_chunks(
             },
         );
     }
-    save_manifest(&manifest_path, &new_manifest)?;
+    let new_manifest = MergeManifest {
+        chunks: chunk_map,
+        padding_rows,
+        total_rows: final_rows,
+        ncols,
+    };
+    save_merge_manifest(&manifest_path, &new_manifest)?;
 
     Ok(merged_path)
+}
+
+/// Clear merged files and manifests to force regeneration on next load.
+///
+/// This should be called after index updates to ensure the merged files
+/// are regenerated with the latest data. The function silently ignores
+/// missing files.
+pub fn clear_merged_files(index_path: &Path) -> Result<()> {
+    let files_to_remove = [
+        "merged_codes.npy",
+        "merged_codes.npy.tmp",
+        "merged_codes.manifest.json",
+        "merged_codes.manifest.json.tmp",
+        "merged_residuals.npy",
+        "merged_residuals.npy.tmp",
+        "merged_residuals.manifest.json",
+        "merged_residuals.manifest.json.tmp",
+    ];
+
+    for filename in files_to_remove {
+        let path = index_path.join(filename);
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|e| Error::IndexLoad(format!("Failed to remove {}: {}", filename, e)))?;
+        }
+    }
+
+    Ok(())
 }
 
 // ============================================================================
