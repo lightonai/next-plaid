@@ -7,9 +7,26 @@ use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(feature = "model")]
 use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use next_plaid::MmapIndex;
 use parking_lot::RwLock;
+
+/// Global registry of per-index loading locks to prevent concurrent loads.
+/// This prevents race conditions where multiple requests try to load the same
+/// index simultaneously, which can cause file conflicts.
+static LOADING_LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>> =
+    OnceLock::new();
+
+/// Get or create a loading lock for the given index name.
+fn get_loading_lock(name: &str) -> Arc<std::sync::Mutex<()>> {
+    let locks = LOADING_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut locks_guard = locks.lock().unwrap();
+    locks_guard
+        .entry(name.to_string())
+        .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
+        .clone()
+}
 
 use crate::error::{ApiError, ApiResult};
 use crate::models::IndexConfigStored;
@@ -167,7 +184,7 @@ impl AppState {
 
     /// Get a loaded index by name.
     pub fn get_index(&self, name: &str) -> ApiResult<Arc<RwLock<MmapIndex>>> {
-        // First check if already loaded
+        // First check if already loaded (fast path, no lock needed)
         {
             let indices = self.indices.read();
             if let Some(idx) = indices.get(name) {
@@ -175,10 +192,24 @@ impl AppState {
             }
         }
 
-        // Try to load from disk
+        // Acquire per-index loading lock to prevent concurrent loads.
+        // This prevents race conditions where multiple requests try to load
+        // the same index simultaneously, which can cause file conflicts.
+        let loading_lock = get_loading_lock(name);
+        let _guard = loading_lock.lock().unwrap();
+
+        // Double-check: another request might have loaded it while we waited
+        {
+            let indices = self.indices.read();
+            if let Some(idx) = indices.get(name) {
+                return Ok(Arc::clone(idx));
+            }
+        }
+
+        // Now safe to load from disk
         self.load_index(name)?;
 
-        // Now get it
+        // Get the loaded index
         let indices = self.indices.read();
         indices
             .get(name)

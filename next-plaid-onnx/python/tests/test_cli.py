@@ -27,7 +27,7 @@ class TestCLIHelp:
         assert result.returncode == 0
         assert "pylate-onnx-export" in result.stdout
         assert "HuggingFace model name" in result.stdout
-        assert "--quantize" in result.stdout
+        assert "--no-quantize" in result.stdout
         assert "--force" in result.stdout
         assert "--push-to-hub" in result.stdout
         assert "--private" in result.stdout
