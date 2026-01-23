@@ -56,27 +56,32 @@ pip install pylate-onnx-export
 #### Export a Model
 
 ```bash
-# Export ColBERT model to ONNX (FP32)
+# Export ColBERT model to ONNX (creates both FP32 and INT8 quantized versions by default)
 pylate-onnx-export lightonai/GTE-ModernColBERT-v1
 
-# Export with INT8 quantization (recommended for production)
-pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --quantize
+# Export to a specific directory
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
 
-# Export to custom directory
-pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models -q
+# Export FP32 only (skip quantization)
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --no-quantize
 
 # Force re-export (overwrites existing)
 pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --force
 ```
 
-#### Push to HuggingFace Hub
+#### Export, Save to Directory, and Push to HuggingFace Hub
 
 ```bash
-# Export and push to Hub
-pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -q --push-to-hub myorg/my-onnx-model
+# Install the package
+pip install pylate-onnx-export
+
+# Export model to a specific directory and push to HuggingFace Hub
+# This creates model.onnx (FP32) and model_int8.onnx (INT8) in ./my-models
+# and uploads both to the specified Hub repository
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models --push-to-hub myorg/my-onnx-model
 
 # Push as private repository
-pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -q --push-to-hub myorg/my-model --private
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models --push-to-hub myorg/my-model --private
 ```
 
 #### Quantize Existing Model
@@ -95,7 +100,7 @@ Arguments:
 
 Options:
   -o, --output-dir DIR    Output directory (default: ./models/<model-name>)
-  -q, --quantize          Create INT8 quantized model
+  --no-quantize           Skip INT8 quantization (by default, both FP32 and INT8 are created)
   -f, --force             Force re-export even if exists
   --push-to-hub REPO_ID   Push to HuggingFace Hub
   --private               Make Hub repository private
@@ -108,7 +113,7 @@ Options:
 ```
 models/<model-name>/
 ├── model.onnx           # FP32 ONNX model
-├── model_int8.onnx      # INT8 quantized (with --quantize)
+├── model_int8.onnx      # INT8 quantized (created by default)
 ├── tokenizer.json       # HuggingFace tokenizer (fast tokenizer format)
 └── onnx_config.json     # Model configuration for inference
 ```

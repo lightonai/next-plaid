@@ -138,11 +138,17 @@ colgrep set-model lightonai/LateOn-Code-v0
 
 ## Models
 
-Any HuggingFace ColBERT-style model can be exported to ONNX. INT8 quantization reduces size and improves speed with minimal quality loss.
+Any HuggingFace ColBERT-style model can be exported to ONNX. By default, both FP32 and INT8 quantized versions are created. INT8 quantization reduces size (~4x smaller) and improves speed with minimal quality loss.
 
 ```bash
+# Install the export tool
 pip install pylate-onnx-export
-pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --quantize
+
+# Export model to a specific directory (creates model.onnx and model_int8.onnx)
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
+
+# Export and push to HuggingFace Hub
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models --push-to-hub myorg/my-onnx-model
 ```
 
 Available models:

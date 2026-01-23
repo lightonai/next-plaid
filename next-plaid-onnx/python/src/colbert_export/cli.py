@@ -13,20 +13,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Export a model (downloads from HuggingFace and converts to ONNX)
+  # Export a model (creates both FP32 and INT8 quantized versions by default)
   pylate-onnx-export lightonai/GTE-ModernColBERT-v1
 
-  # Export with INT8 quantization for faster inference
-  pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --quantize
+  # Export FP32 only (skip quantization)
+  pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --no-quantize
 
   # Export to a specific directory
   pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
 
   # Export and push to HuggingFace Hub
   pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --push-to-hub myorg/my-onnx-model
-
-  # Export with quantization and push to Hub
-  pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -q --push-to-hub myorg/my-onnx-model
 
 Supported models:
   - lightonai/GTE-ModernColBERT-v1 (96-dim, BERT-based)
@@ -50,10 +47,9 @@ Supported models:
     )
 
     parser.add_argument(
-        "-q",
-        "--quantize",
+        "--no-quantize",
         action="store_true",
-        help="Also create INT8 quantized model for faster inference",
+        help="Skip INT8 quantization (by default, both FP32 and INT8 models are created)",
     )
 
     parser.add_argument(
@@ -100,7 +96,7 @@ Supported models:
         result_dir = export_model(
             model_name=args.model,
             output_dir=output_dir,
-            quantize=args.quantize,
+            quantize=not args.no_quantize,
             verbose=not args.quiet,
             force=args.force,
         )

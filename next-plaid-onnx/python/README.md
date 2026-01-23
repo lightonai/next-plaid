@@ -27,14 +27,14 @@ pip install pylate-onnx-export
 ### Export a Model
 
 ```bash
-# Export ColBERT model to ONNX (FP32)
+# Export ColBERT model to ONNX (creates both FP32 and INT8 quantized versions by default)
 pylate-onnx-export lightonai/GTE-ModernColBERT-v1
 
-# Export with INT8 quantization (recommended for production)
-pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --quantize
+# Export FP32 only (skip quantization)
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --no-quantize
 
 # Export to custom directory
-pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models -q
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
 
 # Force re-export (overwrites existing)
 pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --force
@@ -44,10 +44,10 @@ pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --force
 
 ```bash
 # Export and push to Hub
-pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -q --push-to-hub myorg/my-onnx-model
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --push-to-hub myorg/my-onnx-model
 
 # Push as private repository
-pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -q --push-to-hub myorg/my-model --private
+pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --push-to-hub myorg/my-model --private
 ```
 
 ### Quantize Existing Model
@@ -70,7 +70,7 @@ Arguments:
 
 Options:
   -o, --output-dir DIR    Output directory (default: ./models/<model-name>)
-  -q, --quantize          Create INT8 quantized model
+  --no-quantize           Skip INT8 quantization (by default, both FP32 and INT8 are created)
   -f, --force             Force re-export even if exists
   --push-to-hub REPO_ID   Push to HuggingFace Hub
   --private               Make Hub repository private
@@ -191,9 +191,9 @@ repo_url = push_to_hub(
 ```
 models/<model-name>/
 ├── model.onnx                        # FP32 ONNX model
-├── model_int8.onnx                   # INT8 quantized (with --quantize)
+├── model_int8.onnx                   # INT8 quantized (created by default)
 ├── tokenizer.json                    # HuggingFace fast tokenizer
-└── onnx_config.json # Model configuration
+└── onnx_config.json                  # Model configuration
 ```
 
 ### `onnx_config.json` Schema
@@ -276,7 +276,7 @@ The export process:
 3. **Create ONNX wrapper** - Combines transformer + projection + L2 normalization
 4. **Export with torch.onnx** - Dynamic shapes for batch and sequence
 5. **Verify model** - Validates ONNX graph structure
-6. **Quantize (optional)** - Apply INT8 dynamic quantization
+6. **Quantize (default)** - Apply INT8 dynamic quantization
 
 ```
 HuggingFace Model
@@ -292,7 +292,7 @@ torch.onnx.export (opset 14, dynamic axes)
        ↓
 ONNX verification
        ↓
-INT8 quantization (optional)
+INT8 quantization (default)
 ```
 
 ---
