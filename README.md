@@ -28,7 +28,7 @@ It runs well on CPU and exposes a simple REST API.
 
 ### Docker
 
-```sh
+```bash
 docker pull ghcr.io/lightonai/lategrep:cpu-latest
 docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
   ghcr.io/lightonai/lategrep:cpu-latest \
@@ -37,7 +37,7 @@ docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
 
 With GPU support:
 
-```sh
+```bash
 docker pull ghcr.io/lightonai/lategrep:cuda-latest
 docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
   ghcr.io/lightonai/lategrep:cuda-latest \
@@ -46,7 +46,7 @@ docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
 
 ### Python SDK
 
-```sh
+```bash
 pip install next-plaid-client
 ```
 
@@ -87,13 +87,13 @@ The index lives locally. Your code never leaves your machine.
 
 ### Install
 
-```sh
+```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/lategrep/releases/latest/download/colgrep-installer.sh | sh
 ```
 
 Or via Cargo:
 
-```sh
+```bash
 cargo install colgrep
 ```
 
@@ -107,7 +107,7 @@ cargo install colgrep
 
 ### Usage
 
-```sh
+```bash
 colgrep "database connection pooling"
 ```
 
@@ -115,13 +115,13 @@ The first search builds the index. After that, only modified files are re-indexe
 
 Regex meets semantics:
 
-```sh
+```bash
 colgrep -e "async.*await" "error handling"
 ```
 
 Scope your search:
 
-```sh
+```bash
 colgrep --include="*.py" "database query"
 colgrep --exclude-dir="node_modules" "config loading"
 ```
@@ -130,7 +130,7 @@ The default model is `lightonai/LateOn-Code-v0-edge`.
 
 For higher accuracy you can switch to `lightonai/LateOn-Code-v0`:
 
-```sh
+```bash
 colgrep set-model lightonai/LateOn-Code-v0
 ```
 
@@ -140,7 +140,7 @@ colgrep set-model lightonai/LateOn-Code-v0
 
 Any HuggingFace ColBERT-style model can be exported to ONNX. INT8 quantization reduces size and improves speed with minimal quality loss.
 
-```sh
+```bash
 pip install pylate-onnx-export
 pylate-onnx-export lightonai/GTE-ModernColBERT-v1 --quantize
 ```
