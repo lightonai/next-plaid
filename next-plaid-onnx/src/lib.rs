@@ -941,11 +941,13 @@ fn encode_batch_with_session(
         })?,
     };
 
-    // Apply lowercasing if configured (matches sentence-transformers preprocessing)
+    // Apply text preprocessing to match sentence-transformers behavior:
+    // 1. Strip leading/trailing whitespace
+    // 2. Lowercase if configured
     let processed_texts: Vec<String> = if config.do_lower_case {
-        texts.iter().map(|t| t.to_lowercase()).collect()
+        texts.iter().map(|t| t.trim().to_lowercase()).collect()
     } else {
-        texts.iter().map(|t| t.to_string()).collect()
+        texts.iter().map(|t| t.trim().to_string()).collect()
     };
     let texts_to_encode: Vec<&str> = processed_texts.iter().map(|s| s.as_str()).collect();
 
