@@ -10,11 +10,11 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 
 use colgrep::{
-    acquire_index_lock, ensure_model, ensure_onnx_runtime, find_parent_index, get_colgrep_data_dir,
-    get_index_dir_for_project, get_vector_index_path, index_exists, install_claude_code,
-    install_codex, install_opencode, is_text_format, setup_signal_handler, uninstall_claude_code,
-    uninstall_codex, uninstall_opencode, Config, IndexBuilder, IndexState, ProjectMetadata,
-    Searcher, DEFAULT_MODEL, DEFAULT_POOL_FACTOR,
+    acquire_index_lock, bre_to_ere, ensure_model, ensure_onnx_runtime, find_parent_index,
+    get_colgrep_data_dir, get_index_dir_for_project, get_vector_index_path, index_exists,
+    install_claude_code, install_codex, install_opencode, is_text_format, setup_signal_handler,
+    uninstall_claude_code, uninstall_codex, uninstall_opencode, Config, IndexBuilder, IndexState,
+    ProjectMetadata, Searcher, DEFAULT_MODEL, DEFAULT_POOL_FACTOR,
 };
 
 const MAIN_HELP: &str = "\
@@ -127,15 +127,15 @@ struct Cli {
     #[arg(short = 'n', long = "lines")]
     context_lines: Option<usize>,
 
-    /// Text pattern: pre-filter using grep, then rank with semantic search
+    /// Text pattern: pre-filter using regex, then rank with semantic search
     #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
     text_pattern: Option<String>,
 
-    /// Use extended regular expressions (ERE) for -e pattern
+    /// Use extended regular expressions (ERE) for -e pattern (now default, kept for compatibility)
     #[arg(short = 'E', long = "extended-regexp")]
     extended_regexp: bool,
 
-    /// Interpret -e pattern as fixed string, not regex
+    /// Interpret -e pattern as fixed string, not regex (disables default regex mode)
     #[arg(short = 'F', long = "fixed-strings")]
     fixed_strings: bool,
 
@@ -234,9 +234,9 @@ GREP COMPATIBILITY:
     -r, --recursive    Enabled by default (for grep users)
     -l, --files-only   Show only filenames, like grep -l
     -c, --content      Show syntax-highlighted content (up to 50 lines)
-    -e, --pattern      Pre-filter with text pattern, like grep -e
-    -E, --extended-regexp  Use extended regex (ERE) for -e pattern
-    -F, --fixed-strings    Interpret -e pattern as fixed string (no regex)
+    -e, --pattern      Pre-filter with regex pattern (ERE syntax by default)
+    -E, --extended-regexp  Kept for compatibility (regex is now default)
+    -F, --fixed-strings    Interpret -e pattern as literal string (no regex)
     -w, --word-regexp      Match whole words only for -e pattern
     --include          Filter files by glob pattern
     --exclude          Exclude files matching pattern
@@ -353,15 +353,15 @@ enum Commands {
         #[arg(short = 'n', long = "lines")]
         context_lines: Option<usize>,
 
-        /// Text pattern: pre-filter using grep, then rank with semantic search
+        /// Text pattern: pre-filter using regex, then rank with semantic search
         #[arg(short = 'e', long = "pattern", value_name = "PATTERN")]
         text_pattern: Option<String>,
 
-        /// Use extended regular expressions (ERE) for -e pattern
+        /// Use extended regular expressions (ERE) for -e pattern (now default, kept for compatibility)
         #[arg(short = 'E', long = "extended-regexp")]
         extended_regexp: bool,
 
-        /// Interpret -e pattern as fixed string, not regex
+        /// Interpret -e pattern as fixed string, not regex (disables default regex mode)
         #[arg(short = 'F', long = "fixed-strings")]
         fixed_strings: bool,
 
@@ -949,6 +949,10 @@ fn cmd_search(
 ) -> Result<()> {
     let path = std::fs::canonicalize(path)?;
 
+    // When -e is used without -F, automatically enable regex mode (ERE)
+    // This makes -e imply -E by default, with -F as the opt-out
+    let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
+
     // Resolve model: CLI > config > default
     let model = resolve_model(cli_model);
 
@@ -1083,12 +1087,12 @@ fn cmd_search(
         // Apply text pattern filter: search indexed code directly (much faster than grep)
         if let Some(pattern) = text_pattern {
             // Use regex-based filtering with full grep flag support:
-            // -E (extended_regexp): ERE patterns with |, +, ?, () etc.
-            // -F (fixed_strings): literal string matching, takes precedence over -E
+            // -e now implies ERE by default (no need for -E flag)
+            // -F (fixed_strings): literal string matching, disables regex mode
             // -w (word_regexp): whole word matching with \b boundaries
             let pattern_ids = searcher.filter_by_text_pattern_with_options(
                 pattern,
-                extended_regexp,
+                effective_extended_regexp,
                 fixed_strings,
                 word_regexp,
             )?;
@@ -1315,7 +1319,9 @@ fn cmd_search(
         }
 
         // Helper to find matching line numbers within a code unit's content
-        // Supports: simple patterns, regex (-E), fixed strings (-F), whole word (-w)
+        // Supports: regex (default with -e), fixed strings (-F), whole word (-w)
+        // Uses size_limit for ReDoS protection (consistent with SQLite REGEXP)
+        // Falls back to literal matching if regex matches nothing (handles regex special chars)
         let find_matches_in_unit = |unit: &colgrep::CodeUnit,
                                     pattern: &str,
                                     use_regex: bool,
@@ -1325,15 +1331,33 @@ fn cmd_search(
             // -F takes precedence over -E (like grep)
             let effective_use_regex = use_regex && !is_fixed;
 
+            // Helper for literal substring matching
+            let literal_match = |pattern: &str| -> Vec<usize> {
+                let pattern_lower = pattern.to_lowercase();
+                unit.code
+                    .lines()
+                    .enumerate()
+                    .filter_map(|(i, line)| {
+                        if line.to_lowercase().contains(&pattern_lower) {
+                            Some(unit.line + i)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+
             if effective_use_regex {
-                // Build regex pattern, optionally with word boundaries
+                // Convert BRE to ERE and build regex pattern, optionally with word boundaries
+                let ere_pattern = bre_to_ere(pattern);
                 let regex_pattern = if is_word {
-                    format!(r"\b{}\b", pattern)
+                    format!(r"\b{}\b", ere_pattern)
                 } else {
-                    pattern.to_string()
+                    ere_pattern
                 };
-                match regex::RegexBuilder::new(&regex_pattern)
+                let regex_matches: Vec<usize> = match regex::RegexBuilder::new(&regex_pattern)
                     .case_insensitive(true)
+                    .size_limit(10 * (1 << 20)) // 10MB limit for ReDoS protection
                     .build()
                 {
                     Ok(re) => unit
@@ -1348,7 +1372,16 @@ fn cmd_search(
                             }
                         })
                         .collect(),
-                    Err(_) => vec![], // Invalid regex, return empty
+                    Err(_) => vec![], // Invalid regex
+                };
+
+                // If regex matched nothing, fall back to literal matching
+                // This handles patterns with unescaped special chars that the user
+                // intended as literals (e.g., "func(arg)?;" should match literally)
+                if regex_matches.is_empty() {
+                    literal_match(pattern)
+                } else {
+                    regex_matches
                 }
             } else if is_word {
                 // Word match with fixed string: use regex with escaped pattern
@@ -1356,6 +1389,7 @@ fn cmd_search(
                 let word_pattern = format!(r"\b{}\b", escaped);
                 match regex::RegexBuilder::new(&word_pattern)
                     .case_insensitive(true)
+                    .size_limit(10 * (1 << 20)) // 10MB limit for ReDoS protection
                     .build()
                 {
                     Ok(re) => unit
@@ -1374,18 +1408,7 @@ fn cmd_search(
                 }
             } else {
                 // Simple case-insensitive substring match (fixed string, no word boundary)
-                let pattern_lower = pattern.to_lowercase();
-                unit.code
-                    .lines()
-                    .enumerate()
-                    .filter_map(|(i, line)| {
-                        if line.to_lowercase().contains(&pattern_lower) {
-                            Some(unit.line + i)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
+                literal_match(pattern)
             }
         };
 
@@ -1433,7 +1456,7 @@ fn cmd_search(
                             let file_matches = find_matches_in_unit(
                                 &result.unit,
                                 text_pattern.unwrap(),
-                                extended_regexp,
+                                effective_extended_regexp,
                                 fixed_strings,
                                 word_regexp,
                             );
@@ -1499,7 +1522,7 @@ fn cmd_search(
                             let file_matches = find_matches_in_unit(
                                 &result.unit,
                                 text_pattern.unwrap(),
-                                extended_regexp,
+                                effective_extended_regexp,
                                 fixed_strings,
                                 word_regexp,
                             );
