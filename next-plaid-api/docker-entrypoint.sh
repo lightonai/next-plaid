@@ -100,7 +100,7 @@ model_exists() {
     if [ "$use_int8" = "true" ]; then
         [ ! -f "${model_path}/model_int8.onnx" ] && return 1
     else
-        [ ! -f "${model_path}/model.onnx" ] && [ ! -f "${model_path}/model_int8.onnx" ] && return 1
+        [ ! -f "${model_path}/model.onnx" ] && return 1
     fi
     return 0
 }

@@ -1,7 +1,7 @@
 <div align="center">
   <h1>NextPlaid & ColGREP</h1>
   <p>Multi-vector search, from database to coding agents</p>
-  <p><em>Store one embedding per token. Search text and code the way ColBERT intended.</em></p>
+  <p><em>Store one embedding per token.</em></p>
 </div>
 
 <p align="center">
@@ -127,7 +127,9 @@ colgrep --include="*.py" "database query"
 colgrep --exclude-dir="node_modules" "config loading"
 ```
 
-The default model is `lightonai/LateOn-Code-v0-edge`. For higher accuracy:
+The default model is `lightonai/LateOn-Code-v0-edge`.
+
+For higher accuracy you can switch to `lightonai/LateOn-Code-v0`:
 
 ```sh
 colgrep set-model lightonai/LateOn-Code-v0
@@ -152,6 +154,8 @@ Available models:
 | lightonai/LateOn-Code-v0                 | Code search, accurate       |
 | lightonai/answerai-colbert-small-v1-onnx | Text retrieval, lightweight |
 | lightonai/GTE-ModernColBERT-v1           | Text retrieval, accurate    |
+
+Any PyLate-compatible ColBERT model from HuggingFace can be used: [HuggingFace Hub](https://huggingface.co/models?other=PyLate).
 
 ---
 
