@@ -1,7 +1,6 @@
 <div align="center">
   <h1>NextPlaid & ColGREP</h1>
   <p>Multi-vector search, from database to coding agents</p>
-  <p><em>Store one embedding per token.</em></p>
 </div>
 
 <p align="center">
