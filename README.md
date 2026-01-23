@@ -7,7 +7,7 @@
   <img width=500 src="https://github.com/lightonai/next-plaid/blob/main/docs/logo.png"/>
 </p>
 
----
+&nbsp;
 
 ## What this is
 
