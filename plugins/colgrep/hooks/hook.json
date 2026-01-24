@@ -1,4 +1,5 @@
 {
+  "description": "Colgrep hooks - inject context and redirect search tools to colgrep",
   "hooks": {
     "SessionStart": [
       {
@@ -8,6 +9,18 @@
             "type": "command",
             "command": "colgrep --session-hook",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"Reminder: colgrep is available for semantic code search. Consider using colgrep for better results.\"}}'",
+            "timeout": 5
           }
         ]
       }
