@@ -162,6 +162,39 @@ To clear all the indexes:
 colgrep clear --all
 ```
 
+### Performance tuning
+
+For faster indexing and search on large codebases, you can enable INT8 quantization and embedding pooling:
+
+```bash
+# Enable INT8 quantized inference (faster, slightly less precise)
+colgrep settings --int8
+
+# Enable embedding pooling (reduces index size by ~50%, faster search)
+colgrep settings --pool-factor 2
+
+# Combine both for maximum speed
+colgrep settings --int8 --pool-factor 2
+```
+
+| Setting | Effect | Trade-off |
+| ------- | ------ | --------- |
+| `--int8` | Uses INT8 quantized model | ~2x faster inference, minimal quality loss |
+| `--pool-factor 1` | No pooling (default) | Maximum precision, larger index |
+| `--pool-factor 2` | Pools every 2 token embeddings | ~50% smaller index, faster search |
+
+To reset to defaults (FP32, no pooling):
+
+```bash
+colgrep settings --fp32 --pool-factor 0
+```
+
+View current settings:
+
+```bash
+colgrep settings
+```
+
 ### Features
 
 | Feature                | Command                                               |
@@ -187,6 +220,7 @@ colgrep clear --all
 | JSON output            | `colgrep --json "search" -k 2`                        |
 | Glob-style file find   | `colgrep -l --include="src/**/*.rs" "" .`             |
 | Status command         | `colgrep status`                                      |
+| Settings command       | `colgrep settings`                                    |
 | Help command           | `colgrep help`                                        |
 
 ---
