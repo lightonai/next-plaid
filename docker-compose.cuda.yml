@@ -29,6 +29,7 @@
 #   BATCH_CHANNEL_SIZE          Buffer size for document batch queue (default: 200)
 #   MAX_BATCH_TEXTS             Max texts to batch for encoding (default: 128)
 #   ENCODE_BATCH_CHANNEL_SIZE   Buffer size for encode batch queue (default: 512)
+#   MODEL_POOL_SIZE             Number of model workers for concurrent encoding (default: 1)
 #
 # CUDA Defaults (optimized for GPU, high throughput):
 #   --model lightonai/GTE-ModernColBERT-v1 --cuda --batch-size 128
@@ -80,7 +81,7 @@ services:
       # Encode batching configuration
       - MAX_BATCH_TEXTS=${MAX_BATCH_TEXTS:-128}
       - ENCODE_BATCH_CHANNEL_SIZE=${ENCODE_BATCH_CHANNEL_SIZE:-512}
-    # CUDA defaults: FP32 model (GPU is fast), large batches, single session
+    # CUDA defaults: FP32 model (GPU is fast), large batches, 1 model pool worker
     command:
       - --host
       - "0.0.0.0"
@@ -93,6 +94,8 @@ services:
       - --cuda
       - --batch-size
       - "128"
+      - --model-pool-size
+      - "${MODEL_POOL_SIZE:-1}"
       - --query-length
       - "48"
       - --document-length

@@ -18,6 +18,7 @@
 #   --threads <N>               Threads per session
 #   --query-length <N>          Max query length in tokens (default: 48)
 #   --document-length <N>       Max document length in tokens (default: 300)
+#   --model-pool-size <N>       Number of model worker instances for concurrent encoding
 #
 # Examples:
 #   docker-entrypoint.sh --model /models/my-model --parallel 8

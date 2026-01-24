@@ -472,29 +472,41 @@ def run_api_benchmark(
     start_search = time.perf_counter()
 
     search_results = []
+    max_search_workers = min(num_search_batches, 5)
 
-    for batch_idx in tqdm(range(num_search_batches), desc="    Searching"):
-        start_idx = batch_idx * search_batch_size
-        end_idx = min(start_idx + search_batch_size, num_queries)
-        batch_queries = query_texts[start_idx:end_idx]
+    def search_batch(batch_idx: int):
+        """Search a batch of queries."""
+        thread_client = NextPlaidClient(base_url, timeout=300.0)
+        try:
+            start_idx = batch_idx * search_batch_size
+            end_idx = min(start_idx + search_batch_size, num_queries)
+            batch_queries = query_texts[start_idx:end_idx]
 
-        # Use SDK's search() method with text queries (auto-detects text input)
-        result = client.search(index_name, batch_queries, params=search_params)
+            result = thread_client.search(index_name, batch_queries, params=search_params)
 
-        for i, query_result in enumerate(result.results):
-            query_idx = start_idx + i
-            search_results.append(
-                {
-                    "query_id": query_idx,
-                    "passage_ids": query_result.document_ids,
-                    "scores": query_result.scores,
-                    "metadata": query_result.metadata or [],
-                }
-            )
+            batch_results = []
+            for i, query_result in enumerate(result.results):
+                query_idx = start_idx + i
+                batch_results.append(
+                    {
+                        "query_id": query_idx,
+                        "passage_ids": query_result.document_ids,
+                        "scores": query_result.scores,
+                        "metadata": query_result.metadata or [],
+                    }
+                )
+            return batch_results
+        finally:
+            thread_client.close()
 
-        # Sleep between batches to avoid rate limiting
-        if batch_idx < num_search_batches - 1:
-            time.sleep(0.5)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_search_workers) as executor:
+        futures = [executor.submit(search_batch, i) for i in range(num_search_batches)]
+        for future in tqdm(
+            concurrent.futures.as_completed(futures),
+            total=len(futures),
+            desc="    Searching",
+        ):
+            search_results.extend(future.result())
 
     search_time = time.perf_counter() - start_search
 

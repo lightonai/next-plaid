@@ -5,10 +5,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-#[cfg(feature = "model")]
-use std::sync::Mutex;
 use std::sync::OnceLock;
 
+use arc_swap::{ArcSwap, Guard};
 use next_plaid::MmapIndex;
 use parking_lot::RwLock;
 
@@ -18,10 +17,40 @@ use parking_lot::RwLock;
 static LOADING_LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>> =
     OnceLock::new();
 
+/// Slot for an index with lock-free read access using ArcSwap.
+/// Allows atomic swapping of the index during writes while readers continue
+/// with the old version uninterrupted.
+pub struct IndexSlot {
+    /// The active index, accessible via lock-free atomic load
+    active: ArcSwap<MmapIndex>,
+}
+
+impl IndexSlot {
+    /// Create a new index slot with the given index.
+    pub fn new(index: MmapIndex) -> Self {
+        Self {
+            active: ArcSwap::from_pointee(index),
+        }
+    }
+
+    /// Get a lock-free reference to the current index.
+    /// This never blocks, even during writes.
+    pub fn load(&self) -> Guard<Arc<MmapIndex>> {
+        self.active.load()
+    }
+
+    /// Store a new index (like swap but discards the old one).
+    pub fn store(&self, new_index: MmapIndex) {
+        self.active.store(Arc::new(new_index));
+    }
+}
+
 /// Get or create a loading lock for the given index name.
 fn get_loading_lock(name: &str) -> Arc<std::sync::Mutex<()>> {
     let locks = LOADING_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut locks_guard = locks.lock().unwrap();
+    let mut locks_guard = locks
+        .lock()
+        .expect("LOADING_LOCKS mutex poisoned - a thread panicked while holding this lock");
     locks_guard
         .entry(name.to_string())
         .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
@@ -57,6 +86,42 @@ pub struct ModelInfo {
     pub path: String,
     /// Whether the model is INT8 quantized
     pub quantized: bool,
+}
+
+/// Configuration for building a model instance.
+/// Used by the worker pool to create model instances on each worker.
+#[cfg(feature = "model")]
+#[derive(Debug, Clone)]
+pub struct ModelConfig {
+    /// Path to the model directory
+    pub path: std::path::PathBuf,
+    /// Whether to use CUDA execution provider
+    pub use_cuda: bool,
+    /// Whether to use INT8 quantization
+    pub use_int8: bool,
+    /// Number of parallel ONNX sessions per model
+    pub parallel_sessions: Option<usize>,
+    /// Batch size for encoding
+    pub batch_size: Option<usize>,
+    /// Threads per ONNX session
+    pub threads: Option<usize>,
+    /// Maximum query length in tokens
+    pub query_length: Option<usize>,
+    /// Maximum document length in tokens
+    pub document_length: Option<usize>,
+}
+
+/// Model pool for concurrent encoding.
+/// Stores configuration for workers to create their own model instances.
+#[cfg(feature = "model")]
+#[derive(Debug)]
+pub struct ModelPool {
+    /// Number of workers in the pool
+    pub pool_size: usize,
+    /// Configuration for building model instances
+    pub model_config: ModelConfig,
+    /// Cached model info for lock-free access (immutable after init)
+    pub cached_info: CachedModelInfo,
 }
 
 /// Cached model information that doesn't require locking.
@@ -97,22 +162,20 @@ pub struct CachedModelInfo {
 /// Application state containing loaded indices.
 ///
 /// All indices are stored as MmapIndex for efficient memory usage.
+/// Indices use ArcSwap for lock-free read access during write operations.
 pub struct AppState {
     /// Configuration
     pub config: ApiConfig,
-    /// Loaded indices by name
-    indices: RwLock<HashMap<String, Arc<RwLock<MmapIndex>>>>,
+    /// Loaded indices by name (using IndexSlot for lock-free reads)
+    indices: RwLock<HashMap<String, Arc<IndexSlot>>>,
     /// Cached index configurations to avoid repeated file reads
     index_configs: RwLock<HashMap<String, IndexConfigStored>>,
-    /// Optional ONNX model for encoding texts
+    /// Optional model pool for concurrent encoding
     #[cfg(feature = "model")]
-    pub model: Option<Mutex<next_plaid_onnx::Colbert>>,
-    /// Model configuration info (path, quantization status)
+    pub model_pool: Option<ModelPool>,
+    /// Model configuration info (path, quantization status) - for logging
     #[cfg(feature = "model")]
     pub model_info: Option<ModelInfo>,
-    /// Cached model info for lock-free access (immutable after init)
-    #[cfg(feature = "model")]
-    pub cached_model_info: Option<CachedModelInfo>,
 }
 
 impl AppState {
@@ -131,13 +194,12 @@ impl AppState {
         }
     }
 
-    /// Create a new application state with an optional model.
+    /// Create a new application state with an optional model pool.
     #[cfg(feature = "model")]
-    pub fn with_model(
+    pub fn with_model_pool(
         config: ApiConfig,
-        model: Option<next_plaid_onnx::Colbert>,
+        model_pool: Option<ModelPool>,
         model_info: Option<ModelInfo>,
-        cached_model_info: Option<CachedModelInfo>,
     ) -> Self {
         // Ensure index directory exists
         if !config.index_dir.exists() {
@@ -148,10 +210,21 @@ impl AppState {
             config,
             indices: RwLock::new(HashMap::new()),
             index_configs: RwLock::new(HashMap::new()),
-            model: model.map(Mutex::new),
+            model_pool,
             model_info,
-            cached_model_info,
         }
+    }
+
+    /// Check if model pool is available.
+    #[cfg(feature = "model")]
+    pub fn has_model(&self) -> bool {
+        self.model_pool.is_some()
+    }
+
+    /// Get cached model info if model pool is available.
+    #[cfg(feature = "model")]
+    pub fn cached_model_info(&self) -> Option<&CachedModelInfo> {
+        self.model_pool.as_ref().map(|p| &p.cached_info)
     }
 
     /// Get the path for an index by name.
@@ -177,13 +250,14 @@ impl AppState {
         let idx = MmapIndex::load(&path_str)?;
 
         let mut indices = self.indices.write();
-        indices.insert(name.to_string(), Arc::new(RwLock::new(idx)));
+        indices.insert(name.to_string(), Arc::new(IndexSlot::new(idx)));
 
         Ok(())
     }
 
-    /// Get a loaded index by name.
-    pub fn get_index(&self, name: &str) -> ApiResult<Arc<RwLock<MmapIndex>>> {
+    /// Get a loaded index slot by name (for write operations that need swapping).
+    /// Returns the IndexSlot which supports atomic swapping.
+    pub fn get_index_slot(&self, name: &str) -> ApiResult<Arc<IndexSlot>> {
         // First check if already loaded (fast path, no lock needed)
         {
             let indices = self.indices.read();
@@ -217,10 +291,22 @@ impl AppState {
             .ok_or_else(|| ApiError::IndexNotFound(name.to_string()))
     }
 
+    /// Get a lock-free reference to an index for read operations.
+    /// This never blocks, even during write operations.
+    pub fn get_index_for_read(&self, name: &str) -> ApiResult<Guard<Arc<MmapIndex>>> {
+        let slot = self.get_index_slot(name)?;
+        Ok(slot.load())
+    }
+
     /// Register a new index (after creation).
     pub fn register_index(&self, name: &str, index: MmapIndex) {
         let mut indices = self.indices.write();
-        indices.insert(name.to_string(), Arc::new(RwLock::new(index)));
+        // Check if slot already exists - if so, swap instead of replacing
+        if let Some(slot) = indices.get(name) {
+            slot.store(index);
+        } else {
+            indices.insert(name.to_string(), Arc::new(IndexSlot::new(index)));
+        }
     }
 
     /// Unload an index from memory.
@@ -229,10 +315,32 @@ impl AppState {
         indices.remove(name).is_some()
     }
 
-    /// Reload an index from disk.
+    /// Reload an index from disk using atomic swap.
+    /// Readers continue with the old version during the load.
     pub fn reload_index(&self, name: &str) -> ApiResult<()> {
-        self.unload_index(name);
-        self.load_index(name)
+        let path = self.index_path(name);
+        let path_str = path.to_string_lossy().to_string();
+
+        if !path.join("metadata.json").exists() {
+            return Err(ApiError::IndexNotFound(name.to_string()));
+        }
+
+        // Load the new index
+        let new_idx = MmapIndex::load(&path_str)?;
+
+        // Check if slot exists
+        let indices = self.indices.read();
+        if let Some(slot) = indices.get(name) {
+            // Atomic swap - readers continue with old version
+            slot.store(new_idx);
+            Ok(())
+        } else {
+            // Need to create new slot
+            drop(indices);
+            let mut indices = self.indices.write();
+            indices.insert(name.to_string(), Arc::new(IndexSlot::new(new_idx)));
+            Ok(())
+        }
     }
 
     /// Get cached index config, loading from disk if not cached.

@@ -14,10 +14,47 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use fs2::FileExt;
 use memmap2::Mmap;
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
 use crate::error::{Error, Result};
+
+/// RAII guard for file-based locking to coordinate concurrent processes.
+/// The lock is released when this guard is dropped.
+struct FileLockGuard {
+    _file: File,
+}
+
+impl FileLockGuard {
+    /// Acquire an exclusive lock on the given lock file path.
+    /// Creates the lock file if it doesn't exist.
+    /// Blocks until the lock is acquired.
+    fn acquire(lock_path: &Path) -> Result<Self> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .map_err(|e| {
+                Error::IndexLoad(format!("Failed to open lock file {:?}: {}", lock_path, e))
+            })?;
+
+        file.lock_exclusive().map_err(|e| {
+            Error::IndexLoad(format!("Failed to acquire lock on {:?}: {}", lock_path, e))
+        })?;
+
+        Ok(Self { _file: file })
+    }
+}
+
+impl Drop for FileLockGuard {
+    fn drop(&mut self) {
+        // Lock is automatically released when file is closed
+        let _ = self._file.unlock();
+    }
+}
 
 /// A memory-mapped array of f32 values.
 ///
@@ -1166,6 +1203,7 @@ struct ChunkInfo {
 ///
 /// Uses incremental persistence with manifest tracking to skip unchanged chunks.
 /// Uses atomic writes to prevent corruption from interrupted writes.
+/// Uses file-based locking to coordinate concurrent processes.
 /// Returns the path to the merged file.
 pub fn merge_codes_chunks(
     index_path: &Path,
@@ -1177,8 +1215,16 @@ pub fn merge_codes_chunks(
     let merged_path = index_path.join("merged_codes.npy");
     let manifest_path = index_path.join("merged_codes.manifest.json");
     let temp_path = index_path.join("merged_codes.npy.tmp");
+    let lock_path = index_path.join("merged_codes.lock");
 
-    // Load previous manifest
+    // Acquire exclusive lock to prevent concurrent merge operations.
+    // This is critical for multi-process scenarios (e.g., multiple API workers).
+    let _lock = FileLockGuard::acquire(&lock_path)?;
+
+    // After acquiring the lock, re-check if merge is still needed.
+    // Another process might have completed the merge while we were waiting.
+
+    // Load previous manifest (re-read after acquiring lock)
     let old_manifest = load_merge_manifest(&manifest_path);
 
     // Scan chunks and detect changes
@@ -1317,6 +1363,8 @@ pub fn merge_codes_chunks(
                 // File is corrupted, force regeneration by recursing with empty manifest
                 let _ = fs::remove_file(&merged_path);
                 let _ = fs::remove_file(&manifest_path);
+                // Lock is held, so we can safely drop it before recursing
+                drop(_lock);
                 return merge_codes_chunks(index_path, num_chunks, padding_rows);
             }
         }
@@ -1347,6 +1395,7 @@ pub fn merge_codes_chunks(
 /// Merge chunked residuals NPY files into a single merged file.
 ///
 /// Uses atomic writes to prevent corruption from interrupted writes.
+/// Uses file-based locking to coordinate concurrent processes.
 pub fn merge_residuals_chunks(
     index_path: &Path,
     num_chunks: usize,
@@ -1357,8 +1406,16 @@ pub fn merge_residuals_chunks(
     let merged_path = index_path.join("merged_residuals.npy");
     let manifest_path = index_path.join("merged_residuals.manifest.json");
     let temp_path = index_path.join("merged_residuals.npy.tmp");
+    let lock_path = index_path.join("merged_residuals.lock");
 
-    // Load previous manifest
+    // Acquire exclusive lock to prevent concurrent merge operations.
+    // This is critical for multi-process scenarios (e.g., multiple API workers).
+    let _lock = FileLockGuard::acquire(&lock_path)?;
+
+    // After acquiring the lock, re-check if merge is still needed.
+    // Another process might have completed the merge while we were waiting.
+
+    // Load previous manifest (re-read after acquiring lock)
     let old_manifest = load_merge_manifest(&manifest_path);
 
     // Scan chunks and detect changes
@@ -1507,6 +1564,8 @@ pub fn merge_residuals_chunks(
                 // File is corrupted, force regeneration
                 let _ = fs::remove_file(&merged_path);
                 let _ = fs::remove_file(&manifest_path);
+                // Lock is held, so we can safely drop it before recursing
+                drop(_lock);
                 return merge_residuals_chunks(index_path, num_chunks, padding_rows);
             }
         }
@@ -1539,7 +1598,18 @@ pub fn merge_residuals_chunks(
 /// This should be called after index updates to ensure the merged files
 /// are regenerated with the latest data. The function silently ignores
 /// missing files.
+///
+/// Acquires file locks to prevent racing with concurrent merge operations
+/// in multi-process deployments.
 pub fn clear_merged_files(index_path: &Path) -> Result<()> {
+    // Acquire locks to prevent racing with ongoing merge operations.
+    // This is important in multi-process scenarios where one process might
+    // be loading (merging) while another is updating (clearing).
+    let codes_lock_path = index_path.join("merged_codes.lock");
+    let residuals_lock_path = index_path.join("merged_residuals.lock");
+    let _codes_lock = FileLockGuard::acquire(&codes_lock_path)?;
+    let _residuals_lock = FileLockGuard::acquire(&residuals_lock_path)?;
+
     let files_to_remove = [
         "merged_codes.npy",
         "merged_codes.npy.tmp",

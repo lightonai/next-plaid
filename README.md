@@ -164,30 +164,30 @@ colgrep clear --all
 
 ### Features
 
-| Feature | Command |
-|---------|---------|
-| Basic semantic search | `colgrep "error handling" --results 5` |
-| Exploration mode (-k) | `colgrep "search function" -k 5` |
-| Search specific folder | `colgrep "index" ./next-plaid/src -k 3` |
-| Multiple directories | `colgrep "Result" ./next-plaid ./next-plaid-api -k 5` |
-| Include .rs files | `colgrep --include="*.rs" "parse" -k 3` |
-| Recursive glob | `colgrep --include="src/**/*.rs" "config" -k 3` |
-| Brace expansion | `colgrep --include="*.{rs,py}" "model" -k 3` |
-| Exclude files | `colgrep --exclude="*test*" "search" -k 3` |
-| Exclude directory | `colgrep --exclude-dir=tests "handler" -k 3` |
-| Pattern-only search | `colgrep -e "async fn" -k 5` |
-| Pattern + file filter | `colgrep -e "pub struct" --include="*.rs" -k 3` |
-| Hybrid text+semantic | `colgrep -e "Result" "error handling" -k 3` |
-| Extended regex (-E) | `colgrep -e "async\|await" -E "concurrency" -k 3` |
-| Fixed string (-F) | `colgrep -e "Vec<" -F "collection types" -k 3` |
-| Whole word (-w) | `colgrep -e "test" -w "testing utilities" -k 3` |
-| List files only (-l) | `colgrep -l "authentication" -k 5` |
-| Show content (-c) | `colgrep -c "default config" -k 1` |
-| Context lines (-n) | `colgrep -n 10 "error" -k 1` |
-| JSON output | `colgrep --json "search" -k 2` |
-| Glob-style file find | `colgrep -l --include="src/**/*.rs" "" .` |
-| Status command | `colgrep status` |
-| Help command | `colgrep help` |
+| Feature                | Command                                               |
+| ---------------------- | ----------------------------------------------------- |
+| Basic semantic search  | `colgrep "error handling" --results 5`                |
+| Exploration mode (-k)  | `colgrep "search function" -k 5`                      |
+| Search specific folder | `colgrep "index" ./next-plaid/src -k 3`               |
+| Multiple directories   | `colgrep "Result" ./next-plaid ./next-plaid-api -k 5` |
+| Include .rs files      | `colgrep --include="*.rs" "parse" -k 3`               |
+| Recursive glob         | `colgrep --include="src/**/*.rs" "config" -k 3`       |
+| Brace expansion        | `colgrep --include="*.{rs,py}" "model" -k 3`          |
+| Exclude files          | `colgrep --exclude="*test*" "search" -k 3`            |
+| Exclude directory      | `colgrep --exclude-dir=tests "handler" -k 3`          |
+| Pattern-only search    | `colgrep -e "async fn" -k 5`                          |
+| Pattern + file filter  | `colgrep -e "pub struct" --include="*.rs" -k 3`       |
+| Hybrid text+semantic   | `colgrep -e "Result" "error handling" -k 3`           |
+| Extended regex (-E)    | `colgrep -e "async\|await" -E "concurrency" -k 3`     |
+| Fixed string (-F)      | `colgrep -e "Vec<" -F "collection types" -k 3`        |
+| Whole word (-w)        | `colgrep -e "test" -w "testing utilities" -k 3`       |
+| List files only (-l)   | `colgrep -l "authentication" -k 5`                    |
+| Show content (-c)      | `colgrep -c "default config" -k 1`                    |
+| Context lines (-n)     | `colgrep -n 10 "error" -k 1`                          |
+| JSON output            | `colgrep --json "search" -k 2`                        |
+| Glob-style file find   | `colgrep -l --include="src/**/*.rs" "" .`             |
+| Status command         | `colgrep status`                                      |
+| Help command           | `colgrep help`                                        |
 
 ---
 
@@ -206,16 +206,17 @@ pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
 pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models --push-to-hub myorg/my-onnx-model
 ```
 
-Available models:
+Available models which can be served with NextPlaid and used with ColGREP without export:
 
-| Model                                    | Use case                    |
-| ---------------------------------------- | --------------------------- |
+| Model                                    | Use case                    | Authors |
+| ---------------------------------------- | --------------------------- | ------- |
 | lightonai/LateOn-Code-v0-edge            | Code search, lightweight    |
 | lightonai/LateOn-Code-v0                 | Code search, accurate       |
+| lightonai/mxbai-edge-colbert-v0-32m-onnx | Text retrieval, lightweight |
 | lightonai/answerai-colbert-small-v1-onnx | Text retrieval, lightweight |
 | lightonai/GTE-ModernColBERT-v1           | Text retrieval, accurate    |
 
-Any PyLate-compatible ColBERT model from HuggingFace can be used: [HuggingFace Hub](https://huggingface.co/models?other=PyLate).
+Any PyLate-compatible ColBERT model from HuggingFace can be used: [HuggingFace Hub](https://huggingface.co/models?other=PyLate) when converted to ONNX with `pylate-onnx-export`.
 
 ---
 

@@ -224,8 +224,8 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=2 \
 
 # Run the API via entrypoint script (handles model download)
 ENTRYPOINT ["docker-entrypoint.sh"]
-# CPU defaults: 16 parallel sessions, batch size 4 (optimized for throughput)
-CMD ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--parallel", "16", "--batch-size", "4"]
+# CPU defaults: 16 parallel sessions, batch size 4, 1 model pool worker (optimized for memory)
+CMD ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--parallel", "16", "--batch-size", "4", "--model-pool-size", "1"]
 
 # =============================================================================
 # Runtime stage - CUDA with model support
@@ -283,5 +283,5 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=2 \
 
 # Run the API via entrypoint script (handles model download)
 ENTRYPOINT ["docker-entrypoint.sh"]
-# CUDA defaults: large batch size (GPU handles parallelism internally)
-CMD ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--batch-size", "128"]
+# CUDA defaults: large batch size, 1 model pool worker (GPU handles parallelism internally)
+CMD ["--host", "0.0.0.0", "--port", "8080", "--index-dir", "/data/indices", "--batch-size", "128", "--model-pool-size", "1"]

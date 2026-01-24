@@ -31,6 +31,7 @@ serde_json = { workspace = true }
 ndarray-npy = "0.9.1"
 fastkmeans-rs = "0.1.5"
 memmap2 = "0.9"
+fs2 = "0.4"
 half = "2.4"
 byteorder = "1.5"
 rusqlite = { version = "0.38", features = ["bundled", "functions"] }

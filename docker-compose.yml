@@ -32,6 +32,7 @@
 #   BATCH_CHANNEL_SIZE          Buffer size for document batch queue (default: 100)
 #   MAX_BATCH_TEXTS             Max texts to batch for encoding (default: 64)
 #   ENCODE_BATCH_CHANNEL_SIZE   Buffer size for encode batch queue (default: 256)
+#   MODEL_POOL_SIZE             Number of model workers for concurrent encoding (default: 1)
 #
 # CPU Defaults (optimized for throughput):
 #   --model lightonai/mxbai-edge-colbert-v0-32m-onnx --parallel 16 --batch-size 4
@@ -98,6 +99,8 @@ services:
       - "16"
       - --batch-size
       - "4"
+      - --model-pool-size
+      - "${MODEL_POOL_SIZE:-1}"
       - --query-length
       - "48"
       - --document-length

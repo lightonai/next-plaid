@@ -976,11 +976,26 @@ fn encode_batch_with_session(
         let mut token_ids_vec = token_ids;
 
         // Truncate to max_length - 1 to leave room for prefix token
+        // IMPORTANT: Preserve [SEP] token at the end when truncating
+        // PyLate truncates content but keeps [CLS] at start and [SEP] at end
         if input_ids.len() > truncate_limit {
-            input_ids.truncate(truncate_limit);
-            attention_mask.truncate(truncate_limit);
-            token_type_ids.truncate(truncate_limit);
-            token_ids_vec.truncate(truncate_limit);
+            // Save the [SEP] token (last token)
+            let sep_token = input_ids[input_ids.len() - 1];
+            let sep_mask = attention_mask[attention_mask.len() - 1];
+            let sep_type = token_type_ids[token_type_ids.len() - 1];
+            let sep_token_id = token_ids_vec[token_ids_vec.len() - 1];
+
+            // Truncate content (keeping room for [SEP])
+            input_ids.truncate(truncate_limit - 1);
+            attention_mask.truncate(truncate_limit - 1);
+            token_type_ids.truncate(truncate_limit - 1);
+            token_ids_vec.truncate(truncate_limit - 1);
+
+            // Re-add [SEP] at the end
+            input_ids.push(sep_token);
+            attention_mask.push(sep_mask);
+            token_type_ids.push(sep_type);
+            token_ids_vec.push(sep_token_id);
         }
 
         // Insert prefix token after [CLS] (position 1), matching PyLate's insert_prefix_token

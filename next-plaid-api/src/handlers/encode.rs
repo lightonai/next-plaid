@@ -1,7 +1,7 @@
 //! Encode endpoint handler for the next-plaid API.
 //!
-//! Provides text encoding using the loaded ColBERT model with automatic batching
-//! of concurrent requests for improved throughput.
+//! Provides text encoding using a pool of ColBERT model workers for concurrent
+//! encoding with automatic batching of requests for improved throughput.
 
 #[cfg(feature = "model")]
 use std::collections::HashMap;
@@ -76,114 +76,200 @@ struct EncodeBatchItem {
     response_tx: oneshot::Sender<EncodeResult>,
 }
 
-/// Handle to the encode batch queue.
+/// Handle to the encode worker pool.
 #[cfg(feature = "model")]
-struct EncodeBatchQueue {
+struct EncodeWorkerPool {
     sender: mpsc::Sender<EncodeBatchItem>,
 }
 
-/// Global encode batch queue (singleton).
+/// Global encode worker pool (singleton).
 #[cfg(feature = "model")]
-static ENCODE_BATCH_QUEUE: OnceLock<std::sync::Mutex<Option<EncodeBatchQueue>>> = OnceLock::new();
+static ENCODE_WORKER_POOL: OnceLock<std::sync::Mutex<Option<EncodeWorkerPool>>> = OnceLock::new();
 
-/// Get or create the global encode batch queue.
-/// Spawns a batch worker if the queue doesn't exist yet.
+/// Get or create the global encode worker pool.
+/// Spawns multiple workers, each owning its own Colbert model instance.
 #[cfg(feature = "model")]
-fn get_or_create_encode_queue(state: Arc<AppState>) -> mpsc::Sender<EncodeBatchItem> {
-    let queue_lock: &std::sync::Mutex<Option<EncodeBatchQueue>> =
-        ENCODE_BATCH_QUEUE.get_or_init(|| std::sync::Mutex::new(None));
+fn get_or_create_encode_pool(state: Arc<AppState>) -> ApiResult<mpsc::Sender<EncodeBatchItem>> {
+    let pool_lock: &std::sync::Mutex<Option<EncodeWorkerPool>> =
+        ENCODE_WORKER_POOL.get_or_init(|| std::sync::Mutex::new(None));
 
-    let mut queue_opt = queue_lock.lock().unwrap();
+    let mut pool_opt = pool_lock.lock().unwrap();
 
-    if let Some(queue) = queue_opt.as_ref() {
-        return queue.sender.clone();
+    if let Some(pool) = pool_opt.as_ref() {
+        return Ok(pool.sender.clone());
     }
 
-    // Create new channel and spawn worker
+    // Get model pool configuration
+    let model_pool = state
+        .model_pool
+        .as_ref()
+        .ok_or_else(|| ApiError::ModelNotLoaded)?;
+
+    let pool_size = model_pool.pool_size;
+    let model_config = model_pool.model_config.clone();
+
+    // Create shared channel for all workers
     let (sender, receiver) = mpsc::channel(encode_batch_channel_size());
-    let queue = EncodeBatchQueue {
-        sender: sender.clone(),
-    };
-    *queue_opt = Some(queue);
 
-    // Spawn the batch worker
-    tokio::spawn(encode_batch_worker(receiver, state));
+    // Wrap receiver in Arc<Mutex> for sharing among workers
+    let shared_receiver = Arc::new(tokio::sync::Mutex::new(receiver));
 
-    sender
-}
+    // Spawn N workers, each building and owning its own model
+    tracing::info!(pool_size = pool_size, "Starting encode worker pool");
 
-/// Background worker that collects encode requests and processes them in batches.
-///
-/// The worker waits for items on the channel and batches them until either:
-/// - The total text count reaches max_batch_texts() (configurable via MAX_BATCH_TEXTS env var), or
-/// - BATCH_TIMEOUT has elapsed since the first item arrived
-///
-/// Items are grouped by input_type (query vs document) for correct encoding.
-#[cfg(feature = "model")]
-async fn encode_batch_worker(mut receiver: mpsc::Receiver<EncodeBatchItem>, state: Arc<AppState>) {
-    tracing::info!("Encode batch worker started");
+    for worker_id in 0..pool_size {
+        let receiver_clone = Arc::clone(&shared_receiver);
+        let config_clone = model_config.clone();
 
-    loop {
-        // Wait for the first item (blocking)
-        let first_item = match receiver.recv().await {
-            Some(item) => item,
-            None => {
-                tracing::info!("Encode batch worker shutting down (channel closed)");
-                break;
-            }
-        };
-
-        // Start collecting batch
-        let mut pending_items: Vec<EncodeBatchItem> = vec![first_item];
-        let mut total_texts = pending_items[0].texts.len();
-        let deadline = Instant::now() + BATCH_TIMEOUT;
-
-        // Collect more items until timeout or max batch size
-        while total_texts < max_batch_texts() {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-
-            match tokio::time::timeout(remaining, receiver.recv()).await {
-                Ok(Some(item)) => {
-                    total_texts += item.texts.len();
-                    pending_items.push(item);
+        // Spawn worker in a blocking task since model building is CPU-intensive
+        tokio::spawn(async move {
+            // Build model for this worker
+            let model = match build_model_from_config(&config_clone) {
+                Ok(m) => {
+                    tracing::info!(worker_id = worker_id, "Encode worker started with model");
+                    m
                 }
-                Ok(None) => {
-                    // Channel closed - process remaining batch before exiting
-                    tracing::info!(
-                        "Encode batch worker shutting down (channel closed during batch)"
+                Err(e) => {
+                    tracing::error!(
+                        worker_id = worker_id,
+                        error = %e,
+                        "Failed to build model for worker"
                     );
-                    if !pending_items.is_empty() {
-                        process_encode_batch(pending_items, &state).await;
-                    }
                     return;
                 }
-                Err(_) => {
-                    // Timeout reached
+            };
+
+            // Run the worker loop with owned model
+            encode_worker_loop(worker_id, model, receiver_clone).await;
+        });
+    }
+
+    let pool = EncodeWorkerPool {
+        sender: sender.clone(),
+    };
+    *pool_opt = Some(pool);
+
+    Ok(sender)
+}
+
+/// Build a Colbert model from configuration.
+#[cfg(feature = "model")]
+fn build_model_from_config(
+    config: &crate::state::ModelConfig,
+) -> Result<next_plaid_onnx::Colbert, String> {
+    let execution_provider = if config.use_cuda {
+        next_plaid_onnx::ExecutionProvider::Cuda
+    } else {
+        next_plaid_onnx::ExecutionProvider::Cpu
+    };
+
+    let mut builder = next_plaid_onnx::Colbert::builder(&config.path)
+        .with_execution_provider(execution_provider)
+        .with_quantized(config.use_int8);
+
+    if let Some(parallel) = config.parallel_sessions {
+        builder = builder.with_parallel(parallel);
+    }
+    if let Some(batch_size) = config.batch_size {
+        builder = builder.with_batch_size(batch_size);
+    }
+    if let Some(threads) = config.threads {
+        builder = builder.with_threads(threads);
+    }
+    if let Some(query_length) = config.query_length {
+        builder = builder.with_query_length(query_length);
+    }
+    if let Some(document_length) = config.document_length {
+        builder = builder.with_document_length(document_length);
+    }
+
+    builder.build().map_err(|e| e.to_string())
+}
+
+/// Worker loop that owns a model and processes batches from the shared queue.
+#[cfg(feature = "model")]
+async fn encode_worker_loop(
+    worker_id: usize,
+    model: next_plaid_onnx::Colbert,
+    receiver: Arc<tokio::sync::Mutex<mpsc::Receiver<EncodeBatchItem>>>,
+) {
+    loop {
+        // Collect a batch of items
+        let pending_items = {
+            let mut rx = receiver.lock().await;
+
+            // Wait for the first item (blocking)
+            let first_item = match rx.recv().await {
+                Some(item) => item,
+                None => {
+                    tracing::info!(
+                        worker_id = worker_id,
+                        "Encode worker shutting down (channel closed)"
+                    );
                     break;
                 }
-            }
-        }
+            };
 
-        // Process the collected batch
+            // Start collecting batch
+            let mut pending_items: Vec<EncodeBatchItem> = vec![first_item];
+            let mut total_texts = pending_items[0].texts.len();
+            let deadline = Instant::now() + BATCH_TIMEOUT;
+
+            // Collect more items until timeout or max batch size
+            while total_texts < max_batch_texts() {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+
+                match tokio::time::timeout(remaining, rx.recv()).await {
+                    Ok(Some(item)) => {
+                        total_texts += item.texts.len();
+                        pending_items.push(item);
+                    }
+                    Ok(None) => {
+                        // Channel closed - process remaining batch before exiting
+                        tracing::info!(
+                            worker_id = worker_id,
+                            "Encode worker shutting down (channel closed during batch)"
+                        );
+                        if !pending_items.is_empty() {
+                            process_encode_batch_with_model(worker_id, pending_items, &model).await;
+                        }
+                        return;
+                    }
+                    Err(_) => {
+                        // Timeout reached
+                        break;
+                    }
+                }
+            }
+
+            pending_items
+        }; // Release the lock before processing
+
+        // Process the collected batch (lock is released)
         if !pending_items.is_empty() {
-            process_encode_batch(pending_items, &state).await;
+            process_encode_batch_with_model(worker_id, pending_items, &model).await;
         }
     }
 }
 
-/// Process a batch of encode requests.
+/// Process a batch of encode requests using an owned model.
 ///
 /// Groups items by input_type and pool_factor, encodes them in batches,
 /// then distributes results back to waiting clients.
 #[cfg(feature = "model")]
-async fn process_encode_batch(items: Vec<EncodeBatchItem>, state: &Arc<AppState>) {
+async fn process_encode_batch_with_model(
+    worker_id: usize,
+    items: Vec<EncodeBatchItem>,
+    model: &next_plaid_onnx::Colbert,
+) {
     let num_requests = items.len();
     let total_texts: usize = items.iter().map(|i| i.texts.len()).sum();
 
     tracing::debug!(
+        worker_id = worker_id,
         requests = num_requests,
         texts = total_texts,
         "Processing encode batch"
@@ -218,7 +304,7 @@ async fn process_encode_batch(items: Vec<EncodeBatchItem>, state: &Arc<AppState>
             .collect();
 
         let query_results =
-            encode_texts_batch(state, &all_query_texts, InputType::Query, None).await;
+            encode_texts_with_model(worker_id, model, &all_query_texts, InputType::Query, None);
 
         match query_results {
             Ok(embeddings) => {
@@ -248,8 +334,13 @@ async fn process_encode_batch(items: Vec<EncodeBatchItem>, state: &Arc<AppState>
             .flat_map(|(_, item)| item.texts.clone())
             .collect();
 
-        let doc_results =
-            encode_texts_batch(state, &all_doc_texts, InputType::Document, pool_factor).await;
+        let doc_results = encode_texts_with_model(
+            worker_id,
+            model,
+            &all_doc_texts,
+            InputType::Document,
+            pool_factor,
+        );
 
         match doc_results {
             Ok(embeddings) => {
@@ -282,82 +373,61 @@ async fn process_encode_batch(items: Vec<EncodeBatchItem>, state: &Arc<AppState>
     }
 
     tracing::debug!(
+        worker_id = worker_id,
         requests = num_requests,
         texts = total_texts,
         "Encode batch completed"
     );
 }
 
-/// Encode texts in a batch using the model.
+/// Encode texts using an owned model (no mutex needed).
 #[cfg(feature = "model")]
-async fn encode_texts_batch(
-    state: &Arc<AppState>,
+fn encode_texts_with_model(
+    worker_id: usize,
+    model: &next_plaid_onnx::Colbert,
     texts: &[String],
     input_type: InputType,
     pool_factor: Option<usize>,
 ) -> Result<Vec<Vec<Vec<f32>>>, String> {
-    let state_clone = state.clone();
-    let texts_owned: Vec<String> = texts.to_vec();
     let num_texts = texts.len();
 
-    // Run encoding in blocking thread to avoid blocking async runtime
-    tokio::task::spawn_blocking(move || {
-        let model_mutex = state_clone
-            .model
-            .as_ref()
-            .ok_or_else(|| "Model not loaded".to_string())?;
+    tracing::info!(
+        worker_id = worker_id,
+        input_type = ?input_type,
+        num_texts = num_texts,
+        pool_factor = ?pool_factor,
+        embedding_dim = model.embedding_dim(),
+        model_batch_size = model.batch_size(),
+        model_num_sessions = model.num_sessions(),
+        "Encoding texts with model"
+    );
 
-        let model = model_mutex
-            .lock()
-            .map_err(|_| "Model lock poisoned".to_string())?;
+    let texts_ref: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
 
-        // Log encoding parameters and model info
-        let (model_path, model_quantized) = state_clone
-            .model_info
-            .as_ref()
-            .map(|info| (info.path.as_str(), info.quantized))
-            .unwrap_or(("unknown", false));
+    let encode_start = std::time::Instant::now();
+    let embeddings_result = match input_type {
+        InputType::Query => model.encode_queries(&texts_ref),
+        InputType::Document => model.encode_documents(&texts_ref, pool_factor),
+    };
+    let encode_duration_ms = encode_start.elapsed().as_millis() as u64;
 
-        tracing::info!(
-            input_type = ?input_type,
-            num_texts = num_texts,
-            pool_factor = ?pool_factor,
-            model_path = model_path,
-            model_quantized = model_quantized,
-            embedding_dim = model.embedding_dim(),
-            model_batch_size = model.batch_size(),
-            model_num_sessions = model.num_sessions(),
-            "Encoding texts with model"
-        );
+    tracing::info!(
+        worker_id = worker_id,
+        input_type = ?input_type,
+        num_texts = num_texts,
+        encode_duration_ms = encode_duration_ms,
+        "Encoding completed"
+    );
 
-        let texts_ref: Vec<&str> = texts_owned.iter().map(|s| s.as_str()).collect();
+    let embeddings = embeddings_result.map_err(|e| e.to_string())?;
 
-        let encode_start = std::time::Instant::now();
-        let embeddings_result = match input_type {
-            InputType::Query => model.encode_queries(&texts_ref),
-            InputType::Document => model.encode_documents(&texts_ref, pool_factor),
-        };
-        let encode_duration_ms = encode_start.elapsed().as_millis() as u64;
+    // Convert Array2<f32> to Vec<Vec<Vec<f32>>>
+    let result: Vec<Vec<Vec<f32>>> = embeddings
+        .into_iter()
+        .map(|arr| arr.rows().into_iter().map(|row| row.to_vec()).collect())
+        .collect();
 
-        tracing::info!(
-            input_type = ?input_type,
-            num_texts = num_texts,
-            encode_duration_ms = encode_duration_ms,
-            "Encoding completed"
-        );
-
-        let embeddings = embeddings_result.map_err(|e| e.to_string())?;
-
-        // Convert Array2<f32> to Vec<Vec<Vec<f32>>>
-        let result: Vec<Vec<Vec<f32>>> = embeddings
-            .into_iter()
-            .map(|arr| arr.rows().into_iter().map(|row| row.to_vec()).collect())
-            .collect();
-
-        Ok(result)
-    })
-    .await
-    .map_err(|e| format!("Task failed: {}", e))?
+    Ok(result)
 }
 
 /// Encode texts into ColBERT embeddings.
@@ -429,7 +499,7 @@ pub async fn encode(
 }
 
 /// Internal function to encode texts (queries or documents).
-/// This is async and uses the batch queue mechanism to avoid blocking.
+/// This is async and uses the worker pool mechanism to avoid blocking.
 /// All encoding in the API goes through this single function.
 #[cfg(feature = "model")]
 pub async fn encode_texts_internal(
@@ -438,7 +508,7 @@ pub async fn encode_texts_internal(
     input_type: InputType,
     pool_factor: Option<usize>,
 ) -> ApiResult<Vec<ndarray::Array2<f32>>> {
-    if state.model.is_none() {
+    if !state.has_model() {
         return Err(ApiError::ModelNotLoaded);
     }
 
@@ -453,23 +523,23 @@ pub async fn encode_texts_internal(
         response_tx,
     };
 
-    // Get or create the batch queue
-    let sender = get_or_create_encode_queue(state);
+    // Get or create the worker pool
+    let sender = get_or_create_encode_pool(state)?;
 
-    // Send to batch queue
+    // Send to worker pool
     sender.try_send(batch_item).map_err(|e| match e {
         mpsc::error::TrySendError::Full(_) => ApiError::ServiceUnavailable(
             "Encode queue full. Too many concurrent requests. Retry later.".to_string(),
         ),
         mpsc::error::TrySendError::Closed(_) => {
-            ApiError::Internal("Encode batch worker is not running".to_string())
+            ApiError::Internal("Encode worker pool is not running".to_string())
         }
     })?;
 
-    // Wait for result from batch worker
+    // Wait for result from worker
     let result = response_rx
         .await
-        .map_err(|_| ApiError::Internal("Batch worker dropped response channel".to_string()))?;
+        .map_err(|_| ApiError::Internal("Worker dropped response channel".to_string()))?;
 
     let embeddings_3d = result.map_err(ApiError::ModelError)?;
 

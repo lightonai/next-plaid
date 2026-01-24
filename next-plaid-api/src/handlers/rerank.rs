@@ -179,7 +179,7 @@ pub async fn rerank_with_encoding(
     }
 
     // Check if model is loaded
-    if state.model.is_none() {
+    if !state.has_model() {
         return Err(ApiError::ModelNotLoaded);
     }
 

@@ -201,8 +201,7 @@ async fn health(state: axum::extract::State<Arc<AppState>>) -> Json<HealthRespon
     // Get model info from cached data (no lock required)
     #[cfg(feature = "model")]
     let model_info = state
-        .cached_model_info
-        .as_ref()
+        .cached_model_info()
         .map(|info| models::ModelHealthInfo {
             name: info.name.clone(),
             path: info.path.clone(),
@@ -473,6 +472,7 @@ async fn main() {
     let mut _threads: Option<usize> = None;
     let mut _query_length: Option<usize> = None;
     let mut _document_length: Option<usize> = None;
+    let mut _model_pool_size: Option<usize> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -584,6 +584,18 @@ async fn main() {
                     std::process::exit(1);
                 }
             }
+            "--model-pool-size" => {
+                if i + 1 < args.len() {
+                    _model_pool_size = Some(args[i + 1].parse().unwrap_or_else(|_| {
+                        eprintln!("Error: Invalid model pool size");
+                        std::process::exit(1);
+                    }));
+                    i += 2;
+                } else {
+                    eprintln!("Error: --model-pool-size requires a value");
+                    std::process::exit(1);
+                }
+            }
             "--help" => {
                 println!(
                     r#"Next-Plaid API Server
@@ -608,6 +620,9 @@ Options:
                            Overrides value from model config file.
   --document-length <N>    Maximum document length in tokens (default: 300)
                            Overrides value from model config file.
+  --model-pool-size <N>    Number of model worker instances for concurrent encoding
+                           (default: 1). Each worker owns a separate model instance.
+                           More workers = more encoding parallelism but also more memory.
   --help                   Show this help message
 
 Environment Variables:
@@ -624,6 +639,7 @@ Examples:
   next-plaid-api --model ./models/colbert --int8          # Enable encoding with INT8 quantization
   next-plaid-api --model ./models/colbert --parallel 16   # 16 parallel sessions for high throughput
   next-plaid-api --model ./models/colbert --parallel 8 --batch-size 4  # Fine-tuned parallel config
+  next-plaid-api --model ./models/colbert --model-pool-size 2  # 2 model workers for concurrent encoding
   RUST_LOG=debug next-plaid-api                           # Debug logging
 "#
                 );
@@ -729,11 +745,17 @@ Examples:
             path: path.to_string_lossy().to_string(),
             quantized: _use_int8,
         });
-        // Create cached model info for lock-free health endpoint access
-        let cached_model_info = model.as_ref().map(|m| {
-            let config = m.config();
-            state::CachedModelInfo {
-                name: config.model_name().map(|s| s.to_string()),
+
+        // Create model pool if model was loaded successfully
+        let model_pool = model.map(|m| {
+            let model_cfg = m.config();
+            let pool_size = _model_pool_size.unwrap_or(1);
+
+            tracing::info!("Model pool size: {}", pool_size);
+
+            // Create cached model info for lock-free health endpoint access
+            let cached_info = state::CachedModelInfo {
+                name: model_cfg.model_name().map(|s| s.to_string()),
                 path: model_path
                     .as_ref()
                     .map(|p| p.to_string_lossy().to_string())
@@ -742,22 +764,39 @@ Examples:
                 embedding_dim: m.embedding_dim(),
                 batch_size: m.batch_size(),
                 num_sessions: m.num_sessions(),
-                query_prefix: config.query_prefix.clone(),
-                document_prefix: config.document_prefix.clone(),
-                query_length: config.query_length,
-                document_length: config.document_length,
-                do_query_expansion: config.do_query_expansion,
-                uses_token_type_ids: config.uses_token_type_ids,
-                mask_token_id: config.mask_token_id,
-                pad_token_id: config.pad_token_id,
+                query_prefix: model_cfg.query_prefix.clone(),
+                document_prefix: model_cfg.document_prefix.clone(),
+                query_length: model_cfg.query_length,
+                document_length: model_cfg.document_length,
+                do_query_expansion: model_cfg.do_query_expansion,
+                uses_token_type_ids: model_cfg.uses_token_type_ids,
+                mask_token_id: model_cfg.mask_token_id,
+                pad_token_id: model_cfg.pad_token_id,
+            };
+
+            // Create model config for workers to build their own instances
+            let model_config = state::ModelConfig {
+                path: model_path.clone().unwrap(),
+                use_cuda: _use_cuda,
+                use_int8: _use_int8,
+                parallel_sessions: _parallel_sessions,
+                batch_size: _batch_size,
+                threads: _threads,
+                query_length: _query_length,
+                document_length: _document_length,
+            };
+
+            // Drop the initial model - workers will create their own
+            drop(m);
+
+            state::ModelPool {
+                pool_size,
+                model_config,
+                cached_info,
             }
         });
-        Arc::new(AppState::with_model(
-            config,
-            model,
-            model_info,
-            cached_model_info,
-        ))
+
+        Arc::new(AppState::with_model_pool(config, model_pool, model_info))
     };
 
     #[cfg(not(feature = "model"))]

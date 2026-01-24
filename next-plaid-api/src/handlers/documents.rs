@@ -46,6 +46,25 @@ fn max_queued_tasks_per_index() -> usize {
 
 // --- Index/DB Sync Repair ---
 
+/// Global registry of per-index repair locks to prevent concurrent repair operations.
+/// This ensures only one repair operation runs at a time for a given index,
+/// preventing race conditions where multiple requests detect a mismatch and
+/// attempt conflicting repairs simultaneously.
+static REPAIR_LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>> =
+    OnceLock::new();
+
+/// Get or create a repair lock for the given index path.
+/// Used to serialize repair operations on a specific index.
+fn get_repair_lock(index_path: &str) -> Arc<std::sync::Mutex<()>> {
+    let locks = REPAIR_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut map = locks
+        .lock()
+        .expect("REPAIR_LOCKS mutex poisoned - a thread panicked while holding this lock");
+    map.entry(index_path.to_string())
+        .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
+        .clone()
+}
+
 /// Automatically repair sync issues between the vector index and metadata DB.
 ///
 /// This function handles two cases:
@@ -53,7 +72,15 @@ fn max_queued_tasks_per_index() -> usize {
 /// 2. Index has more documents than DB: Delete extra documents from index (IDs >= DB count)
 ///
 /// Returns Ok(true) if repair was performed, Ok(false) if no repair needed.
+///
+/// Thread-safety: Uses a per-index lock to prevent concurrent repair operations.
 fn repair_index_db_sync(index_path: &str) -> Result<bool, String> {
+    // Acquire per-index repair lock to prevent concurrent repairs
+    let repair_lock = get_repair_lock(index_path);
+    let _guard = repair_lock
+        .lock()
+        .map_err(|_| "Repair lock poisoned - a previous repair operation panicked".to_string())?;
+
     let path = std::path::Path::new(index_path);
 
     // Check if both exist
@@ -189,7 +216,9 @@ static INDEX_SEMAPHORES: OnceLock<std::sync::Mutex<HashMap<String, Arc<Semaphore
 pub fn get_index_lock(name: &str) -> Arc<Mutex<()>> {
     let locks: &std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> =
         INDEX_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut map = locks.lock().unwrap();
+    let mut map = locks
+        .lock()
+        .expect("INDEX_LOCKS mutex poisoned - a thread panicked while holding this lock");
     map.entry(name.to_string())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
@@ -200,7 +229,9 @@ pub fn get_index_lock(name: &str) -> Arc<Mutex<()>> {
 fn get_index_semaphore(name: &str) -> Arc<Semaphore> {
     let sems: &std::sync::Mutex<HashMap<String, Arc<Semaphore>>> =
         INDEX_SEMAPHORES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut map = sems.lock().unwrap();
+    let mut map = sems
+        .lock()
+        .expect("INDEX_SEMAPHORES mutex poisoned - a thread panicked while holding this lock");
     map.entry(name.to_string())
         .or_insert_with(|| Arc::new(Semaphore::new(max_queued_tasks_per_index())))
         .clone()
@@ -211,7 +242,9 @@ fn get_index_semaphore(name: &str) -> Arc<Semaphore> {
 fn get_or_create_batch_queue(name: &str, state: Arc<AppState>) -> mpsc::Sender<BatchItem> {
     let queues: &std::sync::Mutex<HashMap<String, BatchQueue>> =
         BATCH_QUEUES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut map = queues.lock().unwrap();
+    let mut map = queues
+        .lock()
+        .expect("BATCH_QUEUES mutex poisoned - a thread panicked while holding this lock");
 
     if let Some(queue) = map.get(name) {
         return queue.sender.clone();
@@ -600,10 +633,9 @@ pub async fn get_index_info(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> ApiResult<Json<IndexInfoResponse>> {
-    // Scope the read guard to ensure it's dropped before any await
+    // Use lock-free read access (never blocks during writes)
     let (path_str, num_documents, num_embeddings, num_partitions, avg_doclen, dimension) = {
-        let index = state.get_index(&name)?;
-        let idx = index.read();
+        let idx = state.get_index_for_read(&name)?;
         (
             idx.path.clone(),
             idx.num_documents(),
@@ -696,10 +728,9 @@ pub async fn add_documents(
         )));
     }
 
-    // Check index existence BEFORE expensive conversion - fail fast
-    let index_arc = state.get_index(&name)?;
+    // Check index existence BEFORE expensive conversion - fail fast (lock-free read)
     let expected_dim = {
-        let idx = index_arc.read();
+        let idx = state.get_index_for_read(&name)?;
         idx.embedding_dim()
     };
 

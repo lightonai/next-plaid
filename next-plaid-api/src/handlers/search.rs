@@ -55,34 +55,36 @@ fn to_ndarray(query: &QueryEmbeddings) -> ApiResult<Array2<f32>> {
 /// Fetch metadata for a list of document IDs.
 /// Returns a Vec of Option<serde_json::Value> in the same order as document_ids.
 /// If metadata doesn't exist for an index or a specific document, returns None for that entry.
-fn fetch_metadata_for_docs(path_str: &str, document_ids: &[i64]) -> Vec<Option<serde_json::Value>> {
+///
+/// # Errors
+/// Returns an error if the metadata database exists but fails to query.
+/// If no metadata database exists, returns Ok with None for all entries (not an error).
+fn fetch_metadata_for_docs(
+    path_str: &str,
+    document_ids: &[i64],
+) -> ApiResult<Vec<Option<serde_json::Value>>> {
     if !filtering::exists(path_str) {
-        // No metadata database - return None for all
-        return vec![None; document_ids.len()];
+        // No metadata database - return None for all (this is not an error)
+        return Ok(vec![None; document_ids.len()]);
     }
 
     // Fetch metadata for the document IDs
-    let metadata_result = filtering::get(path_str, None, &[], Some(document_ids));
+    let metadata_list = filtering::get(path_str, None, &[], Some(document_ids)).map_err(|e| {
+        tracing::error!("Failed to fetch metadata from database: {}", e);
+        ApiError::Internal(format!("Failed to fetch metadata: {}", e))
+    })?;
 
-    match metadata_result {
-        Ok(metadata_list) => {
-            // Build a map from _subset_ to metadata for quick lookup
-            let meta_map: HashMap<i64, serde_json::Value> = metadata_list
-                .into_iter()
-                .filter_map(|m| m.get("_subset_").and_then(|v| v.as_i64()).map(|id| (id, m)))
-                .collect();
+    // Build a map from _subset_ to metadata for quick lookup
+    let meta_map: HashMap<i64, serde_json::Value> = metadata_list
+        .into_iter()
+        .filter_map(|m| m.get("_subset_").and_then(|v| v.as_i64()).map(|id| (id, m)))
+        .collect();
 
-            // Map document_ids to their metadata (or None if not found)
-            document_ids
-                .iter()
-                .map(|doc_id| meta_map.get(doc_id).cloned())
-                .collect()
-        }
-        Err(e) => {
-            tracing::warn!("Failed to fetch metadata: {}", e);
-            vec![None; document_ids.len()]
-        }
-    }
+    // Map document_ids to their metadata (or None if not found)
+    Ok(document_ids
+        .iter()
+        .map(|doc_id| meta_map.get(doc_id).cloned())
+        .collect())
 }
 
 /// Search an index with query embeddings.
@@ -116,9 +118,8 @@ pub async fn search(
         .map(to_ndarray)
         .collect::<ApiResult<Vec<_>>>()?;
 
-    // Get index
-    let index_arc = state.get_index(&name)?;
-    let idx = index_arc.read();
+    // Get index (lock-free read - never blocks during writes)
+    let idx = state.get_index_for_read(&name)?;
 
     // Validate query dimensions
     let expected_dim = idx.embedding_dim();
@@ -157,7 +158,7 @@ pub async fn search(
     );
 
     // Perform search and collect raw results
-    let index = &*idx;
+    let index = &**idx;
     let index_query_start = std::time::Instant::now();
     let raw_results: Vec<(usize, Vec<i64>, Vec<f32>)> = if queries.len() == 1 {
         let result = index.search(&queries[0], &params, req.subset.as_deref())?;
@@ -182,15 +183,15 @@ pub async fn search(
     let results: Vec<QueryResultResponse> = raw_results
         .into_iter()
         .map(|(query_id, document_ids, scores)| {
-            let metadata = fetch_metadata_for_docs(&path_str, &document_ids);
-            QueryResultResponse {
+            let metadata = fetch_metadata_for_docs(&path_str, &document_ids)?;
+            Ok(QueryResultResponse {
                 query_id,
                 document_ids,
                 scores,
                 metadata,
-            }
+            })
         })
-        .collect();
+        .collect::<ApiResult<Vec<_>>>()?;
     let metadata_fetch_duration_ms = metadata_fetch_start.elapsed().as_millis() as u64;
     tracing::info!(
         index = %name,

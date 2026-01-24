@@ -144,6 +144,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arc-swap"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51d03449bb8ca2cc2ef70869af31463d1ae5ccc8fa3e334b307203fbf815207e"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2152,6 +2161,7 @@ dependencies = [
  "byteorder",
  "criterion",
  "fastkmeans-rs",
+ "fs2",
  "half",
  "memmap2",
  "ndarray 0.16.1",
@@ -2175,6 +2185,7 @@ name = "next-plaid-api"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "axum",
  "base64 0.22.1",
  "ndarray 0.16.1",
