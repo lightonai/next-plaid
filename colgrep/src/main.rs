@@ -31,6 +31,10 @@ EXAMPLES:
     # Search in a specific directory
     colgrep \"API endpoints\" ./backend
 
+    # Search in a specific file (or multiple files)
+    colgrep \"error handling\" ./src/main.rs
+    colgrep \"auth\" ./src/auth.rs ./src/login.rs
+
     # Search in multiple directories (results are merged by score)
     colgrep \"error handling\" ./src ./lib ./api
     colgrep -e \"Result\" \"error\" ./crate-a ./crate-b -k 20
@@ -96,7 +100,7 @@ struct Cli {
     #[arg(value_name = "QUERY")]
     query: Option<String>,
 
-    /// Project directories to search in (default: current directory)
+    /// Files or directories to search in (default: current directory)
     #[arg(value_name = "PATH")]
     paths: Vec<PathBuf>,
 
@@ -322,7 +326,7 @@ enum Commands {
         /// Natural language query (optional if -e pattern is provided)
         query: Option<String>,
 
-        /// Project directories to search in (default: current directory)
+        /// Files or directories to search in (default: current directory)
         #[arg(value_name = "PATH")]
         paths: Vec<PathBuf>,
 
@@ -1362,6 +1366,18 @@ fn search_single_path(
 ) -> Result<Vec<colgrep::SearchResult>> {
     let path = std::fs::canonicalize(path)?;
 
+    // Check if path is a file (not a directory)
+    // If so, we'll use the parent directory for indexing and filter to this specific file
+    let (search_path, specific_file): (PathBuf, Option<PathBuf>) = if path.is_file() {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("File has no parent directory: {}", path.display()))?
+            .to_path_buf();
+        (parent, Some(path.clone()))
+    } else {
+        (path.clone(), None)
+    };
+
     // When -e is used without -F, automatically enable regex mode (ERE)
     // This makes -e imply -E by default, with -F as the opt-out
     let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
@@ -1373,7 +1389,8 @@ fn search_single_path(
     let quantized = Config::load().map(|c| !c.use_fp32()).unwrap_or(false);
 
     // Check if index already exists (suppress model output if so)
-    let has_existing_index = index_exists(&path) || find_parent_index(&path)?.is_some();
+    let has_existing_index =
+        index_exists(&search_path) || find_parent_index(&search_path)?.is_some();
 
     // Ensure model is downloaded (quiet if we already have an index)
     let model_path = ensure_model(Some(&model), has_existing_index)?;
@@ -1382,13 +1399,13 @@ fn search_single_path(
     // the current directory (external project)
     let parent_info = {
         let is_external_project = std::env::current_dir()
-            .map(|cwd| !path.starts_with(&cwd))
+            .map(|cwd| !search_path.starts_with(&cwd))
             .unwrap_or(false);
 
         if is_external_project {
             None
         } else {
-            find_parent_index(&path)?
+            find_parent_index(&search_path)?
         }
     };
 
@@ -1398,7 +1415,7 @@ fn search_single_path(
             info.project_path.clone(),
             Some(info.relative_subdir.clone()),
         ),
-        None => (path.clone(), None),
+        None => (search_path.clone(), None),
     };
 
     // Check if --include patterns would escape the subdirectory
@@ -1559,6 +1576,35 @@ fn search_single_path(
                     )
                 }
                 None => Some(pattern_ids),
+            };
+        }
+
+        // Apply specific file filter (when user passes a file path instead of directory)
+        if let Some(ref file_path) = specific_file {
+            // Convert absolute file path to relative path (relative to effective_root)
+            let rel_path = file_path
+                .strip_prefix(&effective_root)
+                .unwrap_or(file_path)
+                .to_string_lossy()
+                .to_string();
+            let file_ids = searcher.filter_by_files(std::slice::from_ref(&rel_path))?;
+            if file_ids.is_empty() {
+                if !json && !files_only {
+                    eprintln!("No indexed code units in file: {}", file_path.display());
+                }
+                return Ok(vec![]);
+            }
+            combined_ids = match combined_ids {
+                Some(existing) => {
+                    let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
+                    Some(
+                        file_ids
+                            .into_iter()
+                            .filter(|id| existing_set.contains(id))
+                            .collect(),
+                    )
+                }
+                None => Some(file_ids),
             };
         }
 
@@ -2103,6 +2149,7 @@ fn cmd_session_hook() -> Result<()> {
                 "colgrep REPLACES both Grep and Glob:\n",
                 "- Semantic search: `colgrep \"error handling logic\"`\n",
                 "- Search in path: `colgrep \"database queries\" ./src/api`\n",
+                "- Search in specific file(s): `colgrep \"query\" ./src/main.rs ./src/lib.rs`\n",
                 "- Search multiple paths: `colgrep \"error\" ./crate-a ./crate-b -k 20`\n",
                 "- Pattern-only search: `colgrep -e \"async fn\"` (no semantic query needed)\n",
                 "- Hybrid grep+semantic: `colgrep -e \"async\" \"concurrency patterns\"`\n",

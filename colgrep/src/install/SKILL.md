@@ -11,6 +11,8 @@ This repository has `colgrep` installed - a semantic code search CLI.
 colgrep "<natural language query>" --results 10   # Basic search
 colgrep "<query>" -k 25                           # Exploration (more results)
 colgrep "<query>" ./src/parser                    # Search in specific folder
+colgrep "<query>" ./src/main.rs                   # Search in specific file
+colgrep "<query>" ./src/main.rs ./src/lib.rs      # Search in multiple files
 colgrep "<query>" ./crate-a ./crate-b             # Search multiple directories
 
 # File filtering
@@ -70,6 +72,8 @@ colgrep --json "<query>"                          # JSON output
 | Know text exists, need context  | `colgrep -e "text" "semantic query"`           |
 | Literal text with special chars | `colgrep -e "foo[0]" -F "semantic query"`      |
 | Whole word match                | `colgrep -e "test" -w "testing utilities"`     |
+| Search in a specific file       | `colgrep "query" ./src/main.rs`                |
+| Search in multiple files        | `colgrep "query" ./src/main.rs ./src/lib.rs`   |
 | Search specific file type       | `colgrep --include="*.ext" "query"`            |
 | Search multiple file types      | `colgrep --include="*.{rs,md,py}" "query"`     |
 | Exclude test files              | `colgrep --exclude="*_test.go" "query"`        |
