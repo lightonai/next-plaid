@@ -1276,7 +1276,23 @@ pub async fn update_index_with_encoding(
         )));
     }
 
-    // Encode documents using the model (async, uses batch queue)
+    // Get or create the batch queue for this index FIRST
+    let sender = get_or_create_batch_queue(&name, state.clone());
+
+    // Reserve a slot in the batch queue BEFORE encoding
+    // This ensures we don't waste encoding work if the queue is full
+    let permit = sender.try_reserve().map_err(|e| match e {
+        mpsc::error::TrySendError::Full(_) => ApiError::ServiceUnavailable(format!(
+            "Update queue full for index '{}'. Max {} pending items. Retry later.",
+            name,
+            batch_channel_size()
+        )),
+        mpsc::error::TrySendError::Closed(_) => {
+            ApiError::Internal(format!("Batch worker for index '{}' is not running", name))
+        }
+    })?;
+
+    // Now encode - we have a guaranteed slot in the batch queue
     let embeddings = encode_texts_internal(
         state.clone(),
         &req.documents,
@@ -1287,26 +1303,14 @@ pub async fn update_index_with_encoding(
 
     let doc_count = embeddings.len();
 
-    // Get or create the batch queue for this index
-    let sender = get_or_create_batch_queue(&name, state.clone());
-
     // Create batch item
     let batch_item = BatchItem {
         embeddings,
         metadata: req.metadata,
     };
 
-    // Send to batch queue
-    sender.try_send(batch_item).map_err(|e| match e {
-        mpsc::error::TrySendError::Full(_) => ApiError::ServiceUnavailable(format!(
-            "Update queue full for index '{}'. Max {} pending items. Retry later.",
-            name,
-            batch_channel_size()
-        )),
-        mpsc::error::TrySendError::Closed(_) => {
-            ApiError::Internal(format!("Batch worker for index '{}' is not running", name))
-        }
-    })?;
+    // Send using the reserved permit - this is guaranteed to succeed
+    permit.send(batch_item);
 
     tracing::debug!(
         index = %name,
