@@ -9,6 +9,11 @@ use syntect::highlighting::{Style, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 
+/// Maximum visible characters per line before truncation.
+/// This is generous enough for normal code but prevents issues with
+/// minified/obfuscated files that have extremely long lines.
+const MAX_LINE_WIDTH: usize = 400;
+
 use colgrep::{
     acquire_index_lock, bre_to_ere, ensure_model, ensure_onnx_runtime, find_parent_index,
     get_colgrep_data_dir, get_index_dir_for_project, get_vector_index_path, index_exists,
@@ -756,6 +761,39 @@ fn calc_display_ranges(
     merged
 }
 
+/// Truncate a string containing ANSI escape codes to a maximum visible width.
+/// Returns the truncated string with "..." appended if truncation occurred.
+fn truncate_ansi_string(s: &str, max_width: usize) -> String {
+    let mut visible_count = 0;
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Start of ANSI escape sequence - copy it entirely
+            result.push(c);
+            // Copy until we hit 'm' (end of color code) or run out of chars
+            while let Some(&next) = chars.peek() {
+                result.push(chars.next().unwrap());
+                if next == 'm' {
+                    break;
+                }
+            }
+        } else {
+            // Regular visible character
+            if visible_count >= max_width {
+                // Truncation point reached
+                result.push_str("\x1b[0m..."); // Reset color and add ellipsis
+                return result;
+            }
+            result.push(c);
+            visible_count += 1;
+        }
+    }
+
+    result
+}
+
 /// Print content with syntax highlighting for multiple ranges
 fn print_highlighted_ranges(
     file_path: &Path,
@@ -799,6 +837,8 @@ fn print_highlighted_ranges(
             let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
             // Remove trailing newline for cleaner output
             let escaped = escaped.trim_end_matches('\n');
+            // Truncate very long lines (e.g., minified JS)
+            let escaped = truncate_ansi_string(escaped, MAX_LINE_WIDTH);
             println!(
                 "{} {}\x1b[0m",
                 format!("{:>width$}", line_num, width = line_num_width).dimmed(),
@@ -852,6 +892,8 @@ fn print_highlighted_content(
         let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
         // Remove trailing newline for cleaner output
         let escaped = escaped.trim_end_matches('\n');
+        // Truncate very long lines (e.g., minified JS)
+        let escaped = truncate_ansi_string(escaped, MAX_LINE_WIDTH);
         println!(
             "{} {}\x1b[0m",
             format!("{:>width$}", line_num, width = line_num_width).dimmed(),
