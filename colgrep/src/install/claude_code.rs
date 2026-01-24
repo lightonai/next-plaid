@@ -310,3 +310,118 @@ fn print_install_success() {
     println!("{}", border.yellow());
     println!();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use std::process::Command;
+
+    /// Test that hook.json is valid JSON
+    #[test]
+    fn test_hook_json_is_valid() {
+        let parsed: Result<Value, _> = serde_json::from_str(HOOK_JSON);
+        assert!(
+            parsed.is_ok(),
+            "hook.json is not valid JSON: {:?}",
+            parsed.err()
+        );
+    }
+
+    /// Test that all hook commands produce valid JSON output
+    #[test]
+    fn test_hook_commands_produce_valid_json() {
+        let hook_config: Value =
+            serde_json::from_str(HOOK_JSON).expect("hook.json should be valid JSON");
+
+        let hooks = hook_config
+            .get("hooks")
+            .expect("hook.json should have 'hooks' field");
+
+        // Iterate through all hook events (SessionStart, PreToolUse, etc.)
+        if let Value::Object(events) = hooks {
+            for (event_name, matchers) in events {
+                if let Value::Array(matcher_list) = matchers {
+                    for matcher_entry in matcher_list {
+                        let matcher = matcher_entry
+                            .get("matcher")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("*");
+
+                        if let Some(Value::Array(hook_list)) = matcher_entry.get("hooks") {
+                            for hook in hook_list {
+                                if let Some(command) = hook.get("command").and_then(|c| c.as_str())
+                                {
+                                    // Skip commands that run external tools (like colgrep --session-hook)
+                                    // which require the actual binary to be installed
+                                    if command.contains("colgrep") {
+                                        continue;
+                                    }
+
+                                    // Execute the command and capture output
+                                    let output = Command::new("sh")
+                                        .args(["-c", command])
+                                        .output()
+                                        .expect("Failed to execute hook command");
+
+                                    let stdout = String::from_utf8_lossy(&output.stdout);
+                                    let stdout_trimmed = stdout.trim();
+
+                                    // If the command produces output, it should be valid JSON
+                                    if !stdout_trimmed.is_empty() {
+                                        let parsed: Result<Value, _> =
+                                            serde_json::from_str(stdout_trimmed);
+                                        assert!(
+                                            parsed.is_ok(),
+                                            "Hook command for event '{}' matcher '{}' produced invalid JSON.\n\
+                                             Command: {}\n\
+                                             Output: {}\n\
+                                             Error: {:?}",
+                                            event_name,
+                                            matcher,
+                                            command,
+                                            stdout_trimmed,
+                                            parsed.err()
+                                        );
+
+                                        // Verify the JSON has the expected structure for PreToolUse hooks
+                                        if event_name == "PreToolUse" {
+                                            let json = parsed.unwrap();
+                                            assert!(
+                                                json.get("hookSpecificOutput").is_some(),
+                                                "PreToolUse hook should have 'hookSpecificOutput' field.\n\
+                                                 Command: {}\n\
+                                                 Output: {}",
+                                                command,
+                                                stdout_trimmed
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Test that hook.json has required structure
+    #[test]
+    fn test_hook_json_structure() {
+        let hook_config: Value =
+            serde_json::from_str(HOOK_JSON).expect("hook.json should be valid JSON");
+
+        // Should have description
+        assert!(
+            hook_config.get("description").is_some(),
+            "hook.json should have 'description' field"
+        );
+
+        // Should have hooks object
+        let hooks = hook_config
+            .get("hooks")
+            .expect("hook.json should have 'hooks' field");
+        assert!(hooks.is_object(), "'hooks' should be an object");
+    }
+}

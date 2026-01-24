@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"IMPORTANT: Tell the spawned agent to use colgrep (via Bash) instead of Grep/Glob tools. Include these instructions in your prompt:\\n\\nUse colgrep for ALL code search tasks:\\n- Semantic search: colgrep \\\"error handling\\\" ./src\\n- Pattern search (like grep): colgrep -e \\\"fn main\\\"\\n- Hybrid grep+semantic: colgrep -e \\\"async\\\" \\\"concurrency patterns\\\"\\n- Regex pattern: colgrep -e \\\"Result<.*Error>\\\" -E\\n- Find files (like glob): colgrep -l --include=\\\"**/*.rs\\\" \\\"\\\" .\\n- More results: colgrep -k 25 \\\"query\\\"\\n- Exclude: colgrep --exclude=\\\"*_test.go\\\" \\\"query\\\"\\n\\nDo NOT use Grep or Glob tools - use colgrep via Bash instead.\"}}'",
+            "command": "cat <<'EOF'\n{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"IMPORTANT: Include colgrep instructions in your agent prompt. Add this to your prompt: Use colgrep (via Bash) for ALL code searches instead of Grep/Glob tools. Examples: colgrep query ./src, colgrep -e pattern, colgrep -l --include=*.rs query . Do NOT use Grep or Glob tools.\"}}\nEOF",
             "timeout": 5
           }
         ]
