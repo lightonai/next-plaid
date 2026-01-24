@@ -2,7 +2,7 @@
 
 This repository has `colgrep` installed - a semantic code search CLI.
 
-**Use `colgrep` as your PRIMARY search tool** instead of `Search / Grep` or `Task / Explore` agent.
+**Use `colgrep` as your PRIMARY search tool** instead of `Search / Grep / Glob`.
 
 ## Quick Reference
 
@@ -11,6 +11,8 @@ This repository has `colgrep` installed - a semantic code search CLI.
 colgrep "<natural language query>" --results 10   # Basic search
 colgrep "<query>" -k 25                           # Exploration (more results)
 colgrep "<query>" ./src/parser                    # Search in specific folder
+colgrep "<query>" ./src/main.rs                   # Search in specific file
+colgrep "<query>" ./src/main.rs ./src/lib.rs      # Search in multiple files
 colgrep "<query>" ./crate-a ./crate-b             # Search multiple directories
 
 # File filtering
@@ -62,24 +64,26 @@ colgrep --json "<query>"                          # JSON output
 
 ## When to Use What
 
-| Task                            | Tool                                           |
-| ------------------------------- | ---------------------------------------------- |
-| Find code by intent/description | `colgrep "query" -k 10`                        |
-| Explore/understand a system     | `colgrep "query" -k 25` (increase k)           |
-| Search by pattern only          | `colgrep -e "pattern"` (no semantic query)     |
-| Know text exists, need context  | `colgrep -e "text" "semantic query"`           |
-| Literal text with special chars | `colgrep -e "foo[0]" -F "semantic query"`      |
-| Whole word match                | `colgrep -e "test" -w "testing utilities"`     |
-| Search specific file type       | `colgrep --include="*.ext" "query"`            |
-| Search multiple file types      | `colgrep --include="*.{rs,md,py}" "query"`     |
-| Exclude test files              | `colgrep --exclude="*_test.go" "query"`        |
-| Exclude vendor directories      | `colgrep --exclude-dir=vendor "query"`         |
-| Search in specific directories  | `colgrep --include="src/**/*.rs" "query"`      |
-| Search multiple directories     | `colgrep "query" ./src ./lib ./api`            |
-| Search CI/CD configs            | `colgrep --include="**/.github/**/*" "q" .`    |
-| View full function content      | `colgrep -c "query"`                           |
-| Exact string/regex match only   | Built-in `Grep` tool                           |
-| Find files by name              | Built-in `Glob` tool                           |
+| Task                            | Tool                                         |
+| ------------------------------- | -------------------------------------------- |
+| Find code by intent/description | `colgrep "query" -k 10`                      |
+| Explore/understand a system     | `colgrep "query" -k 25` (increase k)         |
+| Search by pattern only          | `colgrep -e "pattern"` (no semantic query)   |
+| Know text exists, need context  | `colgrep -e "text" "semantic query"`         |
+| Literal text with special chars | `colgrep -e "foo[0]" -F "semantic query"`    |
+| Whole word match                | `colgrep -e "test" -w "testing utilities"`   |
+| Search in a specific file       | `colgrep "query" ./src/main.rs`              |
+| Search in multiple files        | `colgrep "query" ./src/main.rs ./src/lib.rs` |
+| Search specific file type       | `colgrep --include="*.ext" "query"`          |
+| Search multiple file types      | `colgrep --include="*.{rs,md,py}" "query"`   |
+| Exclude test files              | `colgrep --exclude="*_test.go" "query"`      |
+| Exclude vendor directories      | `colgrep --exclude-dir=vendor "query"`       |
+| Search in specific directories  | `colgrep --include="src/**/*.rs" "query"`    |
+| Search multiple directories     | `colgrep "query" ./src ./lib ./api`          |
+| Search CI/CD configs            | `colgrep --include="**/.github/**/*" "q" .`  |
+| View full function content      | `colgrep -c "query"`                         |
+| Exact string/regex match only   | Built-in `Grep` tool                         |
+| Find files by name              | Built-in `Glob` tool                         |
 
 ## Key Rules
 

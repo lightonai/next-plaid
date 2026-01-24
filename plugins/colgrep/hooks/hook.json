@@ -23,6 +23,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"Reminder: Tell the spawned agent to use colgrep instead of Grep/Glob for code search. Include in the prompt: use colgrep \\\"query\\\" [path] for searching.\"}}'",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }
