@@ -6,12 +6,13 @@
 
 use std::sync::Arc;
 
-use axum::{extract::State, Json};
+use axum::{extract::State, Extension, Json};
 use ndarray::Array2;
 
 use crate::error::{ApiError, ApiResult};
 use crate::models::{RerankRequest, RerankResponse, RerankResult};
 use crate::state::AppState;
+use crate::tracing_middleware::TraceId;
 
 /// Convert a Vec<Vec<f32>> to an ndarray::Array2<f32>.
 fn to_ndarray(embeddings: &[Vec<f32>]) -> ApiResult<Array2<f32>> {
@@ -92,8 +93,12 @@ fn compute_maxsim(query: &Array2<f32>, document: &Array2<f32>) -> f32 {
 )]
 pub async fn rerank(
     State(_state): State<Arc<AppState>>,
+    trace_id: Option<Extension<TraceId>>,
     Json(request): Json<RerankRequest>,
 ) -> ApiResult<Json<RerankResponse>> {
+    let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
+    let start = std::time::Instant::now();
+
     // Validate request
     if request.query.is_empty() {
         return Err(ApiError::BadRequest("Empty query embeddings".to_string()));
@@ -105,6 +110,7 @@ pub async fn rerank(
     // Convert query to ndarray
     let query = to_ndarray(&request.query)?;
     let query_dim = query.ncols();
+    let query_tokens = query.nrows();
 
     // Convert all documents and validate dimensions
     let documents: Vec<Array2<f32>> = request
@@ -122,7 +128,10 @@ pub async fn rerank(
         })
         .collect::<ApiResult<Vec<_>>>()?;
 
+    let num_documents = documents.len();
+
     // Compute MaxSim scores for all documents
+    let scoring_start = std::time::Instant::now();
     let mut results: Vec<RerankResult> = documents
         .iter()
         .enumerate()
@@ -131,6 +140,7 @@ pub async fn rerank(
             RerankResult { index, score }
         })
         .collect();
+    let scoring_ms = scoring_start.elapsed().as_millis() as u64;
 
     // Sort by score descending
     results.sort_by(|a, b| {
@@ -139,7 +149,16 @@ pub async fn rerank(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let num_documents = results.len();
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    tracing::info!(
+        trace_id = %trace_id,
+        num_documents = num_documents,
+        query_tokens = query_tokens,
+        scoring_ms = scoring_ms,
+        total_ms = total_ms,
+        "rerank.complete"
+    );
 
     Ok(Json(RerankResponse {
         results,
@@ -165,10 +184,14 @@ pub async fn rerank(
 )]
 pub async fn rerank_with_encoding(
     State(state): State<Arc<AppState>>,
+    trace_id: Option<Extension<TraceId>>,
     Json(request): Json<crate::models::RerankWithEncodingRequest>,
 ) -> ApiResult<Json<RerankResponse>> {
     use crate::handlers::encode::encode_texts_internal;
     use crate::models::InputType;
+
+    let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
+    let start = std::time::Instant::now();
 
     // Validate request
     if request.query.is_empty() {
@@ -178,12 +201,15 @@ pub async fn rerank_with_encoding(
         return Err(ApiError::BadRequest("No documents provided".to_string()));
     }
 
+    let num_documents = request.documents.len();
+
     // Check if model is loaded
     if !state.has_model() {
         return Err(ApiError::ModelNotLoaded);
     }
 
     // Encode query
+    let encode_start = std::time::Instant::now();
     let query_texts = vec![request.query];
     let query_embeddings = encode_texts_internal(
         state.clone(),
@@ -206,8 +232,10 @@ pub async fn rerank_with_encoding(
         request.pool_factor,
     )
     .await?;
+    let encode_ms = encode_start.elapsed().as_millis() as u64;
 
     // Compute MaxSim scores for all documents
+    let scoring_start = std::time::Instant::now();
     let mut results: Vec<RerankResult> = doc_embeddings
         .iter()
         .enumerate()
@@ -216,6 +244,7 @@ pub async fn rerank_with_encoding(
             RerankResult { index, score }
         })
         .collect();
+    let scoring_ms = scoring_start.elapsed().as_millis() as u64;
 
     // Sort by score descending
     results.sort_by(|a, b| {
@@ -224,11 +253,22 @@ pub async fn rerank_with_encoding(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let num_documents = results.len();
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    tracing::info!(
+        trace_id = %trace_id,
+        num_documents = num_documents,
+        encode_ms = encode_ms,
+        scoring_ms = scoring_ms,
+        total_ms = total_ms,
+        "rerank.with_encoding.complete"
+    );
+
+    let result_count = results.len();
 
     Ok(Json(RerankResponse {
         results,
-        num_documents,
+        num_documents: result_count,
     }))
 }
 

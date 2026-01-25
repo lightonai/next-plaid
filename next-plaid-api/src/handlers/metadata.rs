@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, State},
-    Json,
+    Extension, Json,
 };
 use tokio::task;
 
@@ -18,6 +18,7 @@ use crate::models::{
     GetMetadataResponse, MetadataCountResponse, QueryMetadataRequest, QueryMetadataResponse,
 };
 use crate::state::AppState;
+use crate::tracing_middleware::TraceId;
 
 /// Check if specific documents exist in the metadata database.
 #[utoipa::path(
@@ -36,8 +37,11 @@ use crate::state::AppState;
 pub async fn check_metadata(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    trace_id: Option<Extension<TraceId>>,
     Json(req): Json<CheckMetadataRequest>,
 ) -> ApiResult<Json<CheckMetadataResponse>> {
+    let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
+    let start = std::time::Instant::now();
     let path_str = state.index_path(&name).to_string_lossy().to_string();
 
     // Check if index exists
@@ -57,7 +61,7 @@ pub async fn check_metadata(
 
     // Run blocking SQLite operations in a separate thread
     let document_ids = req.document_ids.clone();
-    let name_clone = name.clone();
+    let num_ids = document_ids.len();
     let result = task::spawn_blocking(move || {
         // Check if metadata database exists
         if !filtering::exists(&path_str) {
@@ -68,13 +72,7 @@ pub async fn check_metadata(
         let sql_query_start = std::time::Instant::now();
         let found_metadata = filtering::get(&path_str, None, &[], Some(&document_ids))
             .map_err(|e| format!("Failed to query metadata: {}", e))?;
-        let sql_query_duration_ms = sql_query_start.elapsed().as_millis() as u64;
-        tracing::info!(
-            index = %name_clone,
-            num_ids = document_ids.len(),
-            sql_query_duration_ms = sql_query_duration_ms,
-            "Metadata check query completed"
-        );
+        let sql_query_ms = sql_query_start.elapsed().as_millis() as u64;
 
         // Extract the IDs that were actually found
         let existing_set: std::collections::HashSet<i64> = found_metadata
@@ -95,18 +93,31 @@ pub async fn check_metadata(
             }
         }
 
-        Ok((existing_ids, missing_ids))
+        Ok((existing_ids, missing_ids, sql_query_ms))
     })
     .await
     .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
 
     match result {
-        Ok((existing_ids, missing_ids)) => Ok(Json(CheckMetadataResponse {
-            existing_count: existing_ids.len(),
-            missing_count: missing_ids.len(),
-            existing_ids,
-            missing_ids,
-        })),
+        Ok((existing_ids, missing_ids, sql_query_ms)) => {
+            let total_ms = start.elapsed().as_millis() as u64;
+            tracing::info!(
+                trace_id = %trace_id,
+                index = %name,
+                num_ids = num_ids,
+                existing_count = existing_ids.len(),
+                missing_count = missing_ids.len(),
+                sql_query_ms = sql_query_ms,
+                total_ms = total_ms,
+                "metadata.check.complete"
+            );
+            Ok(Json(CheckMetadataResponse {
+                existing_count: existing_ids.len(),
+                missing_count: missing_ids.len(),
+                existing_ids,
+                missing_ids,
+            }))
+        }
         Err(e) if e == "metadata_not_found" => Err(ApiError::MetadataNotFound(name)),
         Err(e) => Err(ApiError::Internal(e)),
     }
@@ -130,8 +141,11 @@ pub async fn check_metadata(
 pub async fn query_metadata(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    trace_id: Option<Extension<TraceId>>,
     Json(req): Json<QueryMetadataRequest>,
 ) -> ApiResult<Json<QueryMetadataResponse>> {
+    let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
+    let start = std::time::Instant::now();
     let path_str = state.index_path(&name).to_string_lossy().to_string();
 
     // Check if index exists
@@ -143,8 +157,6 @@ pub async fn query_metadata(
     let condition = req.condition.clone();
     let parameters = req.parameters.clone();
     let name_clone = name.clone();
-    let name_for_log = name.clone();
-    let condition_for_log = req.condition.clone();
     let result = task::spawn_blocking(move || {
         // Check if metadata database exists
         if !filtering::exists(&path_str) {
@@ -155,20 +167,24 @@ pub async fn query_metadata(
         let sql_query_start = std::time::Instant::now();
         let document_ids = filtering::where_condition(&path_str, &condition, &parameters)
             .map_err(|e| ApiError::BadRequest(format!("Invalid condition: {}", e)))?;
-        let sql_query_duration_ms = sql_query_start.elapsed().as_millis() as u64;
-        tracing::info!(
-            index = %name_for_log,
-            condition = %condition_for_log,
-            results = document_ids.len(),
-            sql_query_duration_ms = sql_query_duration_ms,
-            "Metadata where_condition query completed"
-        );
-        Ok(document_ids)
+        let sql_query_ms = sql_query_start.elapsed().as_millis() as u64;
+        Ok((document_ids, sql_query_ms))
     })
     .await
     .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
 
-    let document_ids = result?;
+    let (document_ids, sql_query_ms) = result?;
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    tracing::info!(
+        trace_id = %trace_id,
+        index = %name,
+        condition = %req.condition,
+        num_results = document_ids.len(),
+        sql_query_ms = sql_query_ms,
+        total_ms = total_ms,
+        "metadata.query.complete"
+    );
 
     Ok(Json(QueryMetadataResponse {
         count: document_ids.len(),
@@ -194,8 +210,11 @@ pub async fn query_metadata(
 pub async fn get_metadata(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    trace_id: Option<Extension<TraceId>>,
     Json(req): Json<GetMetadataRequest>,
 ) -> ApiResult<Json<GetMetadataResponse>> {
+    let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
+    let start = std::time::Instant::now();
     let path_str = state.index_path(&name).to_string_lossy().to_string();
 
     // Check if index exists
@@ -216,7 +235,6 @@ pub async fn get_metadata(
     let document_ids = req.document_ids.clone();
     let limit = req.limit;
     let name_clone = name.clone();
-    let name_for_log = name.clone();
 
     let result = task::spawn_blocking(move || {
         // Check if metadata database exists
@@ -232,25 +250,29 @@ pub async fn get_metadata(
             document_ids.as_deref(),
         )
         .map_err(|e| ApiError::Internal(format!("Failed to get metadata: {}", e)))?;
-        let sql_query_duration_ms = sql_query_start.elapsed().as_millis() as u64;
-        tracing::info!(
-            index = %name_for_log,
-            results = metadata.len(),
-            sql_query_duration_ms = sql_query_duration_ms,
-            "Metadata get query completed"
-        );
+        let sql_query_ms = sql_query_start.elapsed().as_millis() as u64;
 
         // Apply limit if specified
         if let Some(limit) = limit {
             metadata.truncate(limit);
         }
 
-        Ok(metadata)
+        Ok((metadata, sql_query_ms))
     })
     .await
     .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
 
-    let metadata = result?;
+    let (metadata, sql_query_ms) = result?;
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    tracing::info!(
+        trace_id = %trace_id,
+        index = %name,
+        num_results = metadata.len(),
+        sql_query_ms = sql_query_ms,
+        total_ms = total_ms,
+        "metadata.get.complete"
+    );
 
     Ok(Json(GetMetadataResponse {
         count: metadata.len(),
@@ -274,7 +296,10 @@ pub async fn get_metadata(
 pub async fn get_all_metadata(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    trace_id: Option<Extension<TraceId>>,
 ) -> ApiResult<Json<GetMetadataResponse>> {
+    let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
+    let start = std::time::Instant::now();
     let path_str = state.index_path(&name).to_string_lossy().to_string();
 
     // Check if index exists
@@ -284,7 +309,6 @@ pub async fn get_all_metadata(
 
     // Run blocking SQLite operations in a separate thread
     let name_clone = name.clone();
-    let name_for_log = name.clone();
     let result = task::spawn_blocking(move || {
         // Check if metadata database exists
         if !filtering::exists(&path_str) {
@@ -294,19 +318,23 @@ pub async fn get_all_metadata(
         let sql_query_start = std::time::Instant::now();
         let metadata = filtering::get(&path_str, None, &[], None)
             .map_err(|e| ApiError::Internal(format!("Failed to get metadata: {}", e)))?;
-        let sql_query_duration_ms = sql_query_start.elapsed().as_millis() as u64;
-        tracing::info!(
-            index = %name_for_log,
-            results = metadata.len(),
-            sql_query_duration_ms = sql_query_duration_ms,
-            "Get all metadata query completed"
-        );
-        Ok(metadata)
+        let sql_query_ms = sql_query_start.elapsed().as_millis() as u64;
+        Ok((metadata, sql_query_ms))
     })
     .await
     .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
 
-    let metadata = result?;
+    let (metadata, sql_query_ms) = result?;
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    tracing::info!(
+        trace_id = %trace_id,
+        index = %name,
+        num_results = metadata.len(),
+        sql_query_ms = sql_query_ms,
+        total_ms = total_ms,
+        "metadata.get_all.complete"
+    );
 
     Ok(Json(GetMetadataResponse {
         count: metadata.len(),
@@ -330,7 +358,10 @@ pub async fn get_all_metadata(
 pub async fn get_metadata_count(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    trace_id: Option<Extension<TraceId>>,
 ) -> ApiResult<Json<MetadataCountResponse>> {
+    let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
+    let start = std::time::Instant::now();
     let path_str = state.index_path(&name).to_string_lossy().to_string();
 
     // Check if index exists
@@ -339,27 +370,32 @@ pub async fn get_metadata_count(
     }
 
     // Run blocking SQLite operations in a separate thread
-    let name_for_log = name.clone();
-    let (has_metadata, count) = task::spawn_blocking(move || {
+    let (has_metadata, count, sql_query_ms) = task::spawn_blocking(move || {
         let has_metadata = filtering::exists(&path_str);
-        let count = if has_metadata {
+        let (count, sql_query_ms) = if has_metadata {
             let sql_query_start = std::time::Instant::now();
             let count = filtering::count(&path_str).unwrap_or(0);
-            let sql_query_duration_ms = sql_query_start.elapsed().as_millis() as u64;
-            tracing::info!(
-                index = %name_for_log,
-                count = count,
-                sql_query_duration_ms = sql_query_duration_ms,
-                "Metadata count query completed"
-            );
-            count
+            let sql_query_ms = sql_query_start.elapsed().as_millis() as u64;
+            (count, sql_query_ms)
         } else {
-            0
+            (0, 0)
         };
-        (has_metadata, count)
+        (has_metadata, count, sql_query_ms)
     })
     .await
     .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
+
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    tracing::info!(
+        trace_id = %trace_id,
+        index = %name,
+        count = count,
+        has_metadata = has_metadata,
+        sql_query_ms = sql_query_ms,
+        total_ms = total_ms,
+        "metadata.count.complete"
+    );
 
     Ok(Json(MetadataCountResponse {
         count,

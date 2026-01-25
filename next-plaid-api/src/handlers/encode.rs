@@ -115,7 +115,7 @@ fn get_or_create_encode_pool(state: Arc<AppState>) -> ApiResult<mpsc::Sender<Enc
     let shared_receiver = Arc::new(tokio::sync::Mutex::new(receiver));
 
     // Spawn N workers, each building and owning its own model
-    tracing::info!(pool_size = pool_size, "Starting encode worker pool");
+    tracing::info!(pool_size = pool_size, "encode.worker.pool.starting");
 
     for worker_id in 0..pool_size {
         let receiver_clone = Arc::clone(&shared_receiver);
@@ -126,14 +126,14 @@ fn get_or_create_encode_pool(state: Arc<AppState>) -> ApiResult<mpsc::Sender<Enc
             // Build model for this worker
             let model = match build_model_from_config(&config_clone) {
                 Ok(m) => {
-                    tracing::info!(worker_id = worker_id, "Encode worker started with model");
+                    tracing::info!(worker_id = worker_id, "encode.worker.started");
                     m
                 }
                 Err(e) => {
                     tracing::error!(
                         worker_id = worker_id,
                         error = %e,
-                        "Failed to build model for worker"
+                        "encode.worker.start.failed"
                     );
                     return;
                 }
@@ -202,10 +202,7 @@ async fn encode_worker_loop(
             let first_item = match rx.recv().await {
                 Some(item) => item,
                 None => {
-                    tracing::info!(
-                        worker_id = worker_id,
-                        "Encode worker shutting down (channel closed)"
-                    );
+                    tracing::debug!(worker_id = worker_id, "encode.worker.stopped");
                     break;
                 }
             };
@@ -229,13 +226,10 @@ async fn encode_worker_loop(
                     }
                     Ok(None) => {
                         // Channel closed - process remaining batch before exiting
-                        tracing::info!(
-                            worker_id = worker_id,
-                            "Encode worker shutting down (channel closed during batch)"
-                        );
                         if !pending_items.is_empty() {
                             process_encode_batch_with_model(worker_id, pending_items, &model).await;
                         }
+                        tracing::debug!(worker_id = worker_id, "encode.worker.stopped");
                         return;
                     }
                     Err(_) => {
@@ -265,15 +259,9 @@ async fn process_encode_batch_with_model(
     items: Vec<EncodeBatchItem>,
     model: &next_plaid_onnx::Colbert,
 ) {
+    let start = std::time::Instant::now();
     let num_requests = items.len();
     let total_texts: usize = items.iter().map(|i| i.texts.len()).sum();
-
-    tracing::debug!(
-        worker_id = worker_id,
-        requests = num_requests,
-        texts = total_texts,
-        "Processing encode batch"
-    );
 
     // Group items by input type and pool_factor
     let mut query_items: Vec<(usize, &EncodeBatchItem)> = Vec::new();
@@ -372,11 +360,14 @@ async fn process_encode_batch_with_model(
         let _ = item.response_tx.send(result);
     }
 
-    tracing::debug!(
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    tracing::info!(
         worker_id = worker_id,
-        requests = num_requests,
-        texts = total_texts,
-        "Encode batch completed"
+        num_requests = num_requests,
+        num_texts = total_texts,
+        total_ms = total_ms,
+        "encode.batch.complete"
     );
 }
 
@@ -390,18 +381,6 @@ fn encode_texts_with_model(
     pool_factor: Option<usize>,
 ) -> Result<Vec<Vec<Vec<f32>>>, String> {
     let num_texts = texts.len();
-
-    tracing::info!(
-        worker_id = worker_id,
-        input_type = ?input_type,
-        num_texts = num_texts,
-        pool_factor = ?pool_factor,
-        embedding_dim = model.embedding_dim(),
-        model_batch_size = model.batch_size(),
-        model_num_sessions = model.num_sessions(),
-        "Encoding texts with model"
-    );
-
     let texts_ref: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
 
     let encode_start = std::time::Instant::now();
@@ -409,15 +388,7 @@ fn encode_texts_with_model(
         InputType::Query => model.encode_queries(&texts_ref),
         InputType::Document => model.encode_documents(&texts_ref, pool_factor),
     };
-    let encode_duration_ms = encode_start.elapsed().as_millis() as u64;
-
-    tracing::info!(
-        worker_id = worker_id,
-        input_type = ?input_type,
-        num_texts = num_texts,
-        encode_duration_ms = encode_duration_ms,
-        "Encoding completed"
-    );
+    let encode_ms = encode_start.elapsed().as_millis() as u64;
 
     let embeddings = embeddings_result.map_err(|e| e.to_string())?;
 
@@ -426,6 +397,15 @@ fn encode_texts_with_model(
         .into_iter()
         .map(|arr| arr.rows().into_iter().map(|row| row.to_vec()).collect())
         .collect();
+
+    tracing::debug!(
+        worker_id = worker_id,
+        input_type = ?input_type,
+        num_texts = num_texts,
+        pool_factor = ?pool_factor,
+        encode_ms = encode_ms,
+        "encode.texts.complete"
+    );
 
     Ok(result)
 }

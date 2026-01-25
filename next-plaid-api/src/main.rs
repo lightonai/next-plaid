@@ -38,6 +38,7 @@ use std::time::Duration;
 use axum::{
     extract::DefaultBodyLimit,
     http::StatusCode,
+    middleware,
     routing::{delete, get, post, put},
     Json, Router,
 };
@@ -56,6 +57,7 @@ mod error;
 mod handlers;
 mod models;
 mod state;
+mod tracing_middleware;
 
 use models::HealthResponse;
 use state::{ApiConfig, AppState};
@@ -270,10 +272,10 @@ async fn shutdown_signal() {
 
     tokio::select! {
         _ = ctrl_c => {
-            tracing::info!("Received SIGINT (Ctrl+C), starting graceful shutdown...");
+            tracing::info!(signal = "SIGINT", "server.shutdown.initiated");
         },
         _ = terminate => {
-            tracing::info!("Received SIGTERM, starting graceful shutdown...");
+            tracing::info!(signal = "SIGTERM", "server.shutdown.initiated");
         },
     }
 }
@@ -308,6 +310,7 @@ fn build_router(state: Arc<AppState>) -> Router {
     let health_router = Router::new()
         .route("/health", get(health))
         .route("/", get(health))
+        .layer(middleware::from_fn(tracing_middleware::trace_request))
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -320,6 +323,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .without_v07_checks()
         .route("/indices", get(handlers::list_indices))
         .route("/indices/{name}", get(handlers::get_index_info))
+        .layer(middleware::from_fn(tracing_middleware::trace_request))
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -341,6 +345,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/indices/{name}/update_with_encoding",
             post(handlers::update_index_with_encoding),
         )
+        .layer(middleware::from_fn(tracing_middleware::trace_request))
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -364,6 +369,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/rerank_with_encoding",
             post(handlers::rerank_with_encoding),
         )
+        .layer(middleware::from_fn(tracing_middleware::trace_request))
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -418,6 +424,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(handlers::query_metadata),
         )
         .route("/indices/{name}/metadata/get", post(handlers::get_metadata))
+        .layer(middleware::from_fn(tracing_middleware::trace_request))
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
@@ -659,27 +666,19 @@ Examples:
         default_top_k: 10,
     };
 
-    tracing::info!("Starting Next-Plaid API server");
-    tracing::info!("Index directory: {:?}", config.index_dir);
-    tracing::info!("Using memory-mapped indices for efficient memory usage");
+    tracing::info!(
+        index_dir = %config.index_dir.display(),
+        "server.starting"
+    );
 
     // Load model if specified
     #[cfg(feature = "model")]
     let model = if let Some(ref model_path) = model_path {
-        tracing::info!("Loading ONNX model from: {:?}", model_path);
         let execution_provider = if _use_cuda {
-            tracing::info!("Using CUDA execution provider");
             next_plaid_onnx::ExecutionProvider::Cuda
         } else {
-            tracing::info!("Using CPU execution provider");
             next_plaid_onnx::ExecutionProvider::Cpu
         };
-
-        if _use_int8 {
-            tracing::info!("Using INT8 quantized model");
-        } else {
-            tracing::info!("Using non-quantized model (FP32)");
-        }
 
         let mut builder = next_plaid_onnx::Colbert::builder(model_path)
             .with_execution_provider(execution_provider)
@@ -687,54 +686,51 @@ Examples:
 
         // Apply optional model configuration
         if let Some(parallel) = _parallel_sessions {
-            tracing::info!("Using {} parallel ONNX sessions", parallel);
             builder = builder.with_parallel(parallel);
         }
         if let Some(batch_size) = _batch_size {
-            tracing::info!("Using batch size: {}", batch_size);
             builder = builder.with_batch_size(batch_size);
         }
         if let Some(threads) = _threads {
-            tracing::info!("Using {} threads per session", threads);
             builder = builder.with_threads(threads);
         }
         if let Some(query_length) = _query_length {
-            tracing::info!("Using query length: {}", query_length);
             builder = builder.with_query_length(query_length);
         }
         if let Some(document_length) = _document_length {
-            tracing::info!("Using document length: {}", document_length);
             builder = builder.with_document_length(document_length);
         }
 
         match builder.build() {
             Ok(model) => {
-                let config = model.config();
-                tracing::info!("Model loaded successfully");
-                if let Some(name) = config.model_name() {
-                    tracing::info!("  Model name: {}", name);
-                }
-                tracing::info!("  Embedding dimension: {}", model.embedding_dim());
-                tracing::info!("  Batch size: {}", model.batch_size());
-                tracing::info!("  Parallel sessions: {}", model.num_sessions());
-                tracing::info!("  Query prefix: {:?}", config.query_prefix);
-                tracing::info!("  Document prefix: {:?}", config.document_prefix);
-                tracing::info!("  Query length: {}", config.query_length);
-                tracing::info!("  Document length: {}", config.document_length);
-                tracing::info!("  Query expansion: {}", config.do_query_expansion);
-                tracing::info!("  Uses token_type_ids: {}", config.uses_token_type_ids);
-                tracing::info!("  Mask token ID: {}", config.mask_token_id);
-                tracing::info!("  Pad token ID: {}", config.pad_token_id);
+                let cfg = model.config();
+                tracing::info!(
+                    model_path = %model_path.display(),
+                    model_name = ?cfg.model_name(),
+                    execution_provider = if _use_cuda { "cuda" } else { "cpu" },
+                    quantized = _use_int8,
+                    embedding_dim = model.embedding_dim(),
+                    batch_size = model.batch_size(),
+                    num_sessions = model.num_sessions(),
+                    query_length = cfg.query_length,
+                    document_length = cfg.document_length,
+                    query_expansion = cfg.do_query_expansion,
+                    "model.load.complete"
+                );
                 Some(model)
             }
             Err(e) => {
-                tracing::error!("Failed to load model: {}", e);
+                tracing::error!(
+                    model_path = %model_path.display(),
+                    error = %e,
+                    "model.load.failed"
+                );
                 eprintln!("Error: Failed to load model from {:?}: {}", model_path, e);
                 std::process::exit(1);
             }
         }
     } else {
-        tracing::info!("No model specified, encoding endpoints will be disabled");
+        tracing::debug!("model.disabled");
         None
     };
 
@@ -750,8 +746,6 @@ Examples:
         let model_pool = model.map(|m| {
             let model_cfg = m.config();
             let pool_size = _model_pool_size.unwrap_or(1);
-
-            tracing::info!("Model pool size: {}", pool_size);
 
             // Create cached model info for lock-free health endpoint access
             let cached_info = state::CachedModelInfo {
@@ -838,28 +832,16 @@ Examples:
         .and_then(|v| v.parse().ok())
         .unwrap_or(64);
 
-    tracing::info!("Listening on http://{}", addr);
-    tracing::info!("Swagger UI available at http://{}/swagger-ui", addr);
     tracing::info!(
-        "Rate limiting: {} req/sec sustained, {} burst (health, index info, update, encode exempt)",
-        rate_limit_per_second,
-        rate_limit_burst_size
-    );
-    tracing::info!(
-        "Concurrency limit: {} in-flight requests",
-        concurrency_limit
-    );
-    tracing::info!(
-        "Update queue limit: {} pending tasks per index",
-        max_queued_tasks
-    );
-    tracing::info!(
-        "Document batching: max {} documents per batch",
-        max_batch_documents
-    );
-    tracing::info!(
-        "Encode batching: max {} texts, 10ms timeout",
-        max_batch_texts
+        listen_addr = %addr,
+        swagger_ui = %format!("http://{}/swagger-ui", addr),
+        rate_limit_per_second = rate_limit_per_second,
+        rate_limit_burst = rate_limit_burst_size,
+        concurrency_limit = concurrency_limit,
+        max_queued_tasks = max_queued_tasks,
+        max_batch_documents = max_batch_documents,
+        max_batch_texts = max_batch_texts,
+        "server.started"
     );
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -871,5 +853,5 @@ Examples:
     .await
     .unwrap();
 
-    tracing::info!("Server shutdown complete");
+    tracing::info!("server.shutdown.complete");
 }

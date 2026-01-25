@@ -18,6 +18,7 @@ pub mod error;
 pub mod handlers;
 pub mod models;
 pub mod state;
+pub mod tracing_middleware;
 
 pub use error::{ApiError, ApiResult};
 pub use state::{ApiConfig, AppState};

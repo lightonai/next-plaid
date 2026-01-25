@@ -10,7 +10,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use ndarray::Array2;
 use tokio::sync::{mpsc, Mutex, Semaphore};
@@ -28,6 +28,7 @@ use crate::models::{
     UpdateWithEncodingRequest,
 };
 use crate::state::AppState;
+use crate::tracing_middleware::TraceId;
 
 // --- Concurrency Control ---
 
@@ -103,33 +104,27 @@ fn repair_index_db_sync(index_path: &str) -> Result<bool, String> {
     }
 
     tracing::warn!(
-        "Index/DB sync mismatch detected: index has {} documents, DB has {} records. Attempting automatic repair.",
-        index_count,
-        db_count
+        index = %index_path,
+        index_count = index_count,
+        db_count = db_count,
+        "index.sync.mismatch"
     );
+
+    let repair_start = std::time::Instant::now();
+    let extra_count: usize;
 
     if db_count > index_count {
         // DB has extra records - delete them
         // Extra records have IDs >= index_count
         let extra_ids: Vec<i64> = (index_count as i64..db_count as i64).collect();
-        tracing::info!(
-            "Deleting {} extra DB records (IDs {} to {})",
-            extra_ids.len(),
-            index_count,
-            db_count - 1
-        );
+        extra_count = extra_ids.len();
         filtering::delete(index_path, &extra_ids)
             .map_err(|e| format!("Failed to delete extra DB records: {}", e))?;
     } else {
         // Index has extra documents - delete them from index
         // Extra documents have IDs >= db_count
         let extra_ids: Vec<i64> = (db_count as i64..index_count as i64).collect();
-        tracing::info!(
-            "Deleting {} extra index documents (IDs {} to {})",
-            extra_ids.len(),
-            db_count,
-            index_count - 1
-        );
+        extra_count = extra_ids.len();
         let mut index = MmapIndex::load(index_path)
             .map_err(|e| format!("Failed to load index for repair: {}", e))?;
         // Use delete_with_options with delete_metadata=false since DB doesn't have these
@@ -151,9 +146,14 @@ fn repair_index_db_sync(index_path: &str) -> Result<bool, String> {
         ));
     }
 
+    let repair_ms = repair_start.elapsed().as_millis() as u64;
+
     tracing::info!(
-        "Index/DB sync repair successful. Both now have {} documents.",
-        new_db_count
+        index = %index_path,
+        deleted_count = extra_count,
+        final_count = new_db_count,
+        repair_ms = repair_ms,
+        "index.repair.complete"
     );
 
     Ok(true)
@@ -274,14 +274,14 @@ async fn batch_worker(
     index_name: String,
     state: Arc<AppState>,
 ) {
-    tracing::info!(index = %index_name, "Batch worker started");
+    tracing::info!(index = %index_name, "update.worker.started");
 
     loop {
         // Wait for the first item (blocking)
         let first_item = match receiver.recv().await {
             Some(item) => item,
             None => {
-                tracing::info!(index = %index_name, "Batch worker shutting down (channel closed)");
+                tracing::debug!(index = %index_name, "update.worker.stopped");
                 break;
             }
         };
@@ -307,12 +307,11 @@ async fn batch_worker(
                     doc_count += item_docs;
                 }
                 Ok(None) => {
-                    // Channel closed
-                    tracing::info!(index = %index_name, "Batch worker shutting down (channel closed during batch)");
-                    // Process remaining batch before exiting
+                    // Channel closed - process remaining batch before exiting
                     if !batch_embeddings.is_empty() {
                         process_batch(&index_name, batch_embeddings, batch_metadata, &state).await;
                     }
+                    tracing::debug!(index = %index_name, "update.worker.stopped");
                     return;
                 }
                 Err(_) => {
@@ -329,6 +328,15 @@ async fn batch_worker(
     }
 }
 
+/// Metrics returned from the blocking batch processing.
+struct BatchMetrics {
+    index_update_ms: u64,
+    metadata_update_ms: u64,
+    first_doc_id: Option<i64>,
+    last_doc_id: Option<i64>,
+    evicted_count: usize,
+}
+
 /// Process a batch of documents for the given index.
 async fn process_batch(
     index_name: &str,
@@ -339,12 +347,6 @@ async fn process_batch(
     let doc_count = embeddings.len();
     let start = std::time::Instant::now();
 
-    tracing::info!(
-        index = %index_name,
-        documents = doc_count,
-        "Processing batch"
-    );
-
     // Acquire per-index lock
     let lock = get_index_lock(index_name);
     let _guard = lock.lock().await;
@@ -354,7 +356,7 @@ async fn process_batch(
     let path_str = state.index_path(index_name).to_string_lossy().to_string();
 
     // Run heavy work in blocking thread
-    let result = task::spawn_blocking(move || -> Result<(), String> {
+    let result = task::spawn_blocking(move || -> Result<BatchMetrics, String> {
         // Load stored config
         let config_path = state_clone.index_path(&name_inner).join("config.json");
         let config_file = std::fs::File::open(&config_path)
@@ -364,11 +366,6 @@ async fn process_batch(
 
         // Check and automatically repair sync issues between index and DB
         if let Err(e) = repair_index_db_sync(&path_str) {
-            tracing::error!(
-                index = %name_inner,
-                "Failed to repair index/DB sync: {}",
-                e
-            );
             return Err(format!("Index/DB sync repair failed: {}", e));
         }
 
@@ -382,11 +379,7 @@ async fn process_batch(
         };
         let update_config = UpdateConfig::default();
 
-        let num_new_docs = embeddings.len();
-
         // STEP 1: Update vector index FIRST
-        // The index knows its true state and will assign correct document IDs.
-        // This is critical after delete operations, which compact/renumber IDs.
         let index_update_start = std::time::Instant::now();
         let index_result =
             MmapIndex::update_or_create(&embeddings, &path_str, &index_config, &update_config);
@@ -397,19 +390,12 @@ async fn process_batch(
                 return Err(format!("Index update failed: {}", e));
             }
         };
+        let index_update_ms = index_update_start.elapsed().as_millis() as u64;
 
-        let index_update_duration_ms = index_update_start.elapsed().as_millis() as u64;
-        tracing::info!(
-            index = %name_inner,
-            num_documents = num_new_docs,
-            first_doc_id = ?doc_ids.first(),
-            last_doc_id = ?doc_ids.last(),
-            index_update_duration_ms = index_update_duration_ms,
-            "Index update completed"
-        );
+        let first_doc_id = doc_ids.first().copied();
+        let last_doc_id = doc_ids.last().copied();
 
         // STEP 2: Update metadata DB using the ACTUAL doc_ids from the index
-        // If this fails, we need to rollback the index changes
         let metadata_update_start = std::time::Instant::now();
         let db_existed = filtering::exists(&path_str);
         let db_result = if db_existed {
@@ -420,75 +406,93 @@ async fn process_batch(
 
         if let Err(e) = db_result {
             // ROLLBACK: Remove the documents we just added to the index
-            tracing::warn!(
-                index = %name_inner,
-                "Metadata DB update failed, rolling back index changes: {}",
-                e
-            );
             if let Err(rollback_err) = index.delete_with_options(&doc_ids, false) {
                 tracing::error!(
                     index = %name_inner,
-                    "Failed to rollback index after metadata failure: {}. \
-                     Index may be out of sync and require rebuild.",
-                    rollback_err
+                    error = %rollback_err,
+                    operation = "rollback",
+                    "update.rollback.failed"
                 );
             }
             return Err(format!("Failed to update metadata: {}", e));
         }
-
-        let metadata_update_duration_ms = metadata_update_start.elapsed().as_millis() as u64;
-        tracing::info!(
-            index = %name_inner,
-            num_documents = num_new_docs,
-            metadata_update_duration_ms = metadata_update_duration_ms,
-            "Metadata update completed"
-        );
+        let metadata_update_ms = metadata_update_start.elapsed().as_millis() as u64;
 
         // Eviction: Check if over max_documents limit
-        if let Some(max_docs) = stored_config.max_documents {
-            if let Err(e) = evict_oldest_documents(&mut index, max_docs) {
-                tracing::warn!(
-                    "Failed to evict documents from {}: {}. Index may exceed max_documents limit.",
-                    name_inner,
-                    e
-                );
+        let evicted_count = if let Some(max_docs) = stored_config.max_documents {
+            match evict_oldest_documents(&mut index, max_docs) {
+                Ok(count) => count,
+                Err(e) => {
+                    tracing::warn!(
+                        index = %name_inner,
+                        error = %e,
+                        max_documents = max_docs,
+                        "update.eviction.failed"
+                    );
+                    0
+                }
             }
-        }
+        } else {
+            0
+        };
 
         // Reload State
         state_clone.unload_index(&name_inner);
         let idx = MmapIndex::load(&path_str).map_err(|e| format!("Failed to load index: {}", e))?;
         state_clone.register_index(&name_inner, idx);
 
-        Ok(())
+        Ok(BatchMetrics {
+            index_update_ms,
+            metadata_update_ms,
+            first_doc_id,
+            last_doc_id,
+            evicted_count,
+        })
     })
     .await;
 
-    let duration = start.elapsed();
+    let total_ms = start.elapsed().as_millis() as u64;
 
     match result {
-        Ok(Ok(())) => {
+        Ok(Ok(metrics)) => {
             tracing::info!(
                 index = %index_name,
-                documents = doc_count,
-                duration_ms = duration.as_millis() as u64,
-                "Batch processing completed successfully"
+                num_documents = doc_count,
+                first_doc_id = ?metrics.first_doc_id,
+                last_doc_id = ?metrics.last_doc_id,
+                index_update_ms = metrics.index_update_ms,
+                metadata_update_ms = metrics.metadata_update_ms,
+                evicted_count = metrics.evicted_count,
+                total_ms = total_ms,
+                "update.batch.complete"
             );
+
+            // Warn on slow batch processing (>5s)
+            if total_ms > 5000 {
+                tracing::warn!(
+                    index = %index_name,
+                    num_documents = doc_count,
+                    total_ms = total_ms,
+                    "update.batch.slow"
+                );
+            }
         }
         Ok(Err(e)) => {
             tracing::error!(
                 index = %index_name,
-                documents = doc_count,
+                num_documents = doc_count,
                 error = %e,
-                "Batch processing failed"
+                total_ms = total_ms,
+                "update.batch.failed"
             );
         }
         Err(e) => {
             tracing::error!(
                 index = %index_name,
-                documents = doc_count,
+                num_documents = doc_count,
                 error = %e,
-                "Batch processing task panicked"
+                total_ms = total_ms,
+                "update.batch.panicked"
             );
         }
     }
@@ -540,19 +544,14 @@ fn evict_oldest_documents(index: &mut MmapIndex, max_documents: usize) -> ApiRes
     // Oldest documents have the lowest IDs (0, 1, 2, ...)
     let ids_to_delete: Vec<i64> = (0..num_to_evict as i64).collect();
 
-    tracing::info!(
-        "Evicting {} oldest documents (current: {}, max: {})",
-        num_to_evict,
-        current_count,
-        max_documents
-    );
-
     let deleted = index.delete(&ids_to_delete)?;
 
-    tracing::info!(
-        "Evicted {} documents, {} remaining",
-        deleted,
-        index.metadata.num_documents
+    tracing::debug!(
+        current_count = current_count,
+        max_documents = max_documents,
+        evicted = deleted,
+        remaining = index.metadata.num_documents,
+        "index.eviction.complete"
     );
 
     Ok(deleted)
@@ -572,8 +571,11 @@ fn evict_oldest_documents(index: &mut MmapIndex, max_documents: usize) -> ApiRes
 )]
 pub async fn create_index(
     State(state): State<Arc<AppState>>,
+    trace_id: Option<Extension<TraceId>>,
     Json(req): Json<CreateIndexRequest>,
 ) -> ApiResult<Json<CreateIndexResponse>> {
+    let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
+
     // Validate name
     if req.name.is_empty() {
         return Err(ApiError::BadRequest(
@@ -607,7 +609,13 @@ pub async fn create_index(
     // Store config.json and cache it
     state.set_index_config(&req.name, stored_config.clone())?;
 
-    tracing::info!(index = %req.name, nbits = stored_config.nbits, "Index declared");
+    tracing::info!(
+        trace_id = %trace_id,
+        index = %req.name,
+        nbits = stored_config.nbits,
+        max_documents = ?stored_config.max_documents,
+        "index.create.complete"
+    );
 
     Ok(Json(CreateIndexResponse {
         name: req.name,
@@ -796,7 +804,7 @@ pub async fn add_documents(
         let start = std::time::Instant::now();
 
         // 2. Perform heavy IO work in a blocking task
-        let result = task::spawn_blocking(move || -> ApiResult<()> {
+        let result = task::spawn_blocking(move || -> ApiResult<u64> {
             // Load index for update
             let path_str = state_clone
                 .index_path(&name_inner)
@@ -824,13 +832,7 @@ pub async fn add_documents(
             let update_config = UpdateConfig::default();
             let index_update_start = std::time::Instant::now();
             index.update_with_metadata(&embeddings, &update_config, Some(&metadata))?;
-            let index_update_duration_ms = index_update_start.elapsed().as_millis() as u64;
-            tracing::info!(
-                index = %name_inner,
-                num_documents = embeddings.len(),
-                index_update_duration_ms = index_update_duration_ms,
-                "Index update with metadata completed"
-            );
+            let index_update_ms = index_update_start.elapsed().as_millis() as u64;
 
             // Eviction: Load config to check max_documents
             let config_path = state_clone.index_path(&name_inner).join("config.json");
@@ -840,7 +842,12 @@ pub async fn add_documents(
                 {
                     if let Some(max_docs) = stored_config.max_documents {
                         if let Err(e) = evict_oldest_documents(&mut index, max_docs) {
-                            tracing::warn!("Failed to evict documents from {}: {}", name_inner, e);
+                            tracing::warn!(
+                                index = %name_inner,
+                                error = %e,
+                                max_documents = max_docs,
+                                "documents.add.eviction.failed"
+                            );
                         }
                     }
                 }
@@ -848,27 +855,40 @@ pub async fn add_documents(
 
             // Reload state
             state_clone.reload_index(&name_inner)?;
-            Ok(())
+            Ok(index_update_ms)
         })
         .await;
 
-        let duration = start.elapsed();
+        let total_ms = start.elapsed().as_millis() as u64;
 
         // Log result
         match result {
-            Ok(Ok(())) => {
+            Ok(Ok(index_update_ms)) => {
                 tracing::info!(
                     index = %name_clone,
-                    documents = doc_count,
-                    duration_ms = duration.as_millis() as u64,
-                    "Documents added successfully"
+                    num_documents = doc_count,
+                    index_update_ms = index_update_ms,
+                    total_ms = total_ms,
+                    "documents.add.complete"
                 );
             }
             Ok(Err(e)) => {
-                tracing::error!(index = %name_clone, error = %e, "Background error adding documents");
+                tracing::error!(
+                    index = %name_clone,
+                    num_documents = doc_count,
+                    error = %e,
+                    total_ms = total_ms,
+                    "documents.add.failed"
+                );
             }
             Err(e) => {
-                tracing::error!(index = %name_clone, error = %e, "Background task panicked");
+                tracing::error!(
+                    index = %name_clone,
+                    num_documents = doc_count,
+                    error = %e,
+                    total_ms = total_ms,
+                    "documents.add.panicked"
+                );
             }
         }
     });
@@ -965,11 +985,6 @@ pub async fn delete_documents(
 
             // Check and automatically repair sync issues between index and DB
             if let Err(e) = repair_index_db_sync(&path_str) {
-                tracing::error!(
-                    index = %name_inner,
-                    "Failed to repair index/DB sync: {}",
-                    e
-                );
                 return Err(ApiError::Internal(format!(
                     "Index/DB sync repair failed: {}",
                     e
@@ -993,7 +1008,7 @@ pub async fn delete_documents(
         })
         .await;
 
-        let duration = start.elapsed();
+        let total_ms = start.elapsed().as_millis() as u64;
 
         // Log result
         match result {
@@ -1002,24 +1017,28 @@ pub async fn delete_documents(
                     index = %name_clone,
                     deleted = deleted,
                     remaining = remaining,
-                    duration_ms = duration.as_millis() as u64,
-                    "Documents deleted successfully"
+                    total_ms = total_ms,
+                    "documents.delete.complete"
                 );
             }
             Ok(Err(e)) => {
-                tracing::error!(index = %name_clone, error = %e, "Background error deleting documents");
+                tracing::error!(
+                    index = %name_clone,
+                    error = %e,
+                    total_ms = total_ms,
+                    "documents.delete.failed"
+                );
             }
             Err(e) => {
-                tracing::error!(index = %name_clone, error = %e, "Background delete task panicked");
+                tracing::error!(
+                    index = %name_clone,
+                    error = %e,
+                    total_ms = total_ms,
+                    "documents.delete.panicked"
+                );
             }
         }
     });
-
-    tracing::debug!(
-        index = %name,
-        matching_documents = doc_count,
-        "Delete request queued for background processing"
-    );
 
     // Return 202 Accepted immediately
     Ok((
@@ -1047,7 +1066,10 @@ pub async fn delete_documents(
 pub async fn delete_index(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    trace_id: Option<Extension<TraceId>>,
 ) -> ApiResult<Json<DeleteIndexResponse>> {
+    let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
+
     let lock = get_index_lock(&name);
     let _guard = lock.lock().await;
 
@@ -1062,7 +1084,11 @@ pub async fn delete_index(
             .map_err(|e| ApiError::Internal(format!("Failed to delete index: {}", e)))?;
     }
 
-    tracing::info!(index = %name, "Index deleted");
+    tracing::info!(
+        trace_id = %trace_id,
+        index = %name,
+        "index.delete.complete"
+    );
 
     Ok(Json(DeleteIndexResponse {
         deleted: true,
@@ -1142,6 +1168,21 @@ pub async fn update_index(
     };
 
     // Send to batch queue (non-blocking if channel has capacity)
+    // Check queue depth for warning
+    let queue_capacity = batch_channel_size();
+    let queue_available = sender.capacity();
+    let queue_depth = queue_capacity - queue_available;
+
+    // Warn when queue is >80% full
+    if queue_depth > (queue_capacity * 8 / 10) {
+        tracing::warn!(
+            index = %name,
+            queue_depth = queue_depth,
+            max_capacity = queue_capacity,
+            "update.queue.high"
+        );
+    }
+
     sender.try_send(batch_item).map_err(|e| match e {
         mpsc::error::TrySendError::Full(_) => ApiError::ServiceUnavailable(format!(
             "Update queue full for index '{}'. Max {} pending items. Retry later.",
@@ -1155,8 +1196,9 @@ pub async fn update_index(
 
     tracing::debug!(
         index = %name,
-        documents = doc_count,
-        "Update request queued for batching"
+        num_documents = doc_count,
+        queue_depth = queue_depth + 1,
+        "update.queued"
     );
 
     // Immediate Response
@@ -1184,8 +1226,11 @@ pub async fn update_index(
 pub async fn update_index_config(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    trace_id: Option<Extension<TraceId>>,
     Json(req): Json<UpdateIndexConfigRequest>,
 ) -> ApiResult<Json<UpdateIndexConfigResponse>> {
+    let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
+
     let lock = get_index_lock(&name);
     let _guard = lock.lock().await;
 
@@ -1200,18 +1245,19 @@ pub async fn update_index_config(
     // Save updated config (updates both disk and cache)
     state.set_index_config(&name, stored_config.clone())?;
 
+    tracing::info!(
+        trace_id = %trace_id,
+        index = %name,
+        max_documents = ?req.max_documents,
+        "index.config.update.complete"
+    );
+
     let message = match req.max_documents {
-        Some(max) => {
-            tracing::info!(index = %name, max_documents = max, "Index config updated");
-            format!(
-                "max_documents set to {}. Eviction will occur on next document addition if over limit.",
-                max
-            )
-        }
-        None => {
-            tracing::info!(index = %name, max_documents = "unlimited", "Index config updated");
-            "max_documents limit removed (unlimited).".to_string()
-        }
+        Some(max) => format!(
+            "max_documents set to {}. Eviction will occur on next document addition if over limit.",
+            max
+        ),
+        None => "max_documents limit removed (unlimited).".to_string(),
     };
 
     Ok(Json(UpdateIndexConfigResponse {
@@ -1314,8 +1360,8 @@ pub async fn update_index_with_encoding(
 
     tracing::debug!(
         index = %name,
-        documents = doc_count,
-        "Update with encoding request queued for batching"
+        num_documents = doc_count,
+        "update.with_encoding.queued"
     );
 
     // Immediate Response

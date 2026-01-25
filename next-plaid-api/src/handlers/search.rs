@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, State},
-    Json,
+    Extension, Json,
 };
 use ndarray::Array2;
 
@@ -20,6 +20,7 @@ use crate::models::{
     QueryEmbeddings, QueryResultResponse, SearchRequest, SearchResponse, SearchWithEncodingRequest,
 };
 use crate::state::AppState;
+use crate::tracing_middleware::TraceId;
 
 /// Convert query embeddings from JSON format to ndarray.
 fn to_ndarray(query: &QueryEmbeddings) -> ApiResult<Array2<f32>> {
@@ -105,8 +106,12 @@ fn fetch_metadata_for_docs(
 pub async fn search(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    trace_id: Option<Extension<TraceId>>,
     Json(req): Json<SearchRequest>,
 ) -> ApiResult<Json<SearchResponse>> {
+    let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
+    let start = std::time::Instant::now();
+
     if req.queries.is_empty() {
         return Err(ApiError::BadRequest("No queries provided".to_string()));
     }
@@ -149,14 +154,6 @@ pub async fn search(
     // Get path for metadata lookup
     let path_str = state.index_path(&name).to_string_lossy().to_string();
 
-    let start = std::time::Instant::now();
-    tracing::info!(
-        index = %name,
-        queries = queries.len(),
-        top_k = top_k,
-        "Starting search"
-    );
-
     // Perform search and collect raw results
     let index = &**idx;
     let index_query_start = std::time::Instant::now();
@@ -170,16 +167,11 @@ pub async fn search(
             .map(|r| (r.query_id, r.passage_ids, r.scores))
             .collect()
     };
-    let index_query_duration_ms = index_query_start.elapsed().as_millis() as u64;
-    tracing::info!(
-        index = %name,
-        queries = queries.len(),
-        index_query_duration_ms = index_query_duration_ms,
-        "Index query completed"
-    );
+    let index_query_ms = index_query_start.elapsed().as_millis() as u64;
 
     // Enrich results with metadata
     let metadata_fetch_start = std::time::Instant::now();
+    let total_results: usize = raw_results.iter().map(|(_, ids, _)| ids.len()).sum();
     let results: Vec<QueryResultResponse> = raw_results
         .into_iter()
         .map(|(query_id, document_ids, scores)| {
@@ -192,22 +184,32 @@ pub async fn search(
             })
         })
         .collect::<ApiResult<Vec<_>>>()?;
-    let metadata_fetch_duration_ms = metadata_fetch_start.elapsed().as_millis() as u64;
+    let metadata_fetch_ms = metadata_fetch_start.elapsed().as_millis() as u64;
+
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    // Single comprehensive completion log
     tracing::info!(
+        trace_id = %trace_id,
         index = %name,
-        queries = queries.len(),
-        metadata_fetch_duration_ms = metadata_fetch_duration_ms,
-        "Metadata fetch completed"
+        num_queries = queries.len(),
+        top_k = top_k,
+        total_results = total_results,
+        index_query_ms = index_query_ms,
+        metadata_fetch_ms = metadata_fetch_ms,
+        total_ms = total_ms,
+        "search.complete"
     );
 
-    let duration = start.elapsed();
-    tracing::info!(
-        index = %name,
-        queries = queries.len(),
-        top_k = top_k,
-        total_search_duration_ms = duration.as_millis() as u64,
-        "Search completed"
-    );
+    // Warn on slow searches (>1s)
+    if total_ms > 1000 {
+        tracing::warn!(
+            trace_id = %trace_id,
+            index = %name,
+            total_ms = total_ms,
+            "search.slow"
+        );
+    }
 
     Ok(Json(SearchResponse {
         num_queries: queries.len(),
@@ -235,8 +237,13 @@ pub async fn search(
 pub async fn search_filtered(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    trace_id: Option<Extension<TraceId>>,
     Json(req): Json<FilteredSearchRequest>,
 ) -> ApiResult<Json<SearchResponse>> {
+    let trace_id_ext = trace_id.clone();
+    let trace_id_val = trace_id.map(|t| t.0).unwrap_or_default();
+    let start = std::time::Instant::now();
+
     if req.queries.is_empty() {
         return Err(ApiError::BadRequest("No queries provided".to_string()));
     }
@@ -255,15 +262,8 @@ pub async fn search_filtered(
         &req.filter_parameters,
     )
     .map_err(|e| ApiError::BadRequest(format!("Invalid filter condition: {}", e)))?;
-    let sql_filter_duration_ms = sql_filter_start.elapsed().as_millis() as u64;
-
-    tracing::info!(
-        index = %name,
-        filter = %req.filter_condition,
-        matching_docs = subset.len(),
-        sql_filter_duration_ms = sql_filter_duration_ms,
-        "SQL filter applied"
-    );
+    let sql_filter_ms = sql_filter_start.elapsed().as_millis() as u64;
+    let matching_docs = subset.len();
 
     // Convert to standard search request with subset
     let search_req = SearchRequest {
@@ -273,7 +273,28 @@ pub async fn search_filtered(
     };
 
     // Delegate to normal search
-    search(State(state), Path(name), Json(search_req)).await
+    let result = search(
+        State(state),
+        Path(name.clone()),
+        trace_id_ext,
+        Json(search_req),
+    )
+    .await;
+
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    // Log filtered search completion with filter-specific metrics
+    tracing::info!(
+        trace_id = %trace_id_val,
+        index = %name,
+        filter = %req.filter_condition,
+        matching_docs = matching_docs,
+        sql_filter_ms = sql_filter_ms,
+        total_ms = total_ms,
+        "search.filtered.complete"
+    );
+
+    result
 }
 
 /// Search an index using text queries (requires model to be loaded).
@@ -297,15 +318,23 @@ pub async fn search_filtered(
 pub async fn search_with_encoding(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    trace_id: Option<Extension<TraceId>>,
     Json(req): Json<SearchWithEncodingRequest>,
 ) -> ApiResult<Json<SearchResponse>> {
+    let trace_id_val = trace_id.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+    let start = std::time::Instant::now();
+
     if req.queries.is_empty() {
         return Err(ApiError::BadRequest("No queries provided".to_string()));
     }
 
+    let num_queries = req.queries.len();
+
     // Encode the text queries (async, uses batch queue)
+    let encode_start = std::time::Instant::now();
     let query_embeddings =
         encode_texts_internal(state.clone(), &req.queries, InputType::Query, None).await?;
+    let encode_ms = encode_start.elapsed().as_millis() as u64;
 
     // Convert to QueryEmbeddings format
     let queries: Vec<QueryEmbeddings> = query_embeddings
@@ -323,7 +352,20 @@ pub async fn search_with_encoding(
     };
 
     // Delegate to the standard search
-    search(State(state), Path(name), Json(search_req)).await
+    let result = search(State(state), Path(name.clone()), trace_id, Json(search_req)).await;
+
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    tracing::info!(
+        trace_id = %trace_id_val,
+        index = %name,
+        num_queries = num_queries,
+        encode_ms = encode_ms,
+        total_ms = total_ms,
+        "search.with_encoding.complete"
+    );
+
+    result
 }
 
 /// Search with text queries and a metadata filter (requires model to be loaded).
@@ -347,15 +389,23 @@ pub async fn search_with_encoding(
 pub async fn search_filtered_with_encoding(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    trace_id: Option<Extension<TraceId>>,
     Json(req): Json<FilteredSearchWithEncodingRequest>,
 ) -> ApiResult<Json<SearchResponse>> {
+    let trace_id_val = trace_id.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+    let start = std::time::Instant::now();
+
     if req.queries.is_empty() {
         return Err(ApiError::BadRequest("No queries provided".to_string()));
     }
 
+    let num_queries = req.queries.len();
+
     // Encode the text queries (async, uses batch queue)
+    let encode_start = std::time::Instant::now();
     let query_embeddings =
         encode_texts_internal(state.clone(), &req.queries, InputType::Query, None).await?;
+    let encode_ms = encode_start.elapsed().as_millis() as u64;
 
     // Convert to QueryEmbeddings format
     let queries: Vec<QueryEmbeddings> = query_embeddings
@@ -369,10 +419,30 @@ pub async fn search_filtered_with_encoding(
     let filtered_req = FilteredSearchRequest {
         queries,
         params: req.params,
-        filter_condition: req.filter_condition,
+        filter_condition: req.filter_condition.clone(),
         filter_parameters: req.filter_parameters,
     };
 
     // Delegate to the filtered search
-    search_filtered(State(state), Path(name), Json(filtered_req)).await
+    let result = search_filtered(
+        State(state),
+        Path(name.clone()),
+        trace_id,
+        Json(filtered_req),
+    )
+    .await;
+
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    tracing::info!(
+        trace_id = %trace_id_val,
+        index = %name,
+        num_queries = num_queries,
+        filter = %req.filter_condition,
+        encode_ms = encode_ms,
+        total_ms = total_ms,
+        "search.filtered_with_encoding.complete"
+    );
+
+    result
 }
