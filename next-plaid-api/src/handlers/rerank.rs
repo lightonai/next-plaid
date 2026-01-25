@@ -13,6 +13,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::models::{RerankRequest, RerankResponse, RerankResult};
 use crate::state::AppState;
 use crate::tracing_middleware::TraceId;
+use crate::PrettyJson;
 
 /// Convert a Vec<Vec<f32>> to an ndarray::Array2<f32>.
 fn to_ndarray(embeddings: &[Vec<f32>]) -> ApiResult<Array2<f32>> {
@@ -95,7 +96,7 @@ pub async fn rerank(
     State(_state): State<Arc<AppState>>,
     trace_id: Option<Extension<TraceId>>,
     Json(request): Json<RerankRequest>,
-) -> ApiResult<Json<RerankResponse>> {
+) -> ApiResult<PrettyJson<RerankResponse>> {
     let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
     let start = std::time::Instant::now();
 
@@ -160,7 +161,7 @@ pub async fn rerank(
         "rerank.complete"
     );
 
-    Ok(Json(RerankResponse {
+    Ok(PrettyJson(RerankResponse {
         results,
         num_documents,
     }))
@@ -186,7 +187,7 @@ pub async fn rerank_with_encoding(
     State(state): State<Arc<AppState>>,
     trace_id: Option<Extension<TraceId>>,
     Json(request): Json<crate::models::RerankWithEncodingRequest>,
-) -> ApiResult<Json<RerankResponse>> {
+) -> ApiResult<PrettyJson<RerankResponse>> {
     use crate::handlers::encode::encode_texts_internal;
     use crate::models::InputType;
 
@@ -266,7 +267,7 @@ pub async fn rerank_with_encoding(
 
     let result_count = results.len();
 
-    Ok(Json(RerankResponse {
+    Ok(PrettyJson(RerankResponse {
         results,
         num_documents: result_count,
     }))
@@ -286,6 +287,6 @@ pub async fn rerank_with_encoding(
 pub async fn rerank_with_encoding(
     State(_state): State<Arc<AppState>>,
     Json(_request): Json<crate::models::RerankWithEncodingRequest>,
-) -> ApiResult<Json<RerankResponse>> {
+) -> ApiResult<PrettyJson<RerankResponse>> {
     Err(ApiError::ModelNotLoaded)
 }

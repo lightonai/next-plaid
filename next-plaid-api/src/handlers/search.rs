@@ -21,6 +21,7 @@ use crate::models::{
 };
 use crate::state::AppState;
 use crate::tracing_middleware::TraceId;
+use crate::PrettyJson;
 
 /// Convert query embeddings from JSON format to ndarray.
 fn to_ndarray(query: &QueryEmbeddings) -> ApiResult<Array2<f32>> {
@@ -108,7 +109,7 @@ pub async fn search(
     Path(name): Path<String>,
     trace_id: Option<Extension<TraceId>>,
     Json(req): Json<SearchRequest>,
-) -> ApiResult<Json<SearchResponse>> {
+) -> ApiResult<PrettyJson<SearchResponse>> {
     let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
     let start = std::time::Instant::now();
 
@@ -211,7 +212,7 @@ pub async fn search(
         );
     }
 
-    Ok(Json(SearchResponse {
+    Ok(PrettyJson(SearchResponse {
         num_queries: queries.len(),
         results,
     }))
@@ -239,7 +240,7 @@ pub async fn search_filtered(
     Path(name): Path<String>,
     trace_id: Option<Extension<TraceId>>,
     Json(req): Json<FilteredSearchRequest>,
-) -> ApiResult<Json<SearchResponse>> {
+) -> ApiResult<PrettyJson<SearchResponse>> {
     let trace_id_ext = trace_id.clone();
     let trace_id_val = trace_id.map(|t| t.0).unwrap_or_default();
     let start = std::time::Instant::now();
@@ -320,7 +321,7 @@ pub async fn search_with_encoding(
     Path(name): Path<String>,
     trace_id: Option<Extension<TraceId>>,
     Json(req): Json<SearchWithEncodingRequest>,
-) -> ApiResult<Json<SearchResponse>> {
+) -> ApiResult<PrettyJson<SearchResponse>> {
     let trace_id_val = trace_id.as_ref().map(|t| t.0.clone()).unwrap_or_default();
     let start = std::time::Instant::now();
 
@@ -391,7 +392,7 @@ pub async fn search_filtered_with_encoding(
     Path(name): Path<String>,
     trace_id: Option<Extension<TraceId>>,
     Json(req): Json<FilteredSearchWithEncodingRequest>,
-) -> ApiResult<Json<SearchResponse>> {
+) -> ApiResult<PrettyJson<SearchResponse>> {
     let trace_id_val = trace_id.as_ref().map(|t| t.0.clone()).unwrap_or_default();
     let start = std::time::Instant::now();
 

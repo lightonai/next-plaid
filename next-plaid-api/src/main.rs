@@ -40,7 +40,7 @@ use axum::{
     http::StatusCode,
     middleware,
     routing::{delete, get, post, put},
-    Json, Router,
+    Router,
 };
 use tower::limit::ConcurrencyLimitLayer;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
@@ -60,6 +60,7 @@ mod state;
 mod tracing_middleware;
 
 use models::HealthResponse;
+use next_plaid_api::PrettyJson;
 use state::{ApiConfig, AppState};
 
 // OpenAPI documentation
@@ -189,7 +190,7 @@ fn get_memory_usage_bytes() -> u64 {
         (status = 200, description = "Service is healthy", body = HealthResponse)
     )
 )]
-async fn health(state: axum::extract::State<Arc<AppState>>) -> Json<HealthResponse> {
+async fn health(state: axum::extract::State<Arc<AppState>>) -> PrettyJson<HealthResponse> {
     // Ensure index directory exists (async-safe: only check, don't block on create)
     if !state.config.index_dir.exists() {
         // Spawn blocking task for directory creation to avoid blocking async runtime
@@ -224,7 +225,7 @@ async fn health(state: axum::extract::State<Arc<AppState>>) -> Json<HealthRespon
     #[cfg(not(feature = "model"))]
     let model_info: Option<models::ModelHealthInfo> = None;
 
-    Json(HealthResponse {
+    PrettyJson(HealthResponse {
         status: "healthy".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         loaded_indices: state.loaded_count(),
