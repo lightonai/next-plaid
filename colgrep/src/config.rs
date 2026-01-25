@@ -12,8 +12,8 @@ use crate::index::paths::get_colgrep_data_dir;
 
 const CONFIG_FILE: &str = "config.json";
 
-/// Default pool factor for embedding compression: 1 (no pooling)
-pub const DEFAULT_POOL_FACTOR: usize = 1;
+/// Default pool factor for embedding compression: 2 (2x compression)
+pub const DEFAULT_POOL_FACTOR: usize = 2;
 
 /// User configuration stored in the colgrep data directory
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -113,7 +113,7 @@ impl Config {
 
     /// Check if FP32 (non-quantized) model should be used
     pub fn use_fp32(&self) -> bool {
-        self.fp32.unwrap_or(true)
+        self.fp32.unwrap_or(false)
     }
 
     /// Set whether to use FP32 (non-quantized) model
@@ -121,7 +121,7 @@ impl Config {
         self.fp32 = Some(fp32);
     }
 
-    /// Clear the FP32 setting (revert to default FP32)
+    /// Clear the FP32 setting (revert to default INT8)
     pub fn clear_fp32(&mut self) {
         self.fp32 = None;
     }

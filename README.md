@@ -164,29 +164,41 @@ colgrep clear --all
 
 ### Performance tuning
 
-For faster indexing and search on large codebases, you can enable INT8 quantization and embedding pooling:
+By default, colgrep uses INT8 quantization and pool-factor 2 for optimal performance. You can adjust these settings:
 
 ```bash
-# Enable INT8 quantized inference (faster, slightly less precise)
-colgrep settings --int8
+# Use FP32 full precision (more accurate, slower)
+colgrep settings --fp32
 
-# Enable embedding pooling (reduces index size by ~50%, faster search)
-colgrep settings --pool-factor 2
+# Disable embedding pooling (larger index, more precision)
+colgrep settings --pool-factor 1
 
-# Combine both for maximum speed
-colgrep settings --int8 --pool-factor 2
+# Combine both for maximum precision
+colgrep settings --fp32 --pool-factor 1
 ```
 
 | Setting | Effect | Trade-off |
 | ------- | ------ | --------- |
-| `--int8` | Uses INT8 quantized model | ~2x faster inference, minimal quality loss |
-| `--pool-factor 1` | No pooling (default) | Maximum precision, larger index |
-| `--pool-factor 2` | Pools every 2 token embeddings | ~50% smaller index, faster search |
+| `--int8` | Uses INT8 quantized model (default) | ~2x faster inference, minimal quality loss |
+| `--pool-factor 1` | No pooling | Maximum precision, larger index |
+| `--pool-factor 2` | Pools every 2 token embeddings (default) | ~50% smaller index, faster search |
 
-To reset to defaults (FP32, no pooling):
+To reset to defaults (INT8, pool-factor 2):
 
 ```bash
-colgrep settings --fp32 --pool-factor 0
+colgrep settings --int8 --pool-factor 2
+```
+
+For even better search quality, switch to the larger `lightonai/LateOn-Code-v0` model (138M parameters vs 17M for the default edge model). This significantly improves semantic understanding but increases indexing time:
+
+```bash
+colgrep set-model lightonai/LateOn-Code-v0
+```
+
+To switch back to the fast edge model:
+
+```bash
+colgrep set-model lightonai/LateOn-Code-v0-edge
 ```
 
 View current settings:

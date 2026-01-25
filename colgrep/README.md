@@ -237,13 +237,13 @@ colgrep config --k 20
 # Set default context lines
 colgrep config --n 10
 
-# Use INT8 quantized model (faster)
+# Use INT8 quantized model (default, faster)
 colgrep config --int8
 
-# Use FP32 full precision (default, more accurate)
+# Use FP32 full precision (more accurate)
 colgrep config --fp32
 
-# Reset to defaults
+# Reset to defaults (INT8, pool-factor 2)
 colgrep config --k 0 --n 0
 ```
 
