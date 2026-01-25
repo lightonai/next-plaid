@@ -15,6 +15,10 @@ const CONFIG_FILE: &str = "config.json";
 /// Default pool factor for embedding compression: 2 (2x compression)
 pub const DEFAULT_POOL_FACTOR: usize = 2;
 
+/// Default batch size per encoding session
+/// Testing shows batch_size=1 gives best performance with parallel sessions
+pub const DEFAULT_BATCH_SIZE: usize = 1;
+
 /// User configuration stored in the colgrep data directory
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -39,6 +43,16 @@ pub struct Config {
     /// Set to 1 to disable pooling
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pool_factor: Option<usize>,
+
+    /// Number of parallel ONNX sessions for encoding (default: CPU count)
+    /// More sessions = faster encoding on multi-core systems
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_sessions: Option<usize>,
+
+    /// Batch size per encoding session (default: 1)
+    /// Smaller batches work better with parallel sessions
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch_size: Option<usize>,
 }
 
 impl Config {
@@ -141,6 +155,42 @@ impl Config {
     /// Clear the pool factor setting (revert to default)
     pub fn clear_pool_factor(&mut self) {
         self.pool_factor = None;
+    }
+
+    /// Get the number of parallel sessions for encoding
+    /// Returns the configured value or the CPU count (auto-detected)
+    pub fn get_parallel_sessions(&self) -> usize {
+        self.parallel_sessions.unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(8) // Fallback to 8 if detection fails
+        })
+    }
+
+    /// Set the number of parallel sessions for encoding
+    pub fn set_parallel_sessions(&mut self, sessions: usize) {
+        self.parallel_sessions = Some(sessions.max(1)); // Minimum is 1
+    }
+
+    /// Clear the parallel sessions setting (revert to default)
+    pub fn clear_parallel_sessions(&mut self) {
+        self.parallel_sessions = None;
+    }
+
+    /// Get the batch size for encoding
+    /// Returns the configured value or the default (1)
+    pub fn get_batch_size(&self) -> usize {
+        self.batch_size.unwrap_or(DEFAULT_BATCH_SIZE)
+    }
+
+    /// Set the batch size for encoding
+    pub fn set_batch_size(&mut self, size: usize) {
+        self.batch_size = Some(size.max(1)); // Minimum is 1
+    }
+
+    /// Clear the batch size setting (revert to default)
+    pub fn clear_batch_size(&mut self) {
+        self.batch_size = None;
     }
 }
 

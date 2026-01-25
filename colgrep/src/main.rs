@@ -141,7 +141,17 @@ fn main() -> Result<()> {
             fp32,
             int8,
             pool_factor,
-        }) => cmd_config(default_k, default_n, fp32, int8, pool_factor),
+            parallel_sessions,
+            batch_size,
+        }) => cmd_config(
+            default_k,
+            default_n,
+            fp32,
+            int8,
+            pool_factor,
+            parallel_sessions,
+            batch_size,
+        ),
         None => {
             // Default: run search if query is provided
             // If only -e pattern is given without a query, use the pattern as the query too

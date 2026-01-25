@@ -1,6 +1,9 @@
 use anyhow::Result;
 
-use colgrep::{ensure_model, get_colgrep_data_dir, Config, DEFAULT_MODEL, DEFAULT_POOL_FACTOR};
+use colgrep::{
+    ensure_model, get_colgrep_data_dir, Config, DEFAULT_BATCH_SIZE, DEFAULT_MODEL,
+    DEFAULT_POOL_FACTOR,
+};
 
 pub fn cmd_set_model(model: &str) -> Result<()> {
     use next_plaid_onnx::Colbert;
@@ -86,11 +89,20 @@ pub fn cmd_config(
     fp32: bool,
     int8: bool,
     pool_factor: Option<usize>,
+    parallel_sessions: Option<usize>,
+    batch_size: Option<usize>,
 ) -> Result<()> {
     let mut config = Config::load()?;
 
     // If no options provided, show current config
-    if default_k.is_none() && default_n.is_none() && !fp32 && !int8 && pool_factor.is_none() {
+    if default_k.is_none()
+        && default_n.is_none()
+        && !fp32
+        && !int8
+        && pool_factor.is_none()
+        && parallel_sessions.is_none()
+        && batch_size.is_none()
+    {
         println!("Current configuration:");
         println!();
 
@@ -119,6 +131,22 @@ pub fn cmd_config(
             println!("  pool-factor: {} (default)", DEFAULT_POOL_FACTOR);
         }
 
+        // Parallel sessions
+        let ps = config.get_parallel_sessions();
+        if config.parallel_sessions.is_some() {
+            println!("  parallel:    {}", ps);
+        } else {
+            println!("  parallel:    {} (auto, {} cpus)", ps, ps);
+        }
+
+        // Batch size
+        let bs = config.get_batch_size();
+        if config.batch_size.is_some() {
+            println!("  batch-size:  {}", bs);
+        } else {
+            println!("  batch-size:  {} (default)", DEFAULT_BATCH_SIZE);
+        }
+
         // k
         match config.get_default_k() {
             Some(k) => println!("  k:           {}", k),
@@ -137,6 +165,8 @@ pub fn cmd_config(
         );
         println!("Use --fp32 or --int8 to change model precision.");
         println!("Use --pool-factor to set embedding compression (1=disabled, 2+=enabled). Use 0 to reset.");
+        println!("Use --parallel to set number of parallel ONNX sessions. Use 0 to reset to auto (CPU count).");
+        println!("Use --batch-size to set batch size per session. Use 0 to reset to default (1).");
         return Ok(());
     }
 
@@ -189,6 +219,31 @@ pub fn cmd_config(
             } else {
                 println!("✅ Set pool factor to {}", pf);
             }
+        }
+        changed = true;
+    }
+
+    // Set or clear parallel sessions
+    if let Some(ps) = parallel_sessions {
+        if ps == 0 {
+            config.clear_parallel_sessions();
+            let auto_ps = config.get_parallel_sessions();
+            println!("✅ Reset parallel sessions to auto ({} cpus)", auto_ps);
+        } else {
+            config.set_parallel_sessions(ps);
+            println!("✅ Set parallel sessions to {}", ps);
+        }
+        changed = true;
+    }
+
+    // Set or clear batch size
+    if let Some(bs) = batch_size {
+        if bs == 0 {
+            config.clear_batch_size();
+            println!("✅ Reset batch size to {} (default)", DEFAULT_BATCH_SIZE);
+        } else {
+            config.set_batch_size(bs);
+            println!("✅ Set batch size to {}", bs);
         }
         changed = true;
     }

@@ -461,8 +461,15 @@ fn search_single_path(
     // Resolve model: CLI > config > default
     let model = resolve_model(cli_model);
 
+    // Load config for settings
+    let config = Config::load().unwrap_or_default();
+
     // Resolve quantized setting from config (default: false = use FP32)
-    let quantized = Config::load().map(|c| !c.use_fp32()).unwrap_or(false);
+    let quantized = !config.use_fp32();
+
+    // Resolve parallel sessions and batch size from config
+    let parallel_sessions = Some(config.get_parallel_sessions());
+    let batch_size = Some(config.get_batch_size());
 
     // Check if index already exists (suppress model output if so)
     let has_existing_index =
@@ -512,8 +519,14 @@ fn search_single_path(
 
     // Get files matching include patterns (for file-type filtering)
     let include_files: Option<Vec<String>> = if !include_patterns.is_empty() && !no_index {
-        let builder =
-            IndexBuilder::with_options(&effective_root, &model_path, quantized, pool_factor)?;
+        let builder = IndexBuilder::with_options(
+            &effective_root,
+            &model_path,
+            quantized,
+            pool_factor,
+            parallel_sessions,
+            batch_size,
+        )?;
         let paths = builder.scan_files_matching_patterns(include_patterns)?;
         Some(
             paths
@@ -527,8 +540,14 @@ fn search_single_path(
 
     // Auto-index: always do incremental update (no grep-based selective indexing)
     if !no_index {
-        let builder =
-            IndexBuilder::with_options(&effective_root, &model_path, quantized, pool_factor)?;
+        let builder = IndexBuilder::with_options(
+            &effective_root,
+            &model_path,
+            quantized,
+            pool_factor,
+            parallel_sessions,
+            batch_size,
+        )?;
         let needs_index = !index_exists(&effective_root);
 
         if needs_index {
@@ -599,6 +618,8 @@ fn search_single_path(
                     &model_path,
                     quantized,
                     pool_factor,
+                    parallel_sessions,
+                    batch_size,
                 )?;
                 builder.index(None, false)?;
 

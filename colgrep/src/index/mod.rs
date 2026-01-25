@@ -69,11 +69,11 @@ pub struct IndexBuilder {
 
 impl IndexBuilder {
     pub fn new(project_root: &Path, model_path: &Path) -> Result<Self> {
-        Self::with_options(project_root, model_path, false, None)
+        Self::with_options(project_root, model_path, false, None, None, None)
     }
 
     pub fn with_quantized(project_root: &Path, model_path: &Path, quantized: bool) -> Result<Self> {
-        Self::with_options(project_root, model_path, quantized, None)
+        Self::with_options(project_root, model_path, quantized, None, None, None)
     }
 
     pub fn with_options(
@@ -81,9 +81,21 @@ impl IndexBuilder {
         model_path: &Path,
         quantized: bool,
         pool_factor: Option<usize>,
+        parallel_sessions: Option<usize>,
+        batch_size: Option<usize>,
     ) -> Result<Self> {
+        // Use provided values or auto-detect defaults
+        let num_sessions = parallel_sessions.unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(8)
+        });
+        let batch = batch_size.unwrap_or(crate::config::DEFAULT_BATCH_SIZE);
+
         let model = Colbert::builder(model_path)
             .with_quantized(quantized)
+            .with_parallel(num_sessions)
+            .with_batch_size(batch)
             .build()
             .context("Failed to load ColBERT model")?;
 

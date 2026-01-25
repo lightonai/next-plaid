@@ -147,6 +147,12 @@ EXAMPLES:
     # Disable embedding pooling (larger index, more precise)
     colgrep settings --pool-factor 1
 
+    # Set parallel encoding sessions (default: auto-detected CPU count)
+    colgrep settings --parallel 8
+
+    # Set batch size per session (default: 1)
+    colgrep settings --batch-size 2
+
     # Set both at once
     colgrep settings --default-results 25 --default-lines 8
 
@@ -158,7 +164,8 @@ NOTES:
     • Use 0 to reset a value to its default
     • These values override the CLI defaults when not explicitly specified
     • FP32 (full-precision) is the default
-    • Pool factor 2 (default) reduces index size by ~50%. Use 1 to disable pooling";
+    • Pool factor 2 (default) reduces index size by ~50%. Use 1 to disable pooling
+    • Parallel sessions default to CPU count. Batch-size 1 (default) maximizes throughput";
 
 #[derive(Parser)]
 #[command(
@@ -433,5 +440,15 @@ pub enum Commands {
         /// Higher values = faster search, fewer embeddings. Use 1 to disable pooling.
         #[arg(long = "pool-factor", value_name = "FACTOR")]
         pool_factor: Option<usize>,
+
+        /// Set number of parallel ONNX sessions for encoding (use 0 to reset to auto = CPU count)
+        /// More sessions = faster encoding on multi-core systems.
+        #[arg(long = "parallel", value_name = "SESSIONS")]
+        parallel_sessions: Option<usize>,
+
+        /// Set batch size per encoding session (use 0 to reset to default 1)
+        /// Smaller batches work better with parallel sessions.
+        #[arg(long = "batch-size", value_name = "SIZE")]
+        batch_size: Option<usize>,
     },
 }
