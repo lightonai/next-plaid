@@ -118,15 +118,15 @@ class SearchParams:
         top_k: Number of results to return per query (default: 10)
         n_ivf_probe: Number of IVF cells to probe (default: 8)
         n_full_scores: Number of documents for exact re-ranking (default: 4096)
-        centroid_score_threshold: Centroid score threshold for centroid pruning (default: None = disabled).
+        centroid_score_threshold: Centroid score threshold for centroid pruning (default: 0.4).
             Centroids with max score below this threshold are filtered out.
-            Set to a float value (e.g., 0.4) to enable pruning for faster but potentially less accurate search.
+            Set to None to disable pruning for more accurate but slower search.
     """
 
     top_k: int = 10
     n_ivf_probe: int = 8
     n_full_scores: int = 4096
-    centroid_score_threshold: Optional[float] = None
+    centroid_score_threshold: Optional[float] = 0.4
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
