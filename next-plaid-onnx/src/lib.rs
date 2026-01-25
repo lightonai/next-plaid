@@ -488,8 +488,8 @@ pub struct ColbertBuilder {
     batch_size: Option<usize>,
     execution_provider: ExecutionProvider,
     quantized: bool,
-    query_length: usize,
-    document_length: usize,
+    query_length: Option<usize>,
+    document_length: Option<usize>,
 }
 
 impl ColbertBuilder {
@@ -510,8 +510,8 @@ impl ColbertBuilder {
             batch_size: None,
             execution_provider: ExecutionProvider::Auto,
             quantized: false,
-            query_length: default_query_length(),
-            document_length: default_document_length(),
+            query_length: None,
+            document_length: None,
         }
     }
 
@@ -557,21 +557,21 @@ impl ColbertBuilder {
         self
     }
 
-    /// Set the maximum query length (default: 48).
+    /// Set the maximum query length.
     ///
-    /// This overrides the value from the model's config file.
+    /// If not set, uses `max(48, query_length from config_onnx.json)`.
     /// Queries longer than this will be truncated.
     pub fn with_query_length(mut self, query_length: usize) -> Self {
-        self.query_length = query_length;
+        self.query_length = Some(query_length);
         self
     }
 
-    /// Set the maximum document length (default: 300).
+    /// Set the maximum document length.
     ///
-    /// This overrides the value from the model's config file.
+    /// If not set, uses `max(300, document_length from config_onnx.json)`.
     /// Documents longer than this will be truncated.
     pub fn with_document_length(mut self, document_length: usize) -> Self {
-        self.document_length = document_length;
+        self.document_length = Some(document_length);
         self
     }
 
@@ -588,10 +588,15 @@ impl ColbertBuilder {
 
         let mut config = ColbertConfig::from_model_dir(model_dir)?;
 
-        // Override query_length and document_length with builder values
-        // (these always use defaults or user-specified values, never from config file)
-        config.query_length = self.query_length;
-        config.document_length = self.document_length;
+        // Set query_length and document_length:
+        // - If user provided a value, use it
+        // - Otherwise, use max(default, config_value)
+        config.query_length = self
+            .query_length
+            .unwrap_or_else(|| config.query_length.max(default_query_length()));
+        config.document_length = self
+            .document_length
+            .unwrap_or_else(|| config.document_length.max(default_document_length()));
 
         update_token_ids(&mut config, &tokenizer);
         let skiplist_ids = build_skiplist(&config, &tokenizer);
@@ -1276,8 +1281,8 @@ mod tests {
         assert!(!builder.quantized);
         assert!(builder.batch_size.is_none());
         assert_eq!(builder.execution_provider, ExecutionProvider::Auto);
-        assert_eq!(builder.query_length, 48);
-        assert_eq!(builder.document_length, 300);
+        assert!(builder.query_length.is_none());
+        assert!(builder.document_length.is_none());
     }
 
     #[test]
@@ -1329,14 +1334,14 @@ mod tests {
     fn test_builder_with_query_length() {
         let builder = ColbertBuilder::new("test_model").with_query_length(64);
 
-        assert_eq!(builder.query_length, 64);
+        assert_eq!(builder.query_length, Some(64));
     }
 
     #[test]
     fn test_builder_with_document_length() {
         let builder = ColbertBuilder::new("test_model").with_document_length(512);
 
-        assert_eq!(builder.document_length, 512);
+        assert_eq!(builder.document_length, Some(512));
     }
 
     #[test]
@@ -1354,8 +1359,8 @@ mod tests {
         assert_eq!(builder.threads_per_session, 1);
         assert_eq!(builder.batch_size, Some(4));
         assert_eq!(builder.execution_provider, ExecutionProvider::Cuda);
-        assert_eq!(builder.query_length, 64);
-        assert_eq!(builder.document_length, 512);
+        assert_eq!(builder.query_length, Some(64));
+        assert_eq!(builder.document_length, Some(512));
     }
 
     // =========================================================================

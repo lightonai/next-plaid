@@ -31,7 +31,7 @@
 //! let results = index.search(&query, &params, Some(&subset))?;
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -59,6 +59,499 @@ fn lazy_static_regex() -> &'static Regex {
     use std::sync::OnceLock;
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_]*$").unwrap())
+}
+
+// =============================================================================
+// SQL Condition Validator
+// =============================================================================
+//
+// This module provides a safe SQL condition validator using a tokenizer and
+// recursive descent parser. It whitelists safe SQL operators and validates
+// column names against the database schema to prevent SQL injection.
+
+/// Token types for SQL condition parsing.
+#[derive(Debug, Clone, PartialEq)]
+enum Token {
+    Identifier(String),
+    Placeholder, // ?
+    // Comparison operators
+    Eq, // =
+    Ne, // != or <>
+    Lt, // <
+    Le, // <=
+    Gt, // >
+    Ge, // >=
+    // Keywords
+    Like,
+    Regexp,
+    Between,
+    In,
+    And,
+    Or,
+    Not,
+    Is,
+    Null,
+    // Delimiters
+    LParen,
+    RParen,
+    Comma,
+    // End of input
+    Eof,
+}
+
+/// Quick safety check to reject obviously dangerous patterns before tokenization.
+fn quick_safety_check(condition: &str) -> Result<()> {
+    let upper = condition.to_uppercase();
+
+    // Check for comment syntax
+    if condition.contains("--") || condition.contains("/*") || condition.contains("*/") {
+        return Err(Error::Filtering(
+            "SQL comments are not allowed in conditions".into(),
+        ));
+    }
+
+    // Check for statement terminators
+    if condition.contains(';') {
+        return Err(Error::Filtering(
+            "Semicolons are not allowed in conditions".into(),
+        ));
+    }
+
+    // Check for dangerous SQL keywords (must be whole words)
+    let dangerous_keywords = [
+        "SELECT", "UNION", "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE",
+        "EXEC", "EXECUTE", "GRANT", "REVOKE",
+    ];
+
+    for keyword in dangerous_keywords {
+        // Check if keyword appears as a whole word
+        let pattern = format!(r"\b{}\b", keyword);
+        if Regex::new(&pattern).unwrap().is_match(&upper) {
+            return Err(Error::Filtering(format!(
+                "SQL keyword '{}' is not allowed in conditions",
+                keyword
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Tokenize a SQL condition string into tokens.
+fn tokenize(input: &str) -> Result<Vec<Token>> {
+    let mut tokens = Vec::new();
+    let chars: Vec<char> = input.chars().collect();
+    let mut pos = 0;
+
+    while pos < chars.len() {
+        // Skip whitespace
+        if chars[pos].is_whitespace() {
+            pos += 1;
+            continue;
+        }
+
+        // Single-character tokens
+        match chars[pos] {
+            '?' => {
+                tokens.push(Token::Placeholder);
+                pos += 1;
+                continue;
+            }
+            '(' => {
+                tokens.push(Token::LParen);
+                pos += 1;
+                continue;
+            }
+            ')' => {
+                tokens.push(Token::RParen);
+                pos += 1;
+                continue;
+            }
+            ',' => {
+                tokens.push(Token::Comma);
+                pos += 1;
+                continue;
+            }
+            '=' => {
+                tokens.push(Token::Eq);
+                pos += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        // Two-character operators
+        if pos + 1 < chars.len() {
+            let two_chars: String = chars[pos..pos + 2].iter().collect();
+            match two_chars.as_str() {
+                "!=" => {
+                    tokens.push(Token::Ne);
+                    pos += 2;
+                    continue;
+                }
+                "<>" => {
+                    tokens.push(Token::Ne);
+                    pos += 2;
+                    continue;
+                }
+                "<=" => {
+                    tokens.push(Token::Le);
+                    pos += 2;
+                    continue;
+                }
+                ">=" => {
+                    tokens.push(Token::Ge);
+                    pos += 2;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        // Single-character comparison operators (checked after two-char)
+        match chars[pos] {
+            '<' => {
+                tokens.push(Token::Lt);
+                pos += 1;
+                continue;
+            }
+            '>' => {
+                tokens.push(Token::Gt);
+                pos += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        // Identifiers and keywords
+        if chars[pos].is_alphabetic() || chars[pos] == '_' {
+            let start = pos;
+            while pos < chars.len() && (chars[pos].is_alphanumeric() || chars[pos] == '_') {
+                pos += 1;
+            }
+            let word: String = chars[start..pos].iter().collect();
+            let upper = word.to_uppercase();
+
+            let token = match upper.as_str() {
+                "AND" => Token::And,
+                "OR" => Token::Or,
+                "NOT" => Token::Not,
+                "IS" => Token::Is,
+                "NULL" => Token::Null,
+                "LIKE" => Token::Like,
+                "REGEXP" => Token::Regexp,
+                "BETWEEN" => Token::Between,
+                "IN" => Token::In,
+                _ => Token::Identifier(word),
+            };
+            tokens.push(token);
+            continue;
+        }
+
+        // Quoted identifier (double quotes)
+        if chars[pos] == '"' {
+            pos += 1; // skip opening quote
+            let start = pos;
+            while pos < chars.len() && chars[pos] != '"' {
+                pos += 1;
+            }
+            if pos >= chars.len() {
+                return Err(Error::Filtering("Unterminated quoted identifier".into()));
+            }
+            let word: String = chars[start..pos].iter().collect();
+            tokens.push(Token::Identifier(word));
+            pos += 1; // skip closing quote
+            continue;
+        }
+
+        // Reject unexpected characters
+        return Err(Error::Filtering(format!(
+            "Unexpected character '{}' in condition",
+            chars[pos]
+        )));
+    }
+
+    tokens.push(Token::Eof);
+    Ok(tokens)
+}
+
+/// Recursive descent parser/validator for SQL conditions.
+struct ConditionValidator<'a> {
+    tokens: &'a [Token],
+    pos: usize,
+    valid_columns: &'a HashSet<String>,
+    columns_used: Vec<String>,
+}
+
+impl<'a> ConditionValidator<'a> {
+    fn new(tokens: &'a [Token], valid_columns: &'a HashSet<String>) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            valid_columns,
+            columns_used: Vec::new(),
+        }
+    }
+
+    fn current(&self) -> &Token {
+        self.tokens.get(self.pos).unwrap_or(&Token::Eof)
+    }
+
+    fn advance(&mut self) {
+        if self.pos < self.tokens.len() {
+            self.pos += 1;
+        }
+    }
+
+    fn expect(&mut self, expected: &Token) -> Result<()> {
+        if self.current() == expected {
+            self.advance();
+            Ok(())
+        } else {
+            Err(Error::Filtering(format!(
+                "Expected {:?}, found {:?}",
+                expected,
+                self.current()
+            )))
+        }
+    }
+
+    /// Validate the entire condition.
+    fn validate(&mut self) -> Result<()> {
+        self.parse_expr()?;
+        if *self.current() != Token::Eof {
+            return Err(Error::Filtering(format!(
+                "Unexpected token {:?} after expression",
+                self.current()
+            )));
+        }
+        Ok(())
+    }
+
+    /// expr = and_expr (OR and_expr)*
+    fn parse_expr(&mut self) -> Result<()> {
+        self.parse_and_expr()?;
+        while *self.current() == Token::Or {
+            self.advance();
+            self.parse_and_expr()?;
+        }
+        Ok(())
+    }
+
+    /// and_expr = unary_expr (AND unary_expr)*
+    fn parse_and_expr(&mut self) -> Result<()> {
+        self.parse_unary_expr()?;
+        while *self.current() == Token::And {
+            self.advance();
+            self.parse_unary_expr()?;
+        }
+        Ok(())
+    }
+
+    /// unary_expr = NOT? primary_expr
+    fn parse_unary_expr(&mut self) -> Result<()> {
+        if *self.current() == Token::Not {
+            self.advance();
+        }
+        self.parse_primary_expr()
+    }
+
+    /// primary_expr = comparison | null_check | between_expr | in_expr | "(" expr ")"
+    fn parse_primary_expr(&mut self) -> Result<()> {
+        // Parenthesized expression
+        if *self.current() == Token::LParen {
+            self.advance();
+            self.parse_expr()?;
+            self.expect(&Token::RParen)?;
+            return Ok(());
+        }
+
+        // Must start with an identifier
+        let col_name = match self.current().clone() {
+            Token::Identifier(name) => name,
+            other => {
+                return Err(Error::Filtering(format!(
+                    "Expected column name, found {:?}",
+                    other
+                )))
+            }
+        };
+
+        // Validate column name against schema
+        // Case-insensitive comparison
+        let col_lower = col_name.to_lowercase();
+        let valid = self
+            .valid_columns
+            .iter()
+            .any(|c| c.to_lowercase() == col_lower);
+        if !valid {
+            return Err(Error::Filtering(format!(
+                "Unknown column '{}' in condition",
+                col_name
+            )));
+        }
+        self.columns_used.push(col_name);
+        self.advance();
+
+        // Determine what follows the identifier
+        match self.current() {
+            // IS [NOT] NULL
+            Token::Is => {
+                self.advance();
+                if *self.current() == Token::Not {
+                    self.advance();
+                }
+                self.expect(&Token::Null)?;
+            }
+
+            // [NOT] BETWEEN ? AND ?
+            Token::Not => {
+                self.advance();
+                match self.current() {
+                    Token::Between => {
+                        self.advance();
+                        self.expect(&Token::Placeholder)?;
+                        self.expect(&Token::And)?;
+                        self.expect(&Token::Placeholder)?;
+                    }
+                    Token::In => {
+                        self.advance();
+                        self.parse_in_list()?;
+                    }
+                    Token::Like => {
+                        self.advance();
+                        self.expect(&Token::Placeholder)?;
+                    }
+                    Token::Regexp => {
+                        self.advance();
+                        self.expect(&Token::Placeholder)?;
+                    }
+                    _ => {
+                        return Err(Error::Filtering(format!(
+                            "Expected BETWEEN, IN, LIKE, or REGEXP after NOT, found {:?}",
+                            self.current()
+                        )));
+                    }
+                }
+            }
+
+            Token::Between => {
+                self.advance();
+                self.expect(&Token::Placeholder)?;
+                self.expect(&Token::And)?;
+                self.expect(&Token::Placeholder)?;
+            }
+
+            // [NOT] IN (?, ?, ...)
+            Token::In => {
+                self.advance();
+                self.parse_in_list()?;
+            }
+
+            // [NOT] LIKE ?
+            Token::Like => {
+                self.advance();
+                self.expect(&Token::Placeholder)?;
+            }
+
+            // [NOT] REGEXP ?
+            Token::Regexp => {
+                self.advance();
+                self.expect(&Token::Placeholder)?;
+            }
+
+            // Comparison operators: = != <> < <= > >=
+            Token::Eq | Token::Ne | Token::Lt | Token::Le | Token::Gt | Token::Ge => {
+                self.advance();
+                self.expect(&Token::Placeholder)?;
+            }
+
+            other => {
+                return Err(Error::Filtering(format!(
+                    "Expected operator after column name, found {:?}",
+                    other
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Parse IN list: (?, ?, ...)
+    fn parse_in_list(&mut self) -> Result<()> {
+        self.expect(&Token::LParen)?;
+        self.expect(&Token::Placeholder)?;
+        while *self.current() == Token::Comma {
+            self.advance();
+            self.expect(&Token::Placeholder)?;
+        }
+        self.expect(&Token::RParen)?;
+        Ok(())
+    }
+}
+
+/// Get column names from the database schema.
+fn get_schema_columns(conn: &Connection) -> Result<HashSet<String>> {
+    let mut columns = HashSet::new();
+    let mut stmt = conn.prepare("PRAGMA table_info(METADATA)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        columns.insert(row?);
+    }
+    Ok(columns)
+}
+
+/// Validate a SQL WHERE condition against the allowed grammar and schema.
+///
+/// This function performs security validation on user-provided SQL conditions:
+/// 1. Quick safety check rejects dangerous patterns (comments, semicolons, DDL keywords)
+/// 2. Tokenization converts the condition to a safe token stream
+/// 3. Recursive descent parsing validates the condition against an allowlist grammar
+/// 4. Column validation ensures only known columns are referenced
+///
+/// # Allowed Grammar
+///
+/// ```text
+/// condition    = expr
+/// expr         = and_expr (OR and_expr)*
+/// and_expr     = unary_expr (AND unary_expr)*
+/// unary_expr   = NOT? primary_expr
+/// primary_expr = comparison | null_check | between_expr | in_expr | "(" expr ")"
+/// comparison   = identifier (comp_op | like_op | regexp_op) placeholder
+/// null_check   = identifier IS NOT? NULL
+/// between_expr = identifier NOT? BETWEEN placeholder AND placeholder
+/// in_expr      = identifier NOT? IN "(" placeholder ("," placeholder)* ")"
+/// ```
+/// Check if condition is a simple numeric equality like "1=1", "0=0", etc.
+/// These are common SQL idioms for "always true" or "always false" conditions.
+fn is_numeric_equality(condition: &str) -> bool {
+    lazy_static_numeric_eq_regex().is_match(condition.trim())
+}
+
+fn lazy_static_numeric_eq_regex() -> &'static Regex {
+    use std::sync::OnceLock;
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"^(\d+)\s*=\s*(\d+)$").unwrap())
+}
+
+fn validate_condition(condition: &str, valid_columns: &HashSet<String>) -> Result<()> {
+    // Special case: numeric equality like "1=1", "0=0" are common SQL idioms
+    // for "always true" / "always false" conditions. Safe to allow.
+    if is_numeric_equality(condition) {
+        return Ok(());
+    }
+
+    // Step 1: Quick safety check
+    quick_safety_check(condition)?;
+
+    // Step 2: Tokenize
+    let tokens = tokenize(condition)?;
+
+    // Step 3: Parse and validate
+    let mut validator = ConditionValidator::new(&tokens, valid_columns);
+    validator.validate()?;
+
+    Ok(())
 }
 
 /// Infer SQL type from a JSON value.
@@ -491,6 +984,10 @@ pub fn where_condition(
 
     let conn = Connection::open(&db_path)?;
 
+    // Validate condition against SQL injection
+    let valid_columns = get_schema_columns(&conn)?;
+    validate_condition(condition, &valid_columns)?;
+
     let query = format!(
         "SELECT \"{}\" FROM METADATA WHERE {}",
         SUBSET_COLUMN, condition
@@ -571,6 +1068,10 @@ pub fn where_condition_regexp(
 
     let conn = Connection::open(&db_path)?;
 
+    // Validate condition against SQL injection
+    let valid_columns = get_schema_columns(&conn)?;
+    validate_condition(condition, &valid_columns)?;
+
     // Register REGEXP function with pre-compiled regex (compiled once, used for all rows)
     let re = compiled_regex.clone();
     conn.create_scalar_function(
@@ -643,6 +1144,12 @@ pub fn get(
     }
 
     let conn = Connection::open(&db_path)?;
+
+    // Validate condition against SQL injection if provided
+    if let Some(cond) = condition {
+        let valid_columns = get_schema_columns(&conn)?;
+        validate_condition(cond, &valid_columns)?;
+    }
 
     // Get column names
     let mut columns: Vec<String> = Vec::new();
@@ -1020,5 +1527,264 @@ mod tests {
         assert_eq!(results[0]["str_val"], "hello");
         assert_eq!(results[0]["bool_val"], 1); // Bool stored as INTEGER
         assert!(results[0]["null_val"].is_null());
+    }
+
+    // =============================================================================
+    // SQL Condition Validator Tests
+    // =============================================================================
+
+    fn test_columns() -> HashSet<String> {
+        ["name", "category", "score", "status", "_subset_"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn test_validator_simple_equality() {
+        let cols = test_columns();
+        assert!(validate_condition("name = ?", &cols).is_ok());
+        assert!(validate_condition("score = ?", &cols).is_ok());
+    }
+
+    #[test]
+    fn test_validator_comparison_operators() {
+        let cols = test_columns();
+        assert!(validate_condition("score > ?", &cols).is_ok());
+        assert!(validate_condition("score >= ?", &cols).is_ok());
+        assert!(validate_condition("score < ?", &cols).is_ok());
+        assert!(validate_condition("score <= ?", &cols).is_ok());
+        assert!(validate_condition("score != ?", &cols).is_ok());
+        assert!(validate_condition("score <> ?", &cols).is_ok());
+    }
+
+    #[test]
+    fn test_validator_and_or() {
+        let cols = test_columns();
+        assert!(validate_condition("name = ? AND score > ?", &cols).is_ok());
+        assert!(validate_condition("category = ? OR status = ?", &cols).is_ok());
+        assert!(validate_condition("name = ? AND score > ? OR category = ?", &cols).is_ok());
+    }
+
+    #[test]
+    fn test_validator_like() {
+        let cols = test_columns();
+        assert!(validate_condition("name LIKE ?", &cols).is_ok());
+        assert!(validate_condition("name NOT LIKE ?", &cols).is_ok());
+    }
+
+    #[test]
+    fn test_validator_regexp() {
+        let cols = test_columns();
+        assert!(validate_condition("name REGEXP ?", &cols).is_ok());
+        assert!(validate_condition("name NOT REGEXP ?", &cols).is_ok());
+    }
+
+    #[test]
+    fn test_validator_between() {
+        let cols = test_columns();
+        assert!(validate_condition("score BETWEEN ? AND ?", &cols).is_ok());
+        assert!(validate_condition("score NOT BETWEEN ? AND ?", &cols).is_ok());
+    }
+
+    #[test]
+    fn test_validator_in() {
+        let cols = test_columns();
+        assert!(validate_condition("category IN (?)", &cols).is_ok());
+        assert!(validate_condition("category IN (?, ?)", &cols).is_ok());
+        assert!(validate_condition("category IN (?, ?, ?)", &cols).is_ok());
+        assert!(validate_condition("category NOT IN (?, ?)", &cols).is_ok());
+    }
+
+    #[test]
+    fn test_validator_is_null() {
+        let cols = test_columns();
+        assert!(validate_condition("name IS NULL", &cols).is_ok());
+        assert!(validate_condition("name IS NOT NULL", &cols).is_ok());
+    }
+
+    #[test]
+    fn test_validator_parentheses() {
+        let cols = test_columns();
+        assert!(validate_condition("(name = ?)", &cols).is_ok());
+        assert!(validate_condition("(name = ? AND score > ?)", &cols).is_ok());
+        assert!(validate_condition("(name = ? OR category = ?) AND score > ?", &cols).is_ok());
+        assert!(validate_condition("name = ? AND (category = ? OR status = ?)", &cols).is_ok());
+    }
+
+    #[test]
+    fn test_validator_not() {
+        let cols = test_columns();
+        assert!(validate_condition("NOT name = ?", &cols).is_ok());
+        assert!(validate_condition("NOT (name = ? AND score > ?)", &cols).is_ok());
+    }
+
+    #[test]
+    fn test_validator_quoted_identifiers() {
+        let cols = test_columns();
+        assert!(validate_condition("\"name\" = ?", &cols).is_ok());
+        assert!(validate_condition("\"score\" > ?", &cols).is_ok());
+    }
+
+    #[test]
+    fn test_validator_case_insensitive_keywords() {
+        let cols = test_columns();
+        assert!(validate_condition("name = ? and score > ?", &cols).is_ok());
+        assert!(validate_condition("name = ? AND score > ?", &cols).is_ok());
+        assert!(validate_condition("name LIKE ? or category = ?", &cols).is_ok());
+        assert!(validate_condition("score between ? and ?", &cols).is_ok());
+    }
+
+    #[test]
+    fn test_validator_allows_numeric_equality() {
+        // Special case: numeric equality patterns are common SQL idioms
+        // "1=1" for "always true", "1=0" for "always false", etc.
+        let cols = test_columns();
+        assert!(validate_condition("1=1", &cols).is_ok());
+        assert!(validate_condition(" 1=1 ", &cols).is_ok()); // with whitespace
+        assert!(validate_condition("0=0", &cols).is_ok());
+        assert!(validate_condition("1 = 1", &cols).is_ok()); // with spaces around =
+        assert!(validate_condition("42=42", &cols).is_ok());
+        assert!(validate_condition("1=0", &cols).is_ok()); // "always false"
+    }
+
+    // SQL injection tests
+
+    #[test]
+    fn test_validator_rejects_semicolon() {
+        let cols = test_columns();
+        let result = validate_condition("name = ?; DROP TABLE METADATA", &cols);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Semicolon"));
+    }
+
+    #[test]
+    fn test_validator_rejects_comments() {
+        let cols = test_columns();
+        assert!(validate_condition("name = ? -- comment", &cols).is_err());
+        assert!(validate_condition("name = ? /* comment */", &cols).is_err());
+    }
+
+    #[test]
+    fn test_validator_rejects_union() {
+        let cols = test_columns();
+        // UNION is rejected by quick_safety_check (SELECT may be rejected first if present)
+        let result = validate_condition("name = ? UNION SELECT * FROM users", &cols);
+        assert!(result.is_err());
+        // Both UNION and SELECT are dangerous keywords, either error message is acceptable
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("UNION") || err_msg.contains("SELECT"),
+            "Expected error about UNION or SELECT, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_validator_rejects_subqueries() {
+        let cols = test_columns();
+        // SELECT is rejected by quick_safety_check
+        let result = validate_condition("name = (SELECT name FROM users)", &cols);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validator_rejects_ddl_keywords() {
+        let cols = test_columns();
+        assert!(validate_condition("DROP TABLE METADATA", &cols).is_err());
+        assert!(validate_condition("DELETE FROM METADATA", &cols).is_err());
+        assert!(validate_condition("INSERT INTO METADATA VALUES (?)", &cols).is_err());
+        assert!(validate_condition("UPDATE METADATA SET name = ?", &cols).is_err());
+        assert!(validate_condition("CREATE TABLE foo (id INT)", &cols).is_err());
+        assert!(validate_condition("ALTER TABLE METADATA ADD x INT", &cols).is_err());
+        assert!(validate_condition("TRUNCATE TABLE METADATA", &cols).is_err());
+    }
+
+    #[test]
+    fn test_validator_rejects_unknown_columns() {
+        let cols = test_columns();
+        let result = validate_condition("unknown_column = ?", &cols);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown column"));
+    }
+
+    #[test]
+    fn test_validator_rejects_string_literals() {
+        let cols = test_columns();
+        // String literals are rejected as unexpected characters
+        let result = validate_condition("name = 'Alice'", &cols);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validator_rejects_malformed_syntax() {
+        let cols = test_columns();
+        // Missing placeholder
+        assert!(validate_condition("name =", &cols).is_err());
+        // Unbalanced parentheses
+        assert!(validate_condition("(name = ?", &cols).is_err());
+        assert!(validate_condition("name = ?)", &cols).is_err());
+        // Double operators
+        assert!(validate_condition("name = = ?", &cols).is_err());
+        // Missing column
+        assert!(validate_condition("= ?", &cols).is_err());
+    }
+
+    #[test]
+    fn test_validator_rejects_function_calls() {
+        let cols = test_columns();
+        // Function calls result in unexpected tokens
+        let result = validate_condition("LENGTH(name) > ?", &cols);
+        // LENGTH is parsed as identifier, then ( is unexpected after it
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validator_integration() {
+        // Test that validation works end-to-end with actual database
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+
+        let metadata = vec![
+            json!({"name": "Alice", "category": "A", "score": 95}),
+            json!({"name": "Bob", "category": "B", "score": 87}),
+        ];
+        let doc_ids: Vec<i64> = (0..2).collect();
+        create(path, &metadata, &doc_ids).unwrap();
+
+        // Valid condition should work
+        let result = where_condition(path, "category = ? AND score > ?", &[json!("A"), json!(90)]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![0]);
+
+        // SQL injection attempt should be rejected
+        let result = where_condition(path, "category = ?; DROP TABLE METADATA", &[json!("A")]);
+        assert!(result.is_err());
+
+        // Unknown column should be rejected
+        let result = where_condition(path, "unknown = ?", &[json!("test")]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validator_integration_get() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+
+        let metadata = vec![
+            json!({"name": "Alice", "score": 95}),
+            json!({"name": "Bob", "score": 87}),
+        ];
+        let doc_ids: Vec<i64> = (0..2).collect();
+        create(path, &metadata, &doc_ids).unwrap();
+
+        // Valid condition should work
+        let result = get(path, Some("score > ?"), &[json!(90)], None);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1);
+
+        // SQL injection should be rejected
+        let result = get(path, Some("1=1 UNION SELECT * FROM users"), &[], None);
+        assert!(result.is_err());
     }
 }
