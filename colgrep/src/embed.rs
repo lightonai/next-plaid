@@ -89,6 +89,7 @@ pub fn build_embedding_text(unit: &CodeUnit) -> String {
         UnitType::Constant => "Constant",
         UnitType::Document => "Document",
         UnitType::Section => "Section",
+        UnitType::RawCode => "Code block",
     };
     parts.push(format!("{}: {}", type_str, unit.name));
 

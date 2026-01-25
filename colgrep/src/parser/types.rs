@@ -90,6 +90,8 @@ pub enum UnitType {
     Constant,
     Document,
     Section,
+    /// Raw code block: lines not covered by other code units (e.g., module-level statements)
+    RawCode,
 }
 
 /// A code unit with all 5 analysis layers for rich embeddings

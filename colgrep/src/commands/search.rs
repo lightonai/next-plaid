@@ -5,8 +5,9 @@ use anyhow::Result;
 use colored::Colorize;
 
 use colgrep::{
-    bre_to_ere, ensure_model, find_parent_index, get_index_dir_for_project, get_vector_index_path,
-    index_exists, is_text_format, Config, IndexBuilder, IndexState, Searcher, DEFAULT_MODEL,
+    acquire_index_lock, bre_to_ere, ensure_model, find_parent_index, get_index_dir_for_project,
+    get_vector_index_path, index_exists, is_text_format, Config, IndexBuilder, IndexState,
+    Searcher, DEFAULT_MODEL,
 };
 
 use crate::display::{
@@ -563,11 +564,56 @@ fn search_single_path(
     }
 
     // Load searcher (from parent index if applicable)
-    let searcher = match &parent_info {
-        Some(info) => {
-            Searcher::load_from_index_dir_with_quantized(&info.index_dir, &model_path, quantized)?
+    // If loading fails with "No data to merge", clear and rebuild the index
+    let searcher = {
+        let load_result = match &parent_info {
+            Some(info) => Searcher::load_from_index_dir_with_quantized(
+                &info.index_dir,
+                &model_path,
+                quantized,
+            ),
+            None => Searcher::load_with_quantized(&effective_root, &model_path, quantized),
+        };
+
+        match load_result {
+            Ok(s) => s,
+            Err(e) if format!("{:?}", e).contains("No data to merge") => {
+                // Index is corrupted or empty - clear and rebuild
+                if !json && !files_only {
+                    eprintln!("⚠️  Index corrupted, rebuilding...");
+                }
+
+                // Clear the corrupted index
+                let target_index_dir = match &parent_info {
+                    Some(info) => &info.index_dir,
+                    None => &index_dir,
+                };
+                if target_index_dir.exists() {
+                    let _lock = acquire_index_lock(target_index_dir)?;
+                    std::fs::remove_dir_all(target_index_dir)?;
+                }
+
+                // Rebuild the index
+                let builder = IndexBuilder::with_options(
+                    &effective_root,
+                    &model_path,
+                    quantized,
+                    pool_factor,
+                )?;
+                builder.index(None, false)?;
+
+                // Try loading again
+                match &parent_info {
+                    Some(info) => Searcher::load_from_index_dir_with_quantized(
+                        &info.index_dir,
+                        &model_path,
+                        quantized,
+                    )?,
+                    None => Searcher::load_with_quantized(&effective_root, &model_path, quantized)?,
+                }
+            }
+            Err(e) => return Err(e),
         }
-        None => Searcher::load_with_quantized(&effective_root, &model_path, quantized)?,
     };
 
     // Build subset combining subdirectory filter, text pattern filter, and include patterns
