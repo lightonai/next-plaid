@@ -559,7 +559,7 @@ impl ColbertBuilder {
 
     /// Set the maximum query length.
     ///
-    /// If not set, uses `max(48, query_length from config_onnx.json)`.
+    /// If not set, uses `query_length` from `onnx_config.json` (default: 48).
     /// Queries longer than this will be truncated.
     pub fn with_query_length(mut self, query_length: usize) -> Self {
         self.query_length = Some(query_length);
@@ -568,7 +568,7 @@ impl ColbertBuilder {
 
     /// Set the maximum document length.
     ///
-    /// If not set, uses `max(300, document_length from config_onnx.json)`.
+    /// If not set, uses `document_length` from `onnx_config.json` (default: 300).
     /// Documents longer than this will be truncated.
     pub fn with_document_length(mut self, document_length: usize) -> Self {
         self.document_length = Some(document_length);
@@ -590,13 +590,13 @@ impl ColbertBuilder {
 
         // Set query_length and document_length:
         // - If user provided a value, use it
-        // - Otherwise, use max(default, config_value)
-        config.query_length = self
-            .query_length
-            .unwrap_or_else(|| config.query_length.max(default_query_length()));
-        config.document_length = self
-            .document_length
-            .unwrap_or_else(|| config.document_length.max(default_document_length()));
+        // - Otherwise, use value from onnx_config.json
+        if let Some(query_length) = self.query_length {
+            config.query_length = query_length;
+        }
+        if let Some(document_length) = self.document_length {
+            config.document_length = document_length;
+        }
 
         update_token_ids(&mut config, &tokenizer);
         let skiplist_ids = build_skiplist(&config, &tokenizer);
