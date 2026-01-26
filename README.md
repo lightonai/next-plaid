@@ -24,7 +24,7 @@ Multi-vector retrieval keeps multiple embeddings per document instead of collaps
 
 Instead of crushing a document into a single embedding, it stores **one embedding per token**. Indexes are memory-mapped to keep RAM usage low, product quantization (4-bit) keeps storage small, and incremental updates mean you don’t rebuild the world every time something changes. Metadata filtering is handled via SQLite. It provides pre-filtering, re-ranking, and batching.
 
-It runs well on CPU and exposes a simple REST API.
+It runs well on CPU and exposes a simple REST API. If you want to create a multi-vector index and you don't care about the API/tooling, check out [FastPlaid](https://github.com/lightonai/fast-plaid) which supports GPU acceleration when creating the index.
 
 ### Docker
 
