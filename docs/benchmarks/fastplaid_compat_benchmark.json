@@ -1,0 +1,11 @@
+{
+  "compatibility": "verified",
+  "metrics": {
+    "map": 0.7072,
+    "ndcg@10": 0.7436,
+    "ndcg@100": 0.766,
+    "recall@10": 0.8539,
+    "recall@100": 0.955
+  },
+  "search_time_s": 33.69
+}

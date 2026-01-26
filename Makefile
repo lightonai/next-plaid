@@ -63,7 +63,7 @@ ci-quick:
 	cd colgrep && cargo fmt --all -- --check
 	cd colgrep && cargo clippy --all-targets -- -D warnings
 	cd colgrep && cargo test --lib
-	cd benchmarks && uv run --extra dev ruff check .
+	cd docs/benchmarks && uv run --extra dev ruff check .
 	@echo "All quick CI checks passed!"
 
 # Kill any existing API process on port 8080
@@ -114,11 +114,11 @@ install-hooks:
 
 # Lint Python code
 lint-python:
-	cd benchmarks && uv run --extra dev ruff check .
+	cd docs/benchmarks && uv run --extra dev ruff check .
 
 # Format Python code
 fmt-python:
-	cd benchmarks && uv run --extra dev ruff format .
+	cd docs/benchmarks && uv run --extra dev ruff format .
 
 
 launch-api-debug:
@@ -153,17 +153,17 @@ onnx-fmt:
 # Benchmark SciFact via Docker container with server-side encoding
 # Uses next-plaid SDK, starts docker compose, runs benchmark, then stops container
 benchmark-scifact-docker:
-	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_docker.py --model $(or $(MODEL),lightonai/mxbai-edge-colbert-v0-32m-onnx) --batch-size 30 --keep-running
+	cd docs/benchmarks && uv sync --extra eval && uv run python benchmark_scifact_docker.py --model $(or $(MODEL),lightonai/mxbai-edge-colbert-v0-32m-onnx) --batch-size 30 --keep-running
 
 # Stress test: Add/Delete cycles to verify index/DB sync
 # Tests: add 1000 -> delete 200 -> add 200 -> add 1000 -> delete 500 -> add remaining
 benchmark-scifact-stress:
-	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_stress_one.py --model $(or $(MODEL),lightonai/answerai-colbert-small-v1-onnx) --keep-running
+	cd docs/benchmarks && uv sync --extra eval && uv run python benchmark_scifact_stress_one.py --model $(or $(MODEL),lightonai/answerai-colbert-small-v1-onnx) --keep-running
 
 # Benchmark fast-plaid index format compatibility with next-plaid-api
 # Creates a fast-plaid format index, loads it with next-plaid-api, and validates ndcg@10 ~ 0.74
 benchmark-fastplaid-compat:
-	cd benchmarks && uv sync --extra eval && uv run python benchmark_fastplaid_compat.py
+	cd docs/benchmarks && uv sync --extra eval && uv run python benchmark_fastplaid_compat.py
 
 # =============================================================================
 # Docker targets

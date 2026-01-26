@@ -1,0 +1,36 @@
+{
+  "dataset": "scifact",
+  "environment": "docker",
+  "encoding": "server-side",
+  "sdk": "next_plaid_client",
+  "model": "lightonai/mxbai-edge-colbert-v0-32m-onnx",
+  "config": {
+    "batch_size": 30,
+    "top_k": 100,
+    "n_ivf_probe": 8,
+    "n_full_scores": 4096,
+    "nbits": 4
+  },
+  "num_documents": 5183,
+  "num_queries": 300,
+  "timing": {
+    "index_time_s": 93.983,
+    "search_time_s": 9.364,
+    "total_time_s": 103.347
+  },
+  "metrics": {
+    "map": 0.6591,
+    "ndcg@10": 0.6994,
+    "ndcg@100": 0.7223,
+    "recall@10": 0.8219,
+    "recall@100": 0.9277
+  },
+  "throughput": {
+    "docs_per_second": 55.1,
+    "queries_per_second": 32.0
+  },
+  "api_calls": {
+    "indexing": 173,
+    "search": 10
+  }
+}

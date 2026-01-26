@@ -1,0 +1,1079 @@
+{
+  "test_type": "stress_test_cyclic",
+  "dataset": "scifact",
+  "model": "lightonai/answerai-colbert-small-v1-onnx",
+  "num_cycles": 75,
+  "total_deleted": 2223,
+  "operations": [
+    {
+      "op": "add",
+      "cycle": 1,
+      "count": 70,
+      "expected": 70,
+      "actual": 70
+    },
+    {
+      "op": "delete",
+      "cycle": 1,
+      "count": 30,
+      "expected": 40,
+      "actual": 40
+    },
+    {
+      "op": "add",
+      "cycle": 2,
+      "count": 70,
+      "expected": 110,
+      "actual": 110
+    },
+    {
+      "op": "delete",
+      "cycle": 2,
+      "count": 30,
+      "expected": 80,
+      "actual": 80
+    },
+    {
+      "op": "add",
+      "cycle": 3,
+      "count": 70,
+      "expected": 150,
+      "actual": 150
+    },
+    {
+      "op": "delete",
+      "cycle": 3,
+      "count": 30,
+      "expected": 120,
+      "actual": 120
+    },
+    {
+      "op": "add",
+      "cycle": 4,
+      "count": 70,
+      "expected": 190,
+      "actual": 190
+    },
+    {
+      "op": "delete",
+      "cycle": 4,
+      "count": 30,
+      "expected": 160,
+      "actual": 165
+    },
+    {
+      "op": "add",
+      "cycle": 5,
+      "count": 70,
+      "expected": 230,
+      "actual": 230
+    },
+    {
+      "op": "delete",
+      "cycle": 5,
+      "count": 30,
+      "expected": 200,
+      "actual": 212
+    },
+    {
+      "op": "add",
+      "cycle": 6,
+      "count": 70,
+      "expected": 270,
+      "actual": 270
+    },
+    {
+      "op": "delete",
+      "cycle": 6,
+      "count": 30,
+      "expected": 240,
+      "actual": 240
+    },
+    {
+      "op": "add",
+      "cycle": 7,
+      "count": 70,
+      "expected": 310,
+      "actual": 310
+    },
+    {
+      "op": "delete",
+      "cycle": 7,
+      "count": 30,
+      "expected": 280,
+      "actual": 280
+    },
+    {
+      "op": "add",
+      "cycle": 8,
+      "count": 70,
+      "expected": 350,
+      "actual": 350
+    },
+    {
+      "op": "delete",
+      "cycle": 8,
+      "count": 30,
+      "expected": 320,
+      "actual": 320
+    },
+    {
+      "op": "add",
+      "cycle": 9,
+      "count": 70,
+      "expected": 390,
+      "actual": 390
+    },
+    {
+      "op": "delete",
+      "cycle": 9,
+      "count": 30,
+      "expected": 360,
+      "actual": 360
+    },
+    {
+      "op": "add",
+      "cycle": 10,
+      "count": 70,
+      "expected": 430,
+      "actual": 430
+    },
+    {
+      "op": "delete",
+      "cycle": 10,
+      "count": 30,
+      "expected": 400,
+      "actual": 400
+    },
+    {
+      "op": "add",
+      "cycle": 11,
+      "count": 70,
+      "expected": 470,
+      "actual": 470
+    },
+    {
+      "op": "delete",
+      "cycle": 11,
+      "count": 30,
+      "expected": 440,
+      "actual": 443
+    },
+    {
+      "op": "add",
+      "cycle": 12,
+      "count": 70,
+      "expected": 510,
+      "actual": 510
+    },
+    {
+      "op": "delete",
+      "cycle": 12,
+      "count": 30,
+      "expected": 480,
+      "actual": 482
+    },
+    {
+      "op": "add",
+      "cycle": 13,
+      "count": 70,
+      "expected": 550,
+      "actual": 550
+    },
+    {
+      "op": "delete",
+      "cycle": 13,
+      "count": 30,
+      "expected": 520,
+      "actual": 520
+    },
+    {
+      "op": "add",
+      "cycle": 14,
+      "count": 70,
+      "expected": 590,
+      "actual": 590
+    },
+    {
+      "op": "delete",
+      "cycle": 14,
+      "count": 30,
+      "expected": 560,
+      "actual": 565
+    },
+    {
+      "op": "add",
+      "cycle": 15,
+      "count": 70,
+      "expected": 630,
+      "actual": 630
+    },
+    {
+      "op": "delete",
+      "cycle": 15,
+      "count": 30,
+      "expected": 600,
+      "actual": 600
+    },
+    {
+      "op": "add",
+      "cycle": 16,
+      "count": 70,
+      "expected": 670,
+      "actual": 670
+    },
+    {
+      "op": "delete",
+      "cycle": 16,
+      "count": 30,
+      "expected": 640,
+      "actual": 640
+    },
+    {
+      "op": "add",
+      "cycle": 17,
+      "count": 70,
+      "expected": 710,
+      "actual": 710
+    },
+    {
+      "op": "delete",
+      "cycle": 17,
+      "count": 30,
+      "expected": 680,
+      "actual": 694
+    },
+    {
+      "op": "add",
+      "cycle": 18,
+      "count": 70,
+      "expected": 750,
+      "actual": 750
+    },
+    {
+      "op": "delete",
+      "cycle": 18,
+      "count": 30,
+      "expected": 720,
+      "actual": 728
+    },
+    {
+      "op": "add",
+      "cycle": 19,
+      "count": 70,
+      "expected": 790,
+      "actual": 790
+    },
+    {
+      "op": "delete",
+      "cycle": 19,
+      "count": 30,
+      "expected": 760,
+      "actual": 762
+    },
+    {
+      "op": "add",
+      "cycle": 20,
+      "count": 70,
+      "expected": 830,
+      "actual": 830
+    },
+    {
+      "op": "delete",
+      "cycle": 20,
+      "count": 30,
+      "expected": 800,
+      "actual": 802
+    },
+    {
+      "op": "add",
+      "cycle": 21,
+      "count": 70,
+      "expected": 870,
+      "actual": 870
+    },
+    {
+      "op": "delete",
+      "cycle": 21,
+      "count": 30,
+      "expected": 840,
+      "actual": 843
+    },
+    {
+      "op": "add",
+      "cycle": 22,
+      "count": 70,
+      "expected": 910,
+      "actual": 910
+    },
+    {
+      "op": "delete",
+      "cycle": 22,
+      "count": 30,
+      "expected": 880,
+      "actual": 883
+    },
+    {
+      "op": "add",
+      "cycle": 23,
+      "count": 70,
+      "expected": 950,
+      "actual": 950
+    },
+    {
+      "op": "delete",
+      "cycle": 23,
+      "count": 30,
+      "expected": 920,
+      "actual": 926
+    },
+    {
+      "op": "add",
+      "cycle": 24,
+      "count": 70,
+      "expected": 990,
+      "actual": 990
+    },
+    {
+      "op": "delete",
+      "cycle": 24,
+      "count": 30,
+      "expected": 960,
+      "actual": 967
+    },
+    {
+      "op": "add",
+      "cycle": 25,
+      "count": 70,
+      "expected": 1030,
+      "actual": 1030
+    },
+    {
+      "op": "delete",
+      "cycle": 25,
+      "count": 30,
+      "expected": 1000,
+      "actual": 1000
+    },
+    {
+      "op": "add",
+      "cycle": 26,
+      "count": 70,
+      "expected": 1070,
+      "actual": 1070
+    },
+    {
+      "op": "delete",
+      "cycle": 26,
+      "count": 30,
+      "expected": 1040,
+      "actual": 1040
+    },
+    {
+      "op": "add",
+      "cycle": 27,
+      "count": 70,
+      "expected": 1110,
+      "actual": 1110
+    },
+    {
+      "op": "delete",
+      "cycle": 27,
+      "count": 30,
+      "expected": 1080,
+      "actual": 1080
+    },
+    {
+      "op": "add",
+      "cycle": 28,
+      "count": 70,
+      "expected": 1150,
+      "actual": 1150
+    },
+    {
+      "op": "delete",
+      "cycle": 28,
+      "count": 30,
+      "expected": 1120,
+      "actual": 1120
+    },
+    {
+      "op": "add",
+      "cycle": 29,
+      "count": 70,
+      "expected": 1190,
+      "actual": 1190
+    },
+    {
+      "op": "delete",
+      "cycle": 29,
+      "count": 30,
+      "expected": 1160,
+      "actual": 1160
+    },
+    {
+      "op": "add",
+      "cycle": 30,
+      "count": 70,
+      "expected": 1230,
+      "actual": 1230
+    },
+    {
+      "op": "delete",
+      "cycle": 30,
+      "count": 30,
+      "expected": 1200,
+      "actual": 1200
+    },
+    {
+      "op": "add",
+      "cycle": 31,
+      "count": 70,
+      "expected": 1270,
+      "actual": 1270
+    },
+    {
+      "op": "delete",
+      "cycle": 31,
+      "count": 30,
+      "expected": 1240,
+      "actual": 1240
+    },
+    {
+      "op": "add",
+      "cycle": 32,
+      "count": 70,
+      "expected": 1310,
+      "actual": 1310
+    },
+    {
+      "op": "delete",
+      "cycle": 32,
+      "count": 30,
+      "expected": 1280,
+      "actual": 1280
+    },
+    {
+      "op": "add",
+      "cycle": 33,
+      "count": 70,
+      "expected": 1350,
+      "actual": 1350
+    },
+    {
+      "op": "delete",
+      "cycle": 33,
+      "count": 30,
+      "expected": 1320,
+      "actual": 1320
+    },
+    {
+      "op": "add",
+      "cycle": 34,
+      "count": 70,
+      "expected": 1390,
+      "actual": 1390
+    },
+    {
+      "op": "delete",
+      "cycle": 34,
+      "count": 30,
+      "expected": 1360,
+      "actual": 1360
+    },
+    {
+      "op": "add",
+      "cycle": 35,
+      "count": 70,
+      "expected": 1430,
+      "actual": 1430
+    },
+    {
+      "op": "delete",
+      "cycle": 35,
+      "count": 30,
+      "expected": 1400,
+      "actual": 1400
+    },
+    {
+      "op": "add",
+      "cycle": 36,
+      "count": 70,
+      "expected": 1470,
+      "actual": 1470
+    },
+    {
+      "op": "delete",
+      "cycle": 36,
+      "count": 30,
+      "expected": 1440,
+      "actual": 1440
+    },
+    {
+      "op": "add",
+      "cycle": 37,
+      "count": 70,
+      "expected": 1510,
+      "actual": 1510
+    },
+    {
+      "op": "delete",
+      "cycle": 37,
+      "count": 30,
+      "expected": 1480,
+      "actual": 1480
+    },
+    {
+      "op": "add",
+      "cycle": 38,
+      "count": 70,
+      "expected": 1550,
+      "actual": 1550
+    },
+    {
+      "op": "delete",
+      "cycle": 38,
+      "count": 30,
+      "expected": 1520,
+      "actual": 1520
+    },
+    {
+      "op": "add",
+      "cycle": 39,
+      "count": 70,
+      "expected": 1590,
+      "actual": 1590
+    },
+    {
+      "op": "delete",
+      "cycle": 39,
+      "count": 30,
+      "expected": 1560,
+      "actual": 1560
+    },
+    {
+      "op": "add",
+      "cycle": 40,
+      "count": 70,
+      "expected": 1630,
+      "actual": 1630
+    },
+    {
+      "op": "delete",
+      "cycle": 40,
+      "count": 30,
+      "expected": 1600,
+      "actual": 1600
+    },
+    {
+      "op": "add",
+      "cycle": 41,
+      "count": 70,
+      "expected": 1670,
+      "actual": 1670
+    },
+    {
+      "op": "delete",
+      "cycle": 41,
+      "count": 30,
+      "expected": 1640,
+      "actual": 1640
+    },
+    {
+      "op": "add",
+      "cycle": 42,
+      "count": 70,
+      "expected": 1710,
+      "actual": 1710
+    },
+    {
+      "op": "delete",
+      "cycle": 42,
+      "count": 30,
+      "expected": 1680,
+      "actual": 1680
+    },
+    {
+      "op": "add",
+      "cycle": 43,
+      "count": 70,
+      "expected": 1750,
+      "actual": 1750
+    },
+    {
+      "op": "delete",
+      "cycle": 43,
+      "count": 30,
+      "expected": 1720,
+      "actual": 1720
+    },
+    {
+      "op": "add",
+      "cycle": 44,
+      "count": 70,
+      "expected": 1790,
+      "actual": 1790
+    },
+    {
+      "op": "delete",
+      "cycle": 44,
+      "count": 30,
+      "expected": 1760,
+      "actual": 1760
+    },
+    {
+      "op": "add",
+      "cycle": 45,
+      "count": 70,
+      "expected": 1830,
+      "actual": 1830
+    },
+    {
+      "op": "delete",
+      "cycle": 45,
+      "count": 30,
+      "expected": 1800,
+      "actual": 1800
+    },
+    {
+      "op": "add",
+      "cycle": 46,
+      "count": 70,
+      "expected": 1870,
+      "actual": 1870
+    },
+    {
+      "op": "delete",
+      "cycle": 46,
+      "count": 30,
+      "expected": 1840,
+      "actual": 1840
+    },
+    {
+      "op": "add",
+      "cycle": 47,
+      "count": 70,
+      "expected": 1910,
+      "actual": 1910
+    },
+    {
+      "op": "delete",
+      "cycle": 47,
+      "count": 30,
+      "expected": 1880,
+      "actual": 1880
+    },
+    {
+      "op": "add",
+      "cycle": 48,
+      "count": 70,
+      "expected": 1950,
+      "actual": 1950
+    },
+    {
+      "op": "delete",
+      "cycle": 48,
+      "count": 30,
+      "expected": 1920,
+      "actual": 1920
+    },
+    {
+      "op": "add",
+      "cycle": 49,
+      "count": 70,
+      "expected": 1990,
+      "actual": 1990
+    },
+    {
+      "op": "delete",
+      "cycle": 49,
+      "count": 30,
+      "expected": 1960,
+      "actual": 1960
+    },
+    {
+      "op": "add",
+      "cycle": 50,
+      "count": 70,
+      "expected": 2030,
+      "actual": 2030
+    },
+    {
+      "op": "delete",
+      "cycle": 50,
+      "count": 30,
+      "expected": 2000,
+      "actual": 2000
+    },
+    {
+      "op": "add",
+      "cycle": 51,
+      "count": 70,
+      "expected": 2070,
+      "actual": 2070
+    },
+    {
+      "op": "delete",
+      "cycle": 51,
+      "count": 30,
+      "expected": 2040,
+      "actual": 2040
+    },
+    {
+      "op": "add",
+      "cycle": 52,
+      "count": 70,
+      "expected": 2110,
+      "actual": 2110
+    },
+    {
+      "op": "delete",
+      "cycle": 52,
+      "count": 30,
+      "expected": 2080,
+      "actual": 2080
+    },
+    {
+      "op": "add",
+      "cycle": 53,
+      "count": 70,
+      "expected": 2150,
+      "actual": 2150
+    },
+    {
+      "op": "delete",
+      "cycle": 53,
+      "count": 30,
+      "expected": 2120,
+      "actual": 2120
+    },
+    {
+      "op": "add",
+      "cycle": 54,
+      "count": 70,
+      "expected": 2190,
+      "actual": 2190
+    },
+    {
+      "op": "delete",
+      "cycle": 54,
+      "count": 30,
+      "expected": 2160,
+      "actual": 2160
+    },
+    {
+      "op": "add",
+      "cycle": 55,
+      "count": 70,
+      "expected": 2230,
+      "actual": 2230
+    },
+    {
+      "op": "delete",
+      "cycle": 55,
+      "count": 30,
+      "expected": 2200,
+      "actual": 2200
+    },
+    {
+      "op": "add",
+      "cycle": 56,
+      "count": 70,
+      "expected": 2270,
+      "actual": 2270
+    },
+    {
+      "op": "delete",
+      "cycle": 56,
+      "count": 30,
+      "expected": 2240,
+      "actual": 2240
+    },
+    {
+      "op": "add",
+      "cycle": 57,
+      "count": 70,
+      "expected": 2310,
+      "actual": 2310
+    },
+    {
+      "op": "delete",
+      "cycle": 57,
+      "count": 30,
+      "expected": 2280,
+      "actual": 2280
+    },
+    {
+      "op": "add",
+      "cycle": 58,
+      "count": 70,
+      "expected": 2350,
+      "actual": 2350
+    },
+    {
+      "op": "delete",
+      "cycle": 58,
+      "count": 30,
+      "expected": 2320,
+      "actual": 2320
+    },
+    {
+      "op": "add",
+      "cycle": 59,
+      "count": 70,
+      "expected": 2390,
+      "actual": 2390
+    },
+    {
+      "op": "delete",
+      "cycle": 59,
+      "count": 30,
+      "expected": 2360,
+      "actual": 2360
+    },
+    {
+      "op": "add",
+      "cycle": 60,
+      "count": 70,
+      "expected": 2430,
+      "actual": 2430
+    },
+    {
+      "op": "delete",
+      "cycle": 60,
+      "count": 30,
+      "expected": 2400,
+      "actual": 2400
+    },
+    {
+      "op": "add",
+      "cycle": 61,
+      "count": 70,
+      "expected": 2470,
+      "actual": 2470
+    },
+    {
+      "op": "delete",
+      "cycle": 61,
+      "count": 30,
+      "expected": 2440,
+      "actual": 2440
+    },
+    {
+      "op": "add",
+      "cycle": 62,
+      "count": 70,
+      "expected": 2510,
+      "actual": 2510
+    },
+    {
+      "op": "delete",
+      "cycle": 62,
+      "count": 30,
+      "expected": 2480,
+      "actual": 2480
+    },
+    {
+      "op": "add",
+      "cycle": 63,
+      "count": 70,
+      "expected": 2550,
+      "actual": 2550
+    },
+    {
+      "op": "delete",
+      "cycle": 63,
+      "count": 30,
+      "expected": 2520,
+      "actual": 2520
+    },
+    {
+      "op": "add",
+      "cycle": 64,
+      "count": 70,
+      "expected": 2590,
+      "actual": 2590
+    },
+    {
+      "op": "delete",
+      "cycle": 64,
+      "count": 30,
+      "expected": 2560,
+      "actual": 2560
+    },
+    {
+      "op": "add",
+      "cycle": 65,
+      "count": 70,
+      "expected": 2630,
+      "actual": 2630
+    },
+    {
+      "op": "delete",
+      "cycle": 65,
+      "count": 30,
+      "expected": 2600,
+      "actual": 2600
+    },
+    {
+      "op": "add",
+      "cycle": 66,
+      "count": 70,
+      "expected": 2670,
+      "actual": 2670
+    },
+    {
+      "op": "delete",
+      "cycle": 66,
+      "count": 30,
+      "expected": 2640,
+      "actual": 2640
+    },
+    {
+      "op": "add",
+      "cycle": 67,
+      "count": 70,
+      "expected": 2710,
+      "actual": 2710
+    },
+    {
+      "op": "delete",
+      "cycle": 67,
+      "count": 30,
+      "expected": 2680,
+      "actual": 2680
+    },
+    {
+      "op": "add",
+      "cycle": 68,
+      "count": 70,
+      "expected": 2750,
+      "actual": 2750
+    },
+    {
+      "op": "delete",
+      "cycle": 68,
+      "count": 30,
+      "expected": 2720,
+      "actual": 2720
+    },
+    {
+      "op": "add",
+      "cycle": 69,
+      "count": 70,
+      "expected": 2790,
+      "actual": 2790
+    },
+    {
+      "op": "delete",
+      "cycle": 69,
+      "count": 30,
+      "expected": 2760,
+      "actual": 2760
+    },
+    {
+      "op": "add",
+      "cycle": 70,
+      "count": 70,
+      "expected": 2830,
+      "actual": 2830
+    },
+    {
+      "op": "delete",
+      "cycle": 70,
+      "count": 30,
+      "expected": 2800,
+      "actual": 2800
+    },
+    {
+      "op": "add",
+      "cycle": 71,
+      "count": 70,
+      "expected": 2870,
+      "actual": 2870
+    },
+    {
+      "op": "delete",
+      "cycle": 71,
+      "count": 30,
+      "expected": 2840,
+      "actual": 2840
+    },
+    {
+      "op": "add",
+      "cycle": 72,
+      "count": 70,
+      "expected": 2910,
+      "actual": 2910
+    },
+    {
+      "op": "delete",
+      "cycle": 72,
+      "count": 30,
+      "expected": 2880,
+      "actual": 2880
+    },
+    {
+      "op": "add",
+      "cycle": 73,
+      "count": 70,
+      "expected": 2950,
+      "actual": 2950
+    },
+    {
+      "op": "delete",
+      "cycle": 73,
+      "count": 30,
+      "expected": 2920,
+      "actual": 2920
+    },
+    {
+      "op": "add",
+      "cycle": 74,
+      "count": 70,
+      "expected": 2990,
+      "actual": 2990
+    },
+    {
+      "op": "delete",
+      "cycle": 74,
+      "count": 30,
+      "expected": 2960,
+      "actual": 2960
+    },
+    {
+      "op": "add",
+      "cycle": 75,
+      "count": 3,
+      "expected": 2963,
+      "actual": 2963
+    },
+    {
+      "op": "delete",
+      "cycle": 75,
+      "count": 3,
+      "expected": 2960,
+      "actual": 2960
+    },
+    {
+      "op": "add",
+      "cycle": "final",
+      "count": 2223,
+      "expected": 5183,
+      "actual": 5183
+    }
+  ],
+  "final_doc_count": 5183,
+  "all_operations_passed": false,
+  "timing": {
+    "test_time_s": 1532.806,
+    "search_time_s": 23.278
+  },
+  "metrics": {
+    "map": 0.7047,
+    "ndcg@10": 0.7433,
+    "ndcg@100": 0.762,
+    "recall@10": 0.8583,
+    "recall@100": 0.9477
+  }
+}

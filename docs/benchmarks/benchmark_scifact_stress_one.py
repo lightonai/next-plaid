@@ -2,25 +2,21 @@
 """
 Stress test benchmark for next-plaid Docker container on SciFact.
 
-This script tests the update/delete cycle:
-1. Adds 1000 documents
-2. Deletes 200 documents (keeping 800)
-3. Adds 200 new documents (back to 1000)
-4. Adds 1000 more documents (now 2000)
-5. Deletes 500 documents (keeping 1500)
-6. Adds remaining documents from corpus
-7. Re-adds all deleted documents (0-699) to complete corpus
-8. Final verification and evaluation with full corpus
+This script tests the update/delete cycle with repeating pattern:
+1. Upload 70 documents
+2. Delete 30 documents (track them)
+3. Repeat steps 1-2 until all documents are uploaded
+4. Re-add all deleted documents to restore complete corpus
+5. Final verification and evaluation with full corpus
 
 This tests:
-- Index/DB sync during add operations
-- Index/DB sync during delete operations
+- Index/DB sync during repeated add/delete operations
 - Rollback and recovery mechanisms
-- Final document count consistency
+- Final document count consistency after many cycles
 
 Usage:
-    python benchmark_scifact_stress.py [--batch-size 30]
-    python benchmark_scifact_stress.py --keep-running
+    python benchmark_scifact_stress_one.py
+    python benchmark_scifact_stress_one.py --keep-running
 
 Requirements:
     - Docker and docker compose installed
@@ -464,100 +460,94 @@ def run_stress_test(
     print(f"\n    Total documents available: {total_docs}")
 
     # ========================================================================
-    # STRESS TEST SEQUENCE
+    # STRESS TEST SEQUENCE: Upload 70, Delete 30, Repeat
     # ========================================================================
 
     start_time = time.perf_counter()
     operations = []
+    all_deleted_docs = []  # Track all deleted documents for re-adding later
 
-    # Step 1: Add first 1000 documents
-    print("\n  [Step 1] Adding first 1000 documents...")
-    step1_docs = documents_list[:1000]
-    add_documents_one_by_one(client, index_name, step1_docs, base_url, "Step 1")
-    print("    Waiting for indexing to complete...")
-    if not wait_for_document_count(client, index_name, 1000, timeout=300.0):
-        print("    WARNING: Timeout waiting for 1000 documents")
-    info = get_index_info(client, index_name)
-    print(f"    Index now has {info['num_documents']} documents")
-    operations.append({"op": "add", "count": 1000, "expected": 1000, "actual": info["num_documents"]})
+    upload_batch_size = 70
+    delete_batch_size = 30
+    current_doc_index = 0
+    current_index_count = 0
+    cycle_num = 0
 
-    # Step 2: Delete 200 documents (IDs 0-199)
-    print("\n  [Step 2] Deleting 200 documents (first 200)...")
-    delete_ids = [documents_list[i]["id"] for i in range(200)]
-    delete_documents_one_by_one(client, index_name, delete_ids, base_url, "Step 2")
-    print("    Waiting for deletion to complete...")
-    time.sleep(10)  # Give time for async delete
-    if not wait_for_document_count(client, index_name, 800, timeout=120.0):
-        print("    WARNING: Timeout waiting for 800 documents")
-    info = get_index_info(client, index_name)
-    print(f"    Index now has {info['num_documents']} documents")
-    operations.append({"op": "delete", "count": 200, "expected": 800, "actual": info["num_documents"]})
+    # Process documents in cycles: upload 70, delete 30
+    while current_doc_index < total_docs:
+        cycle_num += 1
 
-    # Step 3: Add back 200 different documents (1000-1199)
-    print("\n  [Step 3] Adding 200 new documents...")
-    step3_docs = documents_list[1000:1200]
-    add_documents_one_by_one(client, index_name, step3_docs, base_url, "Step 3")
-    print("    Waiting for indexing to complete...")
-    if not wait_for_document_count(client, index_name, 1000, timeout=300.0):
-        print("    WARNING: Timeout waiting for 1000 documents")
-    info = get_index_info(client, index_name)
-    print(f"    Index now has {info['num_documents']} documents")
-    operations.append({"op": "add", "count": 200, "expected": 1000, "actual": info["num_documents"]})
+        # Calculate how many docs to upload this cycle
+        docs_remaining = total_docs - current_doc_index
+        docs_to_upload = min(upload_batch_size, docs_remaining)
 
-    # Step 4: Add 1000 more documents (1200-2199)
-    print("\n  [Step 4] Adding 1000 more documents...")
-    step4_docs = documents_list[1200:2200]
-    add_documents_one_by_one(client, index_name, step4_docs, base_url, "Step 4")
-    print("    Waiting for indexing to complete...")
-    if not wait_for_document_count(client, index_name, 2000, timeout=300.0):
-        print("    WARNING: Timeout waiting for 2000 documents")
-    info = get_index_info(client, index_name)
-    print(f"    Index now has {info['num_documents']} documents")
-    operations.append({"op": "add", "count": 1000, "expected": 2000, "actual": info["num_documents"]})
+        # Upload phase
+        print(f"\n  [Cycle {cycle_num}] Uploading {docs_to_upload} documents...")
+        batch_docs = documents_list[current_doc_index : current_doc_index + docs_to_upload]
+        add_documents_one_by_one(client, index_name, batch_docs, base_url, f"Cycle {cycle_num} Upload")
 
-    # Step 5: Delete 500 documents
-    print("\n  [Step 5] Deleting 500 documents...")
-    # Delete documents 200-699 (from step1, that weren't deleted)
-    delete_ids = [documents_list[i]["id"] for i in range(200, 700)]
-    delete_documents_one_by_one(client, index_name, delete_ids, base_url, "Step 5")
-    print("    Waiting for deletion to complete...")
-    time.sleep(15)
-    if not wait_for_document_count(client, index_name, 1500, timeout=120.0):
-        print("    WARNING: Timeout waiting for 1500 documents")
-    info = get_index_info(client, index_name)
-    print(f"    Index now has {info['num_documents']} documents")
-    operations.append({"op": "delete", "count": 500, "expected": 1500, "actual": info["num_documents"]})
-
-    # Step 6: Add remaining documents (2200 to end)
-    print("\n  [Step 6] Adding remaining documents...")
-    step6_docs = documents_list[2200:]
-    remaining_count = len(step6_docs)
-    if remaining_count > 0:
-        add_documents_one_by_one(client, index_name, step6_docs, base_url, "Step 6")
-        expected_after_step6 = 1500 + remaining_count
-        print(f"    Waiting for indexing to complete (expecting {expected_after_step6})...")
-        if not wait_for_document_count(client, index_name, expected_after_step6, timeout=300.0):
-            print(f"    WARNING: Timeout waiting for {expected_after_step6} documents")
+        current_index_count += docs_to_upload
+        print(f"    Waiting for indexing to complete (expecting {current_index_count})...")
+        if not wait_for_document_count(client, index_name, current_index_count, timeout=300.0):
+            print(f"    WARNING: Timeout waiting for {current_index_count} documents")
         info = get_index_info(client, index_name)
         print(f"    Index now has {info['num_documents']} documents")
-        operations.append(
-            {"op": "add", "count": remaining_count, "expected": expected_after_step6, "actual": info["num_documents"]}
-        )
-    else:
-        expected_after_step6 = 1500
-        info = get_index_info(client, index_name)
+        operations.append({
+            "op": "add",
+            "cycle": cycle_num,
+            "count": docs_to_upload,
+            "expected": current_index_count,
+            "actual": info["num_documents"]
+        })
 
-    # Step 7: Re-add all deleted documents (0-699) to have complete corpus
-    print("\n  [Step 7] Re-adding previously deleted documents (0-699)...")
-    step7_docs = documents_list[0:700]
-    add_documents_one_by_one(client, index_name, step7_docs, base_url, "Step 7")
-    expected_final = expected_after_step6 + 700
-    print(f"    Waiting for indexing to complete (expecting {expected_final})...")
-    if not wait_for_document_count(client, index_name, expected_final, timeout=300.0):
-        print(f"    WARNING: Timeout waiting for {expected_final} documents")
-    info = get_index_info(client, index_name)
-    print(f"    Index now has {info['num_documents']} documents")
-    operations.append({"op": "add", "count": 700, "expected": expected_final, "actual": info["num_documents"]})
+        # Delete phase: delete first 30 docs from this batch
+        docs_to_delete = min(delete_batch_size, docs_to_upload)
+        if docs_to_delete > 0:
+            print(f"  [Cycle {cycle_num}] Deleting {docs_to_delete} documents...")
+            delete_batch = batch_docs[:docs_to_delete]
+            delete_ids = [doc["id"] for doc in delete_batch]
+            delete_documents_one_by_one(client, index_name, delete_ids, base_url, f"Cycle {cycle_num} Delete")
+
+            # Track deleted documents for later re-adding
+            all_deleted_docs.extend(delete_batch)
+
+            current_index_count -= docs_to_delete
+            print(f"    Waiting for deletion to complete (expecting {current_index_count})...")
+            time.sleep(5)  # Give time for async delete
+            if not wait_for_document_count(client, index_name, current_index_count, timeout=120.0):
+                print(f"    WARNING: Timeout waiting for {current_index_count} documents")
+            info = get_index_info(client, index_name)
+            print(f"    Index now has {info['num_documents']} documents")
+            operations.append({
+                "op": "delete",
+                "cycle": cycle_num,
+                "count": docs_to_delete,
+                "expected": current_index_count,
+                "actual": info["num_documents"]
+            })
+
+        current_doc_index += docs_to_upload
+
+    # Final step: Re-add all deleted documents to restore complete corpus
+    print(f"\n  [Final] Re-adding {len(all_deleted_docs)} previously deleted documents...")
+    if all_deleted_docs:
+        add_documents_one_by_one(client, index_name, all_deleted_docs, base_url, "Re-add deleted")
+        expected_final = current_index_count + len(all_deleted_docs)
+        print(f"    Waiting for indexing to complete (expecting {expected_final})...")
+        if not wait_for_document_count(client, index_name, expected_final, timeout=300.0):
+            print(f"    WARNING: Timeout waiting for {expected_final} documents")
+        info = get_index_info(client, index_name)
+        print(f"    Index now has {info['num_documents']} documents")
+        operations.append({
+            "op": "add",
+            "cycle": "final",
+            "count": len(all_deleted_docs),
+            "expected": expected_final,
+            "actual": info["num_documents"]
+        })
+    else:
+        expected_final = current_index_count
+        info = get_index_info(client, index_name)
 
     index_time = time.perf_counter() - start_time
 
@@ -576,7 +566,8 @@ def run_stress_test(
         status = "OK" if op["expected"] == op["actual"] else "MISMATCH"
         if status == "MISMATCH":
             all_passed = False
-        print(f"    Operation {i+1} ({op['op']}): expected {op['expected']}, got {op['actual']} [{status}]")
+        cycle_str = f"cycle {op['cycle']}" if 'cycle' in op else ""
+        print(f"    Operation {i+1} ({op['op']} {cycle_str}): expected {op['expected']}, got {op['actual']} [{status}]")
 
     # ========================================================================
     # SEARCH AND EVALUATE
@@ -631,6 +622,8 @@ def run_stress_test(
         "operations": operations,
         "final_doc_count": final_info["num_documents"],
         "all_operations_passed": all_passed,
+        "num_cycles": cycle_num,
+        "total_deleted": len(all_deleted_docs),
     }
 
 
@@ -686,14 +679,11 @@ def main():
     print(f"  API endpoint:      http://{config.host}:{config.port}")
 
     print("\nTest sequence:")
-    print("  1. Add 1000 documents")
-    print("  2. Delete 200 documents")
-    print("  3. Add 200 new documents")
-    print("  4. Add 1000 more documents")
-    print("  5. Delete 500 documents")
-    print("  6. Add remaining documents")
-    print("  7. Re-add deleted documents (complete corpus)")
-    print("  7. Verify and evaluate")
+    print("  Repeat until all documents processed:")
+    print("    - Upload 70 documents")
+    print("    - Delete 30 documents (track them)")
+    print("  Final: Re-add all deleted documents (restore complete corpus)")
+    print("  Verify and evaluate")
 
     def signal_handler(sig, frame):
         print("\n\n    Interrupted! Cleaning up...")
@@ -756,13 +746,16 @@ def main():
         print("\n  Operations Summary:")
         for i, op in enumerate(output["operations"]):
             status = "PASS" if op["expected"] == op["actual"] else "FAIL"
+            cycle_str = f"(cycle {op['cycle']})" if 'cycle' in op else ""
             print(
-                f"    {i+1}. {op['op'].upper():6} {op['count']:4} docs: "
+                f"    {i+1}. {op['op'].upper():6} {op['count']:4} docs {cycle_str}: "
                 f"expected {op['expected']:4}, got {op['actual']:4} [{status}]"
             )
 
         print("\n  Final State:")
         print(f"    Document count: {output['final_doc_count']}")
+        print(f"    Total cycles: {output['num_cycles']}")
+        print(f"    Total deleted (then re-added): {output['total_deleted']}")
         print(f"    All operations passed: {output['all_operations_passed']}")
 
         print("\n  Timing:")
@@ -778,9 +771,11 @@ def main():
 
         # Save results
         results = {
-            "test_type": "stress_test",
+            "test_type": "stress_test_cyclic",
             "dataset": dataset_name,
             "model": config.model,
+            "num_cycles": output["num_cycles"],
+            "total_deleted": output["total_deleted"],
             "operations": output["operations"],
             "final_doc_count": output["final_doc_count"],
             "all_operations_passed": output["all_operations_passed"],
