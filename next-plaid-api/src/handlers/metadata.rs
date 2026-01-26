@@ -16,6 +16,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::models::{
     CheckMetadataRequest, CheckMetadataResponse, ErrorResponse, GetMetadataRequest,
     GetMetadataResponse, MetadataCountResponse, QueryMetadataRequest, QueryMetadataResponse,
+    UpdateMetadataRequest, UpdateMetadataResponse,
 };
 use crate::state::AppState;
 use crate::tracing_middleware::TraceId;
@@ -401,4 +402,83 @@ pub async fn get_metadata_count(
         count,
         has_metadata,
     }))
+}
+
+/// Update metadata rows matching a SQL condition.
+///
+/// This endpoint updates existing metadata rows that match the given condition.
+/// The updates are provided as a JSON object where keys are column names and values
+/// are the new values to set.
+#[utoipa::path(
+    post,
+    path = "/indices/{name}/metadata/update",
+    tag = "metadata",
+    params(
+        ("name" = String, Path, description = "Index name")
+    ),
+    request_body = UpdateMetadataRequest,
+    responses(
+        (status = 200, description = "Metadata updated successfully", body = UpdateMetadataResponse),
+        (status = 400, description = "Invalid request (bad condition or updates)", body = ErrorResponse),
+        (status = 404, description = "Index or metadata not found", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded")
+    )
+)]
+pub async fn update_metadata(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    trace_id: Option<Extension<TraceId>>,
+    Json(req): Json<UpdateMetadataRequest>,
+) -> ApiResult<Json<UpdateMetadataResponse>> {
+    let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
+    let start = std::time::Instant::now();
+    let path_str = state.index_path(&name).to_string_lossy().to_string();
+
+    // Check if index exists
+    if !state.index_exists_on_disk(&name) {
+        return Err(ApiError::IndexNotFound(name));
+    }
+
+    // Validate that updates is an object
+    if !req.updates.is_object() {
+        return Err(ApiError::BadRequest(
+            "Updates must be a JSON object".to_string(),
+        ));
+    }
+
+    // Run blocking SQLite operations in a separate thread
+    let condition = req.condition.clone();
+    let parameters = req.parameters.clone();
+    let updates = req.updates.clone();
+    let name_clone = name.clone();
+
+    let result = task::spawn_blocking(move || {
+        // Check if metadata database exists
+        if !filtering::exists(&path_str) {
+            return Err(ApiError::MetadataNotFound(name_clone));
+        }
+
+        let sql_update_start = std::time::Instant::now();
+        let updated = filtering::update_where(&path_str, &condition, &parameters, &updates)
+            .map_err(|e| ApiError::BadRequest(format!("Update failed: {}", e)))?;
+        let sql_update_ms = sql_update_start.elapsed().as_millis() as u64;
+        Ok((updated, sql_update_ms))
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("Task failed: {}", e)))?;
+
+    let (updated, sql_update_ms) = result?;
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    tracing::info!(
+        trace_id = %trace_id,
+        index = %name,
+        condition = %req.condition,
+        rows_updated = updated,
+        sql_update_ms = sql_update_ms,
+        total_ms = total_ms,
+        "metadata.update.complete"
+    );
+
+    Ok(Json(UpdateMetadataResponse { updated }))
 }

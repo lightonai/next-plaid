@@ -346,6 +346,29 @@ pub struct MetadataCountResponse {
     pub has_metadata: bool,
 }
 
+/// Request to update metadata using a SQL condition.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateMetadataRequest {
+    /// SQL WHERE condition for selecting documents to update (e.g., "category = ? AND score > ?")
+    #[schema(example = "category = ? AND score > ?")]
+    pub condition: String,
+    /// Parameters for the condition
+    #[serde(default)]
+    #[schema(example = json!(["science", 90]))]
+    pub parameters: Vec<serde_json::Value>,
+    /// JSON object with column names and new values to set
+    #[schema(example = json!({"status": "reviewed", "updated_at": "2024-01-15"}))]
+    pub updates: serde_json::Value,
+}
+
+/// Response after updating metadata.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct UpdateMetadataResponse {
+    /// Number of rows updated
+    #[schema(example = 5)]
+    pub updated: usize,
+}
+
 // =============================================================================
 // Delete
 // =============================================================================

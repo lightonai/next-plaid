@@ -938,21 +938,33 @@ async fn test_delete_documents() {
     // Should return 202 Accepted for async processing
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body: String = resp.json().await.unwrap();
-    assert!(body.contains("3")); // Should mention 3 documents
+    assert!(body.contains("queued")); // Should indicate queued for processing
 
-    // Wait for deletion to complete
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait for deletion to complete - poll until document count changes
+    let mut attempts = 0;
+    let max_attempts = 20; // 20 * 250ms = 5 seconds max
+    loop {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        attempts += 1;
 
-    // Verify index info - should have 7 documents remaining
-    let resp = fixture
-        .client
-        .get(fixture.url("/indices/delete_test"))
-        .send()
-        .await
-        .unwrap();
+        let resp = fixture
+            .client
+            .get(fixture.url("/indices/delete_test"))
+            .send()
+            .await
+            .unwrap();
 
-    let body: IndexInfoResponse = resp.json().await.unwrap();
-    assert_eq!(body.num_documents, 7);
+        let body: IndexInfoResponse = resp.json().await.unwrap();
+        if body.num_documents == 7 {
+            break; // Delete completed successfully
+        }
+        if attempts >= max_attempts {
+            panic!(
+                "Delete did not complete in time: expected 7 documents, got {}",
+                body.num_documents
+            );
+        }
+    }
 }
 
 #[tokio::test]

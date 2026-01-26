@@ -25,6 +25,7 @@
 //! - `POST /indices/{name}/metadata/check` - Check if documents have metadata
 //! - `POST /indices/{name}/metadata/query` - Query metadata with SQL condition
 //! - `POST /indices/{name}/metadata/get` - Get metadata for specific documents
+//! - `POST /indices/{name}/metadata/update` - Update metadata with SQL condition
 //!
 //! ## Documentation
 //! - `GET /swagger-ui` - Swagger UI
@@ -107,6 +108,7 @@ use state::{ApiConfig, AppState};
         handlers::metadata::check_metadata,
         handlers::metadata::query_metadata,
         handlers::metadata::get_metadata,
+        handlers::metadata::update_metadata,
     ),
     components(schemas(
         models::HealthResponse,
@@ -139,6 +141,8 @@ use state::{ApiConfig, AppState};
         models::QueryMetadataRequest,
         models::QueryMetadataResponse,
         models::MetadataCountResponse,
+        models::UpdateMetadataRequest,
+        models::UpdateMetadataResponse,
         models::UpdateIndexConfigRequest,
         models::UpdateIndexConfigResponse,
         models::InputType,
@@ -445,6 +449,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(handlers::query_metadata),
         )
         .route("/indices/{name}/metadata/get", post(handlers::get_metadata))
+        .route(
+            "/indices/{name}/metadata/update",
+            post(handlers::update_metadata),
+        )
         .layer(middleware::from_fn(tracing_middleware::trace_request))
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(

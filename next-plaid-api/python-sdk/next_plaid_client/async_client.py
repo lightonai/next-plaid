@@ -496,6 +496,59 @@ class AsyncNextPlaidClient(BaseNextPlaidClient):
         )
         return MetadataResponse.from_dict(data)
 
+    async def update_metadata(
+        self,
+        index_name: str,
+        condition: str,
+        updates: Dict[str, Any],
+        parameters: Optional[List[Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Update metadata rows matching a SQL condition.
+
+        Args:
+            index_name: Name of the index.
+            condition: SQL WHERE condition for selecting rows to update
+                      (e.g., "category = ? AND score > ?").
+            updates: Dict with column names and new values to set.
+            parameters: Parameters for the condition placeholders.
+
+        Returns:
+            Dict with 'updated' count indicating number of rows updated.
+
+        Raises:
+            IndexNotFoundError: If the index does not exist.
+            MetadataNotFoundError: If the index has no metadata.
+            ValidationError: If the condition or updates are invalid.
+
+        Examples:
+            # Update all documents in category "draft" to "published"
+            result = await client.update_metadata(
+                "my_index",
+                condition="category = ?",
+                updates={"category": "published", "updated_at": "2024-01-15"},
+                parameters=["draft"]
+            )
+            print(f"Updated {result['updated']} rows")
+
+            # Update documents matching multiple conditions
+            await client.update_metadata(
+                "my_index",
+                condition="score > ? AND status = ?",
+                updates={"status": "reviewed"},
+                parameters=[90, "pending"]
+            )
+        """
+        payload: Dict[str, Any] = {
+            "condition": condition,
+            "updates": updates,
+        }
+        if parameters:
+            payload["parameters"] = parameters
+        return await self._request(
+            "POST", f"/indices/{index_name}/metadata/update", json=payload
+        )
+
     # ==================== Text Encoding ====================
 
     async def encode(

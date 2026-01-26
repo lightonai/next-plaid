@@ -1270,6 +1270,112 @@ fn base64_encode(data: &[u8]) -> String {
     result
 }
 
+/// Update metadata rows matching a SQL condition.
+///
+/// This function updates existing metadata rows that match the given condition.
+/// The updates are provided as a JSON object where keys are column names and values
+/// are the new values to set.
+///
+/// # Arguments
+///
+/// * `index_path` - Path to the index directory
+/// * `condition` - SQL WHERE clause with `?` placeholders (e.g., "category = ? AND score > ?")
+/// * `parameters` - Values to substitute for condition placeholders
+/// * `updates` - JSON object with column names and new values
+///
+/// # Returns
+///
+/// Number of rows updated
+///
+/// # Example
+///
+/// ```ignore
+/// use next-plaid::filtering;
+/// use serde_json::json;
+///
+/// let updated = filtering::update_where(
+///     "my_index",
+///     "category = ?",
+///     &[json!("A")],
+///     &json!({"score": 100, "status": "reviewed"}),
+/// )?;
+/// ```
+pub fn update_where(
+    index_path: &str,
+    condition: &str,
+    parameters: &[Value],
+    updates: &Value,
+) -> Result<usize> {
+    let db_path = get_db_path(index_path);
+    if !db_path.exists() {
+        return Err(Error::Filtering(
+            "No metadata database found. Create it first by adding metadata during index creation."
+                .into(),
+        ));
+    }
+
+    // Parse updates as an object
+    let updates_obj = match updates {
+        Value::Object(obj) => obj,
+        _ => {
+            return Err(Error::Filtering("Updates must be a JSON object".into()));
+        }
+    };
+
+    if updates_obj.is_empty() {
+        return Ok(0);
+    }
+
+    let conn = Connection::open(&db_path)?;
+
+    // Validate condition against SQL injection
+    let valid_columns = get_schema_columns(&conn)?;
+    validate_condition(condition, &valid_columns)?;
+
+    // Validate update column names against schema
+    for col_name in updates_obj.keys() {
+        if col_name == SUBSET_COLUMN {
+            return Err(Error::Filtering("Cannot update the _subset_ column".into()));
+        }
+        if !is_valid_column_name(col_name) {
+            return Err(Error::Filtering(format!(
+                "Invalid column name '{}'. Column names must start with a letter or \
+                 underscore, followed by letters, digits, or underscores.",
+                col_name
+            )));
+        }
+        // Check if column exists (case-insensitive)
+        let col_lower = col_name.to_lowercase();
+        let exists = valid_columns.iter().any(|c| c.to_lowercase() == col_lower);
+        if !exists {
+            return Err(Error::Filtering(format!(
+                "Unknown column '{}' in updates",
+                col_name
+            )));
+        }
+    }
+
+    // Build SET clause
+    let set_parts: Vec<String> = updates_obj
+        .keys()
+        .map(|col| format!("\"{}\" = ?", col))
+        .collect();
+    let set_clause = set_parts.join(", ");
+
+    // Build UPDATE query
+    let query = format!("UPDATE METADATA SET {} WHERE {}", set_clause, condition);
+
+    // Build parameter list: first the update values, then the condition parameters
+    let mut all_params: Vec<Box<dyn ToSql>> = updates_obj.values().map(json_to_sql).collect();
+    all_params.extend(parameters.iter().map(json_to_sql));
+
+    let param_refs: Vec<&dyn ToSql> = all_params.iter().map(|v| v.as_ref()).collect();
+
+    let updated = conn.execute(&query, params_from_iter(param_refs))?;
+
+    Ok(updated)
+}
+
 /// Get the number of documents in the metadata database.
 pub fn count(index_path: &str) -> Result<usize> {
     let db_path = get_db_path(index_path);
