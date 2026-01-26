@@ -1,6 +1,6 @@
 //! Index creation and management for PLAID
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
@@ -61,44 +61,6 @@ impl Default for IndexConfig {
             max_points_per_centroid: 256,
             n_samples_kmeans: None,
             start_from_scratch: 999,
-        }
-    }
-}
-
-/// Configuration for delete operations with deferred compaction.
-///
-/// Documents are soft-deleted immediately (O(1)) and excluded from search results.
-/// Physical deletion and IVF index rebuild are deferred until the number of
-/// pending deletes exceeds the configured threshold.
-///
-/// The effective threshold is `max(batch_threshold_absolute, batch_threshold_percentage * num_docs)`.
-/// This ensures at least `batch_threshold_absolute` (default: 300) deletes are batched
-/// before the expensive IVF rebuild, while allowing larger batches for large indices.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeleteConfig {
-    /// Absolute threshold: trigger compaction when deleted count >= this value.
-    /// Default: 300
-    #[serde(default = "default_batch_threshold_absolute")]
-    pub batch_threshold_absolute: usize,
-    /// Percentage threshold: trigger compaction when deleted count >= this % of total docs.
-    /// Default: 0.05 (5%)
-    #[serde(default = "default_batch_threshold_percentage")]
-    pub batch_threshold_percentage: f64,
-}
-
-fn default_batch_threshold_absolute() -> usize {
-    300
-}
-
-fn default_batch_threshold_percentage() -> f64 {
-    0.05
-}
-
-impl Default for DeleteConfig {
-    fn default() -> Self {
-        Self {
-            batch_threshold_absolute: default_batch_threshold_absolute(),
-            batch_threshold_percentage: default_batch_threshold_percentage(),
         }
     }
 }
@@ -563,10 +525,6 @@ pub struct MmapIndex {
     pub mmap_codes: crate::mmap::MmapNpyArray1I64,
     /// Memory-mapped residuals array (public for search access)
     pub mmap_residuals: crate::mmap::MmapNpyArray2U8,
-    /// Cached IDs of soft-deleted documents for fast search exclusion (O(1) lookup).
-    deleted_ids_cache: HashSet<i64>,
-    /// Configuration for lazy delete behavior.
-    delete_config: DeleteConfig,
 }
 
 impl MmapIndex {
@@ -674,11 +632,6 @@ impl MmapIndex {
         let mmap_codes = crate::mmap::MmapNpyArray1I64::from_npy_file(&merged_codes_path)?;
         let mmap_residuals = crate::mmap::MmapNpyArray2U8::from_npy_file(&merged_residuals_path)?;
 
-        // Initialize deleted IDs cache from metadata database
-        let deleted_ids: Vec<i64> =
-            crate::filtering::get_deleted_ids(index_path).unwrap_or_default();
-        let deleted_ids_cache: HashSet<i64> = deleted_ids.into_iter().collect();
-
         Ok(Self {
             path: index_path.to_string(),
             metadata,
@@ -690,14 +643,10 @@ impl MmapIndex {
             doc_offsets,
             mmap_codes,
             mmap_residuals,
-            deleted_ids_cache,
-            delete_config: DeleteConfig::default(),
         })
     }
 
     /// Get candidate documents from IVF for given centroid indices.
-    ///
-    /// Automatically excludes any soft-deleted documents from the results.
     pub fn get_candidates(&self, centroid_indices: &[usize]) -> Vec<i64> {
         let mut candidates: Vec<i64> = Vec::new();
 
@@ -711,12 +660,6 @@ impl MmapIndex {
 
         candidates.sort_unstable();
         candidates.dedup();
-
-        // Filter out soft-deleted documents
-        if !self.deleted_ids_cache.is_empty() {
-            candidates.retain(|&c| !self.deleted_ids_cache.contains(&c));
-        }
-
         candidates
     }
 
@@ -851,22 +794,9 @@ impl MmapIndex {
         crate::search::search_many_mmap(self, queries, params, parallel, subset)
     }
 
-    /// Get the number of documents in the index (physical count).
-    ///
-    /// Note: This returns the physical count which includes soft-deleted documents.
-    /// Use `num_documents_effective()` to get the count excluding pending deletes.
+    /// Get the number of documents in the index.
     pub fn num_documents(&self) -> usize {
         self.doc_lengths.len()
-    }
-
-    /// Get the effective number of documents (excluding soft-deleted/pending deletes).
-    ///
-    /// This is the count that users should see - it excludes documents marked
-    /// for deletion that haven't been compacted yet.
-    pub fn num_documents_effective(&self) -> usize {
-        self.doc_lengths
-            .len()
-            .saturating_sub(self.deleted_ids_cache.len())
     }
 
     /// Get the total number of embeddings in the index.
@@ -1211,14 +1141,7 @@ impl MmapIndex {
         }
     }
 
-    /// Delete documents from the index using lazy delete with deferred compaction.
-    ///
-    /// Documents are soft-deleted immediately (O(1)) and excluded from search results.
-    /// Physical deletion and IVF index rebuild are deferred until the number of
-    /// pending deletes exceeds the configured threshold (default: min(300, 5% of docs)).
-    ///
-    /// This provides fast delete performance for individual operations while
-    /// batching the expensive IVF rebuild for efficiency.
+    /// Delete documents from the index.
     ///
     /// # Arguments
     ///
@@ -1226,116 +1149,22 @@ impl MmapIndex {
     ///
     /// # Returns
     ///
-    /// The number of documents marked for deletion
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use next_plaid::MmapIndex;
-    ///
-    /// let mut index = MmapIndex::load("/path/to/index")?;
-    ///
-    /// // Fast O(1) soft delete - documents excluded from search immediately
-    /// index.delete(&[5, 10, 15])?;
-    ///
-    /// // Check how many deletes are pending compaction
-    /// println!("Pending deletes: {}", index.pending_deletes());
-    ///
-    /// // Compaction happens automatically when threshold is reached
-    /// ```
+    /// The number of documents actually deleted
     pub fn delete(&mut self, doc_ids: &[i64]) -> Result<usize> {
-        if doc_ids.is_empty() {
-            return Ok(0);
-        }
-
-        let config = self.delete_config.clone();
-        let path = self.path.clone();
-
-        // Step 1: Ensure metadata DB exists (create minimal schema if needed)
-        crate::filtering::ensure_metadata_db(&path, self.metadata.num_documents)?;
-
-        // Step 2: Ensure _deleted column exists (migrate if needed)
-        crate::filtering::migrate_add_deleted_column(&path)?;
-
-        // Step 3: Soft-delete the documents (mark as _deleted=1, NULL metadata)
-        let marked = crate::filtering::soft_delete(&path, doc_ids)?;
-
-        // Step 4: Update the in-memory deleted IDs cache
-        for &doc_id in doc_ids {
-            self.deleted_ids_cache.insert(doc_id);
-        }
-
-        // Step 5: Check if compaction threshold is reached
-        // Use the larger of absolute (300) or percentage (5% of docs) to ensure
-        // we batch enough deletes before the expensive IVF rebuild.
-        // This guarantees at least 300 deletes before compaction, or more for large indices.
-        let deleted_count = self.deleted_ids_cache.len();
-        let num_docs = self.metadata.num_documents;
-
-        let absolute_threshold = config.batch_threshold_absolute;
-        let percentage_threshold = (config.batch_threshold_percentage * num_docs as f64) as usize;
-        let effective_threshold = absolute_threshold.max(percentage_threshold).max(1);
-
-        if deleted_count >= effective_threshold {
-            self.compact()?;
-        }
-
-        Ok(marked)
+        self.delete_with_options(doc_ids, true)
     }
 
-    /// Force compaction of all pending deletes.
-    ///
-    /// This physically removes all soft-deleted documents and rebuilds the IVF index.
-    /// Normally compaction happens automatically when the delete threshold is reached,
-    /// but this method allows forcing it manually.
-    ///
-    /// # Returns
-    ///
-    /// The number of documents that were compacted (physically removed)
-    pub fn compact(&mut self) -> Result<usize> {
-        if self.deleted_ids_cache.is_empty() {
-            return Ok(0);
-        }
-
-        let path = self.path.clone();
-        let pending_ids: Vec<i64> = self.deleted_ids_cache.iter().copied().collect();
-        let count = pending_ids.len();
-
-        // Physically delete from IVF index
-        crate::delete::delete_from_index(&pending_ids, &path)?;
-
-        // Delete from metadata.db as well
-        let index_path = std::path::Path::new(&path);
-        let db_path = index_path.join("metadata.db");
-        if db_path.exists() {
-            crate::filtering::delete(&path, &pending_ids)?;
-        }
-
-        // Reload the index (clears the cache since docs are now physically deleted)
-        *self = Self::load(&path)?;
-
-        Ok(count)
-    }
-
-    /// Immediate delete that bypasses soft-delete and rebuilds IVF index immediately.
-    ///
-    /// **Warning**: This is an expensive O(total_embeddings) operation. Use `delete()` for
-    /// normal delete operations which uses efficient soft-delete with deferred compaction.
-    ///
-    /// This method is provided for special cases like:
-    /// - Repair operations where index/metadata are out of sync
-    /// - Rollback operations after failed updates
-    /// - Situations where you need to control metadata deletion separately
+    /// Delete documents from the index with control over metadata deletion.
     ///
     /// # Arguments
     ///
-    /// * `doc_ids` - Slice of document IDs to delete (0-indexed)
+    /// * `doc_ids` - Slice of document IDs to delete
     /// * `delete_metadata` - If true, also delete from metadata.db if it exists
     ///
     /// # Returns
     ///
     /// The number of documents actually deleted
-    pub fn delete_immediate(&mut self, doc_ids: &[i64], delete_metadata: bool) -> Result<usize> {
+    pub fn delete_with_options(&mut self, doc_ids: &[i64], delete_metadata: bool) -> Result<usize> {
         let path = self.path.clone();
 
         // Perform the deletion using standalone function
@@ -1354,28 +1183,6 @@ impl MmapIndex {
         *self = Self::load(&path)?;
 
         Ok(deleted)
-    }
-
-    /// Get the number of documents currently marked for deletion (pending compaction).
-    ///
-    /// This returns the count of soft-deleted documents that haven't yet been
-    /// physically removed from the index via compaction.
-    pub fn pending_deletes(&self) -> usize {
-        self.deleted_ids_cache.len()
-    }
-
-    /// Set the delete configuration for this index.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - New delete configuration
-    pub fn set_delete_config(&mut self, config: DeleteConfig) {
-        self.delete_config = config;
-    }
-
-    /// Get the current delete configuration.
-    pub fn get_delete_config(&self) -> &DeleteConfig {
-        &self.delete_config
     }
 }
 
@@ -1494,328 +1301,5 @@ mod tests {
                 .expect("Failed to update index");
         assert_eq!(index2.metadata.num_documents, 8);
         assert_eq!(doc_ids2, vec![5, 6, 7]);
-    }
-
-    // =============================================================================
-    // Lazy Delete Tests
-    // =============================================================================
-
-    /// Helper to create normalized embeddings for testing
-    fn create_test_embeddings(count: usize, dim: usize, tokens_per_doc: usize) -> Vec<Array2<f32>> {
-        let mut embeddings = Vec::new();
-        for i in 0..count {
-            let mut doc = Array2::<f32>::zeros((tokens_per_doc, dim));
-            for j in 0..tokens_per_doc {
-                for k in 0..dim {
-                    doc[[j, k]] = (i as f32 * 0.1) + (j as f32 * 0.01) + (k as f32 * 0.001);
-                }
-            }
-            // Normalize rows
-            for mut row in doc.rows_mut() {
-                let norm: f32 = row.iter().map(|x| x * x).sum::<f32>().sqrt();
-                if norm > 0.0 {
-                    row.iter_mut().for_each(|x| *x /= norm);
-                }
-            }
-            embeddings.push(doc);
-        }
-        embeddings
-    }
-
-    #[test]
-    fn test_delete_config_default() {
-        let config = DeleteConfig::default();
-        assert_eq!(config.batch_threshold_absolute, 300);
-        assert!((config.batch_threshold_percentage - 0.05).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_delete_skips_compaction_under_threshold() {
-        use tempfile::tempdir;
-
-        let temp_dir = tempdir().unwrap();
-        let index_path = temp_dir.path().to_str().unwrap();
-
-        // Create index with 100 documents
-        let embeddings = create_test_embeddings(100, 32, 5);
-        let index_config = IndexConfig {
-            nbits: 2,
-            batch_size: 50,
-            seed: Some(42),
-            kmeans_niters: 2,
-            ..Default::default()
-        };
-
-        let mut index = MmapIndex::create_with_kmeans(&embeddings, index_path, &index_config)
-            .expect("Failed to create index");
-
-        assert_eq!(index.metadata.num_documents, 100);
-        assert_eq!(index.pending_deletes(), 0);
-
-        // Configure high threshold so compaction doesn't trigger
-        index.set_delete_config(DeleteConfig {
-            batch_threshold_absolute: 1000,  // High threshold
-            batch_threshold_percentage: 0.5, // 50%
-        });
-
-        // Soft delete 3 documents
-        let deleted = index.delete(&[5, 10, 15]).unwrap();
-        assert_eq!(deleted, 3);
-
-        // Index should still have 100 docs (not compacted)
-        assert_eq!(index.metadata.num_documents, 100);
-
-        // But pending deletes should be 3
-        assert_eq!(index.pending_deletes(), 3);
-    }
-
-    #[test]
-    fn test_default_threshold_waits_for_at_least_300_deletes() {
-        use tempfile::tempdir;
-
-        let temp_dir = tempdir().unwrap();
-        let index_path = temp_dir.path().to_str().unwrap();
-
-        // Create index with 100 documents (small index)
-        let embeddings = create_test_embeddings(100, 32, 5);
-        let index_config = IndexConfig {
-            nbits: 2,
-            batch_size: 50,
-            seed: Some(42),
-            kmeans_niters: 2,
-            ..Default::default()
-        };
-
-        let mut index = MmapIndex::create_with_kmeans(&embeddings, index_path, &index_config)
-            .expect("Failed to create index");
-
-        // Use default config: absolute=300, percentage=5%
-        // For 100 docs: effective = max(300, 5) = 300
-        // This guarantees at least 300 deletes before compaction
-        let config = index.get_delete_config();
-        assert_eq!(config.batch_threshold_absolute, 300);
-        assert!((config.batch_threshold_percentage - 0.05).abs() < 0.001);
-
-        // Delete 50 documents (well under 300 threshold)
-        for i in 0..50 {
-            index.delete(&[i]).unwrap();
-        }
-
-        // Index should still have 100 docs (no compaction yet)
-        // because 50 < 300 (the minimum threshold)
-        assert_eq!(index.metadata.num_documents, 100);
-        assert_eq!(index.pending_deletes(), 50);
-
-        // Even though 50 > 5% of 100, we use max() so threshold is 300
-        // This proves small indices don't trigger early compaction
-    }
-
-    #[test]
-    fn test_delete_triggers_compaction_at_threshold() {
-        use tempfile::tempdir;
-
-        let temp_dir = tempdir().unwrap();
-        let index_path = temp_dir.path().to_str().unwrap();
-
-        // Create index with 20 documents
-        let embeddings = create_test_embeddings(20, 32, 5);
-        let index_config = IndexConfig {
-            nbits: 2,
-            batch_size: 50,
-            seed: Some(42),
-            kmeans_niters: 2,
-            ..Default::default()
-        };
-
-        let mut index = MmapIndex::create_with_kmeans(&embeddings, index_path, &index_config)
-            .expect("Failed to create index");
-
-        assert_eq!(index.metadata.num_documents, 20);
-
-        // Configure threshold: effective = max(3, 0.1*20=2) = 3
-        // So compaction triggers when pending deletes >= 3
-        index.set_delete_config(DeleteConfig {
-            batch_threshold_absolute: 3,
-            batch_threshold_percentage: 0.1, // 10% of 20 = 2, but max(3,2) = 3
-        });
-
-        // Delete 2 docs - should NOT trigger compaction (2 < 3)
-        index.delete(&[1, 2]).unwrap();
-        assert_eq!(index.metadata.num_documents, 20); // Still 20
-        assert_eq!(index.pending_deletes(), 2);
-
-        // Delete 1 more - should trigger compaction (total 3 >= threshold 3)
-        index.delete(&[3]).unwrap();
-
-        // After compaction, index should have 17 documents
-        assert_eq!(index.metadata.num_documents, 17);
-
-        // Pending deletes should be 0 (compaction cleared the cache)
-        assert_eq!(index.pending_deletes(), 0);
-    }
-
-    #[test]
-    fn test_search_excludes_soft_deleted_docs() {
-        use tempfile::tempdir;
-
-        let temp_dir = tempdir().unwrap();
-        let index_path = temp_dir.path().to_str().unwrap();
-
-        // Create index with 10 documents
-        let embeddings = create_test_embeddings(10, 32, 5);
-        let index_config = IndexConfig {
-            nbits: 2,
-            batch_size: 50,
-            seed: Some(42),
-            kmeans_niters: 2,
-            ..Default::default()
-        };
-
-        let mut index = MmapIndex::create_with_kmeans(&embeddings, index_path, &index_config)
-            .expect("Failed to create index");
-
-        // Use doc 0 as query
-        let query = embeddings[0].clone();
-
-        // Search should find doc 0 as the top result
-        let params = crate::search::SearchParameters {
-            top_k: 10,
-            n_full_scores: 10,
-            n_ivf_probe: 4,
-            ..Default::default()
-        };
-        let results_before = index.search(&query, &params, None).unwrap();
-        assert!(
-            results_before.passage_ids.contains(&0),
-            "Doc 0 should be in results before delete"
-        );
-
-        // Configure high threshold so no compaction
-        index.set_delete_config(DeleteConfig {
-            batch_threshold_absolute: 1000,
-            batch_threshold_percentage: 1.0,
-        });
-
-        // Soft delete doc 0
-        index.delete(&[0]).unwrap();
-
-        // Search should NOT find doc 0 anymore
-        let results_after = index.search(&query, &params, None).unwrap();
-        assert!(
-            !results_after.passage_ids.contains(&0),
-            "Doc 0 should NOT be in results after soft delete"
-        );
-
-        // Index still has 10 docs (not compacted)
-        assert_eq!(index.metadata.num_documents, 10);
-    }
-
-    #[test]
-    fn test_compact_forces_immediate_compaction() {
-        use tempfile::tempdir;
-
-        let temp_dir = tempdir().unwrap();
-        let index_path = temp_dir.path().to_str().unwrap();
-
-        // Create index with 10 documents
-        let embeddings = create_test_embeddings(10, 32, 5);
-        let index_config = IndexConfig {
-            nbits: 2,
-            batch_size: 50,
-            seed: Some(42),
-            kmeans_niters: 2,
-            ..Default::default()
-        };
-
-        let mut index = MmapIndex::create_with_kmeans(&embeddings, index_path, &index_config)
-            .expect("Failed to create index");
-
-        // Configure very high threshold so automatic compaction won't trigger
-        index.set_delete_config(DeleteConfig {
-            batch_threshold_absolute: 1000,
-            batch_threshold_percentage: 1.0,
-        });
-
-        // Delete 2 documents (won't trigger automatic compaction)
-        index.delete(&[1, 2]).unwrap();
-        assert_eq!(index.metadata.num_documents, 10); // Still 10
-        assert_eq!(index.pending_deletes(), 2);
-
-        // Force compaction manually
-        let compacted = index.compact().unwrap();
-        assert_eq!(compacted, 2);
-
-        // Index should now have 8 documents
-        assert_eq!(index.metadata.num_documents, 8);
-        assert_eq!(index.pending_deletes(), 0);
-    }
-
-    #[test]
-    fn test_deleted_ids_cache_persists_across_reload() {
-        use tempfile::tempdir;
-
-        let temp_dir = tempdir().unwrap();
-        let index_path = temp_dir.path().to_str().unwrap();
-
-        // Create index with 10 documents
-        let embeddings = create_test_embeddings(10, 32, 5);
-        let index_config = IndexConfig {
-            nbits: 2,
-            batch_size: 50,
-            seed: Some(42),
-            kmeans_niters: 2,
-            ..Default::default()
-        };
-
-        let mut index = MmapIndex::create_with_kmeans(&embeddings, index_path, &index_config)
-            .expect("Failed to create index");
-
-        // Configure high threshold so no compaction
-        index.set_delete_config(DeleteConfig {
-            batch_threshold_absolute: 1000,
-            batch_threshold_percentage: 1.0,
-        });
-
-        // Soft delete some docs
-        index.delete(&[3, 5, 7]).unwrap();
-        assert_eq!(index.pending_deletes(), 3);
-        assert_eq!(index.num_documents(), 10); // Physical count unchanged
-        assert_eq!(index.num_documents_effective(), 7); // Effective count = 10 - 3
-
-        // Reload index (simulates API restart)
-        let index_reloaded = MmapIndex::load(index_path).expect("Failed to reload index");
-
-        // Deleted IDs cache should be restored from metadata.db
-        assert_eq!(index_reloaded.pending_deletes(), 3);
-
-        // num_documents_effective() must be correct after reload
-        assert_eq!(index_reloaded.num_documents(), 10); // Physical count
-        assert_eq!(
-            index_reloaded.num_documents_effective(),
-            7,
-            "num_documents_effective() must persist across reload (API restart)"
-        );
-
-        // Search should still exclude soft-deleted docs
-        let query = embeddings[3].clone(); // Query with a deleted doc's embedding
-        let params = crate::search::SearchParameters {
-            top_k: 10,
-            n_full_scores: 10,
-            n_ivf_probe: 4,
-            ..Default::default()
-        };
-        let results = index_reloaded.search(&query, &params, None).unwrap();
-        assert!(
-            !results.passage_ids.contains(&3),
-            "Soft-deleted doc 3 should not appear in results"
-        );
-        assert!(
-            !results.passage_ids.contains(&5),
-            "Soft-deleted doc 5 should not appear in results"
-        );
-        assert!(
-            !results.passage_ids.contains(&7),
-            "Soft-deleted doc 7 should not appear in results"
-        );
     }
 }
