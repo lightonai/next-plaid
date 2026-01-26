@@ -211,8 +211,9 @@ static INDEX_LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>> 
 static INDEX_SEMAPHORES: OnceLock<std::sync::Mutex<HashMap<String, Arc<Semaphore>>>> =
     OnceLock::new();
 
-/// Helper to get (or create) an async mutex for a specific index name.
+/// Helper to get (or create) an async mutex for a specific index.
 /// Used to serialize updates to a specific index.
+/// Uses the index name as key (assumes unique names within a single server instance).
 pub fn get_index_lock(name: &str) -> Arc<Mutex<()>> {
     let locks: &std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> =
         INDEX_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
@@ -220,6 +221,19 @@ pub fn get_index_lock(name: &str) -> Arc<Mutex<()>> {
         .lock()
         .expect("INDEX_LOCKS mutex poisoned - a thread panicked while holding this lock");
     map.entry(name.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+/// Helper to get (or create) an async mutex for a specific index path.
+/// Used when full path isolation is needed (e.g., in tests with separate temp directories).
+pub fn get_index_lock_by_path(path: &str) -> Arc<Mutex<()>> {
+    let locks: &std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> =
+        INDEX_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut map = locks
+        .lock()
+        .expect("INDEX_LOCKS mutex poisoned - a thread panicked while holding this lock");
+    map.entry(path.to_string())
         .or_insert_with(|| Arc::new(Mutex::new(())))
         .clone()
 }
@@ -239,14 +253,19 @@ fn get_index_semaphore(name: &str) -> Arc<Semaphore> {
 
 /// Get or create a batch queue for the given index.
 /// Spawns a batch worker if the queue doesn't exist yet.
+/// Uses full index path as key to ensure isolation between different data directories.
 fn get_or_create_batch_queue(name: &str, state: Arc<AppState>) -> mpsc::Sender<BatchItem> {
+    // Use full path as key to ensure isolation between different data directories
+    // (important for tests running in parallel with separate temp directories)
+    let queue_key = state.index_path(name).to_string_lossy().to_string();
+
     let queues: &std::sync::Mutex<HashMap<String, BatchQueue>> =
         BATCH_QUEUES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     let mut map = queues
         .lock()
         .expect("BATCH_QUEUES mutex poisoned - a thread panicked while holding this lock");
 
-    if let Some(queue) = map.get(name) {
+    if let Some(queue) = map.get(&queue_key) {
         return queue.sender.clone();
     }
 
@@ -255,7 +274,7 @@ fn get_or_create_batch_queue(name: &str, state: Arc<AppState>) -> mpsc::Sender<B
     let queue = BatchQueue {
         sender: sender.clone(),
     };
-    map.insert(name.to_string(), queue);
+    map.insert(queue_key, queue);
 
     // Spawn the batch worker
     let index_name = name.to_string();
@@ -347,13 +366,13 @@ async fn process_batch(
     let doc_count = embeddings.len();
     let start = std::time::Instant::now();
 
-    // Acquire per-index lock
-    let lock = get_index_lock(index_name);
-    let _guard = lock.lock().await;
-
     let name_inner = index_name.to_string();
     let state_clone = state.clone();
     let path_str = state.index_path(index_name).to_string_lossy().to_string();
+
+    // Acquire per-index lock using full path for isolation
+    let lock = get_index_lock_by_path(&path_str);
+    let _guard = lock.lock().await;
 
     // Run heavy work in blocking thread
     let result = task::spawn_blocking(move || -> Result<BatchMetrics, String> {
@@ -556,6 +575,306 @@ fn evict_oldest_documents(index: &mut MmapIndex, max_documents: usize) -> ApiRes
 
     Ok(deleted)
 }
+
+// =============================================================================
+// Delete Batching Infrastructure
+// =============================================================================
+
+/// Minimum wait time after receiving first delete condition before processing.
+/// Configurable via DELETE_BATCH_MIN_WAIT env var (default: 500ms).
+/// This allows time for concurrent delete requests to accumulate before processing.
+fn delete_batch_min_wait() -> Duration {
+    static VALUE: OnceLock<Duration> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        Duration::from_millis(
+            std::env::var("DELETE_BATCH_MIN_WAIT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(500),
+        )
+    })
+}
+
+/// Maximum time to wait for more delete conditions before processing.
+/// Configurable via DELETE_BATCH_MAX_WAIT env var (default: 2000ms).
+/// Higher values allow better batching for clients with slow HTTP connections.
+fn delete_batch_max_wait() -> Duration {
+    static VALUE: OnceLock<Duration> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        Duration::from_millis(
+            std::env::var("DELETE_BATCH_MAX_WAIT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2000),
+        )
+    })
+}
+
+/// Maximum number of delete conditions to batch together.
+/// Configurable via MAX_DELETE_BATCH_CONDITIONS env var (default: 200).
+/// Higher values allow processing more deletes in a single batch.
+fn max_delete_batch_conditions() -> usize {
+    static VALUE: OnceLock<usize> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("MAX_DELETE_BATCH_CONDITIONS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(200)
+    })
+}
+
+/// A single delete condition to be batched.
+struct DeleteBatchItem {
+    condition: String,
+    parameters: Vec<serde_json::Value>,
+}
+
+/// Handle to a delete batch queue for an index.
+struct DeleteBatchQueue {
+    sender: mpsc::Sender<DeleteBatchItem>,
+}
+
+/// Global registry of delete batch queues per index.
+static DELETE_BATCH_QUEUES: OnceLock<std::sync::Mutex<HashMap<String, DeleteBatchQueue>>> =
+    OnceLock::new();
+
+/// Get or create a delete batch queue for the given index.
+/// Uses full index path as key to ensure isolation between different data directories.
+fn get_or_create_delete_batch_queue(
+    name: &str,
+    state: Arc<AppState>,
+) -> mpsc::Sender<DeleteBatchItem> {
+    // Use full path as key to ensure isolation between different data directories
+    // (important for tests running in parallel with separate temp directories)
+    let queue_key = state.index_path(name).to_string_lossy().to_string();
+
+    let queues: &std::sync::Mutex<HashMap<String, DeleteBatchQueue>> =
+        DELETE_BATCH_QUEUES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut map = queues.lock().expect("DELETE_BATCH_QUEUES mutex poisoned");
+
+    if let Some(queue) = map.get(&queue_key) {
+        return queue.sender.clone();
+    }
+
+    // Create new channel and spawn worker
+    let (sender, receiver) = mpsc::channel(batch_channel_size());
+    let queue = DeleteBatchQueue {
+        sender: sender.clone(),
+    };
+    map.insert(queue_key, queue);
+
+    // Spawn the delete batch worker
+    let index_name = name.to_string();
+    tokio::spawn(delete_batch_worker(receiver, index_name, state));
+
+    sender
+}
+
+/// Background worker that collects delete conditions and processes them together.
+///
+/// The worker waits for conditions and batches them:
+/// - Waits at least DELETE_BATCH_MIN_WAIT after first condition
+/// - Then processes when batch reaches MAX_DELETE_BATCH_CONDITIONS, or
+/// - DELETE_BATCH_MAX_WAIT has elapsed
+///
+/// Conditions are resolved to IDs at delete time (inside the lock) to handle
+/// the ID shifting that occurs when documents are deleted.
+async fn delete_batch_worker(
+    mut receiver: mpsc::Receiver<DeleteBatchItem>,
+    index_name: String,
+    state: Arc<AppState>,
+) {
+    tracing::info!(index = %index_name, "delete.worker.started");
+
+    loop {
+        // Wait for the first item (blocking)
+        let first_item = match receiver.recv().await {
+            Some(item) => item,
+            None => {
+                tracing::debug!(index = %index_name, "delete.worker.stopped");
+                break;
+            }
+        };
+
+        // Start collecting batch
+        let mut batch: Vec<DeleteBatchItem> = vec![first_item];
+        let min_deadline = Instant::now() + delete_batch_min_wait();
+        let max_deadline = Instant::now() + delete_batch_max_wait();
+
+        // First phase: wait at least min_wait to allow batching
+        while Instant::now() < min_deadline && batch.len() < max_delete_batch_conditions() {
+            let remaining = min_deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(remaining, receiver.recv()).await {
+                Ok(Some(item)) => batch.push(item),
+                Ok(None) => {
+                    // Channel closed - process remaining batch
+                    if !batch.is_empty() {
+                        process_delete_batch(&index_name, batch, &state).await;
+                    }
+                    tracing::debug!(index = %index_name, "delete.worker.stopped");
+                    return;
+                }
+                Err(_) => break, // Timeout - proceed to second phase
+            }
+        }
+
+        // Second phase: continue collecting until max_wait or max conditions
+        while batch.len() < max_delete_batch_conditions() {
+            let remaining = max_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+
+            match tokio::time::timeout(remaining, receiver.recv()).await {
+                Ok(Some(item)) => batch.push(item),
+                Ok(None) => {
+                    // Channel closed - process remaining batch
+                    if !batch.is_empty() {
+                        process_delete_batch(&index_name, batch, &state).await;
+                    }
+                    tracing::debug!(index = %index_name, "delete.worker.stopped");
+                    return;
+                }
+                Err(_) => break, // Timeout
+            }
+        }
+
+        // Process the collected batch
+        process_delete_batch(&index_name, batch, &state).await;
+    }
+}
+
+/// Process a batch of delete conditions for the given index.
+///
+/// Conditions are resolved to IDs at delete time (inside the lock) to ensure
+/// we get the correct IDs after any previous deletions have completed.
+async fn process_delete_batch(
+    index_name: &str,
+    conditions: Vec<DeleteBatchItem>,
+    state: &Arc<AppState>,
+) {
+    let num_conditions = conditions.len();
+    let start = std::time::Instant::now();
+
+    tracing::info!(
+        index = %index_name,
+        num_conditions = num_conditions,
+        "delete.batch.processing"
+    );
+
+    let name_inner = index_name.to_string();
+    let state_clone = state.clone();
+    let path_str = state.index_path(index_name).to_string_lossy().to_string();
+
+    // Acquire per-index lock using full path for isolation
+    let lock = get_index_lock_by_path(&path_str);
+    let _guard = lock.lock().await;
+
+    // Run in blocking thread
+    let result = task::spawn_blocking(move || -> Result<(usize, usize), String> {
+        // Check and repair sync issues
+        if let Err(e) = repair_index_db_sync(&path_str) {
+            return Err(format!("Index/DB sync repair failed: {}", e));
+        }
+
+        let mut index =
+            MmapIndex::load(&path_str).map_err(|e| format!("Failed to load index: {}", e))?;
+
+        let mut total_deleted = 0;
+
+        // Process each condition sequentially to handle ID shifting correctly.
+        // When documents are deleted, all subsequent document IDs shift down.
+        // So we must resolve each condition against the current state AFTER
+        // any previous deletions have been applied.
+        for item in &conditions {
+            // Resolve condition to IDs from current metadata.db state
+            let doc_ids =
+                match filtering::where_condition(&path_str, &item.condition, &item.parameters) {
+                    Ok(ids) => ids,
+                    Err(e) => {
+                        tracing::warn!(
+                            index = %name_inner,
+                            condition = %item.condition,
+                            error = %e,
+                            "delete.condition.failed"
+                        );
+                        continue;
+                    }
+                };
+
+            if doc_ids.is_empty() {
+                continue;
+            }
+
+            // Delete these documents - this will shift remaining IDs
+            match index.delete(&doc_ids) {
+                Ok(deleted) => {
+                    total_deleted += deleted;
+                    tracing::debug!(
+                        index = %name_inner,
+                        condition = %item.condition,
+                        deleted = deleted,
+                        "delete.condition.complete"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        index = %name_inner,
+                        condition = %item.condition,
+                        num_ids = doc_ids.len(),
+                        error = %e,
+                        "delete.condition.failed"
+                    );
+                }
+            }
+        }
+
+        let remaining = index.metadata.num_documents;
+
+        // Reload state
+        state_clone
+            .reload_index(&name_inner)
+            .map_err(|e| format!("Failed to reload index: {}", e))?;
+
+        Ok((total_deleted, remaining))
+    })
+    .await;
+
+    let total_ms = start.elapsed().as_millis() as u64;
+
+    match result {
+        Ok(Ok((deleted, remaining))) => {
+            tracing::info!(
+                index = %index_name,
+                num_conditions = num_conditions,
+                deleted = deleted,
+                remaining = remaining,
+                total_ms = total_ms,
+                "delete.batch.complete"
+            );
+        }
+        Ok(Err(e)) => {
+            tracing::error!(
+                index = %index_name,
+                num_conditions = num_conditions,
+                error = %e,
+                total_ms = total_ms,
+                "delete.batch.failed"
+            );
+        }
+        Err(e) => {
+            tracing::error!(
+                index = %index_name,
+                num_conditions = num_conditions,
+                error = %e,
+                total_ms = total_ms,
+                "delete.batch.panicked"
+            );
+        }
+    }
+}
+
+// =============================================================================
 
 /// Declare a new index with its configuration.
 #[utoipa::path(
@@ -899,8 +1218,14 @@ pub async fn add_documents(
 
 /// Delete documents from an index by metadata filter.
 ///
-/// Returns 202 Accepted immediately and processes deletion in background.
-/// Documents matching the SQL WHERE condition will be deleted.
+/// Returns 202 Accepted immediately. Delete conditions are batched together
+/// for efficient processing - multiple delete requests within a short window
+/// will be processed in a single batch operation.
+///
+/// Batching parameters can be configured via environment variables:
+/// - DELETE_BATCH_MIN_WAIT: Minimum wait time before processing (default: 500ms)
+/// - DELETE_BATCH_MAX_WAIT: Maximum wait time for batching (default: 2000ms)
+/// - MAX_DELETE_BATCH_CONDITIONS: Max conditions per batch (default: 50)
 #[utoipa::path(
     delete,
     path = "/indices/{name}/documents",
@@ -937,116 +1262,36 @@ pub async fn delete_documents(
         return Err(ApiError::MetadataNotFound(name));
     }
 
-    // Query document IDs matching the condition (synchronous - fast)
-    let document_ids = filtering::where_condition(&path_str, &req.condition, &req.parameters)
-        .map_err(|e| ApiError::BadRequest(format!("Invalid delete condition: {}", e)))?;
+    // Get or create the delete batch queue for this index
+    let sender = get_or_create_delete_batch_queue(&name, state.clone());
 
-    if document_ids.is_empty() {
-        // No documents to delete - return immediately
-        return Ok((
-            StatusCode::ACCEPTED,
-            Json("No documents match the condition".to_string()),
-        ));
-    }
+    // Try to queue the delete condition
+    let batch_item = DeleteBatchItem {
+        condition: req.condition.clone(),
+        parameters: req.parameters.clone(),
+    };
 
-    let doc_count = document_ids.len();
-    let lock = get_index_lock(&name);
-
-    // Acquire semaphore permit to limit queued tasks
-    let semaphore = get_index_semaphore(&name);
-    let permit = semaphore.clone().try_acquire_owned().map_err(|_| {
-        ApiError::ServiceUnavailable(format!(
-            "Delete queue full for index '{}'. Max {} pending deletes. Retry later.",
+    sender.try_send(batch_item).map_err(|e| match e {
+        mpsc::error::TrySendError::Full(_) => ApiError::ServiceUnavailable(format!(
+            "Delete queue full for index '{}'. Max {} pending items. Retry later.",
             name,
-            max_queued_tasks_per_index()
-        ))
+            batch_channel_size()
+        )),
+        mpsc::error::TrySendError::Closed(_) => {
+            ApiError::Internal(format!("Delete worker for index '{}' is not running", name))
+        }
     })?;
 
-    let name_clone = name.clone();
-    let state_clone = state.clone();
-
-    // Spawn background task
-    tokio::spawn(async move {
-        // Permit is held until this task completes
-        let _permit = permit;
-
-        // Acquire per-index lock
-        let _guard = lock.lock().await;
-
-        let name_inner = name_clone.clone();
-        let start = std::time::Instant::now();
-
-        // Run blocking IO in separate thread
-        let result = task::spawn_blocking(move || -> ApiResult<(usize, usize)> {
-            let path_str = state_clone
-                .index_path(&name_inner)
-                .to_string_lossy()
-                .to_string();
-
-            // Check and automatically repair sync issues between index and DB
-            if let Err(e) = repair_index_db_sync(&path_str) {
-                return Err(ApiError::Internal(format!(
-                    "Index/DB sync repair failed: {}",
-                    e
-                )));
-            }
-
-            let mut index = MmapIndex::load(&path_str)?;
-
-            // Delete documents by IDs
-            // Note: index.delete() already handles metadata deletion internally,
-            // so we don't need to call filtering::delete() separately.
-            // Calling it again would delete WRONG rows because the metadata DB
-            // is re-indexed after the first delete.
-            let deleted = index.delete(&document_ids)?;
-
-            let remaining = index.metadata.num_documents;
-
-            // Reload state
-            state_clone.reload_index(&name_inner)?;
-            Ok((deleted, remaining))
-        })
-        .await;
-
-        let total_ms = start.elapsed().as_millis() as u64;
-
-        // Log result
-        match result {
-            Ok(Ok((deleted, remaining))) => {
-                tracing::info!(
-                    index = %name_clone,
-                    deleted = deleted,
-                    remaining = remaining,
-                    total_ms = total_ms,
-                    "documents.delete.complete"
-                );
-            }
-            Ok(Err(e)) => {
-                tracing::error!(
-                    index = %name_clone,
-                    error = %e,
-                    total_ms = total_ms,
-                    "documents.delete.failed"
-                );
-            }
-            Err(e) => {
-                tracing::error!(
-                    index = %name_clone,
-                    error = %e,
-                    total_ms = total_ms,
-                    "documents.delete.panicked"
-                );
-            }
-        }
-    });
+    tracing::debug!(
+        index = %name,
+        condition = %req.condition,
+        "delete.queued"
+    );
 
     // Return 202 Accepted immediately
     Ok((
         StatusCode::ACCEPTED,
-        Json(format!(
-            "Delete queued: {} documents matching condition",
-            doc_count
-        )),
+        Json("Delete condition queued for batch processing".to_string()),
     ))
 }
 
