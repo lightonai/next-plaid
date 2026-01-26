@@ -227,6 +227,7 @@ endif
 	@sed -i '' 's/"version": "[^"]*"/"version": "$(VERSION)"/' colgrep/src/install/plugin.json
 	@sed -i '' 's/"version": "[^"]*"/"version": "$(VERSION)"/' colgrep/src/install/marketplace.json
 	@sed -i '' 's/"version": "[^"]*"/"version": "$(VERSION)"/' .claude-plugin/marketplace.json
+	@sed -i '' 's/"version": "[^"]*"/"version": "$(VERSION)"/' plugins/colgrep/.claude-plugin/plugin.json
 	@echo "  ✓ Updated Claude plugin versions"
 	@# Update OpenAPI version in next-plaid-api/src/main.rs
 	@sed -i '' 's/version = "[^"]*",/version = "$(VERSION)",/' next-plaid-api/src/main.rs
@@ -243,15 +244,20 @@ endif
 	@sed -i '' 's/version="%(prog)s [^"]*"/version="%(prog)s $(VERSION)"/' next-plaid-onnx/python/src/colbert_export/cli.py
 	@sed -i '' 's/assert "[0-9]*\.[0-9]*\.[0-9]*" in result.stdout/assert "$(VERSION)" in result.stdout/' next-plaid-onnx/python/tests/test_cli.py
 	@echo "  ✓ Updated next-plaid-onnx/python versions"
+	@# Update README crate version (major.minor only)
+	@sed -i '' 's/next-plaid = "[0-9]*\.[0-9]*"/next-plaid = "$(shell echo $(VERSION) | cut -d. -f1,2)"/' README.md
+	@echo "  ✓ Updated README.md crate version"
 	@echo ""
 	@echo "Version bumped to $(VERSION). Files updated:"
 	@echo "  - Cargo.toml (workspace version)"
 	@echo "  - colgrep/Cargo.toml (path dependencies)"
 	@echo "  - colgrep/src/install/{plugin,marketplace}.json"
 	@echo "  - .claude-plugin/marketplace.json"
+	@echo "  - plugins/colgrep/.claude-plugin/plugin.json"
 	@echo "  - next-plaid-api/src/main.rs (OpenAPI)"
 	@echo "  - next-plaid-api/python-sdk/{pyproject.toml,__init__.py}"
 	@echo "  - next-plaid-onnx/python/{pyproject.toml,__init__.py,cli.py,test}"
+	@echo "  - README.md (crate version)"
 	@echo ""
 	@echo "Don't forget to:"
 	@echo "  1. Run 'cargo check' to verify Cargo.lock updates"

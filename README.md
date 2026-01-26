@@ -9,6 +9,8 @@
 
 &nbsp;
 
+**[LLM-friendly documentation](https://lightonai.github.io/lategrep/)** - All READMEs in a single-page format for easy copy-paste into AI assistants.
+
 ## What this is
 
 This repository contains two closely related projects built around **multi-vector retrieval**:
@@ -70,7 +72,7 @@ client.delete("docs", "id IN (?, ?)", ["doc_1", "doc_2"])
 
 ```toml
 [dependencies]
-next-plaid = "0.4"
+next-plaid = "0.5"
 ```
 
 For GPU-accelerated indexing in Python, see [FastPlaid](https://github.com/lightonai/fast-plaid).  
