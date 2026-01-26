@@ -9,8 +9,6 @@
 
 &nbsp;
 
-**[LLM-friendly documentation](https://lightonai.github.io/lategrep/)** - All READMEs in a single-page format for easy copy-paste into AI assistants.
-
 ## What this is
 
 This repository contains two closely related projects built around **multi-vector retrieval**:
@@ -19,6 +17,8 @@ This repository contains two closely related projects built around **multi-vecto
 - **ColGREP** — a code search tool built on top of it for coding agents.
 
 Multi-vector retrieval keeps multiple embeddings per document instead of collapsing everything into one. This preserves fine-grained signals in long text and code, at the cost of more indexing work upfront but much better precision at query time.
+
+**[LLM-friendly documentation](https://lightonai.github.io/lategrep/)** - All READMEs in a single-page format for easy copy-paste into AI assistants.
 
 ## NextPlaid
 
