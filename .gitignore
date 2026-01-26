@@ -45,6 +45,7 @@ test_index/
 /benchmarks/_build/
 /benchmarks/evaluation_datasets/
 /benchmarks/scifact_embeddings/
+/docs/_site/
 
 # Benchmark results
 /target/criterion/
