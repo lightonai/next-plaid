@@ -148,6 +148,9 @@ fn test_delete_with_metadata() {
     let deleted = index.delete(&[1, 3]).unwrap();
     assert_eq!(deleted, 2);
 
+    // Reload to get updated metadata
+    index.reload().unwrap();
+
     // Verify index
     assert_eq!(index.metadata.num_documents, 3);
 
@@ -429,6 +432,9 @@ fn test_create_update_delete_update_workflow() {
     // 3. Delete document with ID 3
     let deleted = index.delete(&[3]).unwrap();
     assert_eq!(deleted, 1, "Expected 1 document to be deleted");
+
+    // Reload to get updated metadata
+    index.reload().unwrap();
 
     // Verify 3 documents after deletion
     assert_eq!(

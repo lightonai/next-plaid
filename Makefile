@@ -158,7 +158,7 @@ benchmark-scifact-docker:
 # Stress test: Add/Delete cycles to verify index/DB sync
 # Tests: add 1000 -> delete 200 -> add 200 -> add 1000 -> delete 500 -> add remaining
 benchmark-scifact-stress:
-	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_stress.py --model $(or $(MODEL),lightonai/answerai-colbert-small-v1-onnx) --batch-size 30 --keep-running
+	cd benchmarks && uv sync --extra eval && uv run python benchmark_scifact_stress_one.py --model $(or $(MODEL),lightonai/answerai-colbert-small-v1-onnx) --keep-running
 
 # Benchmark fast-plaid index format compatibility with next-plaid-api
 # Creates a fast-plaid format index, loads it with next-plaid-api, and validates ndcg@10 ~ 0.74

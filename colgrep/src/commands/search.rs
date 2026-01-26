@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use colored::Colorize;
@@ -106,9 +106,10 @@ pub fn cmd_search(
 ) -> Result<()> {
     // Collect results from all paths
     let mut all_results: Vec<colgrep::SearchResult> = Vec::new();
+    let mut path_errors: Vec<String> = Vec::new();
 
     for path in paths {
-        let results = search_single_path(
+        match search_single_path(
             query,
             path,
             top_k,
@@ -125,8 +126,32 @@ pub fn cmd_search(
             exclude_dirs,
             code_only,
             pool_factor,
-        )?;
-        all_results.extend(results);
+        ) {
+            Ok(results) => all_results.extend(results),
+            Err(e) => {
+                let err_msg = format!("{}", e);
+                // Check if this is a "path does not exist" error
+                if err_msg.contains("Path does not exist:") {
+                    // Store error message for later display, continue with other paths
+                    path_errors.push(err_msg);
+                } else {
+                    // For other errors, fail immediately
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    // If ALL paths failed, return error with all messages
+    if all_results.is_empty() && !path_errors.is_empty() {
+        anyhow::bail!("{}", path_errors.join("\n\n"));
+    }
+
+    // Print warnings for failed paths (but we have some results)
+    if !path_errors.is_empty() && !json && !files_only {
+        for err in &path_errors {
+            eprintln!("⚠️  {}\n", err);
+        }
     }
 
     // Sort all results by score and take top_k
@@ -420,6 +445,52 @@ pub fn cmd_search(
     Ok(())
 }
 
+/// Find the lowest existing parent directory and list its contents
+fn find_existing_parent_and_list(path: &Path) -> String {
+    let mut current = path.to_path_buf();
+
+    // Walk up the path to find the first existing directory
+    while !current.exists() {
+        if let Some(parent) = current.parent() {
+            current = parent.to_path_buf();
+        } else {
+            break;
+        }
+    }
+
+    // If we found an existing directory, list its contents
+    if current.exists() && current.is_dir() {
+        let mut entries: Vec<String> = Vec::new();
+        if let Ok(dir_entries) = std::fs::read_dir(&current) {
+            for entry in dir_entries.take(30).flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                if is_dir {
+                    entries.push(format!("  {}/", name));
+                } else {
+                    entries.push(format!("  {}", name));
+                }
+            }
+        }
+        entries.sort();
+
+        let suffix = if entries.len() >= 30 {
+            "\n  ... (truncated)"
+        } else {
+            ""
+        };
+
+        format!(
+            "Closest existing directory: {}\nContents:\n{}{}",
+            current.display(),
+            entries.join("\n"),
+            suffix
+        )
+    } else {
+        "Could not find any existing parent directory.".to_string()
+    }
+}
+
 /// Search a single path and return results with absolute file paths
 #[allow(clippy::too_many_arguments)]
 fn search_single_path(
@@ -440,7 +511,13 @@ fn search_single_path(
     code_only: bool,
     pool_factor: Option<usize>,
 ) -> Result<Vec<colgrep::SearchResult>> {
-    let path = std::fs::canonicalize(path)?;
+    let path = match std::fs::canonicalize(path) {
+        Ok(p) => p,
+        Err(_) => {
+            let help = find_existing_parent_and_list(path);
+            anyhow::bail!("Path does not exist: {}\n\n{}", path.display(), help);
+        }
+    };
 
     // Check if path is a file (not a directory)
     // If so, we'll use the parent directory for indexing and filter to this specific file

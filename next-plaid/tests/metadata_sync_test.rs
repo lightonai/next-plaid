@@ -296,6 +296,9 @@ fn test_metadata_sync_after_delete() {
     let deleted = index.delete(&[0, 2, 4]).unwrap();
     assert_eq!(deleted, 3);
 
+    // Reload to get updated metadata
+    index.reload().unwrap();
+
     // Verify metadata.json is synced
     let num_docs = read_num_documents_from_file(path).expect("metadata.json should exist");
     assert_eq!(

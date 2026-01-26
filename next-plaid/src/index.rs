@@ -1141,7 +1141,19 @@ impl MmapIndex {
         }
     }
 
+    /// Reload the index from disk.
+    ///
+    /// This should be called after delete operations to refresh the in-memory
+    /// representation with the updated on-disk state.
+    pub fn reload(&mut self) -> Result<()> {
+        *self = Self::load(&self.path)?;
+        Ok(())
+    }
+
     /// Delete documents from the index.
+    ///
+    /// This performs the deletion on disk but does NOT reload the in-memory index.
+    /// Call `reload()` after all delete operations are complete to refresh the index.
     ///
     /// # Arguments
     ///
@@ -1155,6 +1167,9 @@ impl MmapIndex {
     }
 
     /// Delete documents from the index with control over metadata deletion.
+    ///
+    /// This performs the deletion on disk but does NOT reload the in-memory index.
+    /// Call `reload()` after all delete operations are complete to refresh the index.
     ///
     /// # Arguments
     ///
@@ -1178,9 +1193,6 @@ impl MmapIndex {
                 crate::filtering::delete(&path, doc_ids)?;
             }
         }
-
-        // Reload self as mmap
-        *self = Self::load(&path)?;
 
         Ok(deleted)
     }

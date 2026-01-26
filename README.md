@@ -57,11 +57,11 @@ client = NextPlaidClient("http://localhost:8080")
 client.create_index("docs", IndexConfig(nbits=4))
 client.add(
     "docs",
-    documents=["Paris is the capital of France.", "Berlin is in Germany."],
+    documents=["next-plaid is a multi-vector database", "colgrep is a code search tool based on Next-Plaid"],
     metadata=[{"id": "doc_1"}, {"id": "doc_2"}],
 )
-results = client.search("docs", ["What is the capital of France?"])
-results = client.search("docs", ["French city"], filter_condition="id = ?", filter_parameters=["doc_1"])
+results = client.search("docs", ["coding agent tool"])
+results = client.search("docs", ["vector-database"], filter_condition="id = ?", filter_parameters=["doc_1"])
 client.delete("docs", "id = ?", ["doc_1"])
 client.delete("docs", "id IN (?, ?)", ["doc_1", "doc_2"])
 ```
@@ -177,11 +177,11 @@ colgrep settings --pool-factor 1
 colgrep settings --fp32 --pool-factor 1
 ```
 
-| Setting | Effect | Trade-off |
-| ------- | ------ | --------- |
-| `--int8` | Uses INT8 quantized model (default) | ~2x faster inference, minimal quality loss |
-| `--pool-factor 1` | No pooling | Maximum precision, larger index |
-| `--pool-factor 2` | Pools every 2 token embeddings (default) | ~50% smaller index, faster search |
+| Setting           | Effect                                   | Trade-off                                  |
+| ----------------- | ---------------------------------------- | ------------------------------------------ |
+| `--int8`          | Uses INT8 quantized model (default)      | ~2x faster inference, minimal quality loss |
+| `--pool-factor 1` | No pooling                               | Maximum precision, larger index            |
+| `--pool-factor 2` | Pools every 2 token embeddings (default) | ~50% smaller index, faster search          |
 
 To reset to defaults (INT8, pool-factor 2):
 

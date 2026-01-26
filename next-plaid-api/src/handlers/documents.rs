@@ -564,6 +564,7 @@ fn evict_oldest_documents(index: &mut MmapIndex, max_documents: usize) -> ApiRes
     let ids_to_delete: Vec<i64> = (0..num_to_evict as i64).collect();
 
     let deleted = index.delete(&ids_to_delete)?;
+    index.reload()?;
 
     tracing::debug!(
         current_count = current_count,
@@ -807,6 +808,7 @@ async fn process_delete_batch(
             }
 
             // Delete these documents - this will shift remaining IDs
+            // Note: delete() modifies disk but doesn't reload in-memory state
             match index.delete(&doc_ids) {
                 Ok(deleted) => {
                     total_deleted += deleted;
@@ -829,6 +831,10 @@ async fn process_delete_batch(
             }
         }
 
+        // Reload index once after all deletions to get accurate metadata
+        index
+            .reload()
+            .map_err(|e| format!("Failed to reload index after deletions: {}", e))?;
         let remaining = index.metadata.num_documents;
 
         // Reload state

@@ -386,17 +386,37 @@ fn build_router(state: Arc<AppState>) -> Router {
         .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
         .with_state(state.clone());
 
+    // Delete endpoint - exempt from rate limiting (has internal batching)
+    let delete_router = Router::new()
+        .without_v07_checks()
+        .route("/indices/{name}", delete(handlers::delete_index))
+        .route(
+            "/indices/{name}/documents",
+            delete(handlers::delete_documents),
+        )
+        .layer(middleware::from_fn(tracing_middleware::trace_request))
+        .layer(TraceLayer::new_for_http())
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(300),
+        ))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
+        .layer(ConcurrencyLimitLayer::new(concurrency_limit))
+        .with_state(state.clone());
+
     // API router with rate limiting - use without_v07_checks to allow :param syntax
     let api_router = Router::new()
         .without_v07_checks()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         // Index routes (GET routes are in index_info_router, exempt from rate limiting)
+        // Delete routes are in delete_router, exempt from rate limiting
         .route("/indices", post(handlers::create_index))
-        .route("/indices/{name}", delete(handlers::delete_index))
-        .route(
-            "/indices/{name}/documents",
-            post(handlers::add_documents).delete(handlers::delete_documents),
-        )
+        .route("/indices/{name}/documents", post(handlers::add_documents))
         .route("/indices/{name}/config", put(handlers::update_index_config))
         .route("/indices/{name}/search", post(handlers::search))
         .route(
@@ -446,12 +466,13 @@ fn build_router(state: Arc<AppState>) -> Router {
         .with_state(state);
 
     // Merge routers: health first (takes precedence), then index info (no rate limit),
-    // then update/encode (no rate limit), then API (with rate limit)
+    // then update/encode/delete (no rate limit), then API (with rate limit)
     Router::new()
         .merge(health_router)
         .merge(index_info_router)
         .merge(update_router)
         .merge(encode_router)
+        .merge(delete_router)
         .merge(api_router)
 }
 
