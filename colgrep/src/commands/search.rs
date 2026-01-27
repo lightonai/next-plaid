@@ -11,7 +11,8 @@ use colgrep::{
 };
 
 use crate::display::{
-    calc_display_ranges, group_results_by_file, print_highlighted_content, print_highlighted_ranges,
+    calc_display_ranges, find_representative_lines, group_results_by_file,
+    print_highlighted_content, print_highlighted_ranges,
 };
 use crate::scoring::{compute_final_score, should_search_from_root};
 
@@ -348,16 +349,41 @@ pub fn cmd_search(
                                     line_num_width,
                                 );
                             } else {
-                                let start = result.unit.line.saturating_sub(1);
-                                if start < lines.len() {
-                                    print_highlighted_content(
+                                // No exact match - find most representative line(s) based on token overlap
+                                let representative_lines = find_representative_lines(
+                                    &result.unit.code,
+                                    result.unit.line,
+                                    query,
+                                );
+                                if !representative_lines.is_empty() {
+                                    let ranges = calc_display_ranges(
+                                        &representative_lines,
+                                        result.unit.line,
+                                        end,
+                                        half_context,
+                                        max_lines,
+                                        true,
+                                    );
+                                    print_highlighted_ranges(
                                         file_to_read,
                                         &lines,
-                                        start,
-                                        max_lines,
+                                        &ranges,
                                         end,
                                         line_num_width,
                                     );
+                                } else {
+                                    // Final fallback: show from beginning
+                                    let start = result.unit.line.saturating_sub(1);
+                                    if start < lines.len() {
+                                        print_highlighted_content(
+                                            file_to_read,
+                                            &lines,
+                                            start,
+                                            max_lines,
+                                            end,
+                                            line_num_width,
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -422,16 +448,41 @@ pub fn cmd_search(
                                     line_num_width,
                                 );
                             } else {
-                                let start = result.unit.line.saturating_sub(1);
-                                if start < lines.len() {
-                                    print_highlighted_content(
+                                // No exact match - find most representative line(s) based on token overlap
+                                let representative_lines = find_representative_lines(
+                                    &result.unit.code,
+                                    result.unit.line,
+                                    query,
+                                );
+                                if !representative_lines.is_empty() {
+                                    let ranges = calc_display_ranges(
+                                        &representative_lines,
+                                        result.unit.line,
+                                        end,
+                                        half_context,
+                                        max_lines,
+                                        true,
+                                    );
+                                    print_highlighted_ranges(
                                         file_to_read,
                                         &lines,
-                                        start,
-                                        max_lines,
+                                        &ranges,
                                         end,
                                         line_num_width,
                                     );
+                                } else {
+                                    // Final fallback: show from beginning
+                                    let start = result.unit.line.saturating_sub(1);
+                                    if start < lines.len() {
+                                        print_highlighted_content(
+                                            file_to_read,
+                                            &lines,
+                                            start,
+                                            max_lines,
+                                            end,
+                                            line_num_width,
+                                        );
+                                    }
                                 }
                             }
                         }
