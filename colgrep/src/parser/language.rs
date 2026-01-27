@@ -38,6 +38,10 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "ex" | "exs" => Some(Language::Elixir),
         "hs" => Some(Language::Haskell),
         "ml" | "mli" => Some(Language::Ocaml),
+        "r" | "rmd" => Some(Language::R),
+        "zig" => Some(Language::Zig),
+        "jl" => Some(Language::Julia),
+        "sql" => Some(Language::Sql),
         // Text/documentation formats
         "md" | "markdown" => Some(Language::Markdown),
         "txt" | "text" | "rst" => Some(Language::Text),
@@ -95,6 +99,10 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Elixir => tree_sitter_elixir::LANGUAGE.into(),
         Language::Haskell => tree_sitter_haskell::LANGUAGE.into(),
         Language::Ocaml => tree_sitter_ocaml::LANGUAGE_OCAML.into(),
+        Language::R => tree_sitter_r::LANGUAGE.into(),
+        Language::Zig => tree_sitter_zig::LANGUAGE.into(),
+        Language::Julia => tree_sitter_julia::LANGUAGE.into(),
+        Language::Sql => tree_sitter_sequel::LANGUAGE.into(),
         // Text/config formats don't use tree-sitter - this should never be called
         Language::Markdown
         | Language::Text
@@ -219,6 +227,17 @@ mod tests {
             Some(Language::Haskell)
         );
         assert_eq!(detect_language(Path::new("main.ml")), Some(Language::Ocaml));
+        assert_eq!(detect_language(Path::new("analysis.r")), Some(Language::R));
+        assert_eq!(detect_language(Path::new("report.rmd")), Some(Language::R));
+        assert_eq!(detect_language(Path::new("main.zig")), Some(Language::Zig));
+        assert_eq!(
+            detect_language(Path::new("script.jl")),
+            Some(Language::Julia)
+        );
+        assert_eq!(
+            detect_language(Path::new("schema.sql")),
+            Some(Language::Sql)
+        );
     }
 
     #[test]
@@ -288,5 +307,9 @@ mod tests {
         assert!(!is_text_format(Language::Swift));
         assert!(!is_text_format(Language::Haskell));
         assert!(!is_text_format(Language::Ocaml));
+        assert!(!is_text_format(Language::R));
+        assert!(!is_text_format(Language::Zig));
+        assert!(!is_text_format(Language::Julia));
+        assert!(!is_text_format(Language::Sql));
     }
 }

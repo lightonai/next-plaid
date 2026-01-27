@@ -170,6 +170,82 @@ fn test_detect_language_ocaml() {
 }
 
 #[test]
+fn test_detect_language_r() {
+    assert_eq!(detect_language(Path::new("analysis.r")), Some(Language::R));
+    assert_eq!(detect_language(Path::new("report.rmd")), Some(Language::R));
+}
+
+#[test]
+fn test_detect_language_zig() {
+    assert_eq!(detect_language(Path::new("main.zig")), Some(Language::Zig));
+}
+
+#[test]
+fn test_detect_language_julia() {
+    assert_eq!(
+        detect_language(Path::new("script.jl")),
+        Some(Language::Julia)
+    );
+}
+
+#[test]
+fn test_extract_r_function() {
+    let source = r#"# Calculate mean of a vector
+calculate_mean <- function(x) {
+    sum(x) / length(x)
+}
+
+# Filter data frame
+filter_data <- function(df, column, value) {
+    df[df[[column]] == value, ]
+}
+"#;
+    let units = extract_units(Path::new("stats.r"), source, Language::R);
+
+    // Should extract the two function definitions
+    let functions: Vec<_> = units
+        .iter()
+        .filter(|u| u.unit_type == UnitType::Function)
+        .collect();
+    assert!(
+        !functions.is_empty(),
+        "Expected at least 1 function, got {}",
+        functions.len()
+    );
+}
+
+#[test]
+fn test_detect_language_sql() {
+    assert_eq!(
+        detect_language(Path::new("schema.sql")),
+        Some(Language::Sql)
+    );
+    assert_eq!(
+        detect_language(Path::new("queries.sql")),
+        Some(Language::Sql)
+    );
+}
+
+#[test]
+fn test_extract_sql_statements() {
+    let source = r#"CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR(100),
+    email VARCHAR(255)
+);
+
+CREATE INDEX idx_users_email ON users(email);
+"#;
+    let units = extract_units(Path::new("schema.sql"), source, Language::Sql);
+    // SQL files are now parsed with tree-sitter, extracting CREATE TABLE/INDEX as class-like units
+    assert!(
+        !units.is_empty(),
+        "Expected at least one unit from SQL file"
+    );
+    assert_eq!(units[0].language, Language::Sql);
+}
+
+#[test]
 fn test_detect_language_markdown() {
     assert_eq!(
         detect_language(Path::new("README.md")),

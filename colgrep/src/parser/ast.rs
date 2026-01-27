@@ -28,6 +28,10 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         Language::Elixir => matches!(kind, "call" | "anonymous_function"), // def/defp are calls in elixir
         Language::Haskell => kind == "function",
         Language::Ocaml => matches!(kind, "let_binding" | "value_definition"),
+        Language::R => kind == "function_definition",
+        Language::Zig => kind == "FnProto" || kind == "fn_decl",
+        Language::Julia => matches!(kind, "function_definition" | "short_function_definition"),
+        Language::Sql => matches!(kind, "create_function_statement" | "create_procedure"),
         // Text/config formats - handled separately
         _ => false,
     }
@@ -93,6 +97,13 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
         Language::Elixir => kind == "call", // defmodule is a call
         Language::Haskell => matches!(kind, "type_alias" | "newtype" | "adt"),
         Language::Ocaml => matches!(kind, "type_definition" | "module_definition"),
+        Language::R => false, // R doesn't have traditional classes
+        Language::Zig => kind == "ContainerDecl", // struct, enum, union
+        Language::Julia => matches!(kind, "struct_definition" | "abstract_definition"),
+        Language::Sql => matches!(
+            kind,
+            "create_table_statement" | "create_view_statement" | "create_index_statement"
+        ),
         // C and text/config formats
         _ => false,
     }
@@ -121,6 +132,10 @@ pub fn is_constant_node(kind: &str, lang: Language) -> bool {
         Language::Elixir => kind == "unary_operator", // @ for module attributes
         Language::Haskell => kind == "function",      // top-level bindings
         Language::Ocaml => kind == "let_binding",
+        Language::R => kind == "left_assignment" || kind == "equals_assignment", // x <- value or x = value
+        Language::Zig => kind == "VarDecl", // const/var declarations
+        Language::Julia => kind == "const_statement",
+        Language::Sql => false, // SQL doesn't have constants in this sense
         // Java, CSharp, Ruby, Lua don't have clear top-level constants
         _ => false,
     }
@@ -150,6 +165,10 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
         }
         Language::Elixir => node.child_by_field_name("body"),
         Language::Haskell | Language::Ocaml => node.child_by_field_name("body"),
+        Language::R => None, // R doesn't have class bodies
+        Language::Zig => node.child_by_field_name("body"),
+        Language::Julia => node.child_by_field_name("body"),
+        Language::Sql => None, // SQL tables don't have a body with methods
         // C, Lua, and text/config formats
         _ => None,
     }
@@ -183,7 +202,11 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
         | Language::Scala
         | Language::Php
         | Language::Lua
-        | Language::Haskell => node.child_by_field_name("name"),
+        | Language::Haskell
+        | Language::R
+        | Language::Zig
+        | Language::Julia
+        | Language::Sql => node.child_by_field_name("name"),
         Language::Elixir => {
             // For def/defp calls, get the function name from arguments
             node.child_by_field_name("target")

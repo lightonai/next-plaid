@@ -25,6 +25,10 @@ pub enum Language {
     Elixir,
     Haskell,
     Ocaml,
+    R,
+    Zig,
+    Julia,
+    Sql,
     // Text/config formats (no tree-sitter, indexed as documents)
     Markdown,
     Text,
@@ -64,6 +68,10 @@ impl FromStr for Language {
             "elixir" | "ex" => Ok(Language::Elixir),
             "haskell" | "hs" => Ok(Language::Haskell),
             "ocaml" | "ml" => Ok(Language::Ocaml),
+            "r" => Ok(Language::R),
+            "zig" => Ok(Language::Zig),
+            "julia" | "jl" => Ok(Language::Julia),
+            "sql" => Ok(Language::Sql),
             // Text/config formats
             "markdown" | "md" => Ok(Language::Markdown),
             "text" | "txt" => Ok(Language::Text),
