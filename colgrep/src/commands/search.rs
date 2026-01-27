@@ -16,6 +16,118 @@ use crate::display::{
 };
 use crate::scoring::{compute_final_score, should_search_from_root};
 
+/// Pre-compiled pattern matcher for efficient repeated matching.
+/// Compiling regex is expensive (~microseconds), so we do it once and reuse.
+enum PatternMatcher {
+    /// Compiled regex for matching
+    Regex(regex::Regex),
+    /// Literal string for case-insensitive contains matching
+    Literal(String),
+}
+
+impl PatternMatcher {
+    /// Create a new pattern matcher based on the matching mode.
+    /// - `extended_regexp`: Use ERE (extended regular expressions)
+    /// - `fixed_strings`: Treat pattern as literal (overrides extended_regexp)
+    /// - `word_regexp`: Add word boundaries
+    fn new(pattern: &str, extended_regexp: bool, fixed_strings: bool, word_regexp: bool) -> Self {
+        let effective_use_regex = extended_regexp && !fixed_strings;
+
+        if effective_use_regex {
+            let ere_pattern = bre_to_ere(pattern);
+            let regex_pattern = if word_regexp {
+                format!(r"\b{}\b", ere_pattern)
+            } else {
+                ere_pattern
+            };
+            match regex::RegexBuilder::new(&regex_pattern)
+                .case_insensitive(true)
+                .size_limit(10 * (1 << 20))
+                .build()
+            {
+                Ok(re) => PatternMatcher::Regex(re),
+                Err(_) => PatternMatcher::Literal(pattern.to_lowercase()),
+            }
+        } else if word_regexp {
+            let escaped = regex::escape(pattern);
+            let word_pattern = format!(r"\b{}\b", escaped);
+            match regex::RegexBuilder::new(&word_pattern)
+                .case_insensitive(true)
+                .size_limit(10 * (1 << 20))
+                .build()
+            {
+                Ok(re) => PatternMatcher::Regex(re),
+                Err(_) => PatternMatcher::Literal(pattern.to_lowercase()),
+            }
+        } else {
+            PatternMatcher::Literal(pattern.to_lowercase())
+        }
+    }
+
+    /// Find matching line numbers within a code unit's content.
+    /// Returns 1-indexed line numbers where matches were found.
+    fn find_matches_in_unit(&self, unit: &colgrep::CodeUnit) -> Vec<usize> {
+        match self {
+            PatternMatcher::Regex(re) => {
+                let matches: Vec<usize> = unit
+                    .code
+                    .lines()
+                    .enumerate()
+                    .filter_map(|(i, line)| {
+                        if re.is_match(line) {
+                            Some(unit.line + i)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                // If regex matches nothing, fall back to literal match
+                // (handles cases where user searches for regex metacharacters)
+                if matches.is_empty() {
+                    self.literal_fallback(unit)
+                } else {
+                    matches
+                }
+            }
+            PatternMatcher::Literal(pattern_lower) => unit
+                .code
+                .lines()
+                .enumerate()
+                .filter_map(|(i, line)| {
+                    if line.to_lowercase().contains(pattern_lower) {
+                        Some(unit.line + i)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// Literal fallback for when regex mode produces no matches.
+    fn literal_fallback(&self, unit: &colgrep::CodeUnit) -> Vec<usize> {
+        // Extract the original pattern from regex for fallback
+        // This is a simplified fallback - just search the code directly
+        let pattern_lower = match self {
+            PatternMatcher::Regex(re) => re.as_str().to_lowercase(),
+            PatternMatcher::Literal(p) => p.clone(),
+        };
+
+        unit.code
+            .lines()
+            .enumerate()
+            .filter_map(|(i, line)| {
+                if line.to_lowercase().contains(&pattern_lower) {
+                    Some(unit.line + i)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+}
+
 /// Resolve the model to use: CLI arg > saved config > default
 pub fn resolve_model(cli_model: Option<&str>) -> String {
     if let Some(model) = cli_model {
@@ -194,88 +306,13 @@ pub fn cmd_search(
             return Ok(());
         }
 
-        // Helper to find matching line numbers within a code unit's content
-        let find_matches_in_unit = |unit: &colgrep::CodeUnit,
-                                    pattern: &str,
-                                    use_regex: bool,
-                                    is_fixed: bool,
-                                    is_word: bool|
-         -> Vec<usize> {
-            let effective_use_regex = use_regex && !is_fixed;
+        // Pre-compile pattern matchers ONCE before the display loop.
+        // This avoids expensive regex compilation on every result.
+        let text_pattern_matcher = text_pattern
+            .map(|p| PatternMatcher::new(p, effective_extended_regexp, fixed_strings, word_regexp));
 
-            let literal_match = |pattern: &str| -> Vec<usize> {
-                let pattern_lower = pattern.to_lowercase();
-                unit.code
-                    .lines()
-                    .enumerate()
-                    .filter_map(|(i, line)| {
-                        if line.to_lowercase().contains(&pattern_lower) {
-                            Some(unit.line + i)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            };
-
-            if effective_use_regex {
-                let ere_pattern = bre_to_ere(pattern);
-                let regex_pattern = if is_word {
-                    format!(r"\b{}\b", ere_pattern)
-                } else {
-                    ere_pattern
-                };
-                let regex_matches: Vec<usize> = match regex::RegexBuilder::new(&regex_pattern)
-                    .case_insensitive(true)
-                    .size_limit(10 * (1 << 20))
-                    .build()
-                {
-                    Ok(re) => unit
-                        .code
-                        .lines()
-                        .enumerate()
-                        .filter_map(|(i, line)| {
-                            if re.is_match(line) {
-                                Some(unit.line + i)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect(),
-                    Err(_) => vec![],
-                };
-
-                if regex_matches.is_empty() {
-                    literal_match(pattern)
-                } else {
-                    regex_matches
-                }
-            } else if is_word {
-                let escaped = regex::escape(pattern);
-                let word_pattern = format!(r"\b{}\b", escaped);
-                match regex::RegexBuilder::new(&word_pattern)
-                    .case_insensitive(true)
-                    .size_limit(10 * (1 << 20))
-                    .build()
-                {
-                    Ok(re) => unit
-                        .code
-                        .lines()
-                        .enumerate()
-                        .filter_map(|(i, line)| {
-                            if re.is_match(line) {
-                                Some(unit.line + i)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect(),
-                    Err(_) => vec![],
-                }
-            } else {
-                literal_match(pattern)
-            }
-        };
+        // For query matching (when no -e pattern), use literal matching
+        let query_matcher = PatternMatcher::new(query, false, true, false);
 
         // Separate results into code files and documents/config files
         let (code_results, doc_results): (Vec<_>, Vec<_>) = results
@@ -307,13 +344,10 @@ pub fn cmd_search(
                         };
 
                         if has_text_pattern {
-                            let file_matches = find_matches_in_unit(
-                                &result.unit,
-                                text_pattern.unwrap(),
-                                effective_extended_regexp,
-                                fixed_strings,
-                                word_regexp,
-                            );
+                            let file_matches = text_pattern_matcher
+                                .as_ref()
+                                .unwrap()
+                                .find_matches_in_unit(&result.unit);
                             let ranges = calc_display_ranges(
                                 &file_matches,
                                 result.unit.line,
@@ -330,8 +364,7 @@ pub fn cmd_search(
                                 line_num_width,
                             );
                         } else {
-                            let query_matches =
-                                find_matches_in_unit(&result.unit, query, false, true, false);
+                            let query_matches = query_matcher.find_matches_in_unit(&result.unit);
                             if !query_matches.is_empty() {
                                 let ranges = calc_display_ranges(
                                     &query_matches,
@@ -406,13 +439,10 @@ pub fn cmd_search(
                         let max_lines = if show_content { 250 } else { context_lines };
 
                         if has_text_pattern {
-                            let file_matches = find_matches_in_unit(
-                                &result.unit,
-                                text_pattern.unwrap(),
-                                effective_extended_regexp,
-                                fixed_strings,
-                                word_regexp,
-                            );
+                            let file_matches = text_pattern_matcher
+                                .as_ref()
+                                .unwrap()
+                                .find_matches_in_unit(&result.unit);
                             let ranges = calc_display_ranges(
                                 &file_matches,
                                 result.unit.line,
@@ -429,8 +459,7 @@ pub fn cmd_search(
                                 line_num_width,
                             );
                         } else {
-                            let query_matches =
-                                find_matches_in_unit(&result.unit, query, false, true, false);
+                            let query_matches = query_matcher.find_matches_in_unit(&result.unit);
                             if !query_matches.is_empty() {
                                 let ranges = calc_display_ranges(
                                     &query_matches,
