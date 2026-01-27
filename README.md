@@ -18,7 +18,7 @@ This repository contains two closely related projects built around **multi-vecto
 
 Multi-vector retrieval keeps multiple embeddings per document instead of collapsing everything into one. This preserves fine-grained signals in long text and code, at the cost of more indexing work upfront but much better precision at query time.
 
-**[LLM-friendly documentation](https://lightonai.github.io/lategrep/)** - All READMEs in a single-page format for easy copy-paste into AI assistants.
+[Documentation](https://lightonai.github.io/lategrep/)
 
 ## NextPlaid
 
