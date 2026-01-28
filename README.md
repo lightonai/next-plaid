@@ -72,7 +72,7 @@ client.delete("docs", "id IN (?, ?)", ["doc_1", "doc_2"])
 
 ```toml
 [dependencies]
-next-plaid = "0.5"
+next-plaid = "0.6"
 ```
 
 For GPU-accelerated indexing in Python, see [FastPlaid](https://github.com/lightonai/fast-plaid).  

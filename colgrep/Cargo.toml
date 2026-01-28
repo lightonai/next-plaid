@@ -16,8 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 # === Core: your crates ===
-next-plaid = { path = "../next-plaid", version = "0.5.0" }
-next-plaid-onnx = { path = "../next-plaid-onnx", version = "0.5.0" }
+next-plaid = { path = "../next-plaid", version = "0.6.0" }
+next-plaid-onnx = { path = "../next-plaid-onnx", version = "0.6.0" }
 
 # === Tree-sitter for parsing ===
 tree-sitter = "0.25"
