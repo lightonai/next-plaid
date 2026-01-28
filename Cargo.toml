@@ -3,7 +3,7 @@ members = ["next-plaid", "next-plaid-api", "next-plaid-onnx", "colgrep"]
 resolver = "2"
 
 [workspace.package]
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/lightonai/next-plaid"
@@ -37,6 +37,38 @@ lto = "thin"
 [workspace.metadata.dist]
 # The preferred cargo-dist version to use in CI (Conditions for altering this include new features or bug fixes)
 cargo-dist-version = "0.30.3"
+# Custom release body with installation instructions
+github-releases-body = """
+## ColGREP (CLI)
+
+Semantic code search for your codebase. Install with:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/lategrep/releases/latest/download/colgrep-installer.sh | sh
+```
+
+The installer automatically detects your platform and downloads the optimized binary (CoreML + Accelerate on Apple Silicon, Accelerate on Intel Mac).
+
+## NextPlaid (API Server)
+
+Multi-vector database with REST API. Run with Docker:
+
+**CPU:**
+```bash
+docker pull ghcr.io/lightonai/lategrep:cpu-latest
+docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
+  ghcr.io/lightonai/lategrep:cpu-latest \
+  --model lightonai/answerai-colbert-small-v1-onnx --int8
+```
+
+**GPU (CUDA):**
+```bash
+docker pull ghcr.io/lightonai/lategrep:cuda-latest
+docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
+  ghcr.io/lightonai/lategrep:cuda-latest \
+  --model lightonai/GTE-ModernColBERT-v1 --cuda
+```
+"""
 # Allow custom modifications to release.yml (workflow_dispatch, crates.io publishing)
 allow-dirty = ["ci"]
 # CI backends to support
@@ -57,3 +89,13 @@ install-updater = false
 [workspace.metadata.dist.github-custom-runners]
 aarch64-apple-darwin = "macos-14"
 x86_64-apple-darwin = "macos-15"
+
+# Apple Silicon builds with CoreML for model inference and Accelerate for vector search
+[[workspace.metadata.dist.builds]]
+targets = ["aarch64-apple-darwin"]
+features = ["coreml", "accelerate"]
+
+# Intel Mac builds with Accelerate for vector search
+[[workspace.metadata.dist.builds]]
+targets = ["x86_64-apple-darwin"]
+features = ["accelerate"]
