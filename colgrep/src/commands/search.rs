@@ -5,9 +5,9 @@ use anyhow::Result;
 use colored::Colorize;
 
 use colgrep::{
-    acquire_index_lock, bre_to_ere, ensure_model, find_parent_index, get_index_dir_for_project,
-    get_vector_index_path, index_exists, is_text_format, Config, IndexBuilder, IndexState,
-    Searcher, DEFAULT_MODEL,
+    acquire_index_lock, bre_to_ere, ensure_model, escape_literal_braces, find_parent_index,
+    get_index_dir_for_project, get_vector_index_path, index_exists, is_text_format, Config,
+    IndexBuilder, IndexState, Searcher, DEFAULT_MODEL,
 };
 
 use crate::display::{
@@ -34,7 +34,7 @@ impl PatternMatcher {
         let effective_use_regex = extended_regexp && !fixed_strings;
 
         if effective_use_regex {
-            let ere_pattern = bre_to_ere(pattern);
+            let ere_pattern = escape_literal_braces(&bre_to_ere(pattern));
             let regex_pattern = if word_regexp {
                 format!(r"\b{}\b", ere_pattern)
             } else {

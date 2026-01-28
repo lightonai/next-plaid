@@ -22,7 +22,8 @@ pub use index::paths::{
 };
 pub use index::state::IndexState;
 pub use index::{
-    bre_to_ere, index_exists, IndexBuilder, SearchResult, Searcher, UpdatePlan, UpdateStats,
+    bre_to_ere, escape_literal_braces, index_exists, IndexBuilder, SearchResult, Searcher,
+    UpdatePlan, UpdateStats,
 };
 pub use model::{ensure_model, DEFAULT_MODEL};
 pub use onnx_runtime::ensure_onnx_runtime;

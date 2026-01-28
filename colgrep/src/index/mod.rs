@@ -1246,6 +1246,127 @@ pub fn bre_to_ere(pattern: &str) -> String {
     result
 }
 
+/// Escape literal braces that are not valid regex quantifiers.
+///
+/// In regex, `{` and `}` are used for quantifiers like `{2}`, `{2,}`, `{2,4}`.
+/// When users write patterns like `enum.*{` intending to match a literal brace,
+/// the regex engine may try to parse `{` as a quantifier, causing issues.
+///
+/// This function converts non-quantifier braces to character class form `[{]` and `[}]`
+/// which unambiguously matches literal braces.
+///
+/// Examples:
+/// - `a{2,4}` → `a{2,4}` (valid quantifier, unchanged)
+/// - `enum.*{` → `enum.*[{]` (literal brace)
+/// - `\{[^}]*\}` → `[{][^}]*[}]` (literal braces for matching code blocks)
+/// - `[{]` → `[{]` (already escaped, unchanged)
+pub fn escape_literal_braces(pattern: &str) -> String {
+    let mut result = String::with_capacity(pattern.len() + 10);
+    let chars: Vec<char> = pattern.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut in_char_class = false;
+
+    while i < len {
+        let c = chars[i];
+
+        // Track character class boundaries (but not escaped brackets)
+        if c == '[' && (i == 0 || chars[i - 1] != '\\') {
+            in_char_class = true;
+            result.push(c);
+            i += 1;
+            continue;
+        }
+        if c == ']' && in_char_class && (i == 0 || chars[i - 1] != '\\') {
+            in_char_class = false;
+            result.push(c);
+            i += 1;
+            continue;
+        }
+
+        // Inside character class, braces are already literal
+        if in_char_class {
+            result.push(c);
+            i += 1;
+            continue;
+        }
+
+        // Check for opening brace
+        if c == '{' {
+            // Look ahead to see if this is a valid quantifier: {n}, {n,}, {n,m}, {,m}
+            if let Some(close_pos) = find_matching_brace(&chars, i) {
+                let content: String = chars[i + 1..close_pos].iter().collect();
+                if is_valid_quantifier(&content) {
+                    // Valid quantifier - keep as-is
+                    for ch in chars.iter().take(close_pos + 1).skip(i) {
+                        result.push(*ch);
+                    }
+                    i = close_pos + 1;
+                    continue;
+                }
+            }
+            // Not a valid quantifier - escape the brace
+            result.push_str("[{]");
+            i += 1;
+            continue;
+        }
+
+        // Check for closing brace (orphan, not part of quantifier)
+        if c == '}' {
+            // This is an orphan closing brace (quantifier closings are handled above)
+            result.push_str("[}]");
+            i += 1;
+            continue;
+        }
+
+        result.push(c);
+        i += 1;
+    }
+
+    result
+}
+
+/// Find the matching closing brace position, returns None if not found
+fn find_matching_brace(chars: &[char], open_pos: usize) -> Option<usize> {
+    for (i, ch) in chars.iter().enumerate().skip(open_pos + 1) {
+        if *ch == '}' {
+            return Some(i);
+        }
+        // Don't cross another opening brace
+        if *ch == '{' {
+            return None;
+        }
+    }
+    None
+}
+
+/// Check if the content between braces is a valid regex quantifier
+/// Valid forms: "n", "n,", "n,m", ",m" where n and m are non-negative integers
+fn is_valid_quantifier(content: &str) -> bool {
+    if content.is_empty() {
+        return false;
+    }
+
+    // Split by comma
+    let parts: Vec<&str> = content.split(',').collect();
+
+    match parts.len() {
+        1 => {
+            // {n} - must be a positive integer
+            !parts[0].is_empty() && parts[0].chars().all(|c| c.is_ascii_digit())
+        }
+        2 => {
+            // {n,} or {n,m} or {,m}
+            let first_ok = parts[0].is_empty() || parts[0].chars().all(|c| c.is_ascii_digit());
+            let second_ok = parts[1].is_empty() || parts[1].chars().all(|c| c.is_ascii_digit());
+            // At least one part must have digits
+            let has_digits = !parts[0].is_empty() || !parts[1].is_empty();
+            first_ok && second_ok && has_digits
+        }
+        _ => false,
+    }
+}
+
 /// Expand brace patterns like "*.{rs,md}" into ["*.rs", "*.md"]
 /// Supports multiple brace groups: "{src,lib}/**/*.{rs,md}" expands to all combinations
 fn expand_braces(pattern: &str) -> Vec<String> {
@@ -1612,11 +1733,11 @@ impl Searcher {
         // Build the regex pattern for regex-mode search
         let regex_pattern = if word_regexp {
             // Word boundaries without escaping (user wants regex + word match)
-            let ere_pattern = bre_to_ere(pattern);
+            let ere_pattern = escape_literal_braces(&bre_to_ere(pattern));
             format!(r"\b{}\b", ere_pattern)
         } else if extended_regexp {
-            // Extended regex (ERE) - convert BRE escapes to ERE
-            bre_to_ere(pattern)
+            // Extended regex (ERE) - convert BRE escapes to ERE, then escape literal braces
+            escape_literal_braces(&bre_to_ere(pattern))
         } else {
             // Default: basic substring matching (escape for safety)
             regex::escape(pattern)
@@ -1995,6 +2116,54 @@ mod tests {
     fn test_bre_to_ere_trailing_backslash() {
         // Trailing backslash should be preserved
         assert_eq!(bre_to_ere(r"foo\"), r"foo\");
+    }
+
+    #[test]
+    fn test_escape_literal_braces_quantifiers_unchanged() {
+        // Valid quantifiers should remain unchanged
+        assert_eq!(escape_literal_braces("a{2}"), "a{2}");
+        assert_eq!(escape_literal_braces("a{2,}"), "a{2,}");
+        assert_eq!(escape_literal_braces("a{2,4}"), "a{2,4}");
+        assert_eq!(escape_literal_braces("a{,4}"), "a{,4}");
+        assert_eq!(escape_literal_braces("Error[0-9]{2,4}"), "Error[0-9]{2,4}");
+    }
+
+    #[test]
+    fn test_escape_literal_braces_literals_escaped() {
+        // Literal braces should be converted to character class form
+        assert_eq!(escape_literal_braces("enum.*{"), "enum.*[{]");
+        assert_eq!(escape_literal_braces("struct {"), "struct [{]");
+        assert_eq!(escape_literal_braces("}"), "[}]");
+        assert_eq!(escape_literal_braces("{}"), "[{][}]");
+    }
+
+    #[test]
+    fn test_escape_literal_braces_mixed() {
+        // Mixed quantifiers and literal braces
+        assert_eq!(
+            escape_literal_braces("enum.*Error.*{[^}]*Error[0-9]{2,4}[^}]*}"),
+            "enum.*Error.*[{][^}]*Error[0-9]{2,4}[^}]*[}]"
+        );
+    }
+
+    #[test]
+    fn test_escape_literal_braces_character_class_unchanged() {
+        // Braces inside character classes should remain unchanged
+        assert_eq!(escape_literal_braces("[{]"), "[{]");
+        assert_eq!(escape_literal_braces("[}]"), "[}]");
+        assert_eq!(escape_literal_braces("[{}]"), "[{}]");
+        assert_eq!(escape_literal_braces("a[{]b"), "a[{]b");
+    }
+
+    #[test]
+    fn test_escape_literal_braces_complex_pattern() {
+        // The original failing pattern
+        let pattern = r"enum\s+[A-Za-z0-9_]+Error\s*{[^}]*Error[0-9]{2,4}[^}]*}";
+        let escaped = escape_literal_braces(pattern);
+        assert_eq!(
+            escaped,
+            r"enum\s+[A-Za-z0-9_]+Error\s*[{][^}]*Error[0-9]{2,4}[^}]*[}]"
+        );
     }
 
     #[test]

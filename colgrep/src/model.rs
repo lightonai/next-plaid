@@ -1,5 +1,5 @@
 use anyhow::Result;
-use hf_hub::api::sync::Api;
+use hf_hub::api::sync::ApiBuilder;
 use std::path::PathBuf;
 
 pub const DEFAULT_MODEL: &str = "lightonai/LateOn-Code-v0-edge";
@@ -32,7 +32,17 @@ pub fn ensure_model(model_id: Option<&str>, quiet: bool) -> Result<PathBuf> {
     if !quiet {
         eprintln!("🤖 Model: {}", model_id);
     }
-    let api = Api::new()?;
+
+    // Build API with token from environment variables or token file
+    // Priority: HF_TOKEN > HUGGING_FACE_HUB_TOKEN > token file ($HF_HOME/token or ~/.cache/huggingface/token)
+    let mut builder = ApiBuilder::from_env();
+    let token_from_env = std::env::var("HF_TOKEN")
+        .or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
+        .ok();
+    if token_from_env.is_some() {
+        builder = builder.with_token(token_from_env);
+    }
+    let api = builder.build()?;
     let repo = api.model(model_id.to_string());
 
     // Download all required files (cached if already present)
