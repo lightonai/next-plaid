@@ -12,7 +12,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use next_plaid::{
     delete_from_index, filtering, IndexConfig, Metadata, MmapIndex, SearchParameters, UpdateConfig,
 };
-use next_plaid_onnx::Colbert;
+use next_plaid_onnx::{Colbert, ExecutionProvider};
 use serde::{Deserialize, Serialize};
 
 use crate::embed::build_embedding_text;
@@ -1519,9 +1519,17 @@ impl Searcher {
         let index_path = get_vector_index_path(&index_dir);
         let index_path_str = index_path.to_str().unwrap().to_string();
 
-        // Load model
+        // Load model - try CoreML (low overhead on Apple Silicon), fallback to CPU
+        // Never use CUDA/TensorRT (high initialization overhead for single query)
+        let execution_provider = if cfg!(feature = "coreml") {
+            ExecutionProvider::CoreML
+        } else {
+            ExecutionProvider::Cpu
+        };
+
         let model = Colbert::builder(model_path)
             .with_quantized(quantized)
+            .with_execution_provider(execution_provider)
             .build()
             .context("Failed to load ColBERT model")?;
 
@@ -1549,8 +1557,17 @@ impl Searcher {
         let index_path = get_vector_index_path(index_dir);
         let index_path_str = index_path.to_str().unwrap().to_string();
 
+        // Load model - try CoreML (low overhead on Apple Silicon), fallback to CPU
+        // Never use CUDA/TensorRT (high initialization overhead for single query)
+        let execution_provider = if cfg!(feature = "coreml") {
+            ExecutionProvider::CoreML
+        } else {
+            ExecutionProvider::Cpu
+        };
+
         let model = Colbert::builder(model_path)
             .with_quantized(quantized)
+            .with_execution_provider(execution_provider)
             .build()
             .context("Failed to load ColBERT model")?;
 
