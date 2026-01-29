@@ -87,6 +87,9 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 # === Signal handling ===
 ctrlc = "3.4"
 
+# === Process re-exec (for CUDA LD_LIBRARY_PATH setup) ===
+exec = "0.3"
+
 # === Ndarray (for embeddings) ===
 ndarray = "0.16"
 

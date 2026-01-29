@@ -26,7 +26,7 @@ pub use index::{
     UpdatePlan, UpdateStats,
 };
 pub use model::{ensure_model, DEFAULT_MODEL};
-pub use onnx_runtime::ensure_onnx_runtime;
+pub use onnx_runtime::{ensure_onnx_runtime, is_cudnn_available};
 pub use parser::{
     build_call_graph, detect_language, extract_units, is_text_format, CodeUnit, Language, UnitType,
 };

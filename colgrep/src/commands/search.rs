@@ -697,7 +697,7 @@ fn search_single_path(
 
     // Auto-index: always do incremental update (no grep-based selective indexing)
     if !no_index {
-        let builder = IndexBuilder::with_options(
+        let mut builder = IndexBuilder::with_options(
             &effective_root,
             &model_path,
             quantized,
@@ -770,7 +770,7 @@ fn search_single_path(
                 }
 
                 // Rebuild the index
-                let builder = IndexBuilder::with_options(
+                let mut builder = IndexBuilder::with_options(
                     &effective_root,
                     &model_path,
                     quantized,

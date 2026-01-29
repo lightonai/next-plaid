@@ -61,7 +61,13 @@ pub struct UpdatePlan {
 }
 
 pub struct IndexBuilder {
-    model: Colbert,
+    /// The model is lazily created only when needed for encoding
+    model: Option<Colbert>,
+    /// Builder parameters for lazy model creation
+    model_path: PathBuf,
+    quantized: bool,
+    parallel_sessions: Option<usize>,
+    batch_size: Option<usize>,
     project_root: PathBuf,
     index_dir: PathBuf,
     pool_factor: Option<usize>,
@@ -84,29 +90,100 @@ impl IndexBuilder {
         parallel_sessions: Option<usize>,
         batch_size: Option<usize>,
     ) -> Result<Self> {
-        // Use provided values or auto-detect defaults
-        let num_sessions = parallel_sessions.unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|p| p.get())
-                .unwrap_or(8)
-        });
-        let batch = batch_size.unwrap_or(crate::config::DEFAULT_BATCH_SIZE);
-
-        let model = Colbert::builder(model_path)
-            .with_quantized(quantized)
-            .with_parallel(num_sessions)
-            .with_batch_size(batch)
-            .build()
-            .context("Failed to load ColBERT model")?;
-
+        // Store parameters for lazy model creation - don't create the model yet
         let index_dir = get_index_dir_for_project(project_root)?;
 
         Ok(Self {
-            model,
+            model: None, // Lazily created when needed
+            model_path: model_path.to_path_buf(),
+            quantized,
+            parallel_sessions,
+            batch_size,
             project_root: project_root.to_path_buf(),
             index_dir,
             pool_factor,
         })
+    }
+
+    /// Ensure the model is created for encoding.
+    /// The model is lazily created on first use to avoid overhead when just scanning files
+    /// or when checking for index updates that have no changes.
+    fn ensure_model_created(&mut self) -> Result<()> {
+        if self.model.is_none() {
+            // Use CUDA-optimized settings when CUDA feature is enabled AND cuDNN is available:
+            // - 1 session (GPUs work best with single session)
+            // - 64 batch size (GPUs benefit from larger batches)
+            // - CUDA execution provider for GPU acceleration
+            // Otherwise use CPU-optimized settings:
+            // - min(CPU count, 8) sessions (capped for high-core systems)
+            // - 1 batch size (works better with parallel sessions)
+            // - CPU execution provider
+            #[cfg(feature = "cuda")]
+            let (num_sessions, execution_provider) = {
+                // Check both cuDNN (for LD_LIBRARY_PATH) and CUDA EP availability
+                let cudnn_available = crate::onnx_runtime::is_cudnn_available();
+                let cuda_available = next_plaid_onnx::is_cuda_available();
+
+                if cudnn_available && cuda_available {
+                    eprintln!("🚀 GPU encoding enabled");
+                    (
+                        self.parallel_sessions
+                            .unwrap_or(crate::config::DEFAULT_PARALLEL_SESSIONS_GPU),
+                        ExecutionProvider::Cuda,
+                    )
+                } else {
+                    // CUDA not fully available - fall back to CPU mode
+                    if !cudnn_available {
+                        eprintln!("💻 CPU encoding (cuDNN not found)");
+                    } else {
+                        eprintln!("💻 CPU encoding (CUDA EP not available)");
+                    }
+                    (
+                        self.parallel_sessions.unwrap_or_else(|| {
+                            let cpu_count = std::thread::available_parallelism()
+                                .map(|p| p.get())
+                                .unwrap_or(8);
+                            cpu_count.min(crate::config::MAX_PARALLEL_SESSIONS_CPU)
+                        }),
+                        ExecutionProvider::Cpu,
+                    )
+                }
+            };
+            #[cfg(not(feature = "cuda"))]
+            let (num_sessions, execution_provider) = (
+                self.parallel_sessions.unwrap_or_else(|| {
+                    let cpu_count = std::thread::available_parallelism()
+                        .map(|p| p.get())
+                        .unwrap_or(8);
+                    cpu_count.min(crate::config::MAX_PARALLEL_SESSIONS_CPU)
+                }),
+                ExecutionProvider::Cpu,
+            );
+
+            // Use runtime default for batch size (respects cuDNN availability)
+            let batch = self
+                .batch_size
+                .unwrap_or_else(crate::config::get_default_batch_size);
+
+            let model = Colbert::builder(&self.model_path)
+                .with_quantized(self.quantized)
+                .with_parallel(num_sessions)
+                .with_batch_size(batch)
+                .with_execution_provider(execution_provider)
+                .build()
+                .context("Failed to load ColBERT model")?;
+
+            self.model = Some(model);
+        }
+        Ok(())
+    }
+
+    /// Get a reference to the model. Panics if model is not created.
+    /// Call ensure_model_created() first.
+    fn model(&self) -> &Colbert {
+        self.model
+            .as_ref()
+            .expect("Model not created. Call ensure_model_created() first.")
     }
 
     /// Get the path to the index directory
@@ -134,7 +211,7 @@ impl IndexBuilder {
     /// - Updates incrementally if files changed
     /// - Full rebuild if `force = true`
     /// - Full rebuild if CLI version changed (clears outdated index)
-    pub fn index(&self, languages: Option<&[Language]>, force: bool) -> Result<UpdateStats> {
+    pub fn index(&mut self, languages: Option<&[Language]>, force: bool) -> Result<UpdateStats> {
         let _lock = acquire_index_lock(&self.index_dir)?;
         let state = IndexState::load(&self.index_dir)?;
         let index_path = get_vector_index_path(&self.index_dir);
@@ -177,7 +254,7 @@ impl IndexBuilder {
     /// Index only specific files (for filtered search).
     /// Only indexes files that are not already in the index or have changed.
     /// Returns the number of files that were indexed.
-    pub fn index_specific_files(&self, files: &[PathBuf]) -> Result<UpdateStats> {
+    pub fn index_specific_files(&mut self, files: &[PathBuf]) -> Result<UpdateStats> {
         if files.is_empty() {
             return Ok(UpdateStats {
                 added: 0,
@@ -330,6 +407,9 @@ impl IndexBuilder {
         // Build call graph
         build_call_graph(&mut new_units);
 
+        // Ensure model is created before encoding (lazy initialization)
+        self.ensure_model_created()?;
+
         let pb = ProgressBar::new(new_units.len() as u64);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -369,7 +449,7 @@ impl IndexBuilder {
 
                 let batch_start = std::time::Instant::now();
                 let batch_embeddings = self
-                    .model
+                    .model()
                     .encode_documents(batch, effective_pool_factor)
                     .context("Failed to encode documents")?;
                 encoding_duration += batch_start.elapsed();
@@ -460,7 +540,7 @@ impl IndexBuilder {
     }
 
     /// Full rebuild (used when force=true or no index exists)
-    fn full_rebuild(&self, languages: Option<&[Language]>) -> Result<UpdateStats> {
+    fn full_rebuild(&mut self, languages: Option<&[Language]>) -> Result<UpdateStats> {
         // Clear existing index data to avoid duplicates
         let index_path = get_vector_index_path(&self.index_dir);
         if index_path.exists() {
@@ -524,6 +604,8 @@ impl IndexBuilder {
         build_call_graph(&mut all_units);
 
         let was_interrupted = if !all_units.is_empty() {
+            // Ensure model is created before encoding (lazy initialization)
+            self.ensure_model_created()?;
             self.write_index_with_progress(&all_units)?
         } else {
             false
@@ -548,7 +630,7 @@ impl IndexBuilder {
 
     /// Incremental update (only re-index changed files)
     fn incremental_update(
-        &self,
+        &mut self,
         old_state: &IndexState,
         languages: Option<&[Language]>,
     ) -> Result<UpdateStats> {
@@ -679,6 +761,9 @@ impl IndexBuilder {
             // Build call graph for new units
             build_call_graph(&mut new_units);
 
+            // Ensure model is created before encoding (lazy initialization)
+            self.ensure_model_created()?;
+
             // Progress bar for encoding
             let pb = ProgressBar::new(new_units.len() as u64);
             pb.set_style(
@@ -716,7 +801,7 @@ impl IndexBuilder {
 
                     let batch_start = std::time::Instant::now();
                     let batch_embeddings = self
-                        .model
+                        .model()
                         .encode_documents(batch, effective_pool_factor)
                         .context("Failed to encode documents")?;
                     encoding_duration += batch_start.elapsed();
@@ -1058,15 +1143,15 @@ impl IndexBuilder {
     }
 
     #[allow(dead_code)]
-    fn write_index(&self, units: &[CodeUnit]) -> Result<bool> {
+    fn write_index(&mut self, units: &[CodeUnit]) -> Result<bool> {
         self.write_index_impl(units, false)
     }
 
-    fn write_index_with_progress(&self, units: &[CodeUnit]) -> Result<bool> {
+    fn write_index_with_progress(&mut self, units: &[CodeUnit]) -> Result<bool> {
         self.write_index_impl(units, true)
     }
 
-    fn write_index_impl(&self, units: &[CodeUnit], show_progress: bool) -> Result<bool> {
+    fn write_index_impl(&mut self, units: &[CodeUnit], show_progress: bool) -> Result<bool> {
         let index_path = get_vector_index_path(&self.index_dir);
         let index_path_str = index_path.to_str().unwrap();
         std::fs::create_dir_all(&index_path)?;
@@ -1116,7 +1201,7 @@ impl IndexBuilder {
 
                 let batch_start = std::time::Instant::now();
                 let batch_embeddings = self
-                    .model
+                    .model()
                     .encode_documents(batch, effective_pool_factor)
                     .context("Failed to encode documents")?;
                 encoding_duration += batch_start.elapsed();
@@ -1519,8 +1604,21 @@ impl Searcher {
         let index_path = get_vector_index_path(&index_dir);
         let index_path_str = index_path.to_str().unwrap().to_string();
 
-        // Load model - try CoreML (low overhead on Apple Silicon), fallback to CPU
-        // Never use CUDA/TensorRT (high initialization overhead for single query)
+        // Load model - use hardware acceleration when available
+        // Priority: CUDA (if feature enabled and available) > CoreML > CPU
+        #[cfg(feature = "cuda")]
+        let execution_provider = {
+            let cudnn_available = crate::onnx_runtime::is_cudnn_available();
+            let cuda_available = next_plaid_onnx::is_cuda_available();
+            if cudnn_available && cuda_available {
+                ExecutionProvider::Cuda
+            } else if cfg!(feature = "coreml") {
+                ExecutionProvider::CoreML
+            } else {
+                ExecutionProvider::Cpu
+            }
+        };
+        #[cfg(not(feature = "cuda"))]
         let execution_provider = if cfg!(feature = "coreml") {
             ExecutionProvider::CoreML
         } else {
@@ -1557,8 +1655,21 @@ impl Searcher {
         let index_path = get_vector_index_path(index_dir);
         let index_path_str = index_path.to_str().unwrap().to_string();
 
-        // Load model - try CoreML (low overhead on Apple Silicon), fallback to CPU
-        // Never use CUDA/TensorRT (high initialization overhead for single query)
+        // Load model - use hardware acceleration when available
+        // Priority: CUDA (if feature enabled and available) > CoreML > CPU
+        #[cfg(feature = "cuda")]
+        let execution_provider = {
+            let cudnn_available = crate::onnx_runtime::is_cudnn_available();
+            let cuda_available = next_plaid_onnx::is_cuda_available();
+            if cudnn_available && cuda_available {
+                ExecutionProvider::Cuda
+            } else if cfg!(feature = "coreml") {
+                ExecutionProvider::CoreML
+            } else {
+                ExecutionProvider::Cpu
+            }
+        };
+        #[cfg(not(feature = "cuda"))]
         let execution_provider = if cfg!(feature = "coreml") {
             ExecutionProvider::CoreML
         } else {
