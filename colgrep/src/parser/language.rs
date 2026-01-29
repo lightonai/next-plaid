@@ -42,7 +42,10 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "zig" => Some(Language::Zig),
         "jl" => Some(Language::Julia),
         "sql" => Some(Language::Sql),
+        "vue" => Some(Language::Vue),
+        "svelte" => Some(Language::Svelte),
         // Text/documentation formats
+        "html" | "htm" => Some(Language::Html),
         "md" | "markdown" => Some(Language::Markdown),
         "txt" | "text" | "rst" => Some(Language::Text),
         "adoc" | "asciidoc" => Some(Language::AsciiDoc),
@@ -103,6 +106,10 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Zig => tree_sitter_zig::LANGUAGE.into(),
         Language::Julia => tree_sitter_julia::LANGUAGE.into(),
         Language::Sql => tree_sitter_sequel::LANGUAGE.into(),
+        // Vue and Svelte use TypeScript parser for script blocks
+        Language::Vue | Language::Svelte => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        // HTML uses tree-sitter-html
+        Language::Html => tree_sitter_html::LANGUAGE.into(),
         // Text/config formats don't use tree-sitter - this should never be called
         Language::Markdown
         | Language::Text
@@ -281,6 +288,36 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_language_vue() {
+        assert_eq!(detect_language(Path::new("App.vue")), Some(Language::Vue));
+        assert_eq!(
+            detect_language(Path::new("components/Header.vue")),
+            Some(Language::Vue)
+        );
+    }
+
+    #[test]
+    fn test_detect_language_svelte() {
+        assert_eq!(
+            detect_language(Path::new("App.svelte")),
+            Some(Language::Svelte)
+        );
+        assert_eq!(
+            detect_language(Path::new("components/Header.svelte")),
+            Some(Language::Svelte)
+        );
+    }
+
+    #[test]
+    fn test_detect_language_html() {
+        assert_eq!(
+            detect_language(Path::new("index.html")),
+            Some(Language::Html)
+        );
+        assert_eq!(detect_language(Path::new("page.htm")), Some(Language::Html));
+    }
+
+    #[test]
     fn test_detect_language_unknown() {
         assert_eq!(detect_language(Path::new("file.xyz")), None);
         assert_eq!(detect_language(Path::new("noextension")), None);
@@ -311,5 +348,8 @@ mod tests {
         assert!(!is_text_format(Language::Zig));
         assert!(!is_text_format(Language::Julia));
         assert!(!is_text_format(Language::Sql));
+        assert!(!is_text_format(Language::Vue));
+        assert!(!is_text_format(Language::Svelte));
+        assert!(!is_text_format(Language::Html));
     }
 }

@@ -15,9 +15,12 @@ mod analysis;
 mod ast;
 mod call_graph;
 mod extract;
+mod html;
 mod language;
+mod svelte;
 mod text;
 pub mod types;
+mod vue;
 
 #[cfg(test)]
 mod tests;
@@ -41,9 +44,10 @@ use tree_sitter::{Node, Parser};
 ///
 /// This is the main entry point for parsing source files. It:
 /// 1. Detects if the file is a text format (handled separately)
-/// 2. Parses the source with tree-sitter for code files
-/// 3. Extracts functions, classes, constants, and methods
-/// 4. Fills gaps with RawCode units for 100% file coverage
+/// 2. Handles Vue SFCs with special extraction logic
+/// 3. Parses the source with tree-sitter for code files
+/// 4. Extracts functions, classes, constants, and methods
+/// 5. Fills gaps with RawCode units for 100% file coverage
 ///
 /// # Arguments
 /// * `path` - Path to the source file (used for naming and language detection)
@@ -56,6 +60,21 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
     // Handle text formats separately (no tree-sitter parsing)
     if is_text_format(lang) {
         return extract_text_units(path, source, lang);
+    }
+
+    // Handle Vue SFCs with special extraction logic
+    if lang == Language::Vue {
+        return vue::extract_vue_units(path, source);
+    }
+
+    // Handle Svelte components with special extraction logic
+    if lang == Language::Svelte {
+        return svelte::extract_svelte_units(path, source);
+    }
+
+    // Handle HTML files with special extraction logic
+    if lang == Language::Html {
+        return html::extract_html_units(path, source);
     }
 
     let mut parser = Parser::new();

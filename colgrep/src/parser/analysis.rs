@@ -50,6 +50,8 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
         }
         Language::JavaScript
         | Language::TypeScript
+        | Language::Vue
+        | Language::Svelte
         | Language::Java
         | Language::CSharp
         | Language::Kotlin
@@ -138,7 +140,7 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
         Language::Python | Language::Rust | Language::Go | Language::Java | Language::CSharp => {
             node.child_by_field_name("parameters")
         }
-        Language::TypeScript | Language::JavaScript => node
+        Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => node
             .child_by_field_name("parameters")
             .or_else(|| node.child_by_field_name("formal_parameters")),
         Language::C | Language::Cpp => node
@@ -187,7 +189,9 @@ pub fn extract_return_type(node: Node, bytes: &[u8], lang: Language) -> Option<S
     let ret_node = match lang {
         Language::Python => node.child_by_field_name("return_type"),
         Language::Rust => node.child_by_field_name("return_type"),
-        Language::TypeScript => node.child_by_field_name("return_type"),
+        Language::TypeScript | Language::Vue | Language::Svelte => {
+            node.child_by_field_name("return_type")
+        }
         Language::Go => node.child_by_field_name("result"),
         Language::Java | Language::CSharp => node.child_by_field_name("type"),
         Language::Cpp | Language::C => node.child_by_field_name("type"),
@@ -203,7 +207,9 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
     let call_types: &[&str] = match lang {
         Language::Python => &["call"],
         Language::Rust => &["call_expression", "macro_invocation"],
-        Language::TypeScript | Language::JavaScript => &["call_expression"],
+        Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => {
+            &["call_expression"]
+        }
         Language::Go => &["call_expression"],
         Language::Java | Language::CSharp => &["method_invocation", "object_creation_expression"],
         Language::C | Language::Cpp => &["call_expression"],
@@ -325,7 +331,7 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
     let var_types: &[&str] = match lang {
         Language::Python => &["assignment", "named_expression", "augmented_assignment"],
         Language::Rust => &["let_declaration"],
-        Language::TypeScript | Language::JavaScript => {
+        Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => {
             &["variable_declarator", "lexical_declaration"]
         }
         Language::Go => &["short_var_declaration", "var_declaration"],
@@ -383,7 +389,9 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
     let import_types: &[&str] = match lang {
         Language::Python => &["import_statement", "import_from_statement"],
         Language::Rust => &["use_declaration"],
-        Language::TypeScript | Language::JavaScript => &["import_statement"],
+        Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => {
+            &["import_statement"]
+        }
         Language::Go => &["import_declaration"],
         Language::Java => &["import_declaration"],
         Language::CSharp => &["using_directive"],
