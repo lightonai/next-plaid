@@ -6,8 +6,8 @@ use colored::Colorize;
 
 use colgrep::{
     acquire_index_lock, bre_to_ere, ensure_model, escape_literal_braces, find_parent_index,
-    get_index_dir_for_project, get_vector_index_path, index_exists, is_text_format, Config,
-    IndexBuilder, IndexState, Searcher, DEFAULT_MODEL,
+    get_index_dir_for_project, get_vector_index_path, index_exists, is_text_format,
+    path_contains_ignored_dir, Config, IndexBuilder, IndexState, Searcher, DEFAULT_MODEL,
 };
 
 use crate::display::{
@@ -203,7 +203,6 @@ pub fn cmd_search(
     top_k: usize,
     cli_model: Option<&str>,
     json: bool,
-    no_index: bool,
     include_patterns: &[String],
     files_only: bool,
     show_content: bool,
@@ -228,7 +227,6 @@ pub fn cmd_search(
             top_k,
             cli_model,
             json,
-            no_index,
             include_patterns,
             files_only,
             text_pattern,
@@ -579,7 +577,6 @@ fn search_single_path(
     top_k: usize,
     cli_model: Option<&str>,
     json: bool,
-    no_index: bool,
     include_patterns: &[String],
     files_only: bool,
     text_pattern: Option<&str>,
@@ -675,7 +672,7 @@ fn search_single_path(
     };
 
     // Get files matching include patterns (for file-type filtering)
-    let include_files: Option<Vec<String>> = if !include_patterns.is_empty() && !no_index {
+    let include_files: Option<Vec<String>> = if !include_patterns.is_empty() {
         let builder = IndexBuilder::with_options(
             &effective_root,
             &model_path,
@@ -696,7 +693,7 @@ fn search_single_path(
     };
 
     // Auto-index: always do incremental update (no grep-based selective indexing)
-    if !no_index {
+    {
         let mut builder = IndexBuilder::with_options(
             &effective_root,
             &model_path,
@@ -736,7 +733,16 @@ fn search_single_path(
     let index_dir = get_index_dir_for_project(&effective_root)?;
     let vector_index_path = get_vector_index_path(&index_dir);
     if !vector_index_path.join("metadata.json").exists() {
-        anyhow::bail!("No index found. Run a search without --no-index to build the index first.");
+        // Check if the path contains an ignored directory pattern
+        if let Some(ignored_pattern) = path_contains_ignored_dir(&effective_root) {
+            anyhow::bail!(
+                "No files indexed. The path contains '{}' which is in the default ignore list.\n\
+                 Ignored directories: tmp, temp, vendor, node_modules, target, build, dist, .git, etc.\n\
+                 Try searching from a different directory or project root.",
+                ignored_pattern
+            );
+        }
+        anyhow::bail!("No index found. Index building may have failed (no indexable files found).");
     }
 
     // Load searcher (from parent index if applicable)

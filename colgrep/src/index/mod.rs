@@ -1031,6 +1031,24 @@ const ALLOWED_HIDDEN_DIRS: &[&str] = &[
 /// Hidden files that should be indexed (exceptions to hidden file filtering)
 const ALLOWED_HIDDEN_FILES: &[&str] = &[".gitlab-ci.yml", ".gitlab-ci.yaml", ".travis.yml"];
 
+/// Check if a project root path contains an ignored directory in its path.
+/// This is used to provide better error messages when indexing fails.
+/// Returns Some(matched_pattern) if the path contains an ignored directory, None otherwise.
+pub fn path_contains_ignored_dir(path: &Path) -> Option<&'static str> {
+    for component in path.components() {
+        if let std::path::Component::Normal(name) = component {
+            let name_str = name.to_string_lossy();
+            for pattern in IGNORED_DIRS {
+                // Only check exact matches (not suffix patterns like *.egg-info)
+                if !pattern.starts_with('*') && name_str == *pattern {
+                    return Some(pattern);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Check if a path should be ignored
 fn should_ignore(path: &Path) -> bool {
     // Check each component of the path

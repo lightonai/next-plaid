@@ -83,9 +83,6 @@ EXAMPLES:
     # JSON output for scripting
     colgrep search --json \"auth\" | jq '.[0].unit.name'
 
-    # Skip auto-indexing
-    colgrep search --no-index \"handlers\"
-
 GREP COMPATIBILITY:
     -r, --recursive    Enabled by default (for grep users)
     -l, --files-only   Show only filenames, like grep -l
@@ -209,10 +206,6 @@ pub struct Cli {
     #[arg(long)]
     pub json: bool,
 
-    /// Skip auto-indexing (fail if no index exists)
-    #[arg(long)]
-    pub no_index: bool,
-
     /// Search recursively (default behavior, for grep compatibility)
     #[arg(short = 'r', long)]
     pub recursive: bool,
@@ -329,10 +322,6 @@ pub enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
-
-        /// Skip auto-indexing (fail if no index exists)
-        #[arg(long)]
-        no_index: bool,
 
         /// Search recursively (default behavior, for grep compatibility)
         #[arg(short = 'r', long)]

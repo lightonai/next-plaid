@@ -22,8 +22,8 @@ pub use index::paths::{
 };
 pub use index::state::IndexState;
 pub use index::{
-    bre_to_ere, escape_literal_braces, index_exists, IndexBuilder, SearchResult, Searcher,
-    UpdatePlan, UpdateStats,
+    bre_to_ere, escape_literal_braces, index_exists, path_contains_ignored_dir, IndexBuilder,
+    SearchResult, Searcher, UpdatePlan, UpdateStats,
 };
 pub use model::{ensure_model, DEFAULT_MODEL};
 pub use onnx_runtime::{ensure_onnx_runtime, is_cudnn_available};
