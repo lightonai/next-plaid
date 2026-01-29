@@ -708,7 +708,43 @@ fn search_single_path(
             eprintln!("📂 Building index...");
         }
 
-        let stats = builder.index(None, false)?;
+        // Try incremental update, but if index is corrupted, clear and do full rebuild
+        let stats = match builder.index(None, false) {
+            Ok(s) => s,
+            Err(e) => {
+                let err_str = format!("{}", e);
+                let err_debug = format!("{:?}", e);
+                if err_str.contains("No data to merge")
+                    || err_debug.contains("No data to merge")
+                    || err_str.contains("Index load failed")
+                {
+                    // Index is corrupted - clear and rebuild
+                    if !json && !files_only {
+                        eprintln!("⚠️  Index corrupted, rebuilding...");
+                    }
+
+                    // Clear the corrupted index
+                    let index_dir = get_index_dir_for_project(&effective_root)?;
+                    if index_dir.exists() {
+                        let _lock = acquire_index_lock(&index_dir)?;
+                        std::fs::remove_dir_all(&index_dir)?;
+                    }
+
+                    // Create new builder and do full rebuild
+                    let mut new_builder = IndexBuilder::with_options(
+                        &effective_root,
+                        &model_path,
+                        quantized,
+                        pool_factor,
+                        parallel_sessions,
+                        batch_size,
+                    )?;
+                    new_builder.index(None, false)?
+                } else {
+                    return Err(e);
+                }
+            }
+        };
 
         let changes = stats.added + stats.changed + stats.deleted;
         if changes > 0 && !json && !files_only {
@@ -759,7 +795,16 @@ fn search_single_path(
 
         match load_result {
             Ok(s) => s,
-            Err(e) if format!("{:?}", e).contains("No data to merge") => {
+            Err(e)
+                if {
+                    let err_debug = format!("{:?}", e);
+                    let err_display = format!("{}", e);
+                    err_debug.contains("No data to merge")
+                        || err_display.contains("No data to merge")
+                        || err_debug.contains("IndexLoad")
+                        || err_display.contains("Index load failed")
+                } =>
+            {
                 // Index is corrupted or empty - clear and rebuild
                 if !json && !files_only {
                     eprintln!("⚠️  Index corrupted, rebuilding...");
