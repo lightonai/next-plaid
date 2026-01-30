@@ -721,10 +721,11 @@ fn extract_libraries(
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let path = file.name();
+        // Clone the path to avoid borrow conflict with file.read_to_end()
+        let path = file.name().to_string();
 
         // Handle paths with or without ./ prefix
-        let normalized_path = path.strip_prefix("./").unwrap_or(path);
+        let normalized_path = path.strip_prefix("./").unwrap_or(&path);
 
         if let Some(&dest_name) = files_map.get(normalized_path) {
             let dest_path = dest_dir.join(dest_name);
