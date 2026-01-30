@@ -125,13 +125,13 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
     if let Ok(path) = env::var("ORT_DYLIB_PATH") {
         let path = PathBuf::from(&path);
         if path.exists() {
-            // For CUDA, also ensure LD_LIBRARY_PATH includes the directory and check cuDNN
-            #[cfg(feature = "cuda")]
+            // For CUDA on Linux, also ensure LD_LIBRARY_PATH includes the directory and check cuDNN
+            #[cfg(all(target_os = "linux", feature = "cuda"))]
             {
                 if let Some(parent) = path.parent() {
                     prepend_ld_library_path(parent);
                 }
-                // Always check for cuDNN availability (result is stored in CUDNN_AVAILABLE)
+                // Check for cuDNN availability (result is stored in CUDNN_AVAILABLE)
                 let _ = check_cudnn_available();
             }
             return Ok(path);
@@ -149,8 +149,8 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
     let path = download_onnx_runtime()?;
     env::set_var("ORT_DYLIB_PATH", &path);
 
-    // For CUDA, set LD_LIBRARY_PATH so provider libraries can be found
-    #[cfg(feature = "cuda")]
+    // For CUDA on Linux, set LD_LIBRARY_PATH so provider libraries can be found
+    #[cfg(all(target_os = "linux", feature = "cuda"))]
     if let Some(parent) = path.parent() {
         prepend_ld_library_path(parent);
         // Check for cuDNN availability (result is stored in CUDNN_AVAILABLE)
@@ -207,13 +207,8 @@ fn prepend_ld_library_path(dir: &Path) {
     }
 }
 
-#[cfg(all(not(target_os = "linux"), feature = "cuda"))]
-fn prepend_ld_library_path(_dir: &Path) {
-    // No-op on non-Linux platforms
-}
-
-/// Get all directories to search for cuDNN library
-#[cfg(feature = "cuda")]
+/// Get all directories to search for cuDNN library (Linux only)
+#[cfg(all(target_os = "linux", feature = "cuda"))]
 fn get_cudnn_search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
@@ -298,7 +293,9 @@ fn get_cudnn_search_dirs() -> Vec<PathBuf> {
 /// Check if cuDNN is available (required for CUDA execution provider)
 /// Returns true if cuDNN is found, false otherwise.
 /// Also stores the result in CUDNN_AVAILABLE for later queries.
-#[cfg(feature = "cuda")]
+/// Only used on Linux where we need to manually set up LD_LIBRARY_PATH.
+/// On Windows, ONNX Runtime handles cuDNN detection automatically.
+#[cfg(all(target_os = "linux", feature = "cuda"))]
 fn check_cudnn_available() -> bool {
     // Library names to search for (in order of preference)
     let cudnn_lib_names = [
