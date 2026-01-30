@@ -1649,21 +1649,9 @@ impl Searcher {
         let index_path = get_vector_index_path(&index_dir);
         let index_path_str = index_path.to_str().unwrap().to_string();
 
-        // Load model - use hardware acceleration when available
-        // Priority: CUDA (if feature enabled and available) > CoreML > CPU
-        #[cfg(feature = "cuda")]
-        let execution_provider = {
-            let cudnn_available = crate::onnx_runtime::is_cudnn_available();
-            let cuda_available = next_plaid_onnx::is_cuda_available();
-            if cudnn_available && cuda_available {
-                ExecutionProvider::Cuda
-            } else if cfg!(feature = "coreml") {
-                ExecutionProvider::CoreML
-            } else {
-                ExecutionProvider::Cpu
-            }
-        };
-        #[cfg(not(feature = "cuda"))]
+        // Load model for search - use CPU or CoreML (not CUDA)
+        // CUDA has too much overhead for single query encoding, CPU/CoreML is faster
+        // Priority: CoreML (if enabled) > CPU
         let execution_provider = if cfg!(feature = "coreml") {
             ExecutionProvider::CoreML
         } else {
@@ -1707,21 +1695,9 @@ impl Searcher {
         let index_path = get_vector_index_path(index_dir);
         let index_path_str = index_path.to_str().unwrap().to_string();
 
-        // Load model - use hardware acceleration when available
-        // Priority: CUDA (if feature enabled and available) > CoreML > CPU
-        #[cfg(feature = "cuda")]
-        let execution_provider = {
-            let cudnn_available = crate::onnx_runtime::is_cudnn_available();
-            let cuda_available = next_plaid_onnx::is_cuda_available();
-            if cudnn_available && cuda_available {
-                ExecutionProvider::Cuda
-            } else if cfg!(feature = "coreml") {
-                ExecutionProvider::CoreML
-            } else {
-                ExecutionProvider::Cpu
-            }
-        };
-        #[cfg(not(feature = "cuda"))]
+        // Load model for search - use CPU or CoreML (not CUDA)
+        // CUDA has too much overhead for single query encoding, CPU/CoreML is faster
+        // Priority: CoreML (if enabled) > CPU
         let execution_provider = if cfg!(feature = "coreml") {
             ExecutionProvider::CoreML
         } else {
