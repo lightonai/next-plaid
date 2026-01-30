@@ -60,6 +60,10 @@ pub struct UpdatePlan {
     pub unchanged: usize,
 }
 
+/// Threshold for prompting user confirmation before indexing.
+/// When encoding more than this many units, prompt the user unless auto_confirm is set.
+pub const CONFIRMATION_THRESHOLD: usize = 30_000;
+
 pub struct IndexBuilder {
     /// The model is lazily created only when needed for encoding
     model: Option<Colbert>,
@@ -71,6 +75,8 @@ pub struct IndexBuilder {
     project_root: PathBuf,
     index_dir: PathBuf,
     pool_factor: Option<usize>,
+    /// If true, skip user confirmation for large indexes
+    auto_confirm: bool,
 }
 
 impl IndexBuilder {
@@ -102,7 +108,13 @@ impl IndexBuilder {
             project_root: project_root.to_path_buf(),
             index_dir,
             pool_factor,
+            auto_confirm: false, // Prompt by default for large indexes
         })
+    }
+
+    /// Set whether to automatically confirm indexing for large codebases (> 10K code units)
+    pub fn set_auto_confirm(&mut self, auto_confirm: bool) {
+        self.auto_confirm = auto_confirm;
     }
 
     /// Ensure the model is created for encoding.
@@ -602,6 +614,14 @@ impl IndexBuilder {
         // Build call graph to populate called_by
         build_call_graph(&mut all_units);
 
+        // Prompt for confirmation if indexing a large codebase
+        if !self.auto_confirm
+            && all_units.len() > CONFIRMATION_THRESHOLD
+            && !prompt_large_index_confirmation(all_units.len())
+        {
+            anyhow::bail!("Indexing cancelled by user");
+        }
+
         let was_interrupted = if !all_units.is_empty() {
             // Ensure model is created before encoding (lazy initialization)
             self.ensure_model_created()?;
@@ -759,6 +779,14 @@ impl IndexBuilder {
         if !new_units.is_empty() {
             // Build call graph for new units
             build_call_graph(&mut new_units);
+
+            // Prompt for confirmation if indexing a large number of new units
+            if !self.auto_confirm
+                && new_units.len() > CONFIRMATION_THRESHOLD
+                && !prompt_large_index_confirmation(new_units.len())
+            {
+                anyhow::bail!("Indexing cancelled by user");
+            }
 
             // Ensure model is created before encoding (lazy initialization)
             self.ensure_model_created()?;
@@ -2011,6 +2039,36 @@ impl Searcher {
 /// Check if an index exists for the given project
 pub fn index_exists(project_root: &Path) -> bool {
     paths::index_exists(project_root)
+}
+
+/// Prompt the user for confirmation before indexing a large number of code units.
+/// Returns true if the user confirms (y/Y/Enter), false otherwise.
+fn prompt_large_index_confirmation(num_units: usize) -> bool {
+    use std::io::{self, BufRead, Write};
+
+    // Check if stdin is a TTY (interactive terminal)
+    // If not (e.g., piped input or CI), auto-confirm to avoid blocking
+    if !atty::is(atty::Stream::Stdin) {
+        return true;
+    }
+
+    eprintln!(
+        "\n⚠️  Large codebase detected: {} code units to index",
+        num_units
+    );
+    eprintln!("   This may take a while. Use -y/--yes to skip this prompt in the future.\n");
+    eprint!("   Proceed with indexing? [Y/n] ");
+    io::stderr().flush().ok();
+
+    let stdin = io::stdin();
+    let mut line = String::new();
+    if stdin.lock().read_line(&mut line).is_err() {
+        return false;
+    }
+
+    let response = line.trim().to_lowercase();
+    // Accept: empty (Enter), 'y', 'yes'
+    response.is_empty() || response == "y" || response == "yes"
 }
 
 #[cfg(test)]

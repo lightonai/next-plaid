@@ -215,6 +215,7 @@ pub fn cmd_search(
     exclude_dirs: &[String],
     code_only: bool,
     pool_factor: Option<usize>,
+    auto_confirm: bool,
 ) -> Result<()> {
     // Collect results from all paths
     let mut all_results: Vec<colgrep::SearchResult> = Vec::new();
@@ -237,6 +238,7 @@ pub fn cmd_search(
             exclude_dirs,
             code_only,
             pool_factor,
+            auto_confirm,
         ) {
             Ok(results) => all_results.extend(results),
             Err(e) => {
@@ -587,6 +589,7 @@ fn search_single_path(
     exclude_dirs: &[String],
     code_only: bool,
     pool_factor: Option<usize>,
+    auto_confirm: bool,
 ) -> Result<Vec<colgrep::SearchResult>> {
     let path = match std::fs::canonicalize(path) {
         Ok(p) => p,
@@ -702,6 +705,7 @@ fn search_single_path(
             parallel_sessions,
             batch_size,
         )?;
+        builder.set_auto_confirm(auto_confirm);
         let needs_index = !index_exists(&effective_root);
 
         if needs_index {
@@ -717,7 +721,13 @@ fn search_single_path(
                 if err_str.contains("No data to merge")
                     || err_debug.contains("No data to merge")
                     || err_str.contains("Index load failed")
+                    || err_str.contains("Indexing cancelled by user")
                 {
+                    // Check if user cancelled
+                    if err_str.contains("Indexing cancelled by user") {
+                        return Err(e);
+                    }
+
                     // Index is corrupted - clear and rebuild
                     if !json && !files_only {
                         eprintln!("⚠️  Index corrupted, rebuilding...");
@@ -739,6 +749,7 @@ fn search_single_path(
                         parallel_sessions,
                         batch_size,
                     )?;
+                    new_builder.set_auto_confirm(auto_confirm);
                     new_builder.index(None, false)?
                 } else {
                     return Err(e);
@@ -829,6 +840,7 @@ fn search_single_path(
                     parallel_sessions,
                     batch_size,
                 )?;
+                builder.set_auto_confirm(auto_confirm);
                 builder.index(None, false)?;
 
                 // Try loading again

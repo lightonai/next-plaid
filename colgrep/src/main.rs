@@ -94,6 +94,7 @@ fn main() -> Result<()> {
             code_only,
             no_pool,
             pool_factor,
+            auto_confirm,
         }) => {
             // If only -e pattern is given without a query, use the pattern as the query too
             let query = query.or_else(|| text_pattern.clone());
@@ -122,6 +123,7 @@ fn main() -> Result<()> {
                     &exclude_dirs,
                     code_only,
                     resolve_pool_factor(pool_factor, no_pool),
+                    auto_confirm,
                 )
             } else {
                 // No query or text_pattern provided - show help
@@ -179,6 +181,7 @@ fn main() -> Result<()> {
                     &cli.exclude_dirs,
                     cli.code_only,
                     resolve_pool_factor(cli.pool_factor, cli.no_pool),
+                    cli.auto_confirm,
                 )
             } else {
                 // No query provided - show help

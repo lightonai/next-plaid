@@ -88,6 +88,9 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 # === Signal handling ===
 ctrlc = "3.4"
 
+# === TTY detection ===
+atty = "0.2"
+
 # === Process re-exec (for CUDA LD_LIBRARY_PATH setup) ===
 exec = "0.3"
 

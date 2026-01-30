@@ -297,6 +297,10 @@ pub struct Cli {
     /// Set embedding pool factor (default: 2, higher = fewer embeddings = faster)
     #[arg(long = "pool-factor", value_name = "FACTOR")]
     pub pool_factor: Option<usize>,
+
+    /// Automatically confirm indexing without prompting (for large codebases > 10K code units)
+    #[arg(short = 'y', long = "yes")]
+    pub auto_confirm: bool,
 }
 
 #[derive(Subcommand)]
@@ -378,6 +382,10 @@ pub enum Commands {
         /// Set embedding pool factor (default: 2, higher = fewer embeddings = faster)
         #[arg(long = "pool-factor", value_name = "FACTOR")]
         pool_factor: Option<usize>,
+
+        /// Automatically confirm indexing without prompting (for large codebases > 10K code units)
+        #[arg(short = 'y', long = "yes")]
+        auto_confirm: bool,
     },
 
     /// Show index status for a project
