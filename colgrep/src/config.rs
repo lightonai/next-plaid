@@ -81,6 +81,12 @@ pub const DEFAULT_PARALLEL_SESSIONS_GPU: usize = 8;
 /// - Works well on systems with 4-16+ cores
 pub const MAX_PARALLEL_SESSIONS_CPU: usize = 8;
 
+/// Maximum intra-op threads for single-session search mode.
+/// For ONNX intra-op parallelism, 8-16 threads is typically optimal.
+/// Beyond that, thread synchronization overhead outweighs benefits.
+/// This caps search query encoding threads on high-core-count systems.
+pub const MAX_INTRA_OP_THREADS: usize = 16;
+
 /// User configuration stored in the colgrep data directory
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {

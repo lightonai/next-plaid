@@ -34,8 +34,9 @@ pub fn cmd_clear(path: &PathBuf, all: bool) -> Result<()> {
                 .map(|m| m.project_path.display().to_string())
                 .unwrap_or_else(|_| index_path.display().to_string());
 
-            // Acquire lock before deleting
-            let _lock = acquire_index_lock(&index_path)?;
+            // Acquire lock before deleting, then drop it so the lock file can be removed
+            let lock = acquire_index_lock(&index_path)?;
+            drop(lock);
             std::fs::remove_dir_all(&index_path)?;
             println!("🗑️  Cleared index for {}", project_path);
         }
@@ -48,12 +49,16 @@ pub fn cmd_clear(path: &PathBuf, all: bool) -> Result<()> {
 
         if index_dir.exists() {
             // Exact match found - clear it
-            let _lock = acquire_index_lock(&index_dir)?;
+            // Acquire lock before deleting, then drop it so the lock file can be removed
+            let lock = acquire_index_lock(&index_dir)?;
+            drop(lock);
             std::fs::remove_dir_all(&index_dir)?;
             println!("🗑️  Cleared index for {}", path.display());
         } else if let Some(parent_info) = find_parent_index(&path)? {
             // We're in a subdirectory of an indexed project - clear the parent index
-            let _lock = acquire_index_lock(&parent_info.index_dir)?;
+            // Acquire lock before deleting, then drop it so the lock file can be removed
+            let lock = acquire_index_lock(&parent_info.index_dir)?;
+            drop(lock);
             std::fs::remove_dir_all(&parent_info.index_dir)?;
             println!(
                 "🗑️  Cleared index for {} (parent of current directory)",

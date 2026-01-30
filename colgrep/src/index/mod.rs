@@ -1670,8 +1670,15 @@ impl Searcher {
             ExecutionProvider::Cpu
         };
 
+        // Cap intra-op threads to avoid overhead on high-core-count systems
+        let num_threads = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(8)
+            .min(crate::config::MAX_INTRA_OP_THREADS);
+
         let model = Colbert::builder(model_path)
             .with_quantized(quantized)
+            .with_threads(num_threads)
             .with_execution_provider(execution_provider)
             .build()
             .context("Failed to load ColBERT model")?;
@@ -1721,8 +1728,15 @@ impl Searcher {
             ExecutionProvider::Cpu
         };
 
+        // Cap intra-op threads to avoid overhead on high-core-count systems
+        let num_threads = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(8)
+            .min(crate::config::MAX_INTRA_OP_THREADS);
+
         let model = Colbert::builder(model_path)
             .with_quantized(quantized)
+            .with_threads(num_threads)
             .with_execution_provider(execution_provider)
             .build()
             .context("Failed to load ColBERT model")?;
