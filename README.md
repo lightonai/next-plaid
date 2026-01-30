@@ -113,6 +113,35 @@ cargo install colgrep --features openblas
 cargo install colgrep --features cuda
 ```
 
+#### OpenBLAS Acceleration (Linux)
+
+OpenBLAS provides optimized BLAS for vector operations, significantly improving search performance. Install it before building with the `openblas` feature:
+
+```bash
+# Debian/Ubuntu
+sudo apt install libopenblas-dev
+
+# Fedora/RHEL/CentOS
+sudo dnf install openblas-devel
+
+# Arch Linux
+sudo pacman -S openblas
+```
+
+Then install with the feature enabled:
+
+```bash
+cargo install colgrep --features openblas
+```
+
+#### Apple Accelerate (macOS)
+
+Apple Accelerate is built into macOS and requires no additional installation:
+
+```bash
+cargo install colgrep --features accelerate
+```
+
 ### Agent integrations
 
 | Tool        | Install                         | Uninstall                         |

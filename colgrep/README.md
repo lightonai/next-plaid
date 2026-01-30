@@ -67,6 +67,39 @@ cargo install --path colgrep --features cuda
 cargo install --path colgrep --features "openblas,cuda"
 ```
 
+#### OpenBLAS Acceleration (Linux)
+
+OpenBLAS provides optimized BLAS (Basic Linear Algebra Subprograms) for vector operations, significantly improving search performance on Linux.
+
+**Install OpenBLAS:**
+
+```bash
+# Debian/Ubuntu
+sudo apt install libopenblas-dev
+
+# Fedora/RHEL/CentOS
+sudo dnf install openblas-devel
+
+# Arch Linux
+sudo pacman -S openblas
+```
+
+Then build with the `openblas` feature:
+
+```bash
+cargo install --path colgrep --features openblas
+```
+
+#### Apple Accelerate (macOS)
+
+Apple Accelerate is built into macOS and requires no additional installation. Just build with the feature:
+
+```bash
+cargo install --path colgrep --features accelerate
+```
+
+This is recommended for M1/M2/M3/M4 Macs for optimal performance.
+
 ### ONNX Runtime (Automatic)
 
 ONNX Runtime is automatically downloaded on first use. No manual installation required.
