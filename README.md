@@ -105,8 +105,8 @@ cargo install colgrep
 With features:
 
 ```bash
-# macOS with Apple Accelerate (recommended for M1/M2/M3)
-cargo install colgrep --features accelerate
+# macOS with Apple Accelerate + CoreML (recommended for M1/M2/M3/M4)
+cargo install colgrep --features "accelerate,coreml"
 # Linux with OpenBLAS
 cargo install colgrep --features openblas
 # Linux with CUDA GPU support
@@ -134,12 +134,12 @@ Then install with the feature enabled:
 cargo install colgrep --features openblas
 ```
 
-#### Apple Accelerate (macOS)
+#### Apple Accelerate + CoreML (macOS)
 
-Apple Accelerate is built into macOS and requires no additional installation:
+Apple Accelerate (vector operations) and CoreML (model inference) are built into macOS and require no additional installation:
 
 ```bash
-cargo install colgrep --features accelerate
+cargo install colgrep --features "accelerate,coreml"
 ```
 
 ### Agent integrations

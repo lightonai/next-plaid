@@ -54,6 +54,7 @@ cargo install --path colgrep
 | Feature      | Platform      | Description                            |
 | ------------ | ------------- | -------------------------------------- |
 | `accelerate` | macOS         | Apple Accelerate for vector operations |
+| `coreml`     | macOS         | Apple CoreML for model inference       |
 | `openblas`   | Linux         | OpenBLAS for vector operations         |
 | `cuda`       | Linux/Windows | NVIDIA CUDA for model inference        |
 | `tensorrt`   | Linux         | NVIDIA TensorRT for model inference    |
@@ -62,8 +63,8 @@ cargo install --path colgrep
 **Examples:**
 
 ```bash
-# macOS with Apple Accelerate (recommended for M1/M2/M3)
-cargo install --path colgrep --features accelerate
+# macOS with Apple Accelerate + CoreML (recommended for M1/M2/M3/M4)
+cargo install --path colgrep --features "accelerate,coreml"
 
 # Linux with OpenBLAS
 cargo install --path colgrep --features openblas
@@ -98,12 +99,12 @@ Then build with the `openblas` feature:
 cargo install --path colgrep --features openblas
 ```
 
-#### Apple Accelerate (macOS)
+#### Apple Accelerate + CoreML (macOS)
 
-Apple Accelerate is built into macOS and requires no additional installation. Just build with the feature:
+Apple Accelerate (vector operations) and CoreML (model inference) are built into macOS and require no additional installation. Just build with both features:
 
 ```bash
-cargo install --path colgrep --features accelerate
+cargo install --path colgrep --features "accelerate,coreml"
 ```
 
 This is recommended for M1/M2/M3/M4 Macs for optimal performance.
