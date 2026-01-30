@@ -91,8 +91,7 @@ ctrlc = "3.4"
 # === TTY detection ===
 atty = "0.2"
 
-# === Process re-exec (for CUDA LD_LIBRARY_PATH setup) ===
-exec = "0.3"
+# === Ndarray (for embeddings) ===
 
 # === Ndarray (for embeddings) ===
 ndarray = "0.16"
@@ -113,3 +112,7 @@ openblas = ["next-plaid/openblas"]
 
 [target.'cfg(windows)'.dependencies]
 zip = "2"
+
+[target.'cfg(unix)'.dependencies]
+# Process re-exec (for CUDA LD_LIBRARY_PATH setup on Linux)
+exec = "0.3"

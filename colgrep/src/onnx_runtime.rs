@@ -59,8 +59,9 @@ const ORT_CACHE_SUBDIR: &str = "cpu";
 /// this function will re-exec the current process with the updated LD_LIBRARY_PATH.
 /// This is necessary because Linux caches LD_LIBRARY_PATH at process startup.
 pub fn ensure_onnx_runtime() -> Result<PathBuf> {
-    // For CUDA builds, first check if we need to re-exec with cuDNN in LD_LIBRARY_PATH
-    #[cfg(feature = "cuda")]
+    // For CUDA builds on Linux, check if we need to re-exec with cuDNN in LD_LIBRARY_PATH
+    // This is only needed on Linux because it caches LD_LIBRARY_PATH at process startup
+    #[cfg(all(target_os = "linux", feature = "cuda"))]
     {
         // Check if we already have the marker indicating we've set up LD_LIBRARY_PATH
         if env::var("_COLGREP_CUDA_SETUP").is_err() {
@@ -160,7 +161,7 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
 }
 
 /// Find the cuDNN library directory (without setting any global state)
-#[cfg(feature = "cuda")]
+#[cfg(all(target_os = "linux", feature = "cuda"))]
 fn find_cudnn_directory() -> Option<PathBuf> {
     let search_dirs = get_cudnn_search_dirs();
 
