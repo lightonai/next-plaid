@@ -286,6 +286,10 @@ pub struct Cli {
     #[arg(long = "uninstall-codex")]
     pub uninstall_codex: bool,
 
+    /// Completely uninstall colgrep: remove from all AI tools, clear all indexes, and remove all data
+    #[arg(long = "uninstall")]
+    pub uninstall: bool,
+
     /// Internal: Claude Code session hook (outputs JSON reminder)
     #[arg(long = "session-hook", hide = true)]
     pub session_hook: bool,

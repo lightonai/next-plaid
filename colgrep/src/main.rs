@@ -10,7 +10,8 @@ use clap::{CommandFactory, Parser};
 
 use colgrep::{
     ensure_onnx_runtime, install_claude_code, install_codex, install_opencode,
-    setup_signal_handler, uninstall_claude_code, uninstall_codex, uninstall_opencode,
+    setup_signal_handler, uninstall_all, uninstall_claude_code, uninstall_codex,
+    uninstall_opencode,
 };
 
 use cli::{Cli, Commands};
@@ -50,6 +51,10 @@ fn main() -> Result<()> {
 
     if cli.uninstall_codex {
         return uninstall_codex();
+    }
+
+    if cli.uninstall {
+        return uninstall_all();
     }
 
     if cli.session_hook {

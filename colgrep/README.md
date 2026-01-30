@@ -263,18 +263,39 @@ Config stored in `~/.config/colgrep/config.json`.
 
 ## IDE Integrations
 
-```bash
-# Claude Code
-colgrep --install-claude-code
-colgrep --uninstall-claude-code
+### Claude Code
 
-# OpenCode
+```bash
+colgrep --install-claude-code
+```
+
+**IMPORTANT: You must restart Claude Code after installation for the plugin to take effect.**
+
+To uninstall:
+```bash
+colgrep --uninstall-claude-code
+```
+
+### OpenCode
+
+```bash
 colgrep --install-opencode
 colgrep --uninstall-opencode
+```
 
-# Codex
+### Codex
+
+```bash
 colgrep --install-codex
 colgrep --uninstall-codex
+```
+
+### Complete Uninstall
+
+Remove colgrep from all AI tools, clear all indexes, and delete all data:
+
+```bash
+colgrep --uninstall
 ```
 
 ---

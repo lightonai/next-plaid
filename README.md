@@ -120,6 +120,11 @@ cargo install colgrep --features cuda
 | Claude Code | `colgrep --install-claude-code` | `colgrep --uninstall-claude-code` |
 | OpenCode    | `colgrep --install-opencode`    | `colgrep --uninstall-opencode`    |
 | Codex       | `colgrep --install-codex`       | `colgrep --uninstall-codex`       |
+| **All**     | —                               | `colgrep --uninstall`             |
+
+**IMPORTANT: After running `colgrep --install-claude-code`, you must restart Claude Code for the plugin to take effect.**
+
+The `--uninstall` command completely removes colgrep: uninstalls from all AI tools, clears all indexes, and removes all data.
 
 ### Usage
 
