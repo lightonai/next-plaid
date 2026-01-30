@@ -29,7 +29,10 @@ pub enum Language {
     Zig,
     Julia,
     Sql,
+    Vue,
+    Svelte,
     // Text/config formats (no tree-sitter, indexed as documents)
+    Html,
     Markdown,
     Text,
     Yaml,
@@ -72,7 +75,10 @@ impl FromStr for Language {
             "zig" => Ok(Language::Zig),
             "julia" | "jl" => Ok(Language::Julia),
             "sql" => Ok(Language::Sql),
+            "vue" => Ok(Language::Vue),
+            "svelte" => Ok(Language::Svelte),
             // Text/config formats
+            "html" | "htm" => Ok(Language::Html),
             "markdown" | "md" => Ok(Language::Markdown),
             "text" | "txt" => Ok(Language::Text),
             "yaml" | "yml" => Ok(Language::Yaml),

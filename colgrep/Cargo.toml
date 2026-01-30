@@ -45,6 +45,7 @@ tree-sitter-r = "1.2"
 tree-sitter-zig = "1.1"
 tree-sitter-julia = "0.23"
 tree-sitter-sequel = "0.3"
+tree-sitter-html = "0.23"
 
 # === Model download ===
 hf-hub = "0.4"
@@ -86,6 +87,9 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 # === Signal handling ===
 ctrlc = "3.4"
+
+# === Process re-exec (for CUDA LD_LIBRARY_PATH setup) ===
+exec = "0.3"
 
 # === Ndarray (for embeddings) ===
 ndarray = "0.16"

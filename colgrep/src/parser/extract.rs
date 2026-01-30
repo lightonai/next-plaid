@@ -180,7 +180,7 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .child_by_field_name("name")
             .and_then(|n| n.utf8_text(bytes).ok())
             .map(|s| s.to_string()),
-        Language::TypeScript | Language::JavaScript => {
+        Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => {
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "variable_declarator" {
                     if let Some(name_node) = child.child_by_field_name("name") {
@@ -328,7 +328,7 @@ fn get_constant_type(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .child_by_field_name("type")
             .and_then(|n| n.utf8_text(bytes).ok())
             .map(|s| s.to_string()),
-        Language::TypeScript => {
+        Language::TypeScript | Language::Vue | Language::Svelte => {
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "variable_declarator" {
                     if let Some(type_node) = child.child_by_field_name("type") {

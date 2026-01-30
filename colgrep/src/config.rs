@@ -15,9 +15,71 @@ const CONFIG_FILE: &str = "config.json";
 /// Default pool factor for embedding compression: 2 (2x compression)
 pub const DEFAULT_POOL_FACTOR: usize = 2;
 
-/// Default batch size per encoding session
-/// Testing shows batch_size=1 gives best performance with parallel sessions
-pub const DEFAULT_BATCH_SIZE: usize = 1;
+/// Default batch size per encoding session for CPU
+/// Testing shows batch_size=1 gives best performance with parallel sessions on CPU
+pub const DEFAULT_BATCH_SIZE_CPU: usize = 1;
+
+/// Default batch size per encoding session for GPU (CUDA)
+/// Benchmarking on H100 shows batch_size=4 with 8 parallel sessions is optimal
+/// (68.6s vs 108s baseline with batch=64/parallel=1 = 37% faster)
+pub const DEFAULT_BATCH_SIZE_GPU: usize = 4;
+
+/// Default batch size - use GPU default when CUDA is enabled AND available, CPU otherwise
+/// Note: At compile time we set the GPU default, but at runtime we check cuDNN availability
+#[cfg(feature = "cuda")]
+pub const DEFAULT_BATCH_SIZE: usize = DEFAULT_BATCH_SIZE_GPU;
+#[cfg(not(feature = "cuda"))]
+pub const DEFAULT_BATCH_SIZE: usize = DEFAULT_BATCH_SIZE_CPU;
+
+/// Get the effective default batch size at runtime.
+/// When CUDA feature is enabled but cuDNN is not available, returns CPU default.
+#[cfg(feature = "cuda")]
+pub fn get_default_batch_size() -> usize {
+    if crate::onnx_runtime::is_cudnn_available() {
+        DEFAULT_BATCH_SIZE_GPU
+    } else {
+        DEFAULT_BATCH_SIZE_CPU
+    }
+}
+
+#[cfg(not(feature = "cuda"))]
+pub fn get_default_batch_size() -> usize {
+    DEFAULT_BATCH_SIZE_CPU
+}
+
+/// Get the effective default parallel sessions at runtime.
+/// When CUDA feature is enabled but cuDNN is not available, returns CPU default.
+#[cfg(feature = "cuda")]
+pub fn get_default_parallel_sessions() -> usize {
+    if crate::onnx_runtime::is_cudnn_available() {
+        DEFAULT_PARALLEL_SESSIONS_GPU
+    } else {
+        let cpu_count = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(8);
+        cpu_count.min(MAX_PARALLEL_SESSIONS_CPU)
+    }
+}
+
+#[cfg(not(feature = "cuda"))]
+pub fn get_default_parallel_sessions() -> usize {
+    let cpu_count = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(8);
+    cpu_count.min(MAX_PARALLEL_SESSIONS_CPU)
+}
+
+/// Default number of parallel sessions for GPU (CUDA)
+/// Benchmarking on H100 shows 8 parallel sessions with batch_size=4 is optimal
+/// Multiple sessions help hide CPU overhead (tokenization, data prep)
+pub const DEFAULT_PARALLEL_SESSIONS_GPU: usize = 8;
+
+/// Maximum number of parallel sessions for CPU
+/// Benchmarking shows 8 sessions provides the best balance:
+/// - Good encoding parallelism (29-30s vs 45s with 1 session)
+/// - Low session creation overhead (~1.2s vs ~4s with 32 sessions)
+/// - Works well on systems with 4-16+ cores
+pub const MAX_PARALLEL_SESSIONS_CPU: usize = 8;
 
 /// User configuration stored in the colgrep data directory
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -126,8 +188,16 @@ impl Config {
     }
 
     /// Check if FP32 (non-quantized) model should be used
+    /// Defaults to true when cuda feature is enabled (better CUDA performance with FP32)
     pub fn use_fp32(&self) -> bool {
-        self.fp32.unwrap_or(false)
+        #[cfg(feature = "cuda")]
+        {
+            self.fp32.unwrap_or(true)
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            self.fp32.unwrap_or(false)
+        }
     }
 
     /// Set whether to use FP32 (non-quantized) model
@@ -158,13 +228,12 @@ impl Config {
     }
 
     /// Get the number of parallel sessions for encoding
-    /// Returns the configured value or the CPU count (auto-detected)
+    /// Returns the configured value or:
+    /// - 1 session when CUDA is enabled AND cuDNN is available (GPUs work best with single session + large batches)
+    /// - min(CPU count, 8) otherwise (CPUs benefit from parallel sessions)
     pub fn get_parallel_sessions(&self) -> usize {
-        self.parallel_sessions.unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|p| p.get())
-                .unwrap_or(8) // Fallback to 8 if detection fails
-        })
+        self.parallel_sessions
+            .unwrap_or_else(get_default_parallel_sessions)
     }
 
     /// Set the number of parallel sessions for encoding
@@ -178,9 +247,11 @@ impl Config {
     }
 
     /// Get the batch size for encoding
-    /// Returns the configured value or the default (1)
+    /// Returns the configured value or the runtime default:
+    /// - 64 when CUDA is enabled AND cuDNN is available
+    /// - 1 otherwise (CPU mode)
     pub fn get_batch_size(&self) -> usize {
-        self.batch_size.unwrap_or(DEFAULT_BATCH_SIZE)
+        self.batch_size.unwrap_or_else(get_default_batch_size)
     }
 
     /// Set the batch size for encoding

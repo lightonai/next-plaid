@@ -63,6 +63,8 @@ use tokenizers::Tokenizer;
 
 // Conditional imports for execution providers
 #[cfg(feature = "cuda")]
+use ort::ep::ExecutionProvider as ExecutionProviderTrait;
+#[cfg(feature = "cuda")]
 use ort::execution_providers::CUDAExecutionProvider;
 #[cfg(feature = "coreml")]
 use ort::execution_providers::CoreMLExecutionProvider;
@@ -182,12 +184,57 @@ fn configure_execution_provider(
     }
 }
 
+/// Get CUDA device ID from environment or default to 0
+#[cfg(feature = "cuda")]
+fn get_cuda_device_id() -> i32 {
+    std::env::var("CUDA_VISIBLE_DEVICES")
+        .ok()
+        .and_then(|s| s.split(',').next().and_then(|id| id.parse::<i32>().ok()))
+        .unwrap_or(0)
+}
+
+/// Check if CUDA execution provider is available AND a GPU is visible.
+/// Returns true if:
+/// - CUDA feature is enabled
+/// - CUDA EP is compiled in ONNX Runtime
+/// - At least one GPU is visible (CUDA_VISIBLE_DEVICES is not empty/-1)
+#[cfg(feature = "cuda")]
+pub fn is_cuda_available() -> bool {
+    // First check if CUDA EP is compiled in
+    if !CUDAExecutionProvider::default()
+        .is_available()
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    // Check if GPUs are visible via CUDA_VISIBLE_DEVICES
+    if let Ok(devices) = std::env::var("CUDA_VISIBLE_DEVICES") {
+        // Empty string or "-1" means no GPUs visible
+        if devices.is_empty() || devices == "-1" {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Check if CUDA execution provider is available.
+/// Always returns false when CUDA feature is not enabled.
+#[cfg(not(feature = "cuda"))]
+pub fn is_cuda_available() -> bool {
+    false
+}
+
 fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
     #[cfg(feature = "cuda")]
     {
+        let device_id = get_cuda_device_id();
         if let Ok(b) = builder
             .clone()
-            .with_execution_providers([CUDAExecutionProvider::default().build()])
+            .with_execution_providers([CUDAExecutionProvider::default()
+                .with_device_id(device_id)
+                .build()])
         {
             return Ok(b);
         }
@@ -228,9 +275,14 @@ fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
 
 #[cfg(feature = "cuda")]
 fn configure_cuda(builder: SessionBuilder) -> Result<SessionBuilder> {
+    let device_id = get_cuda_device_id();
     builder
-        .with_execution_providers([CUDAExecutionProvider::default().build()])
-        .context("Failed to configure CUDA execution provider")
+        .with_execution_providers([
+            CUDAExecutionProvider::default()
+                .with_device_id(device_id)
+                .build()
+        ])
+        .context("Failed to configure CUDA execution provider. Ensure CUDA toolkit and cuDNN are installed.")
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -603,7 +655,7 @@ impl ColbertBuilder {
 
         // Create sessions
         let mut sessions = Vec::with_capacity(self.num_sessions);
-        for _ in 0..self.num_sessions {
+        for _i in 0..self.num_sessions {
             let builder = Session::builder()?
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
                 .with_intra_threads(self.threads_per_session)?
@@ -1051,9 +1103,16 @@ fn encode_batch_with_session(
     let attention_mask_tensor =
         Tensor::from_array(([batch_size, batch_max_len], all_attention_mask.clone()))?;
 
-    let outputs = if config.uses_token_type_ids {
-        let token_type_ids_tensor =
-            Tensor::from_array(([batch_size, batch_max_len], all_token_type_ids))?;
+    let token_type_ids_tensor = if config.uses_token_type_ids {
+        Some(Tensor::from_array((
+            [batch_size, batch_max_len],
+            all_token_type_ids,
+        ))?)
+    } else {
+        None
+    };
+
+    let outputs = if let Some(token_type_ids_tensor) = token_type_ids_tensor {
         session.run(ort::inputs![
             "input_ids" => input_ids_tensor,
             "attention_mask" => attention_mask_tensor,

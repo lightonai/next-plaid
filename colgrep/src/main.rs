@@ -80,7 +80,6 @@ fn main() -> Result<()> {
             top_k,
             model,
             json,
-            no_index,
             recursive: _,
             include_patterns,
             files_only,
@@ -111,7 +110,6 @@ fn main() -> Result<()> {
                     resolve_top_k(top_k, 20), // Search subcommand default is 20
                     model.as_deref(),
                     json,
-                    no_index,
                     &include_patterns,
                     files_only,
                     show_content,
@@ -169,7 +167,6 @@ fn main() -> Result<()> {
                     resolve_top_k(cli.top_k, 25), // Default command default is 25
                     cli.model.as_deref(),
                     cli.json,
-                    cli.no_index,
                     &cli.include_patterns,
                     cli.files_only,
                     cli.show_content,

@@ -8,7 +8,7 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
     match lang {
         Language::Python => kind == "function_definition",
         Language::Rust => kind == "function_item",
-        Language::TypeScript | Language::JavaScript => {
+        Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => {
             matches!(
                 kind,
                 "function_declaration" | "method_definition" | "arrow_function"
@@ -45,7 +45,7 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
             kind,
             "impl_item" | "struct_item" | "enum_item" | "trait_item"
         ),
-        Language::TypeScript => matches!(
+        Language::TypeScript | Language::Vue | Language::Svelte => matches!(
             kind,
             "class_declaration"
                 | "interface_declaration"
@@ -113,7 +113,7 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
 pub fn is_constant_node(kind: &str, lang: Language) -> bool {
     match lang {
         Language::Rust => matches!(kind, "const_item" | "static_item"),
-        Language::TypeScript | Language::JavaScript => {
+        Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => {
             // lexical_declaration covers const/let at module level
             // variable_declaration covers var at module level
             matches!(kind, "lexical_declaration" | "variable_declaration")
@@ -146,7 +146,9 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
     match lang {
         Language::Python => node.child_by_field_name("body"),
         Language::Rust => node.child_by_field_name("body"),
-        Language::TypeScript | Language::JavaScript => node.child_by_field_name("body"),
+        Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => {
+            node.child_by_field_name("body")
+        }
         Language::Java | Language::CSharp => node.child_by_field_name("body"),
         Language::Go => node.child_by_field_name("type"),
         Language::Cpp => {
@@ -183,7 +185,7 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
         | Language::Java
         | Language::Ruby
         | Language::CSharp => node.child_by_field_name("name"),
-        Language::TypeScript | Language::JavaScript => node
+        Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => node
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("property")),
         Language::C | Language::Cpp => {
@@ -258,8 +260,8 @@ pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: 
             Language::Java | Language::Kotlin | Language::Scala => line.starts_with('@'),
             // C#: [Attribute]
             Language::CSharp => line.starts_with('[') && line.ends_with(']'),
-            // TypeScript/JavaScript: @decorator (when using decorators), or /** JSDoc */
-            Language::TypeScript | Language::JavaScript => {
+            // TypeScript/JavaScript/Vue/Svelte: @decorator (when using decorators), or /** JSDoc */
+            Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => {
                 line.starts_with('@') || line.starts_with("/**") || line.starts_with("*")
             }
             // Go: // doc comments (by convention, comments immediately preceding a declaration)

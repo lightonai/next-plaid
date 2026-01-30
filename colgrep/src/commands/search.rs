@@ -6,8 +6,8 @@ use colored::Colorize;
 
 use colgrep::{
     acquire_index_lock, bre_to_ere, ensure_model, escape_literal_braces, find_parent_index,
-    get_index_dir_for_project, get_vector_index_path, index_exists, is_text_format, Config,
-    IndexBuilder, IndexState, Searcher, DEFAULT_MODEL,
+    get_index_dir_for_project, get_vector_index_path, index_exists, is_text_format,
+    path_contains_ignored_dir, Config, IndexBuilder, IndexState, Searcher, DEFAULT_MODEL,
 };
 
 use crate::display::{
@@ -203,7 +203,6 @@ pub fn cmd_search(
     top_k: usize,
     cli_model: Option<&str>,
     json: bool,
-    no_index: bool,
     include_patterns: &[String],
     files_only: bool,
     show_content: bool,
@@ -228,7 +227,6 @@ pub fn cmd_search(
             top_k,
             cli_model,
             json,
-            no_index,
             include_patterns,
             files_only,
             text_pattern,
@@ -579,7 +577,6 @@ fn search_single_path(
     top_k: usize,
     cli_model: Option<&str>,
     json: bool,
-    no_index: bool,
     include_patterns: &[String],
     files_only: bool,
     text_pattern: Option<&str>,
@@ -675,7 +672,7 @@ fn search_single_path(
     };
 
     // Get files matching include patterns (for file-type filtering)
-    let include_files: Option<Vec<String>> = if !include_patterns.is_empty() && !no_index {
+    let include_files: Option<Vec<String>> = if !include_patterns.is_empty() {
         let builder = IndexBuilder::with_options(
             &effective_root,
             &model_path,
@@ -696,8 +693,8 @@ fn search_single_path(
     };
 
     // Auto-index: always do incremental update (no grep-based selective indexing)
-    if !no_index {
-        let builder = IndexBuilder::with_options(
+    {
+        let mut builder = IndexBuilder::with_options(
             &effective_root,
             &model_path,
             quantized,
@@ -711,7 +708,43 @@ fn search_single_path(
             eprintln!("📂 Building index...");
         }
 
-        let stats = builder.index(None, false)?;
+        // Try incremental update, but if index is corrupted, clear and do full rebuild
+        let stats = match builder.index(None, false) {
+            Ok(s) => s,
+            Err(e) => {
+                let err_str = format!("{}", e);
+                let err_debug = format!("{:?}", e);
+                if err_str.contains("No data to merge")
+                    || err_debug.contains("No data to merge")
+                    || err_str.contains("Index load failed")
+                {
+                    // Index is corrupted - clear and rebuild
+                    if !json && !files_only {
+                        eprintln!("⚠️  Index corrupted, rebuilding...");
+                    }
+
+                    // Clear the corrupted index
+                    let index_dir = get_index_dir_for_project(&effective_root)?;
+                    if index_dir.exists() {
+                        let _lock = acquire_index_lock(&index_dir)?;
+                        std::fs::remove_dir_all(&index_dir)?;
+                    }
+
+                    // Create new builder and do full rebuild
+                    let mut new_builder = IndexBuilder::with_options(
+                        &effective_root,
+                        &model_path,
+                        quantized,
+                        pool_factor,
+                        parallel_sessions,
+                        batch_size,
+                    )?;
+                    new_builder.index(None, false)?
+                } else {
+                    return Err(e);
+                }
+            }
+        };
 
         let changes = stats.added + stats.changed + stats.deleted;
         if changes > 0 && !json && !files_only {
@@ -736,7 +769,16 @@ fn search_single_path(
     let index_dir = get_index_dir_for_project(&effective_root)?;
     let vector_index_path = get_vector_index_path(&index_dir);
     if !vector_index_path.join("metadata.json").exists() {
-        anyhow::bail!("No index found. Run a search without --no-index to build the index first.");
+        // Check if the path contains an ignored directory pattern
+        if let Some(ignored_pattern) = path_contains_ignored_dir(&effective_root) {
+            anyhow::bail!(
+                "No files indexed. The path contains '{}' which is in the default ignore list.\n\
+                 Ignored directories: tmp, temp, vendor, node_modules, target, build, dist, .git, etc.\n\
+                 Try searching from a different directory or project root.",
+                ignored_pattern
+            );
+        }
+        anyhow::bail!("No index found. Index building may have failed (no indexable files found).");
     }
 
     // Load searcher (from parent index if applicable)
@@ -753,7 +795,16 @@ fn search_single_path(
 
         match load_result {
             Ok(s) => s,
-            Err(e) if format!("{:?}", e).contains("No data to merge") => {
+            Err(e)
+                if {
+                    let err_debug = format!("{:?}", e);
+                    let err_display = format!("{}", e);
+                    err_debug.contains("No data to merge")
+                        || err_display.contains("No data to merge")
+                        || err_debug.contains("IndexLoad")
+                        || err_display.contains("Index load failed")
+                } =>
+            {
                 // Index is corrupted or empty - clear and rebuild
                 if !json && !files_only {
                     eprintln!("⚠️  Index corrupted, rebuilding...");
@@ -770,7 +821,7 @@ fn search_single_path(
                 }
 
                 // Rebuild the index
-                let builder = IndexBuilder::with_options(
+                let mut builder = IndexBuilder::with_options(
                     &effective_root,
                     &model_path,
                     quantized,
