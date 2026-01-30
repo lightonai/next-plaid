@@ -125,7 +125,6 @@ impl IndexBuilder {
                 let cuda_available = next_plaid_onnx::is_cuda_available();
 
                 if cudnn_available && cuda_available {
-                    eprintln!("🚀 GPU encoding enabled");
                     (
                         self.parallel_sessions
                             .unwrap_or(crate::config::DEFAULT_PARALLEL_SESSIONS_GPU),
