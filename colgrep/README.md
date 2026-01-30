@@ -29,6 +29,14 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/lategrep/rele
 
 ### Using Cargo (crates.io)
 
+If you don't have Cargo installed, install Rust first:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Then install colgrep:
+
 ```bash
 cargo install colgrep
 ```

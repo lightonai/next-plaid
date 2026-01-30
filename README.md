@@ -96,7 +96,7 @@ The index lives locally. Your code never leaves your machine.
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/lategrep/releases/latest/download/colgrep-installer.sh | sh
 ```
 
-Or via Cargo:
+Or via Cargo (install Rust first with `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`):
 
 ```bash
 cargo install colgrep
