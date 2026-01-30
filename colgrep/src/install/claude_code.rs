@@ -299,6 +299,12 @@ fn print_install_success() {
     println!("  Colgrep is now available as a semantic search tool in Claude Code.");
     println!("  Claude will automatically use colgrep for code searches.");
     println!();
+    println!(
+        "  {} {}",
+        "→".cyan(),
+        "Restart Claude Code in a new terminal to enable colgrep.".bold()
+    );
+    println!();
     println!("  {}", "What happens:".cyan().bold());
     println!("    • Colgrep indexes your project on first search");
     println!("    • Subsequent searches use the cached index");
