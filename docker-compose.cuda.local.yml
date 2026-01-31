@@ -1,0 +1,80 @@
+# =============================================================================
+# Next-Plaid API Docker Compose - CUDA with Local Paths
+# =============================================================================
+# Standalone CUDA configuration using local directories for data and models.
+# Usage: docker compose -f docker-compose.cuda.local.yml up -d
+#
+# Storage (local to project directory):
+#   - Indices: ./data/indices/
+#   - Models:  ./models/
+#
+# Model Configuration (via environment):
+#   MODEL=<hf-model-id>  HuggingFace model ID (default: lightonai/GTE-ModernColBERT-v1)
+#
+# Example:
+#   MODEL=lightonai/mxbai-edge-colbert-v0-32m-onnx docker compose -f docker-compose.cuda.local.yml up -d
+# =============================================================================
+
+services:
+  next-plaid-api:
+    build:
+      context: .
+      dockerfile: next-plaid-api/Dockerfile
+      target: runtime-cuda
+    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
+    ports:
+      - "8080:8080"
+    volumes:
+      # Local paths relative to project directory
+      - ./data/indices:/data/indices
+      - ./models:/models
+    environment:
+      - RUST_LOG=info
+      - NVIDIA_VISIBLE_DEVICES=all
+      # Rate limiting configuration
+      - RATE_LIMIT_PER_SECOND=${RATE_LIMIT_PER_SECOND:-100}
+      - RATE_LIMIT_BURST_SIZE=${RATE_LIMIT_BURST_SIZE:-200}
+      - CONCURRENCY_LIMIT=${CONCURRENCY_LIMIT:-200}
+      # Document processing configuration
+      - MAX_QUEUED_TASKS_PER_INDEX=${MAX_QUEUED_TASKS_PER_INDEX:-20}
+      - MAX_BATCH_DOCUMENTS=${MAX_BATCH_DOCUMENTS:-500}
+      - BATCH_CHANNEL_SIZE=${BATCH_CHANNEL_SIZE:-200}
+      # Encode batching configuration
+      - MAX_BATCH_TEXTS=${MAX_BATCH_TEXTS:-128}
+      - ENCODE_BATCH_CHANNEL_SIZE=${ENCODE_BATCH_CHANNEL_SIZE:-512}
+    # CUDA defaults: FP32 model (GPU is fast), large batches, 1 model pool worker
+    command:
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --index-dir
+      - /data/indices
+      - --model
+      - ${MODEL:-lightonai/GTE-ModernColBERT-v1}
+      - --cuda
+      - --batch-size
+      - "128"
+      - --model-pool-size
+      - "${MODEL_POOL_SIZE:-1}"
+      - --query-length
+      - "48"
+      - --document-length
+      - "300"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 2
+      start_period: 120s  # Longer start period for model download + CUDA initialization
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+        reservations:
+          memory: 4G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

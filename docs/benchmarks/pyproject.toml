@@ -26,7 +26,11 @@ eval = [
     "httpx>=0.24.0",
     "requests>=2.28.0",
     "fast-plaid>=0.1.0",
+    "next-plaid-client",
 ]
+
+[tool.uv.sources]
+next-plaid-client = { path = "../../next-plaid-api/python-sdk" }
 
 [tool.ruff]
 line-length = 100

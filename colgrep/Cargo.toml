@@ -102,7 +102,7 @@ tempfile = "3"
 [features]
 default = []
 # Model inference acceleration (ONNX Runtime execution providers)
-cuda = ["next-plaid-onnx/cuda"]
+cuda = ["next-plaid-onnx/cuda", "next-plaid/cuda"]
 coreml = ["next-plaid-onnx/coreml"]
 tensorrt = ["next-plaid-onnx/tensorrt"]
 directml = ["next-plaid-onnx/directml"]

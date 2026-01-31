@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-scifact-docker benchmark-scifact-docker-keep benchmark-scifact-stress benchmark-fastplaid-compat benchmark-fastplaid-compat-keep benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 benchmark-onnx-vs-pylate ci-api ci-onnx ci-cli test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-cuda docker-up docker-up-cuda docker-down docker-logs kill-api bump-version
+.PHONY: all build test lint fmt check clean example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-scifact-docker benchmark-scifact-docker-cuda benchmark-scifact-docker-keep benchmark-scifact-stress benchmark-fastplaid-compat benchmark-fastplaid-compat-keep benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 benchmark-onnx-vs-pylate ci-api ci-onnx ci-cli test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-cuda docker-up docker-up-cuda docker-down docker-logs kill-api bump-version
 
 all: fmt lint test
 
@@ -154,6 +154,13 @@ onnx-fmt:
 # Uses next-plaid SDK, starts docker compose, runs benchmark, then stops container
 benchmark-scifact-docker:
 	cd docs/benchmarks && uv sync --extra eval && uv run python benchmark_scifact_docker.py --model $(or $(MODEL),lightonai/mxbai-edge-colbert-v0-32m-onnx) --batch-size 30 --keep-running
+
+# Benchmark SciFact via Docker container with CUDA (GPU) support
+# Uses local paths (./data/indices, ./models) and runs as current user
+# Requires: NVIDIA Container Toolkit
+benchmark-scifact-docker-cuda:
+	@mkdir -p data/indices models
+	cd docs/benchmarks && uv sync --extra eval && DOCKER_UID=$$(id -u) DOCKER_GID=$$(id -g) uv run python benchmark_scifact_docker.py --compose-file docker-compose.cuda.local.yml --model $(or $(MODEL),lightonai/GTE-ModernColBERT-v1) --batch-size 64 --keep-running
 
 # Stress test: Add/Delete cycles to verify index/DB sync
 # Tests: add 1000 -> delete 200 -> add 200 -> add 1000 -> delete 500 -> add remaining

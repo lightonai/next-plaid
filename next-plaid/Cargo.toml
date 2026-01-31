@@ -29,7 +29,7 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ndarray-npy = "0.9.1"
-fastkmeans-rs = "0.1.5"
+fastkmeans-rs = "0.1.6"
 memmap2 = "0.9"
 fs2 = "0.4"
 half = "2.4"
@@ -56,3 +56,4 @@ openblas = [
     "ndarray/blas",
     "fastkmeans-rs/openblas",
 ]
+cuda = ["fastkmeans-rs/cuda"]

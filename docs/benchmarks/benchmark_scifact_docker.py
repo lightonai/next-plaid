@@ -38,7 +38,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 # Add SDK to path
-SDK_PATH = Path(__file__).parent.parent / "next-plaid-api" / "python-sdk"
+SDK_PATH = Path(__file__).parent.parent.parent / "next-plaid-api" / "python-sdk"
 sys.path.insert(0, str(SDK_PATH))
 
 from next_plaid_client import NextPlaidClient  # noqa: E402
@@ -94,8 +94,8 @@ class DockerComposeManager:
             model: HuggingFace model ID to use for encoding
         """
         self.compose_file = compose_file
-        # Find repo root (parent of benchmarks directory)
-        self.project_dir = project_dir or str(Path(__file__).parent.parent)
+        # Find repo root (two levels up from benchmarks directory: benchmarks -> docs -> root)
+        self.project_dir = project_dir or str(Path(__file__).parent.parent.parent)
         self.container_name = "next-plaid-api-1"
         self.model = model
 

@@ -58,7 +58,7 @@ default = []
 openblas = ["next-plaid/openblas"]
 accelerate = ["next-plaid/accelerate"]
 model = ["dep:next-plaid-onnx"]
-cuda = ["model", "next-plaid-onnx/cuda"]
+cuda = ["model", "next-plaid-onnx/cuda", "next-plaid/cuda"]
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json"] }
