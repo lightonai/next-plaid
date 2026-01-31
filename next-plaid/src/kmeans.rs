@@ -285,6 +285,7 @@ pub fn compute_kmeans(
     };
 
     // Run k-means
+    // Note: Use NEXT_PLAID_KMEANS_CPU=1 to force CPU k-means even with cuda feature.
     #[cfg(not(feature = "cuda"))]
     let centroids = {
         let mut kmeans = FastKMeans::with_config(kmeans_config);
@@ -300,16 +301,30 @@ pub fn compute_kmeans(
 
     #[cfg(feature = "cuda")]
     let centroids = {
-        let mut kmeans = FastKMeansCuda::with_config(kmeans_config)
-            .map_err(|e| Error::IndexCreation(format!("CUDA K-means initialization failed: {}", e)))?;
-        kmeans
-            .train(&samples_tensor.view())
-            .map_err(|e| Error::IndexCreation(format!("CUDA K-means training failed: {}", e)))?;
+        let force_cpu = std::env::var("NEXT_PLAID_KMEANS_CPU").is_ok();
 
-        kmeans
-            .centroids()
-            .ok_or_else(|| Error::IndexCreation("CUDA K-means did not produce centroids".into()))?
-            .to_owned()
+        if force_cpu {
+            let mut kmeans = FastKMeans::with_config(kmeans_config);
+            kmeans
+                .train(&samples_tensor.view())
+                .map_err(|e| Error::IndexCreation(format!("K-means training failed: {}", e)))?;
+
+            kmeans
+                .centroids()
+                .ok_or_else(|| Error::IndexCreation("K-means did not produce centroids".into()))?
+                .to_owned()
+        } else {
+            let mut kmeans = FastKMeansCuda::with_config(kmeans_config)
+                .map_err(|e| Error::IndexCreation(format!("CUDA K-means initialization failed: {}", e)))?;
+            kmeans
+                .train(&samples_tensor.view())
+                .map_err(|e| Error::IndexCreation(format!("CUDA K-means training failed: {}", e)))?;
+
+            kmeans
+                .centroids()
+                .ok_or_else(|| Error::IndexCreation("CUDA K-means did not produce centroids".into()))?
+                .to_owned()
+        }
     };
 
     // Normalize centroids (fast-plaid does F.normalize(centroids, dim=-1))

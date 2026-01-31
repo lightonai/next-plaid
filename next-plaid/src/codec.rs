@@ -227,6 +227,9 @@ impl ResidualCodec {
     /// `scores = embeddings @ centroids.T  -> [N, K]`
     /// `codes = argmax(scores, axis=1)     -> [N]`
     ///
+    /// When the `cuda` feature is enabled and a GPU is available, this function
+    /// automatically uses CUDA acceleration. No code changes required.
+    ///
     /// # Arguments
     ///
     /// * `embeddings` - Embeddings of shape `[N, dim]`
@@ -235,6 +238,30 @@ impl ResidualCodec {
     ///
     /// Centroid indices of shape `[N]`
     pub fn compress_into_codes(&self, embeddings: &Array2<f32>) -> Array1<usize> {
+        // Try CUDA acceleration if available
+        #[cfg(feature = "cuda")]
+        {
+            if let Some(ctx) = crate::cuda::get_global_context() {
+                let centroids = self.centroids_view();
+                match crate::cuda::compress_into_codes_cuda_batched(
+                    ctx,
+                    &embeddings.view(),
+                    &centroids,
+                    None,
+                ) {
+                    Ok(codes) => return codes,
+                    Err(e) => {
+                        eprintln!("[next-plaid] CUDA compress_into_codes failed: {}, falling back to CPU", e);
+                    }
+                }
+            }
+        }
+
+        self.compress_into_codes_cpu(embeddings)
+    }
+
+    /// CPU implementation of compress_into_codes.
+    fn compress_into_codes_cpu(&self, embeddings: &Array2<f32>) -> Array1<usize> {
         use rayon::prelude::*;
 
         let n = embeddings.nrows();

@@ -13,6 +13,31 @@ use crate::error::{Error, Result};
 use crate::kmeans::{compute_kmeans, ComputeKmeansConfig};
 use crate::utils::{quantile, quantiles};
 
+/// CPU implementation of fused compress_into_codes + residual computation.
+fn compress_and_residuals_cpu(
+    embeddings: &Array2<f32>,
+    codec: &ResidualCodec,
+) -> (Array1<usize>, Array2<f32>) {
+    use rayon::prelude::*;
+
+    let codes = codec.compress_into_codes(embeddings);
+    let mut residuals = embeddings.clone();
+
+    let centroids = &codec.centroids;
+    residuals
+        .axis_iter_mut(Axis(0))
+        .into_par_iter()
+        .zip(codes.as_slice().unwrap().par_iter())
+        .for_each(|(mut row, &code)| {
+            let centroid = centroids.row(code);
+            row.iter_mut()
+                .zip(centroid.iter())
+                .for_each(|(r, c)| *r -= c);
+        });
+
+    (codes, residuals)
+}
+
 /// Configuration for index creation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexConfig {
@@ -314,25 +339,36 @@ pub fn create_index_files(
             offset += n;
         }
 
-        // BATCH: Compress all embeddings at once
-        let batch_codes = codec.compress_into_codes(&batch_embeddings);
-
-        // BATCH: Compute residuals using parallel subtraction
-        let mut batch_residuals = batch_embeddings;
-        {
-            use rayon::prelude::*;
-            let centroids = &codec.centroids;
-            batch_residuals
-                .axis_iter_mut(Axis(0))
-                .into_par_iter()
-                .zip(batch_codes.as_slice().unwrap().par_iter())
-                .for_each(|(mut row, &code)| {
-                    let centroid = centroids.row(code);
-                    row.iter_mut()
-                        .zip(centroid.iter())
-                        .for_each(|(r, c)| *r -= c);
-                });
-        }
+        // BATCH: Compress embeddings and compute residuals
+        // Try CUDA fused operation first, fall back to CPU
+        let (batch_codes, batch_residuals) = {
+            #[cfg(feature = "cuda")]
+            {
+                if let Some(ctx) = crate::cuda::get_global_context() {
+                    match crate::cuda::compress_and_residuals_cuda_batched(
+                        ctx,
+                        &batch_embeddings.view(),
+                        &codec.centroids_view(),
+                        None,
+                    ) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            eprintln!(
+                                "[next-plaid] CUDA compress_and_residuals failed: {}, falling back to CPU",
+                                e
+                            );
+                            compress_and_residuals_cpu(&batch_embeddings, &codec)
+                        }
+                    }
+                } else {
+                    compress_and_residuals_cpu(&batch_embeddings, &codec)
+                }
+            }
+            #[cfg(not(feature = "cuda"))]
+            {
+                compress_and_residuals_cpu(&batch_embeddings, &codec)
+            }
+        };
 
         // BATCH: Quantize all residuals at once
         let batch_packed = codec.quantize_residuals(&batch_residuals)?;
@@ -456,6 +492,12 @@ pub fn create_index_with_kmeans_files(
 ) -> Result<Metadata> {
     if embeddings.is_empty() {
         return Err(Error::IndexCreation("No documents provided".into()));
+    }
+
+    // Pre-initialize CUDA if available (first init can take 10-20s due to driver initialization)
+    #[cfg(feature = "cuda")]
+    {
+        let _ = crate::cuda::get_global_context();
     }
 
     // Build K-means configuration from IndexConfig

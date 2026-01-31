@@ -36,6 +36,7 @@ half = "2.4"
 byteorder = "1.5"
 rusqlite = { version = "0.38", features = ["bundled", "functions"] }
 regex = "1.11"
+cudarc = { version = "0.12", features = ["cuda-version-from-build-system", "cublas"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8.1", features = ["html_reports"] }
@@ -56,4 +57,4 @@ openblas = [
     "ndarray/blas",
     "fastkmeans-rs/openblas",
 ]
-cuda = ["fastkmeans-rs/cuda"]
+cuda = ["fastkmeans-rs/cuda", "dep:cudarc"]

@@ -2238,6 +2238,7 @@ dependencies = [
  "blas-src 0.14.0",
  "byteorder",
  "criterion",
+ "cudarc",
  "fastkmeans-rs",
  "fs2",
  "half",
