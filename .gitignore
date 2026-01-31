@@ -8,6 +8,8 @@
 *.swo
 *~
 *.plaid
+build/
+models/
 
 # OS
 .DS_Store

@@ -79,7 +79,7 @@ services:
       - MAX_BATCH_DOCUMENTS=${MAX_BATCH_DOCUMENTS:-500}
       - BATCH_CHANNEL_SIZE=${BATCH_CHANNEL_SIZE:-200}
       # Encode batching configuration
-      - MAX_BATCH_TEXTS=${MAX_BATCH_TEXTS:-128}
+      - MAX_BATCH_TEXTS=${MAX_BATCH_TEXTS:-64}
       - ENCODE_BATCH_CHANNEL_SIZE=${ENCODE_BATCH_CHANNEL_SIZE:-512}
     # CUDA defaults: FP32 model (GPU is fast), large batches, 1 model pool worker
     command:
