@@ -101,7 +101,6 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
                         new_ld
                     };
 
-                    eprintln!("🔧 Setting up CUDA environment...");
                     env::set_var("LD_LIBRARY_PATH", &final_ld);
                     env::set_var("_COLGREP_CUDA_SETUP", "1");
 

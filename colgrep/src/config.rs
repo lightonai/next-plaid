@@ -20,9 +20,8 @@ pub const DEFAULT_POOL_FACTOR: usize = 2;
 pub const DEFAULT_BATCH_SIZE_CPU: usize = 1;
 
 /// Default batch size per encoding session for GPU (CUDA)
-/// Benchmarking on H100 shows batch_size=4 with 8 parallel sessions is optimal
-/// (68.6s vs 108s baseline with batch=64/parallel=1 = 37% faster)
-pub const DEFAULT_BATCH_SIZE_GPU: usize = 4;
+/// With 1 session, larger batch size (64) is optimal for GPU throughput
+pub const DEFAULT_BATCH_SIZE_GPU: usize = 64;
 
 /// Default batch size - use GPU default when CUDA is enabled AND available, CPU otherwise
 /// Note: At compile time we set the GPU default, but at runtime we check cuDNN availability
@@ -70,9 +69,9 @@ pub fn get_default_parallel_sessions() -> usize {
 }
 
 /// Default number of parallel sessions for GPU (CUDA)
-/// Benchmarking on H100 shows 8 parallel sessions with batch_size=4 is optimal
-/// Multiple sessions help hide CPU overhead (tokenization, data prep)
-pub const DEFAULT_PARALLEL_SESSIONS_GPU: usize = 8;
+/// Using 1 session with larger batch is optimal for CUDA to minimize session creation overhead
+/// The GPU handles batched inference more efficiently than multiple parallel sessions
+pub const DEFAULT_PARALLEL_SESSIONS_GPU: usize = 1;
 
 /// Maximum number of parallel sessions for CPU
 /// Benchmarking shows 8 sessions provides the best balance:

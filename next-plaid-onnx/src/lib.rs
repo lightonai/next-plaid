@@ -234,6 +234,7 @@ fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
             .clone()
             .with_execution_providers([CUDAExecutionProvider::default()
                 .with_device_id(device_id)
+                .with_tf32(true)
                 .build()])
         {
             return Ok(b);
@@ -280,6 +281,7 @@ fn configure_cuda(builder: SessionBuilder) -> Result<SessionBuilder> {
         .with_execution_providers([
             CUDAExecutionProvider::default()
                 .with_device_id(device_id)
+                .with_tf32(true)
                 .build()
         ])
         .context("Failed to configure CUDA execution provider. Ensure CUDA toolkit and cuDNN are installed.")
