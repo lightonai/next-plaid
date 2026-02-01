@@ -81,6 +81,7 @@ impl Default for ApiConfig {
 /// Model configuration info for logging purposes.
 #[cfg(feature = "model")]
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ModelInfo {
     /// Path to the model directory
     pub path: String,
@@ -175,6 +176,7 @@ pub struct AppState {
     pub model_pool: Option<ModelPool>,
     /// Model configuration info (path, quantization status) - for logging
     #[cfg(feature = "model")]
+    #[allow(dead_code)]
     pub model_info: Option<ModelInfo>,
 }
 

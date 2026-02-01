@@ -407,7 +407,7 @@ pub fn compress_into_codes_cuda_batched(
             .ok_or_else(|| Error::Codec("Failed to get argmax function".into()))?;
 
         let block_size = 256;
-        let grid_size = (batch_n + block_size - 1) / block_size;
+        let grid_size = batch_n.div_ceil(block_size);
 
         unsafe {
             func.launch(
@@ -552,7 +552,7 @@ pub fn compress_and_residuals_cuda_batched(
             .ok_or_else(|| Error::Codec("Failed to get argmax function".into()))?;
 
         let block_size = 256;
-        let grid_size = (batch_n + block_size - 1) / block_size;
+        let grid_size = batch_n.div_ceil(block_size);
 
         unsafe {
             argmax_func
@@ -701,7 +701,7 @@ pub fn colbert_score_cuda(
         .ok_or_else(|| Error::Codec("Failed to get maxsim function".into()))?;
 
     let block_size = 256;
-    let grid_size = (num_query_tokens + block_size - 1) / block_size;
+    let grid_size = num_query_tokens.div_ceil(block_size);
 
     unsafe {
         func.launch(

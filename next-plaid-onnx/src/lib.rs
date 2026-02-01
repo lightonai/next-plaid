@@ -250,6 +250,7 @@ pub fn is_cuda_available() -> bool {
 
 fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
     // Skip GPU providers entirely if CPU-only mode is forced
+    #[cfg(any(feature = "cuda", feature = "tensorrt", feature = "coreml"))]
     let force_cpu = is_force_cpu();
 
     #[cfg(feature = "cuda")]
