@@ -2,6 +2,17 @@
 //!
 //! When the `cuda` feature is enabled, the standard next-plaid functions
 //! automatically use CUDA acceleration. No code changes required for users.
+//!
+//! # Performance Note: CUDA Initialization Time
+//!
+//! The first CUDA context creation can take 10-30+ seconds on some systems due to
+//! NVIDIA driver initialization. This is especially slow when GPU persistence mode
+//! is disabled (the default).
+//!
+//! **To reduce init time**, enable GPU persistence mode (requires root):
+//! ```bash
+//! sudo nvidia-smi -pm 1
+//! ```
 
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
 use cudarc::driver::{CudaDevice, CudaSlice, LaunchAsync, LaunchConfig};
@@ -26,11 +37,13 @@ impl CudaContext {
     /// Create a new CUDA context on the specified device.
     /// This also preloads PTX kernels to avoid compilation delay on first use.
     ///
-    /// Note: First CUDA context creation can take 10-20+ seconds due to driver
-    /// initialization. Subsequent operations are fast.
+    /// Note: First CUDA context creation can take 10-30+ seconds due to driver
+    /// initialization when persistence mode is disabled. Enable it with:
+    /// `sudo nvidia-smi -pm 1`
     pub fn new(device_id: usize) -> Result<Self> {
         let device = CudaDevice::new(device_id)
             .map_err(|e| Error::Codec(format!("Failed to initialize CUDA device: {}", e)))?;
+
         let blas = CudaBlas::new(device.clone())
             .map_err(|e| Error::Codec(format!("Failed to initialize cuBLAS: {}", e)))?;
 
@@ -46,16 +59,18 @@ impl CudaContext {
 pub fn get_global_context() -> Option<&'static CudaContext> {
     GLOBAL_CUDA_CONTEXT
         .get_or_init(|| match CudaContext::new(0) {
-            Ok(ctx) => {
-                eprintln!("[next-plaid] CUDA initialized, GPU acceleration enabled");
-                Some(ctx)
-            }
+            Ok(ctx) => Some(ctx),
             Err(e) => {
                 eprintln!("[next-plaid] CUDA init failed: {}, using CPU", e);
                 None
             }
         })
         .as_ref()
+}
+
+/// Check if CUDA context is already initialized (non-blocking).
+pub fn is_initialized() -> bool {
+    GLOBAL_CUDA_CONTEXT.get().is_some()
 }
 
 /// Argmax kernel - finds index of maximum value per row.
