@@ -14,20 +14,20 @@
   "num_documents": 5183,
   "num_queries": 300,
   "timing": {
-    "index_time_s": 75.861,
-    "search_time_s": 3.317,
-    "total_time_s": 79.178
+    "index_time_s": 78.053,
+    "search_time_s": 3.451,
+    "total_time_s": 81.504
   },
   "metrics": {
-    "map": 0.7193,
-    "ndcg@10": 0.7571,
-    "ndcg@100": 0.7779,
-    "recall@10": 0.8729,
-    "recall@100": 0.9633
+    "map": 0.719,
+    "ndcg@10": 0.7605,
+    "ndcg@100": 0.7784,
+    "recall@10": 0.8862,
+    "recall@100": 0.9667
   },
   "throughput": {
-    "docs_per_second": 68.3,
-    "queries_per_second": 90.4
+    "docs_per_second": 66.4,
+    "queries_per_second": 86.9
   },
   "api_calls": {
     "indexing": 81,
