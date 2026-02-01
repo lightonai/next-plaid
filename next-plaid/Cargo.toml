@@ -29,13 +29,18 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ndarray-npy = "0.9.1"
-fastkmeans-rs = "0.1.6"
+fastkmeans-rs = "0.1.7"
 memmap2 = "0.9"
 fs2 = "0.4"
 half = "2.4"
 byteorder = "1.5"
 rusqlite = { version = "0.38", features = ["bundled", "functions"] }
 regex = "1.11"
+cudarc = { version = "0.12", features = [
+    "cuda-version-from-build-system",
+    "cublas",
+    "dynamic-linking",
+], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8.1", features = ["html_reports"] }
@@ -56,4 +61,4 @@ openblas = [
     "ndarray/blas",
     "fastkmeans-rs/openblas",
 ]
-cuda = ["fastkmeans-rs/cuda"]
+cuda = ["fastkmeans-rs/cuda", "dep:cudarc"]

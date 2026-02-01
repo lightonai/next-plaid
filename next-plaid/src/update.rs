@@ -45,6 +45,9 @@ pub struct UpdateConfig {
     pub start_from_scratch: usize,
     /// Buffer size before triggering centroid expansion (default: 100)
     pub buffer_size: usize,
+    /// Force CPU execution for K-means even when CUDA feature is enabled.
+    #[serde(default)]
+    pub force_cpu: bool,
 }
 
 impl Default for UpdateConfig {
@@ -57,6 +60,7 @@ impl Default for UpdateConfig {
             seed: 42,
             start_from_scratch: 999,
             buffer_size: 100,
+            force_cpu: false,
         }
     }
 }
@@ -70,6 +74,7 @@ impl UpdateConfig {
             seed: self.seed,
             n_samples_kmeans: self.n_samples_kmeans,
             num_partitions: None,
+            force_cpu: self.force_cpu,
         }
     }
 }
@@ -489,6 +494,7 @@ pub fn update_centroids(
         seed: config.seed,
         n_samples_kmeans: config.n_samples_kmeans,
         num_partitions: Some(k_update),
+        force_cpu: config.force_cpu,
     };
 
     // Convert outliers to vector of single-token "documents" for compute_kmeans
@@ -553,6 +559,7 @@ pub fn update_centroids(
 /// * `codec` - The loaded ResidualCodec for compression
 /// * `batch_size` - Optional batch size for processing (default: 50,000)
 /// * `update_threshold` - Whether to update the cluster threshold
+/// * `force_cpu` - Force CPU execution even when CUDA is available
 ///
 /// # Returns
 ///
@@ -563,6 +570,7 @@ pub fn update_index(
     codec: &ResidualCodec,
     batch_size: Option<usize>,
     update_threshold: bool,
+    force_cpu: bool,
 ) -> Result<usize> {
     let batch_size = batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
     let index_dir = Path::new(index_path);
@@ -645,7 +653,12 @@ pub fn update_index(
         }
 
         // BATCH: Compress all embeddings at once
-        let batch_codes = codec.compress_into_codes(&batch_embeddings);
+        // Use CPU-only version when force_cpu is set to avoid CUDA initialization overhead
+        let batch_codes = if force_cpu {
+            codec.compress_into_codes_cpu(&batch_embeddings)
+        } else {
+            codec.compress_into_codes(&batch_embeddings)
+        };
 
         // BATCH: Compute residuals using parallel subtraction
         let mut batch_residuals = batch_embeddings;

@@ -193,30 +193,52 @@ fn get_cuda_device_id() -> i32 {
         .unwrap_or(0)
 }
 
+/// Check if CPU-only mode is forced via environment variable.
+/// Set `NEXT_PLAID_FORCE_CPU=1` to completely disable CUDA and avoid
+/// any CUDA library loading overhead.
+pub fn is_force_cpu() -> bool {
+    std::env::var("NEXT_PLAID_FORCE_CPU")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Check if CUDA execution provider is available AND a GPU is visible.
 /// Returns true if:
+/// - NEXT_PLAID_FORCE_CPU is NOT set
 /// - CUDA feature is enabled
-/// - CUDA EP is compiled in ONNX Runtime
 /// - At least one GPU is visible (CUDA_VISIBLE_DEVICES is not empty/-1)
+/// - CUDA EP is compiled in ONNX Runtime
+///
+/// IMPORTANT: Check CUDA_VISIBLE_DEVICES FIRST before calling .is_available()
+/// to avoid CUDA driver initialization overhead when GPUs are hidden.
 #[cfg(feature = "cuda")]
 pub fn is_cuda_available() -> bool {
-    // First check if CUDA EP is compiled in
-    if !CUDAExecutionProvider::default()
-        .is_available()
-        .unwrap_or(false)
-    {
+    // Check if CPU-only mode is forced via environment variable
+    // This completely bypasses all CUDA checks
+    if is_force_cpu() {
         return false;
     }
 
-    // Check if GPUs are visible via CUDA_VISIBLE_DEVICES
+    // Check if GPUs are visible via CUDA_VISIBLE_DEVICES FIRST
+    // This avoids triggering CUDA driver initialization when GPUs are hidden
+    //
+    // Note: When CUDA_VISIBLE_DEVICES is:
+    // - Not set: GPUs are visible (default CUDA behavior)
+    // - Empty string "": GPUs are hidden
+    // - "-1": GPUs are hidden
+    // - Valid device IDs: Only those GPUs are visible
     if let Ok(devices) = std::env::var("CUDA_VISIBLE_DEVICES") {
         // Empty string or "-1" means no GPUs visible
         if devices.is_empty() || devices == "-1" {
             return false;
         }
     }
+    // If CUDA_VISIBLE_DEVICES is not set, GPUs are visible by default
 
-    true
+    // Only now check if CUDA EP is compiled in (may trigger CUDA driver init)
+    CUDAExecutionProvider::default()
+        .is_available()
+        .unwrap_or(false)
 }
 
 /// Check if CUDA execution provider is available.
@@ -227,8 +249,12 @@ pub fn is_cuda_available() -> bool {
 }
 
 fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
+    // Skip GPU providers entirely if CPU-only mode is forced
+    #[cfg(any(feature = "cuda", feature = "tensorrt", feature = "coreml"))]
+    let force_cpu = is_force_cpu();
+
     #[cfg(feature = "cuda")]
-    {
+    if !force_cpu {
         let device_id = get_cuda_device_id();
         if let Ok(b) = builder
             .clone()
@@ -242,7 +268,7 @@ fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
     }
 
     #[cfg(feature = "tensorrt")]
-    {
+    if !force_cpu {
         if let Ok(b) = builder
             .clone()
             .with_execution_providers([TensorRTExecutionProvider::default().build()])
@@ -262,7 +288,7 @@ fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
     }
 
     #[cfg(feature = "directml")]
-    {
+    if !force_cpu {
         if let Ok(b) = builder
             .clone()
             .with_execution_providers([DirectMLExecutionProvider::default().build()])
@@ -276,6 +302,11 @@ fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
 
 #[cfg(feature = "cuda")]
 fn configure_cuda(builder: SessionBuilder) -> Result<SessionBuilder> {
+    // If CPU-only mode is forced, return CPU provider instead
+    if is_force_cpu() {
+        return Ok(builder);
+    }
+
     let device_id = get_cuda_device_id();
     builder
         .with_execution_providers([

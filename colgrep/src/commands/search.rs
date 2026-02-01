@@ -706,11 +706,7 @@ fn search_single_path(
             batch_size,
         )?;
         builder.set_auto_confirm(auto_confirm);
-        let needs_index = !index_exists(&effective_root);
-
-        if needs_index {
-            eprintln!("📂 Building index...");
-        }
+        builder.set_model_name(&model);
 
         // Try incremental update, but if index is corrupted, clear and do full rebuild
         let stats = match builder.index(None, false) {
@@ -750,6 +746,7 @@ fn search_single_path(
                         batch_size,
                     )?;
                     new_builder.set_auto_confirm(auto_confirm);
+                    new_builder.set_model_name(&model);
                     new_builder.index(None, false)?
                 } else {
                     return Err(e);
@@ -841,6 +838,7 @@ fn search_single_path(
                     batch_size,
                 )?;
                 builder.set_auto_confirm(auto_confirm);
+                builder.set_model_name(&model);
                 builder.index(None, false)?;
 
                 // Try loading again

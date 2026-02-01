@@ -72,9 +72,40 @@ pub struct QueryResult {
     pub scores: Vec<f32>,
 }
 
+/// Minimum matrix size (query_tokens * doc_tokens) to use CUDA.
+/// Below this threshold, CPU is faster due to GPU transfer overhead.
+/// Based on benchmarks: 128 * 1024 = 131072
+#[cfg(feature = "cuda")]
+const CUDA_COLBERT_MIN_SIZE: usize = 128 * 1024;
+
 /// ColBERT-style MaxSim scoring: for each query token, find the max similarity
 /// with any document token, then sum across query tokens.
+///
+/// When the `cuda` feature is enabled and matrices are large enough,
+/// this function automatically uses CUDA acceleration.
 fn colbert_score(query: &ArrayView2<f32>, doc: &ArrayView2<f32>) -> f32 {
+    // Try CUDA for large matrices
+    #[cfg(feature = "cuda")]
+    {
+        let matrix_size = query.nrows() * doc.nrows();
+        if matrix_size >= CUDA_COLBERT_MIN_SIZE {
+            if let Some(ctx) = crate::cuda::get_global_context() {
+                match crate::cuda::colbert_score_cuda(ctx, query, doc) {
+                    Ok(score) => return score,
+                    Err(_) => {
+                        // Silent fallback to CPU for scoring (happens frequently)
+                    }
+                }
+            }
+        }
+    }
+
+    // CPU implementation
+    colbert_score_cpu(query, doc)
+}
+
+/// CPU implementation of ColBERT MaxSim scoring.
+fn colbert_score_cpu(query: &ArrayView2<f32>, doc: &ArrayView2<f32>) -> f32 {
     let mut total_score = 0.0;
 
     // For each query token

@@ -160,7 +160,7 @@ benchmark-scifact-docker:
 # Requires: NVIDIA Container Toolkit
 benchmark-scifact-docker-cuda:
 	@mkdir -p data/indices models
-	cd docs/benchmarks && uv sync --extra eval && DOCKER_UID=$$(id -u) DOCKER_GID=$$(id -g) uv run python benchmark_scifact_docker.py --compose-file docker-compose.cuda.local.yml --model $(or $(MODEL),lightonai/GTE-ModernColBERT-v1) --batch-size 64 --keep-running
+	cd docs/benchmarks && uv sync --extra eval && DOCKER_UID=$$(id -u) DOCKER_GID=$$(id -g) uv run python benchmark_scifact_docker.py --compose-file docker-compose.cuda.local.yml --model $(or $(MODEL),lightonai/GTE-ModernColBERT-v1) --batch-size 64
 
 # Stress test: Add/Delete cycles to verify index/DB sync
 # Tests: add 1000 -> delete 200 -> add 200 -> add 1000 -> delete 500 -> add remaining

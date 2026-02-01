@@ -43,6 +43,11 @@ const LARGE_BATCH_THRESHOLD: usize = 10_000;
 /// Higher value = fewer embeddings = faster indexing and smaller index.
 const LARGE_BATCH_POOL_FACTOR: usize = 2;
 
+/// Threshold for forcing CPU encoding even when CUDA is available.
+/// For small batches (< this many units), CPU is faster due to GPU initialization overhead.
+#[cfg(feature = "cuda")]
+const SMALL_BATCH_CPU_THRESHOLD: usize = 300;
+
 #[derive(Debug)]
 pub struct UpdateStats {
     pub added: usize,
@@ -77,6 +82,8 @@ pub struct IndexBuilder {
     pool_factor: Option<usize>,
     /// If true, skip user confirmation for large indexes
     auto_confirm: bool,
+    /// Model name/id for display (e.g., "lightonai/LateOn-Code-v0-edge")
+    model_name: Option<String>,
 }
 
 impl IndexBuilder {
@@ -109,6 +116,7 @@ impl IndexBuilder {
             index_dir,
             pool_factor,
             auto_confirm: false, // Prompt by default for large indexes
+            model_name: None,
         })
     }
 
@@ -117,10 +125,20 @@ impl IndexBuilder {
         self.auto_confirm = auto_confirm;
     }
 
+    /// Set the model name for display purposes
+    pub fn set_model_name(&mut self, name: &str) {
+        self.model_name = Some(name.to_string());
+    }
+
     /// Ensure the model is created for encoding.
     /// The model is lazily created on first use to avoid overhead when just scanning files
     /// or when checking for index updates that have no changes.
-    fn ensure_model_created(&mut self) -> Result<()> {
+    ///
+    /// # Arguments
+    /// * `num_units` - Number of code units to encode. Used to decide whether to use GPU or CPU.
+    ///   For small batches (< SMALL_BATCH_CPU_THRESHOLD), CPU is preferred even when CUDA is
+    ///   available, as GPU initialization overhead outweighs the benefits for small workloads.
+    fn ensure_model_created(&mut self, num_units: usize) -> Result<()> {
         if self.model.is_none() {
             // Use CUDA-optimized settings when CUDA feature is enabled AND cuDNN is available:
             // - 1 session (GPUs work best with single session)
@@ -130,25 +148,47 @@ impl IndexBuilder {
             // - min(CPU count, 8) sessions (capped for high-core systems)
             // - 1 batch size (works better with parallel sessions)
             // - CPU execution provider
+            //
+            // Special case: For small batches (< SMALL_BATCH_CPU_THRESHOLD), force CPU
+            // even when CUDA is available to avoid GPU initialization overhead.
             #[cfg(feature = "cuda")]
             let (num_sessions, execution_provider) = {
-                // Check both cuDNN (for LD_LIBRARY_PATH) and CUDA EP availability
-                let cudnn_available = crate::onnx_runtime::is_cudnn_available();
-                let cuda_available = next_plaid_onnx::is_cuda_available();
+                // Force CPU for small batches to avoid GPU initialization overhead
+                // IMPORTANT: Check force_cpu FIRST before any CUDA availability checks
+                // to avoid CUDA driver initialization overhead for small batches.
+                let force_cpu = num_units < SMALL_BATCH_CPU_THRESHOLD;
 
-                if cudnn_available && cuda_available {
+                // For small batches, set COLGREP_FORCE_CPU="1" to prevent CUDA initialization.
+                // For large batches, remove COLGREP_FORCE_CPU to allow GPU access.
+                // This is much faster than using a separate CPU-only library because the GPU
+                // ONNX Runtime will immediately fall back to CPU when force_cpu is set.
+                if force_cpu {
+                    std::env::set_var("COLGREP_FORCE_CPU", "1");
+                } else {
+                    // Restore CUDA access for large batches
+                    std::env::remove_var("COLGREP_FORCE_CPU");
+                }
+
+                // Initialize ONNX Runtime
+                crate::onnx_runtime::ensure_onnx_runtime()
+                    .context("Failed to initialize ONNX Runtime")?;
+
+                // Only check CUDA availability if we're not forcing CPU
+                // The is_cuda_available() call may trigger CUDA driver init, so skip it for small batches
+                let use_cuda = !force_cpu && {
+                    // Check both cuDNN (for LD_LIBRARY_PATH) and CUDA EP availability
+                    let cudnn_available = crate::onnx_runtime::is_cudnn_available();
+                    let cuda_available = next_plaid_onnx::is_cuda_available();
+                    cudnn_available && cuda_available
+                };
+
+                if use_cuda {
                     (
                         self.parallel_sessions
                             .unwrap_or(crate::config::DEFAULT_PARALLEL_SESSIONS_GPU),
                         ExecutionProvider::Cuda,
                     )
                 } else {
-                    // CUDA not fully available - fall back to CPU mode
-                    if !cudnn_available {
-                        eprintln!("💻 CPU encoding (cuDNN not found)");
-                    } else {
-                        eprintln!("💻 CPU encoding (CUDA EP not available)");
-                    }
                     (
                         self.parallel_sessions.unwrap_or_else(|| {
                             let cpu_count = std::thread::available_parallelism()
@@ -161,15 +201,29 @@ impl IndexBuilder {
                 }
             };
             #[cfg(not(feature = "cuda"))]
-            let (num_sessions, execution_provider) = (
-                self.parallel_sessions.unwrap_or_else(|| {
-                    let cpu_count = std::thread::available_parallelism()
-                        .map(|p| p.get())
-                        .unwrap_or(8);
-                    cpu_count.min(crate::config::MAX_PARALLEL_SESSIONS_CPU)
-                }),
-                ExecutionProvider::Cpu,
-            );
+            let (num_sessions, execution_provider) = {
+                let _ = num_units; // Silence unused warning when cuda feature is disabled
+
+                // Initialize ONNX Runtime (CPU-only build)
+                crate::onnx_runtime::ensure_onnx_runtime()
+                    .context("Failed to initialize ONNX Runtime")?;
+
+                (
+                    self.parallel_sessions.unwrap_or_else(|| {
+                        let cpu_count = std::thread::available_parallelism()
+                            .map(|p| p.get())
+                            .unwrap_or(8);
+                        cpu_count.min(crate::config::MAX_PARALLEL_SESSIONS_CPU)
+                    }),
+                    ExecutionProvider::Cpu,
+                )
+            };
+
+            // Print model info after ONNX runtime is initialized (and any potential re-exec)
+            if let Some(ref name) = self.model_name {
+                eprintln!("🤖 Model: {}", name);
+            }
+            eprintln!("📂 Building index...");
 
             // Use runtime default for batch size (respects cuDNN availability)
             let batch = self
@@ -419,7 +473,7 @@ impl IndexBuilder {
         build_call_graph(&mut new_units);
 
         // Ensure model is created before encoding (lazy initialization)
-        self.ensure_model_created()?;
+        self.ensure_model_created(new_units.len())?;
 
         let pb = ProgressBar::new(new_units.len() as u64);
         pb.set_style(
@@ -433,8 +487,21 @@ impl IndexBuilder {
 
         // Create or update index
         std::fs::create_dir_all(&index_path)?;
-        let config = IndexConfig::default();
-        let update_config = UpdateConfig::default();
+
+        // Force CPU for K-means when batch is small to avoid GPU initialization overhead
+        #[cfg(feature = "cuda")]
+        let force_cpu = new_units.len() < SMALL_BATCH_CPU_THRESHOLD;
+        #[cfg(not(feature = "cuda"))]
+        let force_cpu = false;
+
+        let config = IndexConfig {
+            force_cpu,
+            ..Default::default()
+        };
+        let update_config = UpdateConfig {
+            force_cpu,
+            ..Default::default()
+        };
 
         let encode_batch_size = 64;
 
@@ -624,7 +691,7 @@ impl IndexBuilder {
 
         let was_interrupted = if !all_units.is_empty() {
             // Ensure model is created before encoding (lazy initialization)
-            self.ensure_model_created()?;
+            self.ensure_model_created(all_units.len())?;
             self.write_index_with_progress(&all_units)?
         } else {
             false
@@ -789,7 +856,7 @@ impl IndexBuilder {
             }
 
             // Ensure model is created before encoding (lazy initialization)
-            self.ensure_model_created()?;
+            self.ensure_model_created(new_units.len())?;
 
             // Progress bar for encoding
             let pb = ProgressBar::new(new_units.len() as u64);
@@ -802,8 +869,20 @@ impl IndexBuilder {
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb.set_message("Encoding...");
 
-            let config = IndexConfig::default();
-            let update_config = UpdateConfig::default();
+            // Force CPU for K-means when batch is small to avoid GPU initialization overhead
+            #[cfg(feature = "cuda")]
+            let force_cpu = new_units.len() < SMALL_BATCH_CPU_THRESHOLD;
+            #[cfg(not(feature = "cuda"))]
+            let force_cpu = false;
+
+            let config = IndexConfig {
+                force_cpu,
+                ..Default::default()
+            };
+            let update_config = UpdateConfig {
+                force_cpu,
+                ..Default::default()
+            };
 
             let encode_batch_size = 64;
 
@@ -1217,8 +1296,20 @@ impl IndexBuilder {
             None
         };
 
-        let config = IndexConfig::default();
-        let update_config = UpdateConfig::default();
+        // Force CPU for K-means when batch is small to avoid GPU initialization overhead
+        #[cfg(feature = "cuda")]
+        let force_cpu = units.len() < SMALL_BATCH_CPU_THRESHOLD;
+        #[cfg(not(feature = "cuda"))]
+        let force_cpu = false;
+
+        let config = IndexConfig {
+            force_cpu,
+            ..Default::default()
+        };
+        let update_config = UpdateConfig {
+            force_cpu,
+            ..Default::default()
+        };
 
         let encode_batch_size = 64;
 
@@ -1658,6 +1749,13 @@ impl Searcher {
             ExecutionProvider::Cpu
         };
 
+        // For search (always small batch - single query), force CPU to avoid
+        // CUDA initialization overhead. The GPU ONNX Runtime will fall back to CPU.
+        #[cfg(feature = "cuda")]
+        std::env::set_var("COLGREP_FORCE_CPU", "1");
+
+        crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")?;
+
         // Cap intra-op threads to avoid overhead on high-core-count systems
         let num_threads = std::thread::available_parallelism()
             .map(|p| p.get())
@@ -1703,6 +1801,13 @@ impl Searcher {
         } else {
             ExecutionProvider::Cpu
         };
+
+        // For search (always small batch - single query), force CPU to avoid
+        // CUDA initialization overhead. The GPU ONNX Runtime will fall back to CPU.
+        #[cfg(feature = "cuda")]
+        std::env::set_var("COLGREP_FORCE_CPU", "1");
+
+        crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")?;
 
         // Cap intra-op threads to avoid overhead on high-core-count systems
         let num_threads = std::thread::available_parallelism()

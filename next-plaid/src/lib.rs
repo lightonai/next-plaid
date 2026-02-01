@@ -11,6 +11,8 @@ extern crate blas_src;
 extern crate openblas_src;
 
 pub mod codec;
+#[cfg(feature = "cuda")]
+pub mod cuda;
 pub mod delete;
 pub mod embeddings;
 pub mod error;
@@ -33,3 +35,6 @@ pub use kmeans::{
 };
 pub use search::{QueryResult, SearchParameters};
 pub use update::UpdateConfig;
+
+#[cfg(feature = "cuda")]
+pub use cuda::CudaContext;
