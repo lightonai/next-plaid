@@ -1293,7 +1293,7 @@ wheels = [
 
 [[package]]
 name = "pylate-onnx-export"
-version = "0.7.1"
+version = "0.8.5"
 source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
