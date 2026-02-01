@@ -33,6 +33,9 @@ pub struct ComputeKmeansConfig {
     /// If provided, explicitly sets the number of centroids (K).
     /// If None, K is calculated using heuristic based on dataset size.
     pub num_partitions: Option<usize>,
+    /// Force CPU execution even when CUDA feature is enabled.
+    /// Useful for small batches where GPU initialization overhead exceeds benefits.
+    pub force_cpu: bool,
 }
 
 impl Default for ComputeKmeansConfig {
@@ -43,6 +46,7 @@ impl Default for ComputeKmeansConfig {
             seed: 42,
             n_samples_kmeans: None,
             num_partitions: None,
+            force_cpu: false,
         }
     }
 }
@@ -62,25 +66,11 @@ pub fn default_config(num_centroids: usize) -> KMeansConfig {
     }
 }
 
-/// Compute centroids from a set of embeddings.
-///
-/// # Arguments
-///
-/// * `embeddings` - The embeddings to cluster, shape `[N, dim]`
-/// * `num_centroids` - Number of centroids to compute
-/// * `config` - Optional custom k-means configuration
-///
-/// # Returns
-///
-/// The centroids array of shape `[num_centroids, dim]`
-#[cfg(not(feature = "cuda"))]
-pub fn compute_centroids(
+/// Compute centroids from a set of embeddings (CPU implementation).
+fn compute_centroids_cpu(
     embeddings: &ArrayView2<f32>,
-    num_centroids: usize,
-    config: Option<KMeansConfig>,
+    config: KMeansConfig,
 ) -> Result<Array2<f32>> {
-    let config = config.unwrap_or_else(|| default_config(num_centroids));
-
     let mut kmeans = FastKMeans::with_config(config);
 
     kmeans
@@ -93,13 +83,37 @@ pub fn compute_centroids(
         .map(|c| c.to_owned())
 }
 
-/// Compute centroids from a set of embeddings using CUDA.
+/// Compute centroids from a set of embeddings.
 ///
 /// # Arguments
 ///
 /// * `embeddings` - The embeddings to cluster, shape `[N, dim]`
 /// * `num_centroids` - Number of centroids to compute
 /// * `config` - Optional custom k-means configuration
+/// * `force_cpu` - Force CPU execution even when CUDA is available
+///
+/// # Returns
+///
+/// The centroids array of shape `[num_centroids, dim]`
+#[cfg(not(feature = "cuda"))]
+pub fn compute_centroids(
+    embeddings: &ArrayView2<f32>,
+    num_centroids: usize,
+    config: Option<KMeansConfig>,
+    _force_cpu: bool,
+) -> Result<Array2<f32>> {
+    let config = config.unwrap_or_else(|| default_config(num_centroids));
+    compute_centroids_cpu(embeddings, config)
+}
+
+/// Compute centroids from a set of embeddings using CUDA (or CPU if force_cpu is true).
+///
+/// # Arguments
+///
+/// * `embeddings` - The embeddings to cluster, shape `[N, dim]`
+/// * `num_centroids` - Number of centroids to compute
+/// * `config` - Optional custom k-means configuration
+/// * `force_cpu` - Force CPU execution even when CUDA is available
 ///
 /// # Returns
 ///
@@ -109,8 +123,13 @@ pub fn compute_centroids(
     embeddings: &ArrayView2<f32>,
     num_centroids: usize,
     config: Option<KMeansConfig>,
+    force_cpu: bool,
 ) -> Result<Array2<f32>> {
     let config = config.unwrap_or_else(|| default_config(num_centroids));
+
+    if force_cpu {
+        return compute_centroids_cpu(embeddings, config);
+    }
 
     let mut kmeans = FastKMeansCuda::with_config(config)
         .map_err(|e| Error::IndexCreation(format!("CUDA K-means initialization failed: {}", e)))?;
@@ -135,6 +154,7 @@ pub fn compute_centroids(
 /// * `documents` - List of document embeddings, each of shape `[num_tokens, dim]`
 /// * `num_centroids` - Number of centroids to compute
 /// * `config` - Optional custom k-means configuration
+/// * `force_cpu` - Force CPU execution even when CUDA is available
 ///
 /// # Returns
 ///
@@ -143,6 +163,7 @@ pub fn compute_centroids_from_documents(
     documents: &[Array2<f32>],
     num_centroids: usize,
     config: Option<KMeansConfig>,
+    force_cpu: bool,
 ) -> Result<Array2<f32>> {
     if documents.is_empty() {
         return Err(Error::IndexCreation("No documents provided".into()));
@@ -162,7 +183,7 @@ pub fn compute_centroids_from_documents(
         offset += n;
     }
 
-    compute_centroids(&flat.view(), num_centroids, config)
+    compute_centroids(&flat.view(), num_centroids, config, force_cpu)
 }
 
 /// Assign embeddings to their nearest centroids.
@@ -284,7 +305,7 @@ pub fn compute_kmeans(
         verbose: false,
     };
 
-    // Run k-means
+    // Run k-means (CPU implementation)
     #[cfg(not(feature = "cuda"))]
     let centroids = {
         let mut kmeans = FastKMeans::with_config(kmeans_config);
@@ -298,10 +319,22 @@ pub fn compute_kmeans(
             .to_owned()
     };
 
+    // Run k-means (CUDA with CPU fallback when force_cpu is true)
     #[cfg(feature = "cuda")]
-    let centroids = {
-        let mut kmeans = FastKMeansCuda::with_config(kmeans_config)
-            .map_err(|e| Error::IndexCreation(format!("CUDA K-means initialization failed: {}", e)))?;
+    let centroids = if config.force_cpu {
+        let mut kmeans = FastKMeans::with_config(kmeans_config);
+        kmeans
+            .train(&samples_tensor.view())
+            .map_err(|e| Error::IndexCreation(format!("K-means training failed: {}", e)))?;
+
+        kmeans
+            .centroids()
+            .ok_or_else(|| Error::IndexCreation("K-means did not produce centroids".into()))?
+            .to_owned()
+    } else {
+        let mut kmeans = FastKMeansCuda::with_config(kmeans_config).map_err(|e| {
+            Error::IndexCreation(format!("CUDA K-means initialization failed: {}", e))
+        })?;
         kmeans
             .train(&samples_tensor.view())
             .map_err(|e| Error::IndexCreation(format!("CUDA K-means training failed: {}", e)))?;
@@ -362,7 +395,7 @@ mod tests {
     #[test]
     fn test_compute_centroids() {
         let data: Array2<f32> = Array2::random((500, 32), Uniform::new(-1.0f32, 1.0));
-        let centroids = compute_centroids(&data.view(), 10, None).unwrap();
+        let centroids = compute_centroids(&data.view(), 10, None, false).unwrap();
 
         assert_eq!(centroids.nrows(), 10);
         assert_eq!(centroids.ncols(), 32);
@@ -374,7 +407,7 @@ mod tests {
             .map(|_| Array2::random((50, 16), Uniform::new(-1.0f32, 1.0)))
             .collect();
 
-        let centroids = compute_centroids_from_documents(&docs, 8, None).unwrap();
+        let centroids = compute_centroids_from_documents(&docs, 8, None, false).unwrap();
 
         assert_eq!(centroids.nrows(), 8);
         assert_eq!(centroids.ncols(), 16);
@@ -383,7 +416,7 @@ mod tests {
     #[test]
     fn test_assign_to_centroids() {
         let data: Array2<f32> = Array2::random((100, 16), Uniform::new(-1.0f32, 1.0));
-        let centroids = compute_centroids(&data.view(), 5, None).unwrap();
+        let centroids = compute_centroids(&data.view(), 5, None, false).unwrap();
 
         let assignments = assign_to_centroids(&data.view(), &centroids);
 

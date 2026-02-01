@@ -433,7 +433,12 @@ pub fn compress_into_codes_cuda_batched(
 }
 
 /// Compute optimal batch size for fused compress+residuals to stay within GPU memory.
-fn compute_batch_size_with_residuals(n: usize, k: usize, dim: usize, max_gpu_memory: usize) -> usize {
+fn compute_batch_size_with_residuals(
+    n: usize,
+    k: usize,
+    dim: usize,
+    max_gpu_memory: usize,
+) -> usize {
     // Memory per row: embedding (dim*4) + scores (k*4) + code (4) + residual (dim*4)
     let bytes_per_row = dim * 4 + k * 4 + 4 + dim * 4;
     let fixed_memory = k * dim * 4; // centroids
@@ -742,13 +747,9 @@ mod tests {
         let embeddings = Array2::random((1000, 128), Uniform::new(-1.0f32, 1.0));
         let centroids = Array2::random((64, 128), Uniform::new(-1.0f32, 1.0));
 
-        let codes = compress_into_codes_cuda_batched(
-            &ctx,
-            &embeddings.view(),
-            &centroids.view(),
-            None,
-        )
-        .expect("CUDA failed");
+        let codes =
+            compress_into_codes_cuda_batched(&ctx, &embeddings.view(), &centroids.view(), None)
+                .expect("CUDA failed");
 
         assert_eq!(codes.len(), 1000);
         for &code in codes.iter() {

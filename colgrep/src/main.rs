@@ -9,9 +9,8 @@ use anyhow::Result;
 use clap::{CommandFactory, Parser};
 
 use colgrep::{
-    ensure_onnx_runtime, install_claude_code, install_codex, install_opencode,
-    setup_signal_handler, uninstall_all, uninstall_claude_code, uninstall_codex,
-    uninstall_opencode,
+    install_claude_code, install_codex, install_opencode, setup_signal_handler, uninstall_all,
+    uninstall_claude_code, uninstall_codex, uninstall_opencode,
 };
 
 use cli::{Cli, Commands};
@@ -69,14 +68,14 @@ fn main() -> Result<()> {
         return cmd_reset_stats();
     }
 
-    // Ensure ONNX Runtime is available (downloads if needed)
-    let skip_onnx = matches!(
-        cli.command,
-        Some(Commands::Status { .. }) | Some(Commands::Clear { .. })
-    );
-    if !skip_onnx {
-        ensure_onnx_runtime()?;
-    }
+    // ONNX Runtime initialization is now deferred to ensure_model_created() in index/mod.rs
+    // This allows us to set NEXT_PLAID_FORCE_CPU based on actual batch size:
+    // - Small batches (<300 units): use CPU-only ONNX to avoid ~25-30s CUDA library load
+    // - Large batches (>=300 units): use GPU ONNX for faster encoding
+    //
+    // Commands that don't need the model (Status, Clear, SetModel, Settings) skip ONNX entirely.
+    // Search command will trigger ensure_onnx_runtime() via ensure_model_created() when needed.
+    let _ = &cli.command; // Suppress unused warning
 
     match cli.command {
         Some(Commands::Search {

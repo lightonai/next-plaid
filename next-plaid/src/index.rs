@@ -20,7 +20,8 @@ fn compress_and_residuals_cpu(
 ) -> (Array1<usize>, Array2<f32>) {
     use rayon::prelude::*;
 
-    let codes = codec.compress_into_codes(embeddings);
+    // Use CPU-only version to ensure no CUDA is called
+    let codes = codec.compress_into_codes_cpu(embeddings);
     let mut residuals = embeddings.clone();
 
     let centroids = &codec.centroids;
@@ -62,6 +63,10 @@ pub struct IndexConfig {
     /// to embeddings.npy for potential rebuilds during updates.
     #[serde(default = "default_start_from_scratch")]
     pub start_from_scratch: usize,
+    /// Force CPU execution for K-means even when CUDA feature is enabled.
+    /// Useful for small batches where GPU initialization overhead exceeds benefits.
+    #[serde(default)]
+    pub force_cpu: bool,
 }
 
 fn default_start_from_scratch() -> usize {
@@ -86,6 +91,7 @@ impl Default for IndexConfig {
             max_points_per_centroid: 256,
             n_samples_kmeans: None,
             start_from_scratch: 999,
+            force_cpu: false,
         }
     }
 }
@@ -236,7 +242,12 @@ pub fn create_index_files(
         ResidualCodec::new(config.nbits, centroids.clone(), avg_residual, None, None)?;
 
     // Compute codes for heldout samples
-    let heldout_codes = initial_codec.compress_into_codes(&heldout);
+    // Use CPU-only version when force_cpu is set to avoid CUDA initialization overhead
+    let heldout_codes = if config.force_cpu {
+        initial_codec.compress_into_codes_cpu(&heldout)
+    } else {
+        initial_codec.compress_into_codes(&heldout)
+    };
 
     // Compute residuals
     let mut residuals = heldout.clone();
@@ -340,25 +351,29 @@ pub fn create_index_files(
         }
 
         // BATCH: Compress embeddings and compute residuals
-        // Try CUDA fused operation first, fall back to CPU
+        // Try CUDA fused operation first, fall back to CPU (skip CUDA if force_cpu is set)
         let (batch_codes, batch_residuals) = {
             #[cfg(feature = "cuda")]
             {
-                if let Some(ctx) = crate::cuda::get_global_context() {
-                    match crate::cuda::compress_and_residuals_cuda_batched(
-                        ctx,
-                        &batch_embeddings.view(),
-                        &codec.centroids_view(),
-                        None,
-                    ) {
-                        Ok(result) => result,
-                        Err(e) => {
-                            eprintln!(
-                                "[next-plaid] CUDA compress_and_residuals failed: {}, falling back to CPU",
-                                e
-                            );
-                            compress_and_residuals_cpu(&batch_embeddings, &codec)
+                if !config.force_cpu {
+                    if let Some(ctx) = crate::cuda::get_global_context() {
+                        match crate::cuda::compress_and_residuals_cuda_batched(
+                            ctx,
+                            &batch_embeddings.view(),
+                            &codec.centroids_view(),
+                            None,
+                        ) {
+                            Ok(result) => result,
+                            Err(e) => {
+                                eprintln!(
+                                    "[next-plaid] CUDA compress_and_residuals failed: {}, falling back to CPU",
+                                    e
+                                );
+                                compress_and_residuals_cpu(&batch_embeddings, &codec)
+                            }
                         }
+                    } else {
+                        compress_and_residuals_cpu(&batch_embeddings, &codec)
                     }
                 } else {
                     compress_and_residuals_cpu(&batch_embeddings, &codec)
@@ -495,8 +510,9 @@ pub fn create_index_with_kmeans_files(
     }
 
     // Pre-initialize CUDA if available (first init can take 10-20s due to driver initialization)
+    // Skip if force_cpu is set to avoid unnecessary initialization overhead
     #[cfg(feature = "cuda")]
-    {
+    if !config.force_cpu {
         let _ = crate::cuda::get_global_context();
     }
 
@@ -507,6 +523,7 @@ pub fn create_index_with_kmeans_files(
         seed: config.seed.unwrap_or(42),
         n_samples_kmeans: config.n_samples_kmeans,
         num_partitions: None, // Let the heuristic decide
+        force_cpu: config.force_cpu,
     };
 
     // Compute centroids using fast-plaid's approach
@@ -1009,6 +1026,7 @@ impl MmapIndex {
                     max_points_per_centroid: config.max_points_per_centroid,
                     n_samples_kmeans: config.n_samples_kmeans,
                     start_from_scratch: config.start_from_scratch,
+                    force_cpu: config.force_cpu,
                 };
 
                 // Rebuild index from scratch with fresh K-means
@@ -1079,7 +1097,14 @@ impl MmapIndex {
             clear_buffer(index_path)?;
 
             // 6. Update index with ALL combined embeddings (buffer + new)
-            update_index(&combined, &path_str, &codec, Some(config.batch_size), true)?;
+            update_index(
+                &combined,
+                &path_str,
+                &codec,
+                Some(config.batch_size),
+                true,
+                config.force_cpu,
+            )?;
         } else {
             // Small update: add to buffer and index without centroid expansion
             // New documents start at current num_documents
@@ -1099,6 +1124,7 @@ impl MmapIndex {
                 &codec,
                 Some(config.batch_size),
                 false,
+                config.force_cpu,
             )?;
         }
 

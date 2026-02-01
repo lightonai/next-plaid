@@ -251,7 +251,10 @@ impl ResidualCodec {
                 ) {
                     Ok(codes) => return codes,
                     Err(e) => {
-                        eprintln!("[next-plaid] CUDA compress_into_codes failed: {}, falling back to CPU", e);
+                        eprintln!(
+                            "[next-plaid] CUDA compress_into_codes failed: {}, falling back to CPU",
+                            e
+                        );
                     }
                 }
             }
@@ -261,7 +264,8 @@ impl ResidualCodec {
     }
 
     /// CPU implementation of compress_into_codes.
-    fn compress_into_codes_cpu(&self, embeddings: &Array2<f32>) -> Array1<usize> {
+    /// This is useful when you want to explicitly avoid CUDA overhead for small batches.
+    pub fn compress_into_codes_cpu(&self, embeddings: &Array2<f32>) -> Array1<usize> {
         use rayon::prelude::*;
 
         let n = embeddings.nrows();

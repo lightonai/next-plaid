@@ -18,8 +18,9 @@ const OPTIONAL_FILES: &[&str] = &["model.onnx"];
 
 /// Load model from cache or download from HuggingFace.
 /// Returns path to the model directory.
-/// If `quiet` is true, suppresses the model name output.
-pub fn ensure_model(model_id: Option<&str>, quiet: bool) -> Result<PathBuf> {
+/// The `quiet` parameter is kept for API compatibility but no longer used
+/// (output is now handled in IndexBuilder::ensure_model_created after ONNX runtime init).
+pub fn ensure_model(model_id: Option<&str>, _quiet: bool) -> Result<PathBuf> {
     let model_id = model_id.unwrap_or(DEFAULT_MODEL);
 
     // Check if it's a local path
@@ -29,9 +30,6 @@ pub fn ensure_model(model_id: Option<&str>, quiet: bool) -> Result<PathBuf> {
     }
 
     // Download from HuggingFace
-    if !quiet {
-        eprintln!("🤖 Model: {}", model_id);
-    }
 
     // Build API with token from environment variables or token file
     // Priority: HF_TOKEN > HUGGING_FACE_HUB_TOKEN > token file ($HF_HOME/token or ~/.cache/huggingface/token)

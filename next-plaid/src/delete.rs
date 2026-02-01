@@ -446,6 +446,7 @@ mod tests {
             max_points_per_centroid: 256,
             n_samples_kmeans: None,
             start_from_scratch: 999,
+            force_cpu: false,
         };
 
         let index = MmapIndex::create_with_kmeans(&embeddings, index_path, &config).unwrap();
@@ -519,6 +520,7 @@ mod tests {
             max_points_per_centroid: 256,
             n_samples_kmeans: None,
             start_from_scratch: 999,
+            force_cpu: false,
         };
 
         MmapIndex::create_with_kmeans(&embeddings, index_path, &config).unwrap();
