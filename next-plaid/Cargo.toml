@@ -39,6 +39,7 @@ regex = "1.11"
 cudarc = { version = "0.12", features = [
     "cuda-version-from-build-system",
     "cublas",
+    "dynamic-linking",
 ], optional = true }
 
 [dev-dependencies]

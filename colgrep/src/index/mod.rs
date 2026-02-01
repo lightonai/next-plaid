@@ -43,6 +43,11 @@ const LARGE_BATCH_THRESHOLD: usize = 10_000;
 /// Higher value = fewer embeddings = faster indexing and smaller index.
 const LARGE_BATCH_POOL_FACTOR: usize = 2;
 
+/// Threshold for forcing CPU encoding even when CUDA is available.
+/// For small batches (< this many units), CPU is faster due to GPU initialization overhead.
+#[cfg(feature = "cuda")]
+const SMALL_BATCH_CPU_THRESHOLD: usize = 300;
+
 #[derive(Debug)]
 pub struct UpdateStats {
     pub added: usize,
@@ -120,7 +125,12 @@ impl IndexBuilder {
     /// Ensure the model is created for encoding.
     /// The model is lazily created on first use to avoid overhead when just scanning files
     /// or when checking for index updates that have no changes.
-    fn ensure_model_created(&mut self) -> Result<()> {
+    ///
+    /// # Arguments
+    /// * `num_units` - Number of code units to encode. Used to decide whether to use GPU or CPU.
+    ///   For small batches (< SMALL_BATCH_CPU_THRESHOLD), CPU is preferred even when CUDA is
+    ///   available, as GPU initialization overhead outweighs the benefits for small workloads.
+    fn ensure_model_created(&mut self, num_units: usize) -> Result<()> {
         if self.model.is_none() {
             // Use CUDA-optimized settings when CUDA feature is enabled AND cuDNN is available:
             // - 1 session (GPUs work best with single session)
@@ -130,25 +140,25 @@ impl IndexBuilder {
             // - min(CPU count, 8) sessions (capped for high-core systems)
             // - 1 batch size (works better with parallel sessions)
             // - CPU execution provider
+            //
+            // Special case: For small batches (< SMALL_BATCH_CPU_THRESHOLD), force CPU
+            // even when CUDA is available to avoid GPU initialization overhead.
             #[cfg(feature = "cuda")]
             let (num_sessions, execution_provider) = {
                 // Check both cuDNN (for LD_LIBRARY_PATH) and CUDA EP availability
                 let cudnn_available = crate::onnx_runtime::is_cudnn_available();
                 let cuda_available = next_plaid_onnx::is_cuda_available();
 
-                if cudnn_available && cuda_available {
+                // Force CPU for small batches to avoid GPU initialization overhead
+                let force_cpu = num_units < SMALL_BATCH_CPU_THRESHOLD;
+
+                if cudnn_available && cuda_available && !force_cpu {
                     (
                         self.parallel_sessions
                             .unwrap_or(crate::config::DEFAULT_PARALLEL_SESSIONS_GPU),
                         ExecutionProvider::Cuda,
                     )
                 } else {
-                    // CUDA not fully available - fall back to CPU mode
-                    if !cudnn_available {
-                        eprintln!("💻 CPU encoding (cuDNN not found)");
-                    } else {
-                        eprintln!("💻 CPU encoding (CUDA EP not available)");
-                    }
                     (
                         self.parallel_sessions.unwrap_or_else(|| {
                             let cpu_count = std::thread::available_parallelism()
@@ -161,15 +171,18 @@ impl IndexBuilder {
                 }
             };
             #[cfg(not(feature = "cuda"))]
-            let (num_sessions, execution_provider) = (
-                self.parallel_sessions.unwrap_or_else(|| {
-                    let cpu_count = std::thread::available_parallelism()
-                        .map(|p| p.get())
-                        .unwrap_or(8);
-                    cpu_count.min(crate::config::MAX_PARALLEL_SESSIONS_CPU)
-                }),
-                ExecutionProvider::Cpu,
-            );
+            let (num_sessions, execution_provider) = {
+                let _ = num_units; // Silence unused warning when cuda feature is disabled
+                (
+                    self.parallel_sessions.unwrap_or_else(|| {
+                        let cpu_count = std::thread::available_parallelism()
+                            .map(|p| p.get())
+                            .unwrap_or(8);
+                        cpu_count.min(crate::config::MAX_PARALLEL_SESSIONS_CPU)
+                    }),
+                    ExecutionProvider::Cpu,
+                )
+            };
 
             // Use runtime default for batch size (respects cuDNN availability)
             let batch = self
@@ -419,7 +432,7 @@ impl IndexBuilder {
         build_call_graph(&mut new_units);
 
         // Ensure model is created before encoding (lazy initialization)
-        self.ensure_model_created()?;
+        self.ensure_model_created(new_units.len())?;
 
         let pb = ProgressBar::new(new_units.len() as u64);
         pb.set_style(
@@ -624,7 +637,7 @@ impl IndexBuilder {
 
         let was_interrupted = if !all_units.is_empty() {
             // Ensure model is created before encoding (lazy initialization)
-            self.ensure_model_created()?;
+            self.ensure_model_created(all_units.len())?;
             self.write_index_with_progress(&all_units)?
         } else {
             false
@@ -789,7 +802,7 @@ impl IndexBuilder {
             }
 
             // Ensure model is created before encoding (lazy initialization)
-            self.ensure_model_created()?;
+            self.ensure_model_created(new_units.len())?;
 
             // Progress bar for encoding
             let pb = ProgressBar::new(new_units.len() as u64);
