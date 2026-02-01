@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::codec::CentroidStore;
 use crate::error::Result;
+use crate::maxsim;
 
 /// Maximum number of documents to decompress concurrently during exact scoring.
 /// This limits peak memory usage from parallel decompression.
@@ -105,27 +106,9 @@ fn colbert_score(query: &ArrayView2<f32>, doc: &ArrayView2<f32>) -> f32 {
 }
 
 /// CPU implementation of ColBERT MaxSim scoring.
+/// Uses SIMD-accelerated max reduction and BLAS for matrix multiplication.
 fn colbert_score_cpu(query: &ArrayView2<f32>, doc: &ArrayView2<f32>) -> f32 {
-    let mut total_score = 0.0;
-
-    // For each query token
-    for q_row in query.axis_iter(Axis(0)) {
-        let mut max_sim = f32::NEG_INFINITY;
-
-        // Find max similarity with any document token
-        for d_row in doc.axis_iter(Axis(0)) {
-            let sim: f32 = q_row.dot(&d_row);
-            if sim > max_sim {
-                max_sim = sim;
-            }
-        }
-
-        if max_sim > f32::NEG_INFINITY {
-            total_score += max_sim;
-        }
-    }
-
-    total_score
+    maxsim::maxsim_score(query, doc)
 }
 
 /// Compute adaptive IVF probe for filtered search on memory-mapped index.

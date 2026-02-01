@@ -12,6 +12,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
 use crate::error::{Error, Result};
+use crate::maxsim;
 
 pub use fastkmeans_rs::{FastKMeans, KMeansConfig, KMeansError};
 
@@ -200,23 +201,7 @@ pub fn compute_centroids_from_documents(
 ///
 /// Vector of centroid indices, one per embedding
 pub fn assign_to_centroids(embeddings: &ArrayView2<f32>, centroids: &Array2<f32>) -> Vec<usize> {
-    embeddings
-        .axis_iter(Axis(0))
-        .map(|emb| {
-            let mut best_idx = 0;
-            let mut best_score = f32::NEG_INFINITY;
-
-            for (idx, centroid) in centroids.axis_iter(Axis(0)).enumerate() {
-                let score = emb.dot(&centroid);
-                if score > best_score {
-                    best_score = score;
-                    best_idx = idx;
-                }
-            }
-
-            best_idx
-        })
-        .collect()
+    maxsim::assign_to_centroids(embeddings, &centroids.view())
 }
 
 /// Compute K-means centroids from document embeddings.

@@ -13,6 +13,7 @@ pub mod model;
 pub mod onnx_runtime;
 pub mod parser;
 pub mod signal;
+pub mod stderr;
 
 pub use config::{Config, DEFAULT_BATCH_SIZE, DEFAULT_POOL_FACTOR};
 pub use embed::build_embedding_text;

@@ -19,6 +19,7 @@ pub mod error;
 pub mod filtering;
 pub mod index;
 pub mod kmeans;
+pub mod maxsim;
 pub mod mmap;
 pub mod search;
 pub mod update;

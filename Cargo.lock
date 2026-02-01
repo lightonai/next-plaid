@@ -539,6 +539,7 @@ dependencies = [
  "hf-hub",
  "ignore",
  "indicatif",
+ "libc",
  "ndarray 0.16.1",
  "next-plaid",
  "next-plaid-onnx",

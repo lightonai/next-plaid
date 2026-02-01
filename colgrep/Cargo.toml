@@ -116,3 +116,5 @@ zip = "2"
 [target.'cfg(unix)'.dependencies]
 # Process re-exec (for CUDA LD_LIBRARY_PATH setup on Linux)
 exec = "0.3"
+# Low-level syscalls for stderr suppression
+libc = "0.2"

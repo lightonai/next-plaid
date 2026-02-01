@@ -230,13 +230,17 @@ impl IndexBuilder {
                 .batch_size
                 .unwrap_or_else(crate::config::get_default_batch_size);
 
-            let model = Colbert::builder(&self.model_path)
-                .with_quantized(self.quantized)
-                .with_parallel(num_sessions)
-                .with_batch_size(batch)
-                .with_execution_provider(execution_provider)
-                .build()
-                .context("Failed to load ColBERT model")?;
+            // Suppress stderr during model loading to hide CoreML's harmless
+            // "Context leak detected" warnings on macOS
+            let model = crate::stderr::with_suppressed_stderr(|| {
+                Colbert::builder(&self.model_path)
+                    .with_quantized(self.quantized)
+                    .with_parallel(num_sessions)
+                    .with_batch_size(batch)
+                    .with_execution_provider(execution_provider)
+                    .build()
+            })
+            .context("Failed to load ColBERT model")?;
 
             self.model = Some(model);
         }
@@ -1762,12 +1766,16 @@ impl Searcher {
             .unwrap_or(8)
             .min(crate::config::MAX_INTRA_OP_THREADS);
 
-        let model = Colbert::builder(model_path)
-            .with_quantized(quantized)
-            .with_threads(num_threads)
-            .with_execution_provider(execution_provider)
-            .build()
-            .context("Failed to load ColBERT model")?;
+        // Suppress stderr during model loading to hide CoreML's harmless
+        // "Context leak detected" warnings on macOS
+        let model = crate::stderr::with_suppressed_stderr(|| {
+            Colbert::builder(model_path)
+                .with_quantized(quantized)
+                .with_threads(num_threads)
+                .with_execution_provider(execution_provider)
+                .build()
+        })
+        .context("Failed to load ColBERT model")?;
 
         // Load index
         let index = MmapIndex::load(&index_path_str).context("Failed to load index")?;
@@ -1815,12 +1823,16 @@ impl Searcher {
             .unwrap_or(8)
             .min(crate::config::MAX_INTRA_OP_THREADS);
 
-        let model = Colbert::builder(model_path)
-            .with_quantized(quantized)
-            .with_threads(num_threads)
-            .with_execution_provider(execution_provider)
-            .build()
-            .context("Failed to load ColBERT model")?;
+        // Suppress stderr during model loading to hide CoreML's harmless
+        // "Context leak detected" warnings on macOS
+        let model = crate::stderr::with_suppressed_stderr(|| {
+            Colbert::builder(model_path)
+                .with_quantized(quantized)
+                .with_threads(num_threads)
+                .with_execution_provider(execution_provider)
+                .build()
+        })
+        .context("Failed to load ColBERT model")?;
 
         let index = MmapIndex::load(&index_path_str).context("Failed to load index")?;
 
@@ -2072,11 +2084,10 @@ impl Searcher {
         top_k: usize,
         subset: Option<&[i64]>,
     ) -> Result<Vec<SearchResult>> {
-        // Encode query
-        let query_embeddings = self
-            .model
-            .encode_queries(&[query])
-            .context("Failed to encode query")?;
+        // Encode query (suppress stderr to hide CoreML's harmless warnings)
+        let query_embeddings =
+            crate::stderr::with_suppressed_stderr(|| self.model.encode_queries(&[query]))
+                .context("Failed to encode query")?;
         let query_emb = &query_embeddings[0];
 
         // Search

@@ -36,7 +36,12 @@ pub fn cmd_set_model(model: &str) -> Result<()> {
     };
 
     // Try to load the model to verify it's compatible
-    match Colbert::builder(&model_path).with_quantized(true).build() {
+    // Suppress stderr during model loading to hide CoreML's harmless
+    // "Context leak detected" warnings on macOS
+    let build_result = colgrep::stderr::with_suppressed_stderr(|| {
+        Colbert::builder(&model_path).with_quantized(true).build()
+    });
+    match build_result {
         Ok(_) => {
             eprintln!("✅ Model validated successfully");
         }

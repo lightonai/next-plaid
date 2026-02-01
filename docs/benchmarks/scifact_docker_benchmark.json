@@ -3,9 +3,9 @@
   "environment": "docker",
   "encoding": "server-side",
   "sdk": "next_plaid_client",
-  "model": "lightonai/GTE-ModernColBERT-v1",
+  "model": "lightonai/mxbai-edge-colbert-v0-32m-onnx",
   "config": {
-    "batch_size": 64,
+    "batch_size": 30,
     "top_k": 100,
     "n_ivf_probe": 8,
     "n_full_scores": 4096,
@@ -14,23 +14,23 @@
   "num_documents": 5183,
   "num_queries": 300,
   "timing": {
-    "index_time_s": 75.896,
-    "search_time_s": 2.87,
-    "total_time_s": 78.765
+    "index_time_s": 136.831,
+    "search_time_s": 43.512,
+    "total_time_s": 180.344
   },
   "metrics": {
-    "map": 0.7214,
-    "ndcg@10": 0.7584,
-    "ndcg@100": 0.7798,
-    "recall@10": 0.8722,
-    "recall@100": 0.9633
+    "map": 0.6794,
+    "ndcg@10": 0.7185,
+    "ndcg@100": 0.7409,
+    "recall@10": 0.8352,
+    "recall@100": 0.9417
   },
   "throughput": {
-    "docs_per_second": 68.3,
-    "queries_per_second": 104.5
+    "docs_per_second": 37.9,
+    "queries_per_second": 6.9
   },
   "api_calls": {
-    "indexing": 81,
+    "indexing": 173,
     "search": 10
   }
 }
