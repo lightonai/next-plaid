@@ -56,7 +56,7 @@ const ORT_CACHE_SUBDIR: &str = "cpu";
 /// When `cuda` feature is enabled, ensures GPU version is used and checks for cuDNN.
 ///
 /// NOTE: To force CPU-only mode and avoid CUDA initialization overhead, set
-/// CUDA_VISIBLE_DEVICES="" before calling this function. This makes the GPU
+/// COLGREP_FORCE_CPU="1" before calling this function. This makes the GPU
 /// ONNX Runtime fall back to CPU immediately without CUDA driver initialization.
 ///
 /// IMPORTANT: On Linux, if cuDNN is found and wasn't already in LD_LIBRARY_PATH,
@@ -65,10 +65,10 @@ const ORT_CACHE_SUBDIR: &str = "cpu";
 pub fn ensure_onnx_runtime() -> Result<PathBuf> {
     // For CUDA builds on Linux, check if we need to re-exec with cuDNN in LD_LIBRARY_PATH
     // This is only needed on Linux because it caches LD_LIBRARY_PATH at process startup
-    // Skip CUDA setup if CUDA_VISIBLE_DEVICES is empty (CPU-only mode)
+    // Skip CUDA setup if COLGREP_FORCE_CPU is set (CPU-only mode)
     #[cfg(all(target_os = "linux", feature = "cuda"))]
-    if std::env::var("CUDA_VISIBLE_DEVICES")
-        .map(|v| !v.is_empty())
+    if std::env::var("COLGREP_FORCE_CPU")
+        .map(|v| v.is_empty())
         .unwrap_or(true)
     {
         // Check if we already have the marker indicating we've set up LD_LIBRARY_PATH

@@ -158,15 +158,15 @@ impl IndexBuilder {
                 // to avoid CUDA driver initialization overhead for small batches.
                 let force_cpu = num_units < SMALL_BATCH_CPU_THRESHOLD;
 
-                // For small batches, set CUDA_VISIBLE_DEVICES="" to prevent CUDA initialization.
-                // For large batches, ensure CUDA_VISIBLE_DEVICES is not set (restore GPU access).
+                // For small batches, set COLGREP_FORCE_CPU="1" to prevent CUDA initialization.
+                // For large batches, remove COLGREP_FORCE_CPU to allow GPU access.
                 // This is much faster than using a separate CPU-only library because the GPU
-                // ONNX Runtime will immediately fall back to CPU when no devices are visible.
+                // ONNX Runtime will immediately fall back to CPU when force_cpu is set.
                 if force_cpu {
-                    std::env::set_var("CUDA_VISIBLE_DEVICES", "");
+                    std::env::set_var("COLGREP_FORCE_CPU", "1");
                 } else {
                     // Restore CUDA access for large batches
-                    std::env::remove_var("CUDA_VISIBLE_DEVICES");
+                    std::env::remove_var("COLGREP_FORCE_CPU");
                 }
 
                 // Initialize ONNX Runtime
@@ -1749,10 +1749,10 @@ impl Searcher {
             ExecutionProvider::Cpu
         };
 
-        // For search (always small batch - single query), hide CUDA devices to avoid
+        // For search (always small batch - single query), force CPU to avoid
         // CUDA initialization overhead. The GPU ONNX Runtime will fall back to CPU.
         #[cfg(feature = "cuda")]
-        std::env::set_var("CUDA_VISIBLE_DEVICES", "");
+        std::env::set_var("COLGREP_FORCE_CPU", "1");
 
         crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")?;
 
@@ -1802,10 +1802,10 @@ impl Searcher {
             ExecutionProvider::Cpu
         };
 
-        // For search (always small batch - single query), hide CUDA devices to avoid
+        // For search (always small batch - single query), force CPU to avoid
         // CUDA initialization overhead. The GPU ONNX Runtime will fall back to CPU.
         #[cfg(feature = "cuda")]
-        std::env::set_var("CUDA_VISIBLE_DEVICES", "");
+        std::env::set_var("COLGREP_FORCE_CPU", "1");
 
         crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")?;
 
