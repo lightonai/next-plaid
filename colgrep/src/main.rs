@@ -134,10 +134,13 @@ fn main() -> Result<()> {
                         (query, final_paths, text_pattern)
                     };
 
+                // Default k: 10 if -n is provided, 15 otherwise
+                let default_k = if context_lines.is_some() { 10 } else { 15 };
+
                 cmd_search(
                     &final_query,
                     &final_paths,
-                    resolve_top_k(top_k, 20), // Search subcommand default is 20
+                    resolve_top_k(top_k, default_k),
                     model.as_deref(),
                     json,
                     &include_patterns,
@@ -222,10 +225,13 @@ fn main() -> Result<()> {
                         (query, paths, cli.text_pattern)
                     };
 
+                // Default k: 10 if -n is provided, 15 otherwise
+                let default_k = if cli.context_lines.is_some() { 10 } else { 15 };
+
                 cmd_search(
                     &final_query,
                     &final_paths,
-                    resolve_top_k(cli.top_k, 25), // Default command default is 25
+                    resolve_top_k(cli.top_k, default_k),
                     cli.model.as_deref(),
                     cli.json,
                     &cli.include_patterns,

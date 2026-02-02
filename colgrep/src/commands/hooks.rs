@@ -19,7 +19,7 @@ pub fn cmd_session_hook() -> Result<()> {
                 "- Semantic only: `colgrep \"error handling logic\"`\n",
                 "- Regex only: `colgrep -e \"async fn\\s+\\w+\"`\n",
                 "- Hybrid: `colgrep -e \"Result<\" \"error handling\"`\n",
-                "- More results: `colgrep -k 25 \"query\"`\n",
+                "- More results: `colgrep -k 20 \"query\"`\n",
                 "- Whole word: `colgrep -e \"test\" -w`\n",
                 "- List files: `colgrep -l --include=\"**/*.ts\" \"\" .`\n\n",
                 "FILTERING:\n",
@@ -29,7 +29,7 @@ pub fn cmd_session_hook() -> Result<()> {
                 "- Exclude dirs: `colgrep --exclude-dir=node_modules --exclude-dir=vendor \"query\"`\n",
                 "- Specific folders: `colgrep \"query\" ./src/api ./src/auth`\n",
                 "- Specific files: `colgrep \"query\" ./main.rs ./lib.rs`\n\n",
-                "Show code content with -n: `colgrep -n 6 \"query\"`"
+                "Show code content with -n: `colgrep -n 6 \"query\" -k 5`"
             )
         }
     });

@@ -201,7 +201,7 @@ pub struct Cli {
     #[arg(value_name = "PATH")]
     pub paths: Vec<PathBuf>,
 
-    /// Number of results (default: 25, or config value)
+    /// Number of results (default: 15, or 10 if -n is used)
     #[arg(short = 'k', long = "results")]
     pub top_k: Option<usize>,
 
@@ -326,7 +326,7 @@ pub enum Commands {
         #[arg(value_name = "PATH")]
         paths: Vec<PathBuf>,
 
-        /// Number of results (default: 20, or config value)
+        /// Number of results (default: 15, or 10 if -n is used)
         #[arg(short = 'k', long = "results")]
         top_k: Option<usize>,
 
