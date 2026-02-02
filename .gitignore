@@ -67,3 +67,4 @@ onnx/ort_gpu/
 # Default location is ~/.local/share/next-plaid, but keep this in case
 # users override NEXT_PLAID_DATA to a local path
 data/
+code-processing/
