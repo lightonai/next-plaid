@@ -354,3 +354,30 @@ File: test test.php";
 
     assert_eq!(text, expected);
 }
+
+#[test]
+fn test_function_with_imports() {
+    let source = r#"<?php
+use DateTime;
+
+function getToday(): string {
+    $dt = new DateTime();
+    return $dt->format('Y-m-d');
+}
+"#;
+    let units = parse(source, Language::Php, "test.php");
+    let func = get_unit_by_name(&units, "getToday").unwrap();
+    let text = build_embedding_text(func);
+
+    // PHP call extraction has limitations - method calls on variables aren't extracted
+    // Uses would need PHP's $dt->format pattern to be tracked
+    let expected = r#"Function: getToday
+Signature: function getToday(): string {
+Code:
+function getToday(): string {
+    $dt = new DateTime();
+    return $dt->format('Y-m-d');
+}
+File: test test.php"#;
+    assert_eq!(text, expected);
+}

@@ -425,3 +425,28 @@ Code:
 File: test test.rb"#;
     assert_eq!(helper_text, expected_helper);
 }
+
+#[test]
+fn test_function_with_imports() {
+    let source = r#"require 'json'
+
+def parse_data(str)
+  JSON.parse(str)
+end
+"#;
+    let units = parse(source, Language::Ruby, "test.rb");
+    let func = get_unit_by_name(&units, "parse_data").unwrap();
+    let text = build_embedding_text(func);
+
+    let expected = r#"Function: parse_data
+Signature: def parse_data(str)
+Parameters: str
+Calls: parse
+Uses: json
+Code:
+def parse_data(str)
+  JSON.parse(str)
+end
+File: test test.rb"#;
+    assert_eq!(text, expected);
+}

@@ -251,13 +251,14 @@ File: src / utils / http client http_client.py
 - Parameters ✓ (already working, including keyword params, splat args)
 - Calls ✓
 - Variables ✓
+- Uses ✓ (tracks required modules via constant receivers like `JSON.parse`)
 
 **Remaining:**
 - **Returns**: Ruby has no types, but YARD `@return` could be parsed (lower priority)
-- **Uses**: Module/class references not tracked (lower priority)
 
 **Changes Made:**
-- No changes needed - Ruby parameter extraction was already working
+- Fixed Ruby import extraction to extract module name from `require 'module'` strings
+- Added case-insensitive matching for Uses (Ruby requires lowercase `json` but uses uppercase `JSON`)
 - Tests verified parameters including regular params, keyword params (`name:, email:`), splat args (`*numbers`), and double splat (`**options`)
 
 ---
@@ -522,7 +523,11 @@ Languages still needing improvements:
 ### Lower Priority
 
 - **Returns extraction** - Missing in many languages but lower priority
-- **Uses/Dependencies tracking** - Implemented for Python, JavaScript, TypeScript, Go via `extract_used_modules()`. N/A for Rust (scoped identifiers). Other languages need different approaches (e.g., Java class instantiation, C/C++ includes)
+- **Uses/Dependencies tracking** - Implemented for Python, JavaScript, TypeScript, Go, Ruby via `extract_used_modules()`. N/A for Rust (scoped identifiers). Other languages have limitations:
+  - **Kotlin/Scala**: Import extraction gets first path component (`java` from `java.util.Arrays`), not the class name
+  - **Java/C#**: Object creation (`new ClassName()`) isn't tracked as Uses
+  - **PHP**: Method calls on variables not extracted
+  - **C/C++**: Uses includes, different pattern than attribute access
 - **Description improvements** - Some doc comment formats need better parsing
 
 ---
@@ -542,7 +547,7 @@ Languages still needing improvements:
 | Kotlin   |  +   |  +  |  +   |   +    |    -    |   ~   |  -   |  -   |
 | Scala    |  +   |  +  |  +   |   +    |    -    |   +   |  -   |  -   |
 | Swift    |  +   |  +  |  +   |   +    |    -    |   +   |  +   |  -   |
-| Ruby     |  +   |  +  |  +   |   +    |    -    |   +   |  +   |  -   |
+| Ruby     |  +   |  +  |  +   |   +    |    -    |   +   |  +   |  +   |
 | Elixir   |  -   |  +  |  -   |   -    |    -    |   ~   |  -   |  ~   |
 | Haskell  |  +   |  ~  |  -   |   -    |    -    |   -   |  -   |  -   |
 | OCaml    |  +   |  +  |  +   |   +    |    -    |   +   |  -   |  -   |

@@ -66,11 +66,13 @@ pub fn extract_function(
     // Layer 5: Dependencies
     // Get modules used via attribute access (e.g., `json` from `json.loads()`)
     let used_modules = extract_used_modules(node, bytes, lang);
-    // Filter to only modules that are actually imported
+    // Filter to only modules that are actually imported (case-insensitive for Ruby, etc.)
     unit.imports = file_imports
         .iter()
         .filter(|import| {
-            used_modules.iter().any(|m| m == *import)
+            used_modules
+                .iter()
+                .any(|m| m.to_lowercase() == import.to_lowercase())
                 || unit.calls.iter().any(|call| {
                     call.to_lowercase().contains(&import.to_lowercase())
                         || import.to_lowercase().contains(&call.to_lowercase())
@@ -444,11 +446,13 @@ fn extract_arrow_function_as_function(
     // Layer 5: Dependencies
     // Get modules used via attribute access
     let used_modules = extract_used_modules(arrow_node, bytes, lang);
-    // Filter to only modules that are actually imported
+    // Filter to only modules that are actually imported (case-insensitive for Ruby, etc.)
     unit.imports = file_imports
         .iter()
         .filter(|import| {
-            used_modules.iter().any(|m| m == *import)
+            used_modules
+                .iter()
+                .any(|m| m.to_lowercase() == import.to_lowercase())
                 || unit.calls.iter().any(|call| {
                     call.to_lowercase().contains(&import.to_lowercase())
                         || import.to_lowercase().contains(&call.to_lowercase())

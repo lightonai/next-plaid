@@ -741,7 +741,7 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         lang: Language,
     ) {
         if import_types.contains(&node.kind()) {
-            // For Ruby, check if it's actually a require call
+            // For Ruby, check if it's actually a require call and extract the module name
             if lang == Language::Ruby {
                 if let Some(name) = node.child_by_field_name("method") {
                     if let Ok(text) = name.utf8_text(bytes) {
@@ -750,6 +750,25 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                         }
                     }
                 }
+                // Extract the string argument from require('json') or require 'json'
+                if let Some(args) = node.child_by_field_name("arguments") {
+                    for child in args.children(&mut args.walk()) {
+                        if child.kind() == "string" || child.kind() == "string_content" {
+                            if let Ok(text) = child.utf8_text(bytes) {
+                                let module = text
+                                    .trim_matches(|c: char| c == '\'' || c == '"')
+                                    .split('/')
+                                    .next_back()
+                                    .unwrap_or("");
+                                if !module.is_empty() {
+                                    imports.push(module.to_string());
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+                return;
             }
 
             // For Go, extract the package name from the string literal content
