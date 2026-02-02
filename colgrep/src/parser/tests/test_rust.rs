@@ -375,3 +375,36 @@ fn test_something() {
 File: test test.rs"#;
     assert_eq!(text, expected);
 }
+
+#[test]
+fn test_function_with_imports() {
+    // Rust uses scoped identifiers (std::fs::read_to_string) rather than field access (foo.bar)
+    // So Uses tracking is less applicable, but we verify what's extracted
+    let source = r#"use std::io;
+use std::fs::File;
+
+fn read_config(path: &str) -> io::Result<String> {
+    let file = File::open(path)?;
+    std::io::read_to_string(file)
+}"#;
+    let units = parse(source, Language::Rust, "test.rs");
+    let func = get_unit_by_name(&units, "read_config").unwrap();
+    let text = build_embedding_text(func);
+
+    // Note: Rust typically uses scoped identifiers (std::fs::File::open) rather than
+    // field access patterns. The Uses field may not capture module imports in the
+    // same way as Python/JS since Rust's module system works differently.
+    let expected = r#"Function: read_config
+Signature: fn read_config(path: &str) -> io::Result<String> {
+Parameters: path
+Returns: io::Result<String>
+Calls: open, read_to_string
+Variables: file
+Code:
+fn read_config(path: &str) -> io::Result<String> {
+    let file = File::open(path)?;
+    std::io::read_to_string(file)
+}
+File: test test.rs"#;
+    assert_eq!(text, expected);
+}

@@ -376,3 +376,31 @@ Code:
 File: stream example StreamExample.java"#;
     assert_eq!(text, expected);
 }
+
+#[test]
+fn test_function_with_imports() {
+    let source = r#"import java.util.List;
+import java.util.ArrayList;
+
+public class ListUtils {
+    public List<String> createList() {
+        return new ArrayList<String>();
+    }
+}"#;
+    let units = parse(source, Language::Java, "ListUtils.java");
+
+    let unit = get_unit_by_name(&units, "createList").unwrap();
+    let text = build_embedding_text(unit);
+    // Note: Java Uses tracking would need to look at object_creation_expression types
+    // Currently "new" is extracted as a call, not the class being instantiated
+    let expected = r#"Method: createList
+Signature: public List<String> createList() {
+Returns: List<String>
+Calls: new
+Code:
+    public List<String> createList() {
+        return new ArrayList<String>();
+    }
+File: list utils ListUtils.java"#;
+    assert_eq!(text, expected);
+}

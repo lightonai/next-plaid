@@ -32,14 +32,13 @@ File: src / utils / http client http_client.py
 - Returns (from type hints) ✓
 - Calls ✓
 - Variables ✓
-
-**Remaining:**
-- **Uses**: External types/dependencies not tracked (lower priority)
+- Uses ✓ (tracks imported modules used via attribute access)
 
 **Changes Made:**
 - Updated `extract_parameters()` in `analysis.rs` to handle Python's `typed_parameter` nodes
 - Added support for `list_splat_pattern` (*args) and `dictionary_splat_pattern` (**kwargs)
-- Updated tests to expect Parameters for all functions
+- Added `extract_used_modules()` to track modules used via attribute access (e.g., `json` from `json.loads()`)
+- Updated tests to expect Parameters and Uses for all functions
 
 ---
 
@@ -51,13 +50,14 @@ File: src / utils / http client http_client.py
 - Description (JSDoc) ✓
 - Calls ✓
 - Variables ✓
+- Uses ✓ (tracks imported modules used via member expressions)
 
 **Remaining:**
 - **Returns**: No return type (JS has no types, JSDoc `@returns` could be parsed)
-- **Uses**: External dependencies not tracked (lower priority)
 
 **Changes Made:**
 - Same fix as TypeScript (shared parameter handling via `pattern` field)
+- Added `extract_used_modules()` to track modules used via member access (e.g., `axios` from `axios.get()`)
 - Tests already expected Parameters and now pass
 
 ---
@@ -70,15 +70,16 @@ File: src / utils / http client http_client.py
 - Returns (type annotations) ✓
 - Calls ✓
 - Variables ✓
+- Uses ✓ (tracks imported modules used via member expressions)
 
 **Remaining:**
 - **Description**: TSDoc/JSDoc not extracted (could be added)
-- **Uses**: External types/interfaces not tracked (lower priority)
 - **Returns format**: Still shows `: Type` instead of `Type`
 
 **Changes Made:**
 - Updated `extract_parameters()` in `analysis.rs` to handle TypeScript's `pattern` field in parameters
 - Same fix applies to JavaScript, Vue, and Svelte
+- Added `extract_used_modules()` to track modules used via member access (e.g., `axios` from `axios.get()`)
 - Updated tests to expect Parameters for all functions
 
 ---
@@ -92,9 +93,7 @@ File: src / utils / http client http_client.py
 - Returns (from return type) ✓
 - Calls ✓
 - Variables ✓
-
-**Remaining:**
-- **Uses**: External types/traits not tracked (lower priority)
+- Uses: N/A (Rust uses scoped identifiers like `std::fs::read_to_string` rather than field access)
 
 **Changes Made:**
 - Updated `extract_parameters()` in `analysis.rs` to handle Rust's `pattern` field in parameters
@@ -111,14 +110,14 @@ File: src / utils / http client http_client.py
 - Returns ✓
 - Calls ✓
 - Variables ✓
-
-**Remaining:**
-- **Uses**: Package/type references not tracked (lower priority)
+- Uses ✓ (tracks imported packages used via selector expressions like `fmt.Sprintf`)
 
 **Changes Made:**
 - Updated `extract_parameters()` to iterate all identifiers in Go `parameter_declaration` nodes
 - Fixed grouped parameter extraction (e.g., `a, b int` now extracts both `a` and `b`)
-- Updated tests to expect full parameter lists
+- Fixed Go import extraction to use `import_spec` nodes and extract package names from string literals
+- Added `extract_used_modules()` to track packages used via selector expressions
+- Updated tests to expect full parameter lists and Uses field
 
 ---
 
@@ -523,7 +522,7 @@ Languages still needing improvements:
 ### Lower Priority
 
 - **Returns extraction** - Missing in many languages but lower priority
-- **Uses/Dependencies tracking** - Missing in all languages
+- **Uses/Dependencies tracking** - Implemented for Python, JavaScript, TypeScript, Go via `extract_used_modules()`. N/A for Rust (scoped identifiers). Other languages need different approaches (e.g., Java class instantiation, C/C++ includes)
 - **Description improvements** - Some doc comment formats need better parsing
 
 ---
@@ -532,11 +531,11 @@ Languages still needing improvements:
 
 | Language | Name | Sig | Desc | Params | Returns | Calls | Vars | Uses |
 |----------|------|-----|------|--------|---------|-------|------|------|
-| Python   |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  -   |
-| JavaScript|  +  |  +  |  ~   |   +    |    -    |   +   |  +   |  -   |
-| TypeScript|  +  |  +  |  -   |   +    |    +    |   +   |  +   |  -   |
-| Rust     |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  -   |
-| Go       |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  -   |
+| Python   |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  +   |
+| JavaScript|  +  |  +  |  ~   |   +    |    -    |   +   |  +   |  +   |
+| TypeScript|  +  |  +  |  -   |   +    |    +    |   +   |  +   |  +   |
+| Rust     |  +   |  +  |  +   |   +    |    +    |   +   |  +   | N/A  |
+| Go       |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  +   |
 | Java     |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  -   |
 | C        |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  -   |
 | C++      |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  -   |

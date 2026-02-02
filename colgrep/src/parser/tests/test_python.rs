@@ -44,6 +44,7 @@ Description: """Fetch JSON data from URL.
 Parameters: url
 Returns: dict
 Calls: loads
+Uses: json
 Code:
 def fetch_data(url: str) -> dict:
     """Fetch JSON data from URL."""

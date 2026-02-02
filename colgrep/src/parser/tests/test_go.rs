@@ -140,6 +140,7 @@ Signature: func greet(name string) string {
 Parameters: name
 Returns: string
 Calls: Sprintf, TrimSpace
+Uses: fmt, strings
 Code:
 func greet(name string) string {
     return fmt.Sprintf("Hello, %s!", strings.TrimSpace(name))

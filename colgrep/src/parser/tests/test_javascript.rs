@@ -278,3 +278,28 @@ fn test_generator_function() {
     // Just verify something is extracted
     assert!(!units.is_empty(), "Should extract generator function");
 }
+
+#[test]
+fn test_function_with_imports() {
+    let source = r#"import axios from 'axios';
+import { format } from 'date-fns';
+
+function fetchData(url) {
+    return axios.get(url);
+}"#;
+    let units = parse(source, Language::JavaScript, "test.js");
+    let func = get_unit_by_name(&units, "fetchData").unwrap();
+    let text = build_embedding_text(func);
+
+    let expected = r#"Function: fetchData
+Signature: function fetchData(url) {
+Parameters: url
+Calls: get
+Uses: axios
+Code:
+function fetchData(url) {
+    return axios.get(url);
+}
+File: test test.js"#;
+    assert_eq!(text, expected);
+}

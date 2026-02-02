@@ -2,7 +2,7 @@
 
 use super::analysis::{
     extract_control_flow, extract_docstring, extract_function_calls, extract_parameters,
-    extract_return_type, extract_variables, filter_used_imports,
+    extract_return_type, extract_used_modules, extract_variables,
 };
 use super::ast::{find_start_with_attributes, get_node_name};
 use super::types::{CodeUnit, Language, UnitType};
@@ -64,7 +64,20 @@ pub fn extract_function(
     unit.variables = extract_variables(node, bytes, lang);
 
     // Layer 5: Dependencies
-    unit.imports = filter_used_imports(&unit.calls, file_imports);
+    // Get modules used via attribute access (e.g., `json` from `json.loads()`)
+    let used_modules = extract_used_modules(node, bytes, lang);
+    // Filter to only modules that are actually imported
+    unit.imports = file_imports
+        .iter()
+        .filter(|import| {
+            used_modules.iter().any(|m| m == *import)
+                || unit.calls.iter().any(|call| {
+                    call.to_lowercase().contains(&import.to_lowercase())
+                        || import.to_lowercase().contains(&call.to_lowercase())
+                })
+        })
+        .cloned()
+        .collect();
 
     // Full source content
     let content_end = (end_line + 1).min(lines.len());
@@ -385,7 +398,7 @@ fn extract_arrow_function_as_function(
 ) -> Option<CodeUnit> {
     use super::analysis::{
         extract_control_flow, extract_function_calls, extract_parameters, extract_return_type,
-        extract_variables, filter_used_imports,
+        extract_used_modules, extract_variables,
     };
 
     // Look for arrow_function in variable_declarator
@@ -429,7 +442,20 @@ fn extract_arrow_function_as_function(
     unit.variables = extract_variables(arrow_node, bytes, lang);
 
     // Layer 5: Dependencies
-    unit.imports = filter_used_imports(&unit.calls, file_imports);
+    // Get modules used via attribute access
+    let used_modules = extract_used_modules(arrow_node, bytes, lang);
+    // Filter to only modules that are actually imported
+    unit.imports = file_imports
+        .iter()
+        .filter(|import| {
+            used_modules.iter().any(|m| m == *import)
+                || unit.calls.iter().any(|call| {
+                    call.to_lowercase().contains(&import.to_lowercase())
+                        || import.to_lowercase().contains(&call.to_lowercase())
+                })
+        })
+        .cloned()
+        .collect();
 
     // Full source content
     let content_end = (end_line + 1).min(lines.len());

@@ -717,7 +717,7 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => {
             &["import_statement"]
         }
-        Language::Go => &["import_declaration"],
+        Language::Go => &["import_spec"], // Individual import specs, not the whole declaration
         Language::Java => &["import_declaration"],
         Language::CSharp => &["using_directive"],
         Language::C | Language::Cpp => &["preproc_include"],
@@ -750,6 +750,32 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                         }
                     }
                 }
+            }
+
+            // For Go, extract the package name from the string literal content
+            if lang == Language::Go {
+                // Go import_spec contains interpreted_string_literal
+                // Extract the last path component as the package name
+                fn find_string_content(node: Node, bytes: &[u8]) -> Option<String> {
+                    if node.kind() == "interpreted_string_literal_content" {
+                        if let Ok(text) = node.utf8_text(bytes) {
+                            // Get the last path component (e.g., "fmt" from "fmt", "http" from "net/http")
+                            return Some(text.split('/').next_back().unwrap_or(text).to_string());
+                        }
+                    }
+                    for child in node.children(&mut node.walk()) {
+                        if let Some(content) = find_string_content(child, bytes) {
+                            return Some(content);
+                        }
+                    }
+                    None
+                }
+                if let Some(pkg) = find_string_content(node, bytes) {
+                    if !pkg.is_empty() {
+                        imports.push(pkg);
+                    }
+                }
+                return;
             }
 
             if let Ok(text) = node.utf8_text(bytes) {
@@ -787,16 +813,85 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
     imports
 }
 
-/// Filter imports to only those used by the given function calls.
-pub fn filter_used_imports(calls: &[String], file_imports: &[String]) -> Vec<String> {
-    file_imports
-        .iter()
-        .filter(|import| {
-            calls.iter().any(|call| {
-                call.to_lowercase().contains(&import.to_lowercase())
-                    || import.to_lowercase().contains(&call.to_lowercase())
-            })
-        })
-        .cloned()
-        .collect()
+/// Extract module/receiver names from attribute access patterns (e.g., `json` from `json.loads()`).
+/// These are identifiers that are used as the base of attribute access or method calls.
+pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    let mut modules = Vec::new();
+    let attr_types: &[&str] = match lang {
+        Language::Python => &["attribute"],
+        Language::JavaScript | Language::TypeScript | Language::Vue | Language::Svelte => {
+            &["member_expression"]
+        }
+        Language::Rust => &["field_expression", "scoped_identifier"],
+        Language::Go => &["selector_expression"],
+        Language::Java | Language::CSharp | Language::Kotlin | Language::Scala => {
+            &["field_access", "member_access_expression"]
+        }
+        Language::C | Language::Cpp => &["field_expression"],
+        Language::Ruby => &["call"],
+        Language::Swift => &["navigation_expression"],
+        Language::Php => &["member_access_expression", "scoped_call_expression"],
+        Language::Lua => &["field_expression", "method_index_expression"],
+        Language::Ocaml => &["field_get_expression"],
+        _ => return modules,
+    };
+
+    fn visit(
+        node: Node,
+        bytes: &[u8],
+        attr_types: &[&str],
+        modules: &mut Vec<String>,
+        lang: Language,
+    ) {
+        if attr_types.contains(&node.kind()) {
+            // Get the base/object part of the attribute access
+            let object_node = match lang {
+                Language::Python => node.child_by_field_name("object"),
+                Language::JavaScript | Language::TypeScript | Language::Vue | Language::Svelte => {
+                    node.child_by_field_name("object")
+                }
+                Language::Rust => node.child_by_field_name("value"),
+                Language::Go => node.child_by_field_name("operand"),
+                Language::Java | Language::CSharp | Language::Kotlin | Language::Scala => node
+                    .child_by_field_name("object")
+                    .or_else(|| node.child_by_field_name("expression")),
+                Language::Ruby => node.child_by_field_name("receiver"),
+                _ => node.child(0),
+            };
+
+            if let Some(obj) = object_node {
+                // Only extract simple identifiers (not nested expressions)
+                if obj.kind() == "identifier"
+                    || obj.kind() == "constant" // Ruby
+                    || obj.kind() == "simple_identifier"
+                // Kotlin
+                {
+                    if let Ok(text) = obj.utf8_text(bytes) {
+                        let name = text.trim();
+                        // Skip self/this/super
+                        if !name.is_empty()
+                            && name != "self"
+                            && name != "this"
+                            && name != "super"
+                            && name
+                                .chars()
+                                .next()
+                                .map(|c| c.is_alphabetic())
+                                .unwrap_or(false)
+                        {
+                            modules.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        for child in node.children(&mut node.walk()) {
+            visit(child, bytes, attr_types, modules, lang);
+        }
+    }
+
+    visit(node, bytes, attr_types, &mut modules, lang);
+    modules.sort();
+    modules.dedup();
+    modules
 }

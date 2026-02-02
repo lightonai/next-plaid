@@ -304,3 +304,29 @@ const MAX_RETRIES: number = 3;
 File: test test.ts"#;
     assert_eq!(max_text, expected_max);
 }
+
+#[test]
+fn test_function_with_imports() {
+    let source = r#"import axios from 'axios';
+import { format } from 'date-fns';
+
+function fetchData(url: string): Promise<any> {
+    return axios.get(url);
+}"#;
+    let units = parse(source, Language::TypeScript, "test.ts");
+    let func = get_unit_by_name(&units, "fetchData").unwrap();
+    let text = build_embedding_text(func);
+
+    let expected = r#"Function: fetchData
+Signature: function fetchData(url: string): Promise<any> {
+Parameters: url
+Returns: : Promise<any>
+Calls: get
+Uses: axios
+Code:
+function fetchData(url: string): Promise<any> {
+    return axios.get(url);
+}
+File: test test.ts"#;
+    assert_eq!(text, expected);
+}
