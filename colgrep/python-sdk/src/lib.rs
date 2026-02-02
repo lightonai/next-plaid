@@ -4,9 +4,7 @@
 //! allowing you to extract code units (functions, classes, etc.) from
 //! source files across multiple programming languages.
 
-mod parser;
-
-use parser::{detect_language, extract_units, CodeUnit, Language, UnitType};
+use colgrep::{build_embedding_text, detect_language, extract_units, CodeUnit, Language, UnitType};
 use pyo3::prelude::*;
 use std::path::Path;
 
@@ -58,53 +56,16 @@ pub struct PyCodeUnit {
     pub imports: Vec<String>,
     #[pyo3(get)]
     pub code: String,
+    /// The embedding text used for semantic search (same as colgrep uses internally)
+    #[pyo3(get)]
+    pub embedding_text: String,
 }
 
 #[pymethods]
 impl PyCodeUnit {
-    /// Returns a human-readable description of the code unit.
+    /// Returns the embedding text (same format colgrep uses for semantic search).
     fn description(&self) -> String {
-        let mut desc = Vec::new();
-
-        desc.push(format!("{}: {}", self.unit_type, self.name));
-        desc.push(format!("Signature: {}", self.signature));
-
-        if let Some(ref doc) = self.docstring {
-            desc.push(format!("Description: {}", doc));
-        }
-
-        if !self.parameters.is_empty() {
-            desc.push(format!("Parameters: {}", self.parameters.join(", ")));
-        }
-
-        if let Some(ref ret) = self.return_type {
-            desc.push(format!("Returns: {}", ret));
-        }
-
-        if let Some(ref extends) = self.extends {
-            desc.push(format!("Extends: {}", extends));
-        }
-
-        if let Some(ref parent) = self.parent_class {
-            desc.push(format!("Parent class: {}", parent));
-        }
-
-        if !self.calls.is_empty() {
-            desc.push(format!("Calls: {}", self.calls.join(", ")));
-        }
-
-        if !self.variables.is_empty() {
-            desc.push(format!("Variables: {}", self.variables.join(", ")));
-        }
-
-        if !self.imports.is_empty() {
-            desc.push(format!("Uses: {}", self.imports.join(", ")));
-        }
-
-        desc.push(format!("Code:\n{}", self.code));
-        desc.push(format!("File: {}", self.file));
-
-        desc.join("\n")
+        self.embedding_text.clone()
     }
 
     /// Returns a dictionary representation of the code unit.
@@ -134,6 +95,7 @@ impl PyCodeUnit {
         dict.set_item("variables", &self.variables)?;
         dict.set_item("imports", &self.imports)?;
         dict.set_item("code", &self.code)?;
+        dict.set_item("embedding_text", &self.embedding_text)?;
 
         Ok(dict.into())
     }
@@ -150,8 +112,8 @@ impl PyCodeUnit {
     }
 }
 
-impl From<CodeUnit> for PyCodeUnit {
-    fn from(unit: CodeUnit) -> Self {
+impl PyCodeUnit {
+    fn from_code_unit(unit: &CodeUnit) -> Self {
         let unit_type = match unit.unit_type {
             UnitType::Function => "Function",
             UnitType::Method => "Method",
@@ -163,30 +125,32 @@ impl From<CodeUnit> for PyCodeUnit {
         };
 
         let language = format!("{:?}", unit.language);
+        let embedding_text = build_embedding_text(unit);
 
         PyCodeUnit {
-            name: unit.name,
-            qualified_name: unit.qualified_name,
+            name: unit.name.clone(),
+            qualified_name: unit.qualified_name.clone(),
             file: unit.file.display().to_string(),
             line: unit.line,
             end_line: unit.end_line,
             language,
             unit_type: unit_type.to_string(),
-            signature: unit.signature,
-            docstring: unit.docstring,
-            parameters: unit.parameters,
-            return_type: unit.return_type,
-            extends: unit.extends,
-            parent_class: unit.parent_class,
-            calls: unit.calls,
-            called_by: unit.called_by,
+            signature: unit.signature.clone(),
+            docstring: unit.docstring.clone(),
+            parameters: unit.parameters.clone(),
+            return_type: unit.return_type.clone(),
+            extends: unit.extends.clone(),
+            parent_class: unit.parent_class.clone(),
+            calls: unit.calls.clone(),
+            called_by: unit.called_by.clone(),
             complexity: unit.complexity,
             has_loops: unit.has_loops,
             has_branches: unit.has_branches,
             has_error_handling: unit.has_error_handling,
-            variables: unit.variables,
-            imports: unit.imports,
-            code: unit.code,
+            variables: unit.variables.clone(),
+            imports: unit.imports.clone(),
+            code: unit.code.clone(),
+            embedding_text,
         }
     }
 }
@@ -218,6 +182,7 @@ fn merge_units(units: Vec<PyCodeUnit>, filename: &str) -> PyCodeUnit {
             variables: Vec::new(),
             imports: Vec::new(),
             code: String::new(),
+            embedding_text: String::new(),
         };
     }
 
@@ -253,6 +218,7 @@ fn merge_units(units: Vec<PyCodeUnit>, filename: &str) -> PyCodeUnit {
     let mut all_imports: Vec<String> = Vec::new();
     let mut all_docstrings: Vec<String> = Vec::new();
     let mut all_code: Vec<String> = Vec::new();
+    let mut all_embedding_texts: Vec<String> = Vec::new();
     let mut total_complexity: usize = 0;
     let mut has_loops = false;
     let mut has_branches = false;
@@ -272,6 +238,7 @@ fn merge_units(units: Vec<PyCodeUnit>, filename: &str) -> PyCodeUnit {
         }
 
         all_code.push(unit.code.clone());
+        all_embedding_texts.push(unit.embedding_text.clone());
         total_complexity += unit.complexity;
         has_loops = has_loops || unit.has_loops;
         has_branches = has_branches || unit.has_branches;
@@ -295,6 +262,7 @@ fn merge_units(units: Vec<PyCodeUnit>, filename: &str) -> PyCodeUnit {
 
     // Merge code (in order, no deduplication since code order matters)
     let code = all_code.join("\n\n");
+    let embedding_text = all_embedding_texts.join("\n\n");
 
     PyCodeUnit {
         name: filename.to_string(),
@@ -319,6 +287,7 @@ fn merge_units(units: Vec<PyCodeUnit>, filename: &str) -> PyCodeUnit {
         variables,
         imports,
         code,
+        embedding_text,
     }
 }
 
@@ -383,7 +352,7 @@ fn parse_code(code: &str, filename: &str, merge: bool) -> PyResult<Vec<PyCodeUni
     })?;
 
     let units = extract_units(path, code, lang);
-    let py_units: Vec<PyCodeUnit> = units.into_iter().map(PyCodeUnit::from).collect();
+    let py_units: Vec<PyCodeUnit> = units.iter().map(PyCodeUnit::from_code_unit).collect();
 
     if merge {
         Ok(vec![merge_units(py_units, filename)])
@@ -450,15 +419,20 @@ fn parse_code(code: &str, filename: &str, merge: bool) -> PyResult<Vec<PyCodeUni
 /// ```
 #[pyfunction]
 #[pyo3(signature = (code, filename, language, merge=false))]
-fn parse_code_with_language(code: &str, filename: &str, language: &str, merge: bool) -> PyResult<Vec<PyCodeUnit>> {
+fn parse_code_with_language(
+    code: &str,
+    filename: &str,
+    language: &str,
+    merge: bool,
+) -> PyResult<Vec<PyCodeUnit>> {
     let path = Path::new(filename);
 
-    let lang: Language = language.parse().map_err(|e: String| {
-        pyo3::exceptions::PyValueError::new_err(e)
-    })?;
+    let lang: Language = language
+        .parse()
+        .map_err(|e: String| pyo3::exceptions::PyValueError::new_err(e))?;
 
     let units = extract_units(path, code, lang);
-    let py_units: Vec<PyCodeUnit> = units.into_iter().map(PyCodeUnit::from).collect();
+    let py_units: Vec<PyCodeUnit> = units.iter().map(PyCodeUnit::from_code_unit).collect();
 
     if merge {
         Ok(vec![merge_units(py_units, filename)])
@@ -500,11 +474,36 @@ fn py_detect_language(filename: &str) -> Option<String> {
 #[pyfunction]
 fn supported_languages() -> Vec<&'static str> {
     vec![
-        "python", "typescript", "javascript", "go", "rust", "java",
-        "c", "cpp", "ruby", "csharp", "kotlin", "swift", "scala",
-        "php", "lua", "elixir", "haskell", "ocaml", "r", "zig",
-        "julia", "sql", "vue", "svelte", "html", "markdown", "yaml",
-        "toml", "json", "shell",
+        "python",
+        "typescript",
+        "javascript",
+        "go",
+        "rust",
+        "java",
+        "c",
+        "cpp",
+        "ruby",
+        "csharp",
+        "kotlin",
+        "swift",
+        "scala",
+        "php",
+        "lua",
+        "elixir",
+        "haskell",
+        "ocaml",
+        "r",
+        "zig",
+        "julia",
+        "sql",
+        "vue",
+        "svelte",
+        "html",
+        "markdown",
+        "yaml",
+        "toml",
+        "json",
+        "shell",
     ]
 }
 
