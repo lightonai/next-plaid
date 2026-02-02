@@ -362,6 +362,49 @@ colgrep --uninstall
 4. **Index**: PLAID algorithm compresses and indexes vectors
 5. **Search**: Query encoded and matched using late interaction scoring
 
+### Embedding Input Format
+
+Each code unit is converted to a structured text representation before being encoded by the model. Here's an example of what the model receives for a Python function:
+
+**Original code:**
+
+```python
+# src/utils/http_client.py
+def fetch_with_retry(url: str, max_retries: int = 3) -> Response:
+    """Fetches data from a URL with retry logic."""
+    for i in range(max_retries):
+        try:
+            return client.get(url)
+        except RequestError as e:
+            if i == max_retries - 1:
+                raise e
+```
+
+**Model input:**
+
+```
+Function: fetch_with_retry
+Signature: def fetch_with_retry(url: str, max_retries: int = 3) -> Response
+Description: Fetches data from a URL with retry logic.
+Parameters: url, max_retries
+Returns: Response
+Calls: range, client.get
+Variables: i, e
+Uses: client, RequestError
+Code:
+def fetch_with_retry(url: str, max_retries: int = 3) -> Response:
+    """Fetches data from a URL with retry logic."""
+    for i in range(max_retries):
+        try:
+            return client.get(url)
+        except RequestError as e:
+            if i == max_retries - 1:
+                raise e
+File: src / utils / http client http_client.py
+```
+
+The file path is normalized to improve semantic matching: separators become spaced, underscores/hyphens become spaces, and CamelCase is split (e.g., `HttpClient` → `http client`).
+
 ---
 
 ## Environment Variables

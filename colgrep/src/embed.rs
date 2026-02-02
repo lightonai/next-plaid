@@ -128,24 +128,6 @@ pub fn build_embedding_text(unit: &CodeUnit) -> String {
         parts.push(format!("Called by: {}", unit.called_by.join(", ")));
     }
 
-    // === Layer 3: Control Flow ===
-    let mut flow_info = Vec::new();
-    if unit.complexity > 1 {
-        flow_info.push(format!("complexity={}", unit.complexity));
-    }
-    if unit.has_loops {
-        flow_info.push("has_loops".to_string());
-    }
-    if unit.has_branches {
-        flow_info.push("has_branches".to_string());
-    }
-    if unit.has_error_handling {
-        flow_info.push("handles_errors".to_string());
-    }
-    if !flow_info.is_empty() {
-        parts.push(format!("Control flow: {}", flow_info.join(", ")));
-    }
-
     // === Layer 4: Data Flow ===
     if !unit.variables.is_empty() {
         parts.push(format!("Variables: {}", unit.variables.join(", ")));
