@@ -29,8 +29,7 @@ pub fn cmd_session_hook() -> Result<()> {
                 "- Exclude dirs: `colgrep --exclude-dir=node_modules --exclude-dir=vendor \"query\"`\n",
                 "- Specific folders: `colgrep \"query\" ./src/api ./src/auth`\n",
                 "- Specific files: `colgrep \"query\" ./main.rs ./lib.rs`\n\n",
-                "OUTPUT MODES:\n",
-                "- Show content for one query: `colgrep -n 10 \"query\"` or `colgrep -c \"query\"``"
+                "Show code content with -n: `colgrep -n 6 \"query\"`"
             )
         }
     });

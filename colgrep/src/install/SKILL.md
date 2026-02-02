@@ -34,8 +34,7 @@ colgrep -e "<word>" -w "<semantic query>"         # Hybrid with whole word match
 
 # Output options
 colgrep -l "<query>"                              # List files only
-colgrep -c "<query>"                              # Show full function content (50 lines max)
-colgrep -n 10 "<query>"                           # Show 10 context lines (default: 6)
+colgrep -n 6 "<query>"                            # Show 6 context lines (use -n for more context)
 colgrep --json "<query>"                          # JSON output
 ```
 
@@ -81,7 +80,7 @@ colgrep --json "<query>"                          # JSON output
 | Search in specific directories  | `colgrep --include="src/**/*.rs" "query"`    |
 | Search multiple directories     | `colgrep "query" ./src ./lib ./api`          |
 | Search CI/CD configs            | `colgrep --include="**/.github/**/*" "q" .`  |
-| View full function content      | `colgrep -c "query"`                         |
+| Need more context lines         | `colgrep -n 10 "query"`                      |
 | Exact string/regex match only   | Built-in `Grep` tool                         |
 | Find files by name              | Built-in `Glob` tool                         |
 
