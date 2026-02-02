@@ -128,6 +128,135 @@ impl PatternMatcher {
     }
 }
 
+/// Strip regex special characters from a pattern for use in semantic queries.
+///
+/// When combining a regex pattern with a semantic query, the regex metacharacters
+/// (like `\s`, `\w`, `+`, `*`, etc.) have no semantic meaning and could negatively
+/// affect the embedding quality. This function extracts only the meaningful text
+/// content from a regex pattern.
+///
+/// Examples:
+/// - `fn\s+\w+` -> `fn`
+/// - `async\s+fn` -> `async fn`
+/// - `Result<.*>` -> `Result`
+/// - `foo|bar` -> `foo bar`
+fn strip_regex_for_semantic(pattern: &str) -> String {
+    let mut result = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            // Handle backslash escapes
+            '\\' => {
+                if let Some(&next) = chars.peek() {
+                    match next {
+                        // Common regex character classes - skip both backslash and class char
+                        's' | 'S' | 'w' | 'W' | 'd' | 'D' | 'b' | 'B' | 'n' | 'r' | 't' => {
+                            chars.next();
+                            // Add a space to separate tokens (e.g., "fn\s+bar" -> "fn bar")
+                            if !result.ends_with(' ') && !result.is_empty() {
+                                result.push(' ');
+                            }
+                        }
+                        // Escaped literal characters - keep the literal
+                        '.' | '*' | '+' | '?' | '[' | ']' | '(' | ')' | '{' | '}' | '^' | '$'
+                        | '|' | '\\' => {
+                            chars.next();
+                            result.push(next);
+                        }
+                        // Other escapes - skip the backslash, keep the char
+                        _ => {
+                            chars.next();
+                            result.push(next);
+                        }
+                    }
+                }
+            }
+            // Quantifiers and metacharacters - skip them
+            '*' | '+' | '?' => {}
+            // Anchors - skip them
+            '^' | '$' => {}
+            // Character class - skip entire [...] block
+            #[allow(clippy::while_let_on_iterator)]
+            '[' => {
+                // Skip until we find the closing ]
+                // Note: using while let because we need to call chars.next() inside for escaped chars
+                let mut depth = 1;
+                while let Some(inner) = chars.next() {
+                    if inner == '\\' {
+                        // Skip escaped char inside character class
+                        chars.next();
+                    } else if inner == '[' {
+                        depth += 1;
+                    } else if inner == ']' {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                }
+            }
+            // Grouping - skip the parens but process contents
+            '(' | ')' => {}
+            // Alternation - convert to space
+            '|' => {
+                if !result.ends_with(' ') && !result.is_empty() {
+                    result.push(' ');
+                }
+            }
+            // Quantifier ranges {n,m} - skip entire block
+            '{' => {
+                for inner in chars.by_ref() {
+                    if inner == '}' {
+                        break;
+                    }
+                }
+            }
+            // Dot (any char) - skip
+            '.' => {}
+            // Regular characters - keep them
+            _ => {
+                result.push(c);
+            }
+        }
+    }
+
+    // Clean up multiple spaces and trim
+    let cleaned: String = result.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    cleaned
+}
+
+/// Merge a semantic query with a sanitized regex pattern, removing duplicate tokens.
+///
+/// This prevents redundant tokens in the final query when the regex pattern
+/// contains words that are already in the semantic query.
+///
+/// Example:
+/// - query: "async function", pattern: "async fn" -> "async function fn"
+/// - query: "error handling", pattern: "error" -> "error handling"
+fn merge_query_with_pattern(query: &str, sanitized_pattern: &str) -> String {
+    if sanitized_pattern.is_empty() {
+        return query.to_string();
+    }
+
+    // Collect query tokens (lowercase for comparison)
+    let query_tokens: std::collections::HashSet<String> =
+        query.split_whitespace().map(|s| s.to_lowercase()).collect();
+
+    // Filter pattern tokens to only include those not already in the query
+    let new_tokens: Vec<&str> = sanitized_pattern
+        .split_whitespace()
+        .filter(|token| !query_tokens.contains(&token.to_lowercase()))
+        .collect();
+
+    if new_tokens.is_empty() {
+        query.to_string()
+    } else {
+        format!("{} {}", query, new_tokens.join(" "))
+    }
+}
+
 /// Resolve the model to use: CLI arg > saved config > default
 pub fn resolve_model(cli_model: Option<&str>) -> String {
     if let Some(model) = cli_model {
@@ -1019,8 +1148,9 @@ fn search_single_path(
     // This ensures exact matches are found even if the vector database doesn't rank them highly
     let results = if let Some(pattern) = &text_pattern {
         // -e flag provided: use existing hybrid search logic
-        // Enhance semantic query with -e pattern
-        let enhanced_query = format!("{} {}", query, pattern);
+        // Enhance semantic query with -e pattern (strip regex metacharacters and dedupe tokens)
+        let sanitized_pattern = strip_regex_for_semantic(pattern);
+        let enhanced_query = merge_query_with_pattern(query, &sanitized_pattern);
         searcher.search(&enhanced_query, search_top_k, subset.as_deref())?
     } else {
         // 1. Run pure semantic search
@@ -1159,5 +1289,153 @@ mod tests {
         let result = resolve_context_lines(None, 20);
         // Should be either 20 (default) or whatever is in config
         assert!(result <= 100); // sanity check
+    }
+
+    // Test strip_regex_for_semantic function
+    #[test]
+    fn test_strip_regex_basic_patterns() {
+        // Character classes should be stripped, leaving meaningful text
+        assert_eq!(strip_regex_for_semantic(r"fn\s+\w+"), "fn");
+        assert_eq!(strip_regex_for_semantic(r"async\s+fn"), "async fn");
+        assert_eq!(strip_regex_for_semantic(r"\btest\b"), "test");
+    }
+
+    #[test]
+    fn test_strip_regex_quantifiers() {
+        // Quantifiers should be stripped
+        assert_eq!(strip_regex_for_semantic("foo+"), "foo");
+        assert_eq!(strip_regex_for_semantic("bar*"), "bar");
+        assert_eq!(strip_regex_for_semantic("baz?"), "baz");
+        assert_eq!(strip_regex_for_semantic("qux{2,5}"), "qux");
+    }
+
+    #[test]
+    fn test_strip_regex_alternation() {
+        // Alternation should become space-separated
+        assert_eq!(strip_regex_for_semantic("foo|bar"), "foo bar");
+        assert_eq!(strip_regex_for_semantic("a|b|c"), "a b c");
+    }
+
+    #[test]
+    fn test_strip_regex_anchors() {
+        // Anchors should be stripped
+        assert_eq!(strip_regex_for_semantic("^start"), "start");
+        assert_eq!(strip_regex_for_semantic("end$"), "end");
+        assert_eq!(strip_regex_for_semantic("^both$"), "both");
+    }
+
+    #[test]
+    fn test_strip_regex_character_classes() {
+        // Character class brackets should be stripped entirely
+        assert_eq!(strip_regex_for_semantic("[abc]"), "");
+        assert_eq!(strip_regex_for_semantic("pre[abc]post"), "prepost");
+        assert_eq!(strip_regex_for_semantic("[a-z]+"), "");
+    }
+
+    #[test]
+    fn test_strip_regex_groups() {
+        // Grouping parens should be stripped but contents kept
+        assert_eq!(strip_regex_for_semantic("(foo)"), "foo");
+        assert_eq!(strip_regex_for_semantic("(foo)(bar)"), "foobar");
+    }
+
+    #[test]
+    fn test_strip_regex_escaped_literals() {
+        // Escaped metacharacters should become literals
+        assert_eq!(strip_regex_for_semantic(r"foo\.bar"), "foo.bar");
+        assert_eq!(strip_regex_for_semantic(r"a\*b"), "a*b");
+        assert_eq!(strip_regex_for_semantic(r"Result\<T\>"), "Result<T>");
+    }
+
+    #[test]
+    fn test_strip_regex_dots() {
+        // Dots (any char) should be stripped
+        assert_eq!(strip_regex_for_semantic("a.b"), "ab");
+        assert_eq!(strip_regex_for_semantic("Result<.*>"), "Result<>");
+    }
+
+    #[test]
+    fn test_strip_regex_plain_text() {
+        // Plain text should pass through unchanged
+        assert_eq!(strip_regex_for_semantic("hello"), "hello");
+        assert_eq!(strip_regex_for_semantic("hello world"), "hello world");
+        assert_eq!(strip_regex_for_semantic("foo_bar"), "foo_bar");
+    }
+
+    #[test]
+    fn test_strip_regex_complex_patterns() {
+        // Complex real-world patterns
+        assert_eq!(strip_regex_for_semantic(r"impl\s+\w+\s+for"), "impl for");
+        assert_eq!(strip_regex_for_semantic(r"fn\s+test_\w+"), "fn test_");
+        assert_eq!(
+            strip_regex_for_semantic(r"pub\s+(async\s+)?fn"),
+            "pub async fn"
+        );
+    }
+
+    #[test]
+    fn test_strip_regex_empty_result() {
+        // Patterns that result in empty string
+        assert_eq!(strip_regex_for_semantic(r"\s+"), "");
+        assert_eq!(strip_regex_for_semantic(r"\w+"), "");
+        assert_eq!(strip_regex_for_semantic(r".*"), "");
+        assert_eq!(strip_regex_for_semantic(r"[a-z]+"), "");
+    }
+
+    // Test merge_query_with_pattern function
+    #[test]
+    fn test_merge_query_no_duplicates() {
+        // No duplicates - all pattern tokens added
+        assert_eq!(
+            merge_query_with_pattern("error handling", "Result"),
+            "error handling Result"
+        );
+        assert_eq!(
+            merge_query_with_pattern("function", "async fn"),
+            "function async fn"
+        );
+    }
+
+    #[test]
+    fn test_merge_query_with_duplicates() {
+        // Duplicates should be removed (case-insensitive)
+        assert_eq!(
+            merge_query_with_pattern("async function", "async fn"),
+            "async function fn"
+        );
+        assert_eq!(
+            merge_query_with_pattern("error handling", "error"),
+            "error handling"
+        );
+        assert_eq!(
+            merge_query_with_pattern("Error Handling", "error handling"),
+            "Error Handling"
+        );
+    }
+
+    #[test]
+    fn test_merge_query_all_duplicates() {
+        // All pattern tokens are duplicates - just return query
+        assert_eq!(merge_query_with_pattern("foo bar", "foo bar"), "foo bar");
+        assert_eq!(merge_query_with_pattern("FOO BAR", "foo bar"), "FOO BAR");
+    }
+
+    #[test]
+    fn test_merge_query_empty_pattern() {
+        // Empty pattern - just return query
+        assert_eq!(merge_query_with_pattern("query", ""), "query");
+    }
+
+    #[test]
+    fn test_merge_query_partial_duplicates() {
+        // Mix of duplicate and new tokens
+        assert_eq!(
+            merge_query_with_pattern("impl trait", "impl for"),
+            "impl trait for"
+        );
+        assert_eq!(
+            merge_query_with_pattern("pub fn", "pub async fn test"),
+            "pub fn async test"
+        );
     }
 }

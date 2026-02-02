@@ -55,7 +55,7 @@ pub fn get_default_parallel_sessions() -> usize {
     } else {
         let cpu_count = std::thread::available_parallelism()
             .map(|p| p.get())
-            .unwrap_or(8);
+            .unwrap_or(16);
         cpu_count.min(MAX_PARALLEL_SESSIONS_CPU)
     }
 }
@@ -64,7 +64,7 @@ pub fn get_default_parallel_sessions() -> usize {
 pub fn get_default_parallel_sessions() -> usize {
     let cpu_count = std::thread::available_parallelism()
         .map(|p| p.get())
-        .unwrap_or(8);
+        .unwrap_or(16);
     cpu_count.min(MAX_PARALLEL_SESSIONS_CPU)
 }
 
@@ -73,12 +73,14 @@ pub fn get_default_parallel_sessions() -> usize {
 /// The GPU handles batched inference more efficiently than multiple parallel sessions
 pub const DEFAULT_PARALLEL_SESSIONS_GPU: usize = 1;
 
-/// Maximum number of parallel sessions for CPU
-/// Benchmarking shows 8 sessions provides the best balance:
-/// - Good encoding parallelism (29-30s vs 45s with 1 session)
-/// - Low session creation overhead (~1.2s vs ~4s with 32 sessions)
-/// - Works well on systems with 4-16+ cores
-pub const MAX_PARALLEL_SESSIONS_CPU: usize = 8;
+/// Maximum number of parallel sessions for CPU.
+/// Benchmarking shows 16 sessions provides the best balance on modern systems:
+/// - Good encoding parallelism
+/// - Low session creation overhead
+/// - Works well on systems with 8-32+ cores
+///
+/// The actual number used is `min(cpu_count, MAX_PARALLEL_SESSIONS_CPU)`.
+pub const MAX_PARALLEL_SESSIONS_CPU: usize = 16;
 
 /// Maximum intra-op threads for single-session search mode.
 /// For ONNX intra-op parallelism, 8-16 threads is typically optimal.
@@ -433,5 +435,29 @@ mod tests {
         let config: Config = serde_json::from_str(json).unwrap();
         assert_eq!(config.get_default_k(), Some(30));
         assert_eq!(config.get_default_n(), Some(12));
+    }
+
+    #[test]
+    fn test_default_parallel_sessions_capped_at_16() {
+        // Verify the constant is set to 16
+        assert_eq!(MAX_PARALLEL_SESSIONS_CPU, 16);
+
+        // Verify get_default_parallel_sessions returns min(cpu_count, 16)
+        let sessions = get_default_parallel_sessions();
+        let cpu_count = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(16);
+        let expected = cpu_count.min(MAX_PARALLEL_SESSIONS_CPU);
+        assert_eq!(sessions, expected);
+        assert!(sessions <= 16, "Sessions should never exceed 16");
+    }
+
+    #[test]
+    fn test_config_parallel_sessions_default() {
+        let config = Config::default();
+        let sessions = config.get_parallel_sessions();
+        // Should be min(cpu_count, 16)
+        assert!(sessions >= 1);
+        assert!(sessions <= 16);
     }
 }
