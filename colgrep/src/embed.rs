@@ -97,6 +97,18 @@ pub fn build_embedding_text(unit: &CodeUnit) -> String {
         parts.push(format!("Signature: {}", unit.signature));
     }
 
+    if let Some(parent) = &unit.extends {
+        if !parent.is_empty() {
+            parts.push(format!("Extends: {}", parent));
+        }
+    }
+
+    if let Some(class_name) = &unit.parent_class {
+        if !class_name.is_empty() {
+            parts.push(format!("Class: {}", class_name));
+        }
+    }
+
     if let Some(doc) = &unit.docstring {
         if !doc.is_empty() {
             parts.push(format!("Description: {}", doc));

@@ -90,6 +90,7 @@ File: test test.py"#;
     let init_text = build_embedding_text(init);
     let expected_init = r#"Method: __init__
 Signature: def __init__(self, value: int = 0):
+Class: Calculator
 Parameters: value
 Variables: self.value
 Code:
@@ -102,6 +103,7 @@ File: test test.py"#;
     let add_text = build_embedding_text(add);
     let expected_add = r#"Method: add
 Signature: def add(self, x: int) -> int:
+Class: Calculator
 Description: """Add x to the current value.
 Parameters: x
 Returns: int
@@ -296,6 +298,59 @@ class Outer:
             pass
 File: test test.py"#;
     assert_eq!(outer_text, expected_outer);
+}
+
+#[test]
+fn test_class_inheritance() {
+    let source = r#"class Animal:
+    """Base animal class."""
+    def speak(self):
+        pass
+
+class Dog(Animal):
+    """A dog that barks."""
+    def speak(self):
+        return "Woof!"
+
+class Cat(Animal):
+    """A cat that meows."""
+    def speak(self):
+        return "Meow!"
+"#;
+    let units = parse(source, Language::Python, "test.py");
+
+    let animal = get_unit_by_name(&units, "Animal").unwrap();
+    let animal_text = build_embedding_text(animal);
+    // Animal has no parent
+    assert!(!animal_text.contains("Extends:"));
+
+    let dog = get_unit_by_name(&units, "Dog").unwrap();
+    let dog_text = build_embedding_text(dog);
+    let expected_dog = r#"Class: Dog
+Signature: class Dog(Animal):
+Extends: Animal
+Description: """A dog that barks.
+Code:
+class Dog(Animal):
+    """A dog that barks."""
+    def speak(self):
+        return "Woof!"
+File: test test.py"#;
+    assert_eq!(dog_text, expected_dog);
+
+    let cat = get_unit_by_name(&units, "Cat").unwrap();
+    let cat_text = build_embedding_text(cat);
+    let expected_cat = r#"Class: Cat
+Signature: class Cat(Animal):
+Extends: Animal
+Description: """A cat that meows.
+Code:
+class Cat(Animal):
+    """A cat that meows."""
+    def speak(self):
+        return "Meow!"
+File: test test.py"#;
+    assert_eq!(cat_text, expected_cat);
 }
 
 #[test]

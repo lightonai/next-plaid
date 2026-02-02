@@ -71,6 +71,7 @@ File: test test.scala"#;
     let text = build_embedding_text(method);
     let expected = r#"Method: greet
 Signature: def greet(): String = s"Hello, I'm $name"
+Class: Person
 Code:
   def greet(): String = s"Hello, I'm $name"
 File: test test.scala"#;
@@ -118,6 +119,7 @@ File: test test.scala"#;
     let text = build_embedding_text(method);
     let expected = r#"Method: helper
 Signature: def helper(x: Int): Int = x * 2
+Class: Utils
 Parameters: x
 Code:
   def helper(x: Int): Int = x * 2
@@ -185,6 +187,7 @@ fn test_implicit_class() {
     let text = build_embedding_text(class);
     let expected = r#"Class: StringOps
 Signature: implicit class StringOps(val s: String) extends AnyVal {
+Extends: AnyVal
 Code:
 implicit class StringOps(val s: String) extends AnyVal {
   def addExclamation: String = s + "!"
@@ -213,6 +216,7 @@ File: test test.scala"#;
     let text = build_embedding_text(class);
     let expected = r#"Class: Success
 Signature: case class Success[T](value: T) extends Result[T]
+Extends: Result
 Code:
 case class Success[T](value: T) extends Result[T]
 File: test test.scala"#;
@@ -222,6 +226,7 @@ File: test test.scala"#;
     let text = build_embedding_text(class);
     let expected = r#"Class: Failure
 Signature: case class Failure(message: String) extends Result[Nothing]
+Extends: Result
 Code:
 case class Failure(message: String) extends Result[Nothing]
 File: test test.scala"#;
@@ -280,6 +285,64 @@ Calls: map
 Code:
 def map[A, B](list: List[A])(f: A => B): List[B] = {
   list.map(f)
+}
+File: test test.scala"#;
+    assert_eq!(text, expected);
+}
+
+#[test]
+fn test_class_inheritance() {
+    let source = r#"class Animal {
+  def speak(): String = "..."
+}
+
+class Dog extends Animal {
+  override def speak(): String = "Woof!"
+}"#;
+    let units = parse(source, Language::Scala, "test.scala");
+
+    let animal = get_unit_by_name(&units, "Animal").unwrap();
+    let animal_text = build_embedding_text(animal);
+    // Animal has no parent
+    assert!(!animal_text.contains("Extends:"));
+
+    let dog = get_unit_by_name(&units, "Dog").unwrap();
+    let dog_text = build_embedding_text(dog);
+    let expected_dog = r#"Class: Dog
+Signature: class Dog extends Animal {
+Extends: Animal
+Code:
+class Dog extends Animal {
+  override def speak(): String = "Woof!"
+}
+File: test test.scala"#;
+    assert_eq!(dog_text, expected_dog);
+}
+
+#[test]
+fn test_function_with_imports() {
+    let source = r#"import scala.collection.mutable.ArrayBuffer
+
+def processBuffer(items: List[String]): ArrayBuffer[String] = {
+  val buffer = ArrayBuffer.empty[String]
+  items.foreach(item => buffer += item)
+  buffer
+}"#;
+    let units = parse(source, Language::Scala, "test.scala");
+    let func = get_unit_by_name(&units, "processBuffer").unwrap();
+    let text = build_embedding_text(func);
+
+    let expected = r#"Function: processBuffer
+Signature: def processBuffer(items: List[String]): ArrayBuffer[String] = {
+Parameters: items
+Calls: foreach
+Variables: buffer
+Uses: ArrayBuffer
+Code:
+def processBuffer(items: List[String]): ArrayBuffer[String] = {
+  val buffer = ArrayBuffer.empty[String]
+  items.foreach(item => buffer += item)
+  buffer
 }
 File: test test.scala"#;
     assert_eq!(text, expected);

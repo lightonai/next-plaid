@@ -156,6 +156,8 @@ fn create_template_unit(path: &Path, template: &SvelteBlock, lang: Language) -> 
         docstring: None,
         parameters: Vec::new(),
         return_type: None,
+        extends: None,
+        parent_class: None,
         calls: Vec::new(),
         called_by: Vec::new(),
         complexity: 1,

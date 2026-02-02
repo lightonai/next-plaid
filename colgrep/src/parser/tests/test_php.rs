@@ -106,6 +106,7 @@ File: test test.php";
 
     let expected_method = "Method: greet
 Signature: public function greet() {
+Class: Person
 Code:
     public function greet() {
         return \"Hello, I'm \" . $this->name;
@@ -170,6 +171,7 @@ File: test test.php";
 
     let expected_method = "Method: helper
 Signature: public static function helper(): string {
+Class: Utils
 Code:
     public static function helper(): string {
         return \"help\";
@@ -291,6 +293,7 @@ File: test test.php";
 
     let expected_method = "Method: describe
 Signature: public function describe(): string {
+Class: Shape
 Code:
     public function describe(): string {
         return \"I am a shape\";
@@ -356,6 +359,43 @@ File: test test.php";
 }
 
 #[test]
+fn test_class_inheritance() {
+    let source = r#"<?php
+class Animal {
+    public function speak() {
+        return "...";
+    }
+}
+
+class Dog extends Animal {
+    public function speak() {
+        return "Woof!";
+    }
+}
+"#;
+    let units = parse(source, Language::Php, "test.php");
+
+    let animal = get_unit_by_name(&units, "Animal").unwrap();
+    let animal_text = build_embedding_text(animal);
+    // Animal has no parent
+    assert!(!animal_text.contains("Extends:"));
+
+    let dog = get_unit_by_name(&units, "Dog").unwrap();
+    let dog_text = build_embedding_text(dog);
+    let expected_dog = "Class: Dog
+Signature: class Dog extends Animal {
+Extends: Animal
+Code:
+class Dog extends Animal {
+    public function speak() {
+        return \"Woof!\";
+    }
+}
+File: test test.php";
+    assert_eq!(dog_text, expected_dog);
+}
+
+#[test]
 fn test_function_with_imports() {
     let source = r#"<?php
 use DateTime;
@@ -369,10 +409,10 @@ function getToday(): string {
     let func = get_unit_by_name(&units, "getToday").unwrap();
     let text = build_embedding_text(func);
 
-    // PHP call extraction has limitations - method calls on variables aren't extracted
-    // Uses would need PHP's $dt->format pattern to be tracked
+    // PHP Uses tracks imported classes used in object creation (new ClassName())
     let expected = r#"Function: getToday
 Signature: function getToday(): string {
+Uses: DateTime
 Code:
 function getToday(): string {
     $dt = new DateTime();

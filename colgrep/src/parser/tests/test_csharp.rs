@@ -38,6 +38,7 @@ File: calculator Calculator.cs"
         method_text,
         "Method: Add
 Signature: public int Add(int a, int b)
+Class: Calculator
 Parameters: a, b
 Code:
     public int Add(int a, int b)
@@ -94,6 +95,7 @@ File: math Math.cs"#
         method_text,
         "Method: Add
 Signature: public int Add(int a, int b)
+Class: Math
 Parameters: a, b
 Code:
     public int Add(int a, int b)
@@ -160,6 +162,7 @@ File: person Person.cs"#
         constructor_text,
         "Method: Person
 Signature: public Person(string name, int age)
+Class: Person
 Parameters: name, age
 Code:
     public Person(string name, int age)
@@ -176,6 +179,7 @@ File: person Person.cs"
         method_text,
         r#"Method: Greet
 Signature: public string Greet()
+Class: Person
 Code:
     public string Greet()
     {
@@ -221,6 +225,7 @@ File: data service DataService.cs"
         method_text,
         "Method: FetchDataAsync
 Signature: public async Task<string> FetchDataAsync(string url)
+Class: DataService
 Parameters: url
 Calls: new
 Variables: client
@@ -268,6 +273,7 @@ File: utils Utils.cs"
         method_text,
         "Method: Format
 Signature: public static string Format(string template, params object[] args)
+Class: Utils
 Parameters: template, args
 Code:
     public static string Format(string template, params object[] args)
@@ -308,6 +314,7 @@ File: idrawable IDrawable.cs"
         draw_text,
         "Method: Draw
 Signature: void Draw();
+Class: IDrawable
 Code:
     void Draw();
 File: idrawable IDrawable.cs"
@@ -319,6 +326,7 @@ File: idrawable IDrawable.cs"
         get_bounds_text,
         "Method: GetBounds
 Signature: Rectangle GetBounds();
+Class: IDrawable
 Code:
     Rectangle GetBounds();
 File: idrawable IDrawable.cs"
@@ -373,6 +381,7 @@ File: container Container.cs"
         get_value_text,
         "Method: GetValue
 Signature: public T GetValue()
+Class: Container
 Code:
     public T GetValue()
     {
@@ -387,6 +396,7 @@ File: container Container.cs"
         set_value_text,
         "Method: SetValue
 Signature: public void SetValue(T value)
+Class: Container
 Parameters: value
 Code:
     public void SetValue(T value)
@@ -431,6 +441,7 @@ File: string extensions StringExtensions.cs"#
         method_text,
         r#"Method: AddExclamation
 Signature: public static string AddExclamation(this string str)
+Class: StringExtensions
 Parameters: str
 Code:
     public static string AddExclamation(this string str)
@@ -549,6 +560,7 @@ File: query service QueryService.cs"#
         method_text,
         r#"Method: FilterNames
 Signature: public IEnumerable<string> FilterNames(IEnumerable<string> names)
+Class: QueryService
 Parameters: names
 Code:
     public IEnumerable<string> FilterNames(IEnumerable<string> names)
@@ -559,4 +571,79 @@ Code:
     }
 File: query service QueryService.cs"#
     );
+}
+
+#[test]
+fn test_class_inheritance() {
+    let source = r#"public class Animal
+{
+    public virtual void Speak()
+    {
+        Console.WriteLine("...");
+    }
+}
+
+public class Dog : Animal
+{
+    public override void Speak()
+    {
+        Console.WriteLine("Woof!");
+    }
+}"#;
+    let units = parse(source, Language::CSharp, "Animals.cs");
+
+    let animal = get_unit_by_name(&units, "Animal").unwrap();
+    let animal_text = build_embedding_text(animal);
+    // Animal has no parent
+    assert!(!animal_text.contains("Extends:"));
+
+    let dog = get_unit_by_name(&units, "Dog").unwrap();
+    let dog_text = build_embedding_text(dog);
+    let expected_dog = r#"Class: Dog
+Signature: public class Dog : Animal
+Extends: Animal
+Code:
+public class Dog : Animal
+{
+    public override void Speak()
+    {
+        Console.WriteLine("Woof!");
+    }
+}
+File: animals Animals.cs"#;
+    assert_eq!(dog_text, expected_dog);
+}
+
+#[test]
+fn test_function_with_imports() {
+    // Note: C# uses namespace imports (using System.Collections.Generic;), not class imports.
+    // This means the Uses field won't be populated for types from imported namespaces
+    // since the import extracts "Generic" (the namespace) but the code uses "List" (the class).
+    // However, object creation is still tracked - the class name is extracted from `new ClassName()`.
+    let source = r#"using MyApp.Models;
+
+public class Factory
+{
+    public User CreateUser()
+    {
+        return new User();
+    }
+}"#;
+    let units = parse(source, Language::CSharp, "Factory.cs");
+    let func = get_unit_by_name(&units, "CreateUser").unwrap();
+    let text = build_embedding_text(func);
+
+    // C# extracts "Models" from "using MyApp.Models;" and "User" from "new User()"
+    // Since User != Models, Uses won't show up. This is expected behavior for C# namespace imports.
+    let expected = r#"Method: CreateUser
+Signature: public User CreateUser()
+Class: Factory
+Calls: new
+Code:
+    public User CreateUser()
+    {
+        return new User();
+    }
+File: factory Factory.cs"#;
+    assert_eq!(text, expected);
 }

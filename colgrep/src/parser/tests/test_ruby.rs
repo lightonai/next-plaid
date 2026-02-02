@@ -88,6 +88,7 @@ File: test test.rb"#;
     let init_text = build_embedding_text(init_unit);
     let expected_init = r#"Method: initialize
 Signature: def initialize(value = 0)
+Class: Calculator
 Parameters: value
 Code:
   def initialize(value = 0)
@@ -100,6 +101,7 @@ File: test test.rb"#;
     let add_text = build_embedding_text(add_unit);
     let expected_add = r#"Method: add
 Signature: def add(x)
+Class: Calculator
 Parameters: x
 Code:
   def add(x)
@@ -188,6 +190,7 @@ File: test test.rb"#;
     let helper_text = build_embedding_text(helper_unit);
     let expected_helper = r#"Method: helper
 Signature: def self.helper(x)
+Class: Utils
 Parameters: x
 Code:
   def self.helper(x)
@@ -200,6 +203,7 @@ File: test test.rb"#;
     let instance_helper_text = build_embedding_text(instance_helper_unit);
     let expected_instance_helper = r#"Method: instance_helper
 Signature: def instance_helper(x)
+Class: Utils
 Parameters: x
 Code:
   def instance_helper(x)
@@ -271,6 +275,7 @@ File: test test.rb"#;
     let method_text = build_embedding_text(method_unit);
     let expected_method = r#"Method: create
 Signature: def self.create(type)
+Class: Factory
 Parameters: type
 Calls: new
 Code:
@@ -358,6 +363,7 @@ File: test test.rb"#;
     let init_text = build_embedding_text(init_unit);
     let expected_init = r#"Method: initialize
 Signature: def initialize(name, age)
+Class: Person
 Parameters: name, age
 Code:
   def initialize(name, age)
@@ -407,6 +413,7 @@ File: test test.rb"#;
     let public_text = build_embedding_text(public_unit);
     let expected_public = r#"Method: public_method
 Signature: def public_method
+Class: Service
 Code:
   def public_method
     helper
@@ -418,12 +425,49 @@ File: test test.rb"#;
     let helper_text = build_embedding_text(helper_unit);
     let expected_helper = r#"Method: helper
 Signature: def helper
+Class: Service
 Code:
   def helper
     "secret"
   end
 File: test test.rb"#;
     assert_eq!(helper_text, expected_helper);
+}
+
+#[test]
+fn test_class_inheritance() {
+    let source = r#"class Animal
+  def speak
+    "..."
+  end
+end
+
+class Dog < Animal
+  def speak
+    "Woof!"
+  end
+end
+"#;
+    let units = parse(source, Language::Ruby, "test.rb");
+
+    let animal = get_unit_by_name(&units, "Animal").unwrap();
+    let animal_text = build_embedding_text(animal);
+    // Animal has no parent
+    assert!(!animal_text.contains("Extends:"));
+
+    let dog = get_unit_by_name(&units, "Dog").unwrap();
+    let dog_text = build_embedding_text(dog);
+    let expected_dog = r#"Class: Dog
+Signature: class Dog < Animal
+Extends: Animal
+Code:
+class Dog < Animal
+  def speak
+    "Woof!"
+  end
+end
+File: test test.rb"#;
+    assert_eq!(dog_text, expected_dog);
 }
 
 #[test]

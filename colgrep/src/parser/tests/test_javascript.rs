@@ -113,6 +113,7 @@ File: test test.js"#;
     let add_text = build_embedding_text(add);
     let expected_add = r#"Method: add
 Signature: add(x) {
+Class: Calculator
 Parameters: x
 Code:
     add(x) {
@@ -277,6 +278,41 @@ fn test_generator_function() {
     // Generator functions may be extracted differently or not at all
     // Just verify something is extracted
     assert!(!units.is_empty(), "Should extract generator function");
+}
+
+#[test]
+fn test_class_inheritance() {
+    let source = r#"class Animal {
+    speak() {
+        return "...";
+    }
+}
+
+class Dog extends Animal {
+    speak() {
+        return "Woof!";
+    }
+}"#;
+    let units = parse(source, Language::JavaScript, "test.js");
+
+    let animal = get_unit_by_name(&units, "Animal").unwrap();
+    let animal_text = build_embedding_text(animal);
+    // Animal has no parent
+    assert!(!animal_text.contains("Extends:"));
+
+    let dog = get_unit_by_name(&units, "Dog").unwrap();
+    let dog_text = build_embedding_text(dog);
+    let expected_dog = r#"Class: Dog
+Signature: class Dog extends Animal {
+Extends: Animal
+Code:
+class Dog extends Animal {
+    speak() {
+        return "Woof!";
+    }
+}
+File: test test.js"#;
+    assert_eq!(dog_text, expected_dog);
 }
 
 #[test]

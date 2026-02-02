@@ -240,3 +240,27 @@ and odd n =
 File: test test.ml";
     assert_eq!(odd_text, odd_expected);
 }
+
+#[test]
+fn test_function_with_imports() {
+    // OCaml can use qualified module access: Printf.printf
+    let source = r#"open Printf
+
+let greet name =
+  Printf.printf "Hello, %s!\n" name
+"#;
+    let units = parse(source, Language::Ocaml, "test.ml");
+    let func = get_unit_by_name(&units, "greet").unwrap();
+    let text = build_embedding_text(func);
+
+    let expected = r#"Function: greet
+Signature: let greet name =
+Parameters: name
+Calls: printf
+Uses: Printf
+Code:
+let greet name =
+  Printf.printf "Hello, %s!\n" name
+File: test test.ml"#;
+    assert_eq!(text, expected);
+}

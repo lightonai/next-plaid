@@ -237,3 +237,37 @@ const { count, increment } = useCounter()
 
     assert!(!units.is_empty(), "Should extract composables");
 }
+
+#[test]
+fn test_function_with_imports() {
+    let source = r#"<script setup>
+import { ref, computed } from 'vue'
+import axios from 'axios'
+
+const data = ref(null)
+
+async function fetchData(url) {
+    const response = await axios.get(url)
+    data.value = response.data
+}
+</script>
+"#;
+    let units = parse(source, Language::Vue, "test.vue");
+    let func = get_unit_by_name(&units, "fetchData").unwrap();
+    let text = build_embedding_text(func);
+
+    // Vue inherits Uses support from JavaScript/TypeScript handling
+    let expected = r#"Function: fetchData
+Signature: async function fetchData(url) {
+Parameters: url
+Calls: get
+Variables: const, response
+Uses: axios
+Code:
+async function fetchData(url) {
+    const response = await axios.get(url)
+    data.value = response.data
+}
+File: test test.vue"#;
+    assert_eq!(text, expected);
+}

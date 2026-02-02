@@ -107,6 +107,7 @@ func (c *Calculator) Add(x int) int {
 
     let expected = r#"Method: Add
 Signature: func (c *Calculator) Add(x int) int {
+Class: Calculator
 Parameters: x
 Returns: int
 Code:
@@ -238,6 +239,7 @@ func (p *Point) Scale(factor float64) {
     let text = build_embedding_text(distance);
     let expected = r#"Method: Distance
 Signature: func (p Point) Distance() float64 {
+Class: Point
 Description: Distance calculates the distance from origin.
 Returns: float64
 Calls: Sqrt
@@ -253,6 +255,7 @@ File: test test.go"#;
     let text = build_embedding_text(scale);
     let expected = r#"Method: Scale
 Signature: func (p *Point) Scale(factor float64) {
+Class: Point
 Description: Scale multiplies the point by a factor.
 Parameters: factor
 Code:

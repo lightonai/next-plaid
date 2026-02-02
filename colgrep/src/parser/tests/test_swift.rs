@@ -94,6 +94,7 @@ File: test test.swift"#;
     let text = build_embedding_text(method);
     let expected = r#"Method: greet
 Signature: func greet() -> String {
+Class: Person
 Code:
     func greet() -> String {
         return "Hello, I'm \(name)"
@@ -134,6 +135,7 @@ File: test test.swift"#;
     let text = build_embedding_text(method);
     let expected = r#"Method: distance
 Signature: func distance() -> Double {
+Class: Point
 Calls: sqrt
 Code:
     func distance() -> Double {
@@ -268,6 +270,7 @@ fn test_extension() {
     let text = build_embedding_text(method);
     let expected = r#"Method: addExclamation
 Signature: func addExclamation() -> String {
+Class: String
 Code:
     func addExclamation() -> String {
         return self + "!"
@@ -323,6 +326,74 @@ struct Clamped<Value: Comparable> {
         didSet { wrappedValue = min(max(wrappedValue, range.lowerBound), range.upperBound) }
     }
     let range: ClosedRange<Value>
+}
+File: test test.swift"#;
+    assert_eq!(text, expected);
+}
+
+#[test]
+fn test_class_inheritance() {
+    let source = r#"class Animal {
+    func speak() -> String {
+        return "..."
+    }
+}
+
+class Dog: Animal {
+    override func speak() -> String {
+        return "Woof!"
+    }
+}"#;
+    let units = parse(source, Language::Swift, "test.swift");
+
+    let animal = get_unit_by_name(&units, "Animal").unwrap();
+    let animal_text = build_embedding_text(animal);
+    // Animal has no parent
+    assert!(!animal_text.contains("Extends:"));
+
+    let dog = get_unit_by_name(&units, "Dog").unwrap();
+    let dog_text = build_embedding_text(dog);
+    let expected_dog = r#"Class: Dog
+Signature: class Dog: Animal {
+Extends: Animal
+Code:
+class Dog: Animal {
+    override func speak() -> String {
+        return "Woof!"
+    }
+}
+File: test test.swift"#;
+    assert_eq!(dog_text, expected_dog);
+}
+
+#[test]
+fn test_function_with_imports() {
+    // Note: Swift imports frameworks (import Foundation), and types are used directly
+    // without module prefix (DateFormatter() not Foundation.DateFormatter()).
+    // Uses tracking doesn't apply to Swift's import pattern - similar to C# namespace imports.
+    let source = r#"import Foundation
+
+func formatDate(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.dateStyle = .medium
+    return formatter.string(from: date)
+}
+"#;
+    let units = parse(source, Language::Swift, "test.swift");
+    let func = get_unit_by_name(&units, "formatDate").unwrap();
+    let text = build_embedding_text(func);
+
+    // Swift doesn't use Module.Type pattern, so Uses won't be populated
+    let expected = r#"Function: formatDate
+Signature: func formatDate(_ date: Date) -> String {
+Parameters: date
+Calls: DateFormatter, string
+Variables: formatter
+Code:
+func formatDate(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.dateStyle = .medium
+    return formatter.string(from: date)
 }
 File: test test.swift"#;
     assert_eq!(text, expected);

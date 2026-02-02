@@ -125,6 +125,8 @@ pub struct CodeUnit {
     pub docstring: Option<String>,
     pub parameters: Vec<String>,
     pub return_type: Option<String>,
+    pub extends: Option<String>, // Parent class for inheritance (classes)
+    pub parent_class: Option<String>, // Containing class (methods)
 
     // === Layer 2: Call Graph ===
     pub calls: Vec<String>,
@@ -173,6 +175,8 @@ impl CodeUnit {
             docstring: None,
             parameters: Vec::new(),
             return_type: None,
+            extends: None,
+            parent_class: parent_class.map(|s| s.to_string()),
             calls: Vec::new(),
             called_by: Vec::new(),
             complexity: 1,

@@ -203,10 +203,10 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("property")),
         Language::C | Language::Cpp => {
-            // For structs/unions/enums, look for name field or type_identifier
+            // For classes/structs/unions/enums, look for name field or type_identifier
             if matches!(
                 node.kind(),
-                "struct_specifier" | "union_specifier" | "enum_specifier"
+                "class_specifier" | "struct_specifier" | "union_specifier" | "enum_specifier"
             ) {
                 return node
                     .child_by_field_name("name")

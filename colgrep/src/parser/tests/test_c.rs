@@ -271,3 +271,35 @@ int max_value(int x, int y) {
 File: test test.c"#;
     assert_eq!(text, expected);
 }
+
+#[test]
+fn test_uses_not_applicable() {
+    // Note: C uses #include directives which provide declarations directly.
+    // Functions are called without module prefixes (e.g., printf() not stdio.printf()),
+    // so the Uses field doesn't apply to C code.
+    let source = r#"#include <stdio.h>
+#include <math.h>
+
+double calculate(double x) {
+    printf("Calculating...\n");
+    return sqrt(x);
+}"#;
+    let units = parse(source, Language::C, "test.c");
+
+    let func = get_unit_by_name(&units, "calculate").unwrap();
+    let text = build_embedding_text(func);
+
+    // No Uses field - functions are called directly without module prefix
+    let expected = r#"Function: calculate
+Signature: double calculate(double x) {
+Parameters: x
+Returns: double
+Calls: printf, sqrt
+Code:
+double calculate(double x) {
+    printf("Calculating...\n");
+    return sqrt(x);
+}
+File: test test.c"#;
+    assert_eq!(text, expected);
+}

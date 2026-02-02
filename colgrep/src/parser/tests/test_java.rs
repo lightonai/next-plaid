@@ -31,6 +31,7 @@ File: calculator Calculator.java"#;
 
     let expected = "Method: add
 Signature: public int add(int a, int b) {
+Class: Calculator
 Parameters: a, b
 Returns: int
 Code:
@@ -61,6 +62,7 @@ fn test_method_with_javadoc() {
 
     let expected = "Method: add
 Signature: public int add(int a, int b) {
+Class: Math
 Description: Calculates the sum of two numbers. @param a First number @param b Second number @return Sum of a and b /
 Parameters: a, b
 Returns: int
@@ -86,6 +88,7 @@ fn test_static_method() {
 
     let expected = "Method: format
 Signature: public static String format(String template, Object... args) {
+Class: Utils
 Parameters: template
 Returns: String
 Calls: format
@@ -136,6 +139,7 @@ File: container Container.java"#;
     let get_text = build_embedding_text(get_unit);
     let get_expected = r#"Method: getValue
 Signature: public T getValue() {
+Class: Container
 Returns: T
 Code:
     public T getValue() {
@@ -148,6 +152,7 @@ File: container Container.java"#;
     let set_text = build_embedding_text(set_unit);
     let set_expected = r#"Method: setValue
 Signature: public void setValue(T value) {
+Class: Container
 Parameters: value
 Returns: void
 Code:
@@ -224,6 +229,7 @@ fn test_method_throws() {
 
     let expected = "Method: read
 Signature: public String read(String path) throws IOException {
+Class: FileReader
 Parameters: path
 Returns: String
 Calls: of, readString
@@ -308,6 +314,7 @@ File: shape Shape.java"#;
     let method_text = build_embedding_text(method_unit);
     let method_expected = r#"Method: describe
 Signature: public void describe() {
+Class: Shape
 Returns: void
 Calls: println
 Code:
@@ -338,6 +345,7 @@ fn test_annotations() {
     let text = build_embedding_text(method);
     let expected = r#"Method: toString
 Signature: @Override
+Class: Service
 Returns: String
 Code:
     @Override
@@ -364,6 +372,7 @@ fn test_lambda_expression() {
     let text = build_embedding_text(unit);
     let expected = r#"Method: filter
 Signature: public List<String> filter(List<String> items) {
+Class: StreamExample
 Parameters: items
 Returns: List<String>
 Calls: collect, filter, startsWith, stream, toList
@@ -375,6 +384,43 @@ Code:
     }
 File: stream example StreamExample.java"#;
     assert_eq!(text, expected);
+}
+
+#[test]
+fn test_class_inheritance() {
+    let source = r#"public class Animal {
+    public void speak() {
+        System.out.println("...");
+    }
+}
+
+public class Dog extends Animal {
+    @Override
+    public void speak() {
+        System.out.println("Woof!");
+    }
+}"#;
+    let units = parse(source, Language::Java, "Animals.java");
+
+    let animal = get_unit_by_name(&units, "Animal").unwrap();
+    let animal_text = build_embedding_text(animal);
+    // Animal has no parent
+    assert!(!animal_text.contains("Extends:"));
+
+    let dog = get_unit_by_name(&units, "Dog").unwrap();
+    let dog_text = build_embedding_text(dog);
+    let expected_dog = r#"Class: Dog
+Signature: public class Dog extends Animal {
+Extends: Animal
+Code:
+public class Dog extends Animal {
+    @Override
+    public void speak() {
+        System.out.println("Woof!");
+    }
+}
+File: animals Animals.java"#;
+    assert_eq!(dog_text, expected_dog);
 }
 
 #[test]
@@ -391,12 +437,13 @@ public class ListUtils {
 
     let unit = get_unit_by_name(&units, "createList").unwrap();
     let text = build_embedding_text(unit);
-    // Note: Java Uses tracking would need to look at object_creation_expression types
-    // Currently "new" is extracted as a call, not the class being instantiated
+
     let expected = r#"Method: createList
 Signature: public List<String> createList() {
+Class: ListUtils
 Returns: List<String>
 Calls: new
+Uses: ArrayList
 Code:
     public List<String> createList() {
         return new ArrayList<String>();

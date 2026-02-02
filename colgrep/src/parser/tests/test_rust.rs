@@ -188,6 +188,7 @@ File: test test.rs"#;
     let new_text = build_embedding_text(new_method);
     let expected_new = r#"Method: new
 Signature: pub fn new(initial: i32) -> Self {
+Class: Calculator
 Parameters: initial
 Returns: Self
 Code:
@@ -201,6 +202,7 @@ File: test test.rs"#;
     let add_text = build_embedding_text(add_method);
     let expected_add = r#"Method: add
 Signature: pub fn add(&mut self, x: i32) -> i32 {
+Class: Calculator
 Parameters: x
 Returns: i32
 Code:

@@ -722,14 +722,14 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         Language::CSharp => &["using_directive"],
         Language::C | Language::Cpp => &["preproc_include"],
         Language::Ruby => &["call"],
-        Language::Kotlin => &["import_header"],
+        Language::Kotlin => &["import"], // Kotlin uses "import" node type
         Language::Swift => &["import_declaration"],
         Language::Scala => &["import_declaration"],
         Language::Php => &["namespace_use_declaration"],
-        Language::Lua => &["call"],
+        Language::Lua => &["function_call"],
         Language::Elixir => &["call"],
         Language::Haskell => &["import"],
-        Language::Ocaml => &["open_statement"],
+        Language::Ocaml => &["open_module"],
         _ => return imports,
     };
 
@@ -771,6 +771,46 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                 return;
             }
 
+            // For Lua, check if it's a require() call and extract the module name
+            if lang == Language::Lua {
+                // Check if first child is identifier "require"
+                if let Some(first) = node.child(0) {
+                    if first.kind() == "identifier" {
+                        if let Ok(text) = first.utf8_text(bytes) {
+                            if text != "require" {
+                                // Not a require call, skip
+                                for child in node.children(&mut node.walk()) {
+                                    visit(child, bytes, import_types, imports, lang);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+                // Extract the string argument from require("json")
+                if let Some(args) = node.child_by_field_name("arguments") {
+                    fn find_string_content(node: Node, bytes: &[u8]) -> Option<String> {
+                        if node.kind() == "string_content" {
+                            if let Ok(text) = node.utf8_text(bytes) {
+                                return Some(text.to_string());
+                            }
+                        }
+                        for child in node.children(&mut node.walk()) {
+                            if let Some(content) = find_string_content(child, bytes) {
+                                return Some(content);
+                            }
+                        }
+                        None
+                    }
+                    if let Some(module) = find_string_content(args, bytes) {
+                        if !module.is_empty() {
+                            imports.push(module);
+                        }
+                    }
+                }
+                return;
+            }
+
             // For Go, extract the package name from the string literal content
             if lang == Language::Go {
                 // Go import_spec contains interpreted_string_literal
@@ -797,9 +837,33 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                 return;
             }
 
+            // For OCaml, extract the module_name from open_module
+            if lang == Language::Ocaml {
+                fn find_module_name(node: Node, bytes: &[u8]) -> Option<String> {
+                    if node.kind() == "module_name" {
+                        if let Ok(text) = node.utf8_text(bytes) {
+                            return Some(text.to_string());
+                        }
+                    }
+                    for child in node.children(&mut node.walk()) {
+                        if let Some(name) = find_module_name(child, bytes) {
+                            return Some(name);
+                        }
+                    }
+                    None
+                }
+                if let Some(module) = find_module_name(node, bytes) {
+                    if !module.is_empty() {
+                        imports.push(module);
+                    }
+                }
+                return;
+            }
+
             if let Ok(text) = node.utf8_text(bytes) {
                 let text = text.trim();
-                let module = text
+                // Find the import path (skip keywords like import, from, use, using)
+                let path = text
                     .split_whitespace()
                     .find(|s| {
                         !s.starts_with("import")
@@ -808,13 +872,25 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                             && !s.starts_with("using")
                     })
                     .unwrap_or(text)
-                    .trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
-                    .split("::")
-                    .next()
-                    .unwrap_or("")
-                    .split('.')
-                    .next()
-                    .unwrap_or("");
+                    .trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '.');
+
+                // For languages with qualified imports (Java, Kotlin, Scala, C#),
+                // extract the last component (class name) instead of the first (package)
+                let module = match lang {
+                    Language::Java | Language::Kotlin | Language::Scala | Language::CSharp => {
+                        // Get last component: "java.util.Arrays" -> "Arrays"
+                        path.split('.').next_back().unwrap_or("")
+                    }
+                    _ => {
+                        // Default: get first component after :: or .
+                        path.split("::")
+                            .next()
+                            .unwrap_or("")
+                            .split('.')
+                            .next()
+                            .unwrap_or("")
+                    }
+                };
 
                 if !module.is_empty() {
                     imports.push(module.to_string());
@@ -843,15 +919,23 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         }
         Language::Rust => &["field_expression", "scoped_identifier"],
         Language::Go => &["selector_expression"],
-        Language::Java | Language::CSharp | Language::Kotlin | Language::Scala => {
-            &["field_access", "member_access_expression"]
-        }
+        Language::Java | Language::CSharp => &[
+            "field_access",
+            "member_access_expression",
+            "object_creation_expression",
+        ],
+        Language::Scala => &["field_expression"],
+        Language::Kotlin => &["navigation_expression"],
         Language::C | Language::Cpp => &["field_expression"],
         Language::Ruby => &["call"],
         Language::Swift => &["navigation_expression"],
-        Language::Php => &["member_access_expression", "scoped_call_expression"],
-        Language::Lua => &["field_expression", "method_index_expression"],
-        Language::Ocaml => &["field_get_expression"],
+        Language::Php => &[
+            "member_access_expression",
+            "scoped_call_expression",
+            "object_creation_expression",
+        ],
+        Language::Lua => &["dot_index_expression", "method_index_expression"],
+        Language::Ocaml => &["field_get_expression", "value_path"],
         _ => return modules,
     };
 
@@ -863,42 +947,92 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         lang: Language,
     ) {
         if attr_types.contains(&node.kind()) {
-            // Get the base/object part of the attribute access
-            let object_node = match lang {
-                Language::Python => node.child_by_field_name("object"),
-                Language::JavaScript | Language::TypeScript | Language::Vue | Language::Svelte => {
-                    node.child_by_field_name("object")
+            // Special handling for object_creation_expression (new ClassName())
+            if node.kind() == "object_creation_expression" {
+                // Find the type identifier from the type
+                // Java: generic_type -> type_identifier
+                // C#: generic_name -> identifier, or just identifier
+                // PHP: name (direct child)
+                fn find_type_identifier<'a>(n: Node<'a>) -> Option<Node<'a>> {
+                    // Java uses type_identifier, C# uses identifier, PHP uses name
+                    if n.kind() == "type_identifier"
+                        || n.kind() == "identifier"
+                        || n.kind() == "name"
+                    {
+                        return Some(n);
+                    }
+                    for child in n.children(&mut n.walk()) {
+                        if let Some(found) = find_type_identifier(child) {
+                            return Some(found);
+                        }
+                    }
+                    None
                 }
-                Language::Rust => node.child_by_field_name("value"),
-                Language::Go => node.child_by_field_name("operand"),
-                Language::Java | Language::CSharp | Language::Kotlin | Language::Scala => node
-                    .child_by_field_name("object")
-                    .or_else(|| node.child_by_field_name("expression")),
-                Language::Ruby => node.child_by_field_name("receiver"),
-                _ => node.child(0),
-            };
-
-            if let Some(obj) = object_node {
-                // Only extract simple identifiers (not nested expressions)
-                if obj.kind() == "identifier"
-                    || obj.kind() == "constant" // Ruby
-                    || obj.kind() == "simple_identifier"
-                // Kotlin
-                {
-                    if let Ok(text) = obj.utf8_text(bytes) {
+                if let Some(type_id) = find_type_identifier(node) {
+                    if let Ok(text) = type_id.utf8_text(bytes) {
                         let name = text.trim();
-                        // Skip self/this/super
-                        if !name.is_empty()
-                            && name != "self"
-                            && name != "this"
-                            && name != "super"
-                            && name
-                                .chars()
-                                .next()
-                                .map(|c| c.is_alphabetic())
-                                .unwrap_or(false)
-                        {
+                        if !name.is_empty() {
                             modules.push(name.to_string());
+                        }
+                    }
+                }
+            } else {
+                // Get the base/object part of the attribute access
+                let object_node = match lang {
+                    Language::Python => node.child_by_field_name("object"),
+                    Language::JavaScript
+                    | Language::TypeScript
+                    | Language::Vue
+                    | Language::Svelte => node.child_by_field_name("object"),
+                    Language::Rust => node.child_by_field_name("value"),
+                    Language::Go => node.child_by_field_name("operand"),
+                    Language::Java | Language::CSharp => node
+                        .child_by_field_name("object")
+                        .or_else(|| node.child_by_field_name("expression")),
+                    Language::Scala => node.child_by_field_name("value"),
+                    Language::Kotlin => node.named_child(0), // First child of navigation_expression
+                    Language::Ruby => node.child_by_field_name("receiver"),
+                    Language::Ocaml => {
+                        // OCaml value_path has module_path -> module_name
+                        fn find_module_name<'a>(n: Node<'a>) -> Option<Node<'a>> {
+                            if n.kind() == "module_name" {
+                                return Some(n);
+                            }
+                            for child in n.children(&mut n.walk()) {
+                                if let Some(found) = find_module_name(child) {
+                                    return Some(found);
+                                }
+                            }
+                            None
+                        }
+                        find_module_name(node)
+                    }
+                    _ => node.child(0),
+                };
+
+                if let Some(obj) = object_node {
+                    // Only extract simple identifiers (not nested expressions)
+                    if obj.kind() == "identifier"
+                        || obj.kind() == "constant" // Ruby
+                        || obj.kind() == "simple_identifier" // Kotlin
+                        || obj.kind() == "module_name"
+                    // OCaml
+                    {
+                        if let Ok(text) = obj.utf8_text(bytes) {
+                            let name = text.trim();
+                            // Skip self/this/super
+                            if !name.is_empty()
+                                && name != "self"
+                                && name != "this"
+                                && name != "super"
+                                && name
+                                    .chars()
+                                    .next()
+                                    .map(|c| c.is_alphabetic())
+                                    .unwrap_or(false)
+                            {
+                                modules.push(name.to_string());
+                            }
                         }
                     }
                 }
@@ -913,4 +1047,243 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
     modules.sort();
     modules.dedup();
     modules
+}
+
+/// Extract parent class name from a class/struct definition.
+pub fn extract_parent_class(node: Node, bytes: &[u8], lang: Language) -> Option<String> {
+    match lang {
+        // Python: class Dog(Animal): -> superclasses -> argument_list -> identifier
+        Language::Python => {
+            let superclasses = node.child_by_field_name("superclasses")?;
+            // Get the first identifier in the argument list
+            for child in superclasses.children(&mut superclasses.walk()) {
+                if child.kind() == "identifier" {
+                    return child.utf8_text(bytes).ok().map(|s| s.to_string());
+                }
+            }
+            None
+        }
+
+        // TypeScript/JavaScript: class Dog extends Animal -> class_heritage -> identifier (sibling of extends)
+        Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => {
+            // Look for class_heritage child
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "class_heritage" {
+                    // In JavaScript, class_heritage contains: extends, identifier (as siblings)
+                    // In TypeScript, class_heritage contains: extends_clause -> identifier
+                    // First try to find identifier directly in class_heritage (JavaScript)
+                    for heritage_child in child.children(&mut child.walk()) {
+                        if heritage_child.kind() == "identifier" {
+                            return heritage_child.utf8_text(bytes).ok().map(|s| s.to_string());
+                        }
+                    }
+                    // Then try extends_clause (TypeScript)
+                    for heritage_child in child.children(&mut child.walk()) {
+                        if heritage_child.kind() == "extends_clause" {
+                            fn find_identifier<'a>(n: Node<'a>) -> Option<Node<'a>> {
+                                if n.kind() == "identifier" {
+                                    return Some(n);
+                                }
+                                for child in n.children(&mut n.walk()) {
+                                    if let Some(found) = find_identifier(child) {
+                                        return Some(found);
+                                    }
+                                }
+                                None
+                            }
+                            if let Some(id) = find_identifier(heritage_child) {
+                                return id.utf8_text(bytes).ok().map(|s| s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+
+        // Java: class Dog extends Animal -> superclass -> type_identifier
+        Language::Java => {
+            let superclass = node.child_by_field_name("superclass")?;
+            // Find type_identifier in superclass
+            fn find_type_id<'a>(n: Node<'a>) -> Option<Node<'a>> {
+                if n.kind() == "type_identifier" {
+                    return Some(n);
+                }
+                for child in n.children(&mut n.walk()) {
+                    if let Some(found) = find_type_id(child) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            find_type_id(superclass).and_then(|n| n.utf8_text(bytes).ok().map(|s| s.to_string()))
+        }
+
+        // C#: class Dog : Animal -> base_list -> identifier
+        Language::CSharp => {
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "base_list" {
+                    // Find first identifier in base list
+                    fn find_id<'a>(n: Node<'a>) -> Option<Node<'a>> {
+                        if n.kind() == "identifier" {
+                            return Some(n);
+                        }
+                        for child in n.children(&mut n.walk()) {
+                            if let Some(found) = find_id(child) {
+                                return Some(found);
+                            }
+                        }
+                        None
+                    }
+                    if let Some(id) = find_id(child) {
+                        return id.utf8_text(bytes).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        }
+
+        // Kotlin: class Dog : Animal() -> delegation_specifiers -> delegation_specifier -> constructor_invocation -> user_type -> identifier
+        Language::Kotlin => {
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "delegation_specifiers" {
+                    // Find first identifier (may be simple_identifier or identifier depending on tree-sitter version)
+                    fn find_id<'a>(n: Node<'a>) -> Option<Node<'a>> {
+                        if n.kind() == "simple_identifier" || n.kind() == "identifier" {
+                            return Some(n);
+                        }
+                        for child in n.children(&mut n.walk()) {
+                            if let Some(found) = find_id(child) {
+                                return Some(found);
+                            }
+                        }
+                        None
+                    }
+                    if let Some(id) = find_id(child) {
+                        return id.utf8_text(bytes).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        }
+
+        // Ruby: class Dog < Animal -> superclass -> superclass node -> constant
+        Language::Ruby => {
+            let superclass = node.child_by_field_name("superclass")?;
+            // Find constant within the superclass node (handles both direct and nested cases)
+            fn find_constant<'a>(n: Node<'a>) -> Option<Node<'a>> {
+                if n.kind() == "constant" {
+                    return Some(n);
+                }
+                for child in n.children(&mut n.walk()) {
+                    if let Some(found) = find_constant(child) {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            find_constant(superclass).and_then(|n| n.utf8_text(bytes).ok().map(|s| s.to_string()))
+        }
+
+        // Swift: class Dog: Animal -> inheritance_specifier -> user_type -> type_identifier
+        Language::Swift => {
+            for child in node.children(&mut node.walk()) {
+                // Try both type_inheritance_clause and inheritance_specifier
+                if child.kind() == "type_inheritance_clause"
+                    || child.kind() == "inheritance_specifier"
+                {
+                    // Find first type_identifier
+                    fn find_id<'a>(n: Node<'a>) -> Option<Node<'a>> {
+                        if n.kind() == "type_identifier" {
+                            return Some(n);
+                        }
+                        for child in n.children(&mut n.walk()) {
+                            if let Some(found) = find_id(child) {
+                                return Some(found);
+                            }
+                        }
+                        None
+                    }
+                    if let Some(id) = find_id(child) {
+                        return id.utf8_text(bytes).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        }
+
+        // PHP: class Dog extends Animal -> base_clause -> name
+        Language::Php => {
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "base_clause" {
+                    // Find name or qualified_name
+                    fn find_name<'a>(n: Node<'a>) -> Option<Node<'a>> {
+                        if n.kind() == "name" || n.kind() == "qualified_name" {
+                            return Some(n);
+                        }
+                        for child in n.children(&mut n.walk()) {
+                            if let Some(found) = find_name(child) {
+                                return Some(found);
+                            }
+                        }
+                        None
+                    }
+                    if let Some(id) = find_name(child) {
+                        return id.utf8_text(bytes).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        }
+
+        // C++: class Dog : public Animal -> base_class_clause -> type_identifier
+        Language::Cpp => {
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "base_class_clause" {
+                    // Find type_identifier
+                    fn find_id<'a>(n: Node<'a>) -> Option<Node<'a>> {
+                        if n.kind() == "type_identifier" {
+                            return Some(n);
+                        }
+                        for child in n.children(&mut n.walk()) {
+                            if let Some(found) = find_id(child) {
+                                return Some(found);
+                            }
+                        }
+                        None
+                    }
+                    if let Some(id) = find_id(child) {
+                        return id.utf8_text(bytes).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        }
+
+        // Scala: class Dog extends Animal -> extends_clause -> type_identifier
+        Language::Scala => {
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "extends_clause" {
+                    // Find type_identifier
+                    fn find_id<'a>(n: Node<'a>) -> Option<Node<'a>> {
+                        if n.kind() == "type_identifier" {
+                            return Some(n);
+                        }
+                        for child in n.children(&mut n.walk()) {
+                            if let Some(found) = find_id(child) {
+                                return Some(found);
+                            }
+                        }
+                        None
+                    }
+                    if let Some(id) = find_id(child) {
+                        return id.utf8_text(bytes).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        }
+
+        _ => None,
+    }
 }

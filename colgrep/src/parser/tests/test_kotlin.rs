@@ -266,6 +266,41 @@ File: test test.kt"#;
 }
 
 #[test]
+fn test_class_inheritance() {
+    let source = r#"open class Animal {
+    open fun speak(): String {
+        return "..."
+    }
+}
+
+class Dog : Animal() {
+    override fun speak(): String {
+        return "Woof!"
+    }
+}"#;
+    let units = parse(source, Language::Kotlin, "test.kt");
+
+    let animal = get_unit_by_name(&units, "Animal").unwrap();
+    let animal_text = build_embedding_text(animal);
+    // Animal has no parent
+    assert!(!animal_text.contains("Extends:"));
+
+    let dog = get_unit_by_name(&units, "Dog").unwrap();
+    let dog_text = build_embedding_text(dog);
+    let expected_dog = r#"Class: Dog
+Signature: class Dog : Animal() {
+Extends: Animal
+Code:
+class Dog : Animal() {
+    override fun speak(): String {
+        return "Woof!"
+    }
+}
+File: test test.kt"#;
+    assert_eq!(dog_text, expected_dog);
+}
+
+#[test]
 fn test_function_with_imports() {
     let source = r#"import java.util.Arrays
 
@@ -275,13 +310,11 @@ fun sortArray(arr: IntArray) {
     let units = parse(source, Language::Kotlin, "test.kt");
     let func = get_unit_by_name(&units, "sortArray").unwrap();
     let text = build_embedding_text(func);
-
-    // Kotlin import extraction gets "java" from "java.util.Arrays" (first path component)
-    // So Uses doesn't match. Arrays appears in Calls instead.
     let expected = r#"Function: sortArray
 Signature: fun sortArray(arr: IntArray) {
 Parameters: arr
 Calls: Arrays, sort
+Uses: Arrays
 Code:
 fun sortArray(arr: IntArray) {
     Arrays.sort(arr)

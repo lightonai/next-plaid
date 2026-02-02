@@ -150,6 +150,8 @@ fn create_html_structure_unit(path: &Path, html: &HtmlBlock) -> CodeUnit {
         docstring: None,
         parameters: Vec::new(),
         return_type: None,
+        extends: None,
+        parent_class: None,
         calls: Vec::new(),
         called_by: Vec::new(),
         complexity: 1,

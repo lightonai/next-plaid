@@ -282,3 +282,32 @@ fn test_async_await() {
 
     assert!(!units.is_empty(), "Should extract async functions");
 }
+
+#[test]
+fn test_function_with_imports() {
+    let source = r#"<script>
+import axios from 'axios';
+
+async function fetchUsers() {
+    const response = await axios.get('/api/users');
+    return response.data;
+}
+</script>
+"#;
+    let units = parse(source, Language::Svelte, "test.svelte");
+    let func = get_unit_by_name(&units, "fetchUsers").unwrap();
+    let text = build_embedding_text(func);
+
+    let expected = r#"Function: fetchUsers
+Signature: async function fetchUsers() {
+Calls: get
+Variables: const, response
+Uses: axios
+Code:
+async function fetchUsers() {
+    const response = await axios.get('/api/users');
+    return response.data;
+}
+File: test test.svelte"#;
+    assert_eq!(text, expected);
+}

@@ -108,6 +108,8 @@ fn create_text_unit(
         docstring,
         parameters: Vec::new(),
         return_type: None,
+        extends: None,
+        parent_class: None,
         calls: Vec::new(),
         called_by: Vec::new(),
         complexity: 1,

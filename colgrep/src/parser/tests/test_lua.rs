@@ -278,3 +278,28 @@ end
 File: test test.lua"#;
     assert_eq!(get_text, expected_get);
 }
+
+#[test]
+fn test_function_with_imports() {
+    let source = r#"local json = require("json")
+
+function parseData(str)
+    return json.decode(str)
+end
+"#;
+    let units = parse(source, Language::Lua, "test.lua");
+    let func = get_unit_by_name(&units, "parseData").unwrap();
+    let text = build_embedding_text(func);
+
+    let expected = r#"Function: parseData
+Signature: function parseData(str)
+Parameters: str
+Calls: decode
+Uses: json
+Code:
+function parseData(str)
+    return json.decode(str)
+end
+File: test test.lua"#;
+    assert_eq!(text, expected);
+}

@@ -2,7 +2,7 @@
 
 use super::analysis::{
     extract_control_flow, extract_docstring, extract_function_calls, extract_parameters,
-    extract_return_type, extract_used_modules, extract_variables,
+    extract_parent_class, extract_return_type, extract_used_modules, extract_variables,
 };
 use super::ast::{find_start_with_attributes, get_node_name};
 use super::types::{CodeUnit, Language, UnitType};
@@ -121,6 +121,7 @@ pub fn extract_class(
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     unit.docstring = extract_docstring(node, lines, lang);
+    unit.extends = extract_parent_class(node, bytes, lang);
 
     // Layer 5: Dependencies (classes can have imports)
     unit.imports = file_imports.to_vec();
@@ -664,6 +665,8 @@ fn create_raw_code_unit(
         docstring: None,
         parameters: Vec::new(),
         return_type: None,
+        extends: None,
+        parent_class: None,
         calls: Vec::new(),
         called_by: Vec::new(),
         complexity: 1,

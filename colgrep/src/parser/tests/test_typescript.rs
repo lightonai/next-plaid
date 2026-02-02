@@ -137,6 +137,7 @@ File: test test.ts"#;
     let add_text = build_embedding_text(add);
     let expected_add = r#"Method: add
 Signature: public add(x: number): number {
+Class: Calculator
 Parameters: x
 Returns: : number
 Code:
@@ -303,6 +304,41 @@ Code:
 const MAX_RETRIES: number = 3;
 File: test test.ts"#;
     assert_eq!(max_text, expected_max);
+}
+
+#[test]
+fn test_class_inheritance() {
+    let source = r#"class Animal {
+    speak(): string {
+        return "...";
+    }
+}
+
+class Dog extends Animal {
+    speak(): string {
+        return "Woof!";
+    }
+}"#;
+    let units = parse(source, Language::TypeScript, "test.ts");
+
+    let animal = get_unit_by_name(&units, "Animal").unwrap();
+    let animal_text = build_embedding_text(animal);
+    // Animal has no parent
+    assert!(!animal_text.contains("Extends:"));
+
+    let dog = get_unit_by_name(&units, "Dog").unwrap();
+    let dog_text = build_embedding_text(dog);
+    let expected_dog = r#"Class: Dog
+Signature: class Dog extends Animal {
+Extends: Animal
+Code:
+class Dog extends Animal {
+    speak(): string {
+        return "Woof!";
+    }
+}
+File: test test.ts"#;
+    assert_eq!(dog_text, expected_dog);
 }
 
 #[test]
