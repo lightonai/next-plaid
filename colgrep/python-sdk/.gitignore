@@ -1,0 +1,13 @@
+# Build artifacts
+target/
+*.so
+*.pyd
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDE
+.idea/
+.vscode/

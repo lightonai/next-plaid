@@ -64,6 +64,7 @@ ci-quick:
 	cd colgrep && cargo clippy --all-targets -- -D warnings
 	cd colgrep && cargo test --lib
 	cd docs/benchmarks && uv run --extra dev ruff check .
+	cd colgrep/python-sdk && uv run --extra dev ruff check python/
 	@echo "All quick CI checks passed!"
 
 # Kill any existing API process on port 8080
@@ -115,10 +116,12 @@ install-hooks:
 # Lint Python code
 lint-python:
 	cd docs/benchmarks && uv run --extra dev ruff check .
+	cd colgrep/python-sdk && uv run --extra dev ruff check python/
 
 # Format Python code
 fmt-python:
 	cd docs/benchmarks && uv run --extra dev ruff format .
+	cd colgrep/python-sdk && uv run --extra dev ruff format python/
 
 
 launch-api-debug:
@@ -251,6 +254,11 @@ endif
 	@sed -i '' 's/version="%(prog)s [^"]*"/version="%(prog)s $(VERSION)"/' next-plaid-onnx/python/src/colbert_export/cli.py
 	@sed -i '' 's/assert "[0-9]*\.[0-9]*\.[0-9]*" in result.stdout/assert "$(VERSION)" in result.stdout/' next-plaid-onnx/python/tests/test_cli.py
 	@echo "  ✓ Updated next-plaid-onnx/python versions"
+	@# Update colgrep-parser Python SDK versions
+	@sed -i '' '/^\[package\]/,/^\[/{s/^version = "[^"]*"/version = "$(VERSION)"/;}' colgrep/python-sdk/Cargo.toml
+	@sed -i '' '/^\[project\]/,/^\[/{s/^version = "[^"]*"/version = "$(VERSION)"/;}' colgrep/python-sdk/pyproject.toml
+	@sed -i '' 's/__version__ = "[^"]*"/__version__ = "$(VERSION)"/' colgrep/python-sdk/python/colgrep_parser/__init__.py
+	@echo "  ✓ Updated colgrep/python-sdk versions"
 	@# Update README crate version (major.minor only)
 	@sed -i '' 's/next-plaid = "[0-9]*\.[0-9]*"/next-plaid = "$(shell echo $(VERSION) | cut -d. -f1,2)"/' README.md
 	@echo "  ✓ Updated README.md crate version"
@@ -259,6 +267,7 @@ endif
 	@echo "  - Cargo.toml (workspace version)"
 	@echo "  - colgrep/Cargo.toml (path dependencies)"
 	@echo "  - colgrep/src/install/{plugin,marketplace}.json"
+	@echo "  - colgrep/python-sdk/{Cargo.toml,pyproject.toml,__init__.py}"
 	@echo "  - .claude-plugin/marketplace.json"
 	@echo "  - plugins/colgrep/.claude-plugin/plugin.json"
 	@echo "  - next-plaid-api/src/main.rs (OpenAPI)"
