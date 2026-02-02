@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pylate-onnx-export"
-version = "0.8.7"
+version = "0.9.0"
 description = "Export HuggingFace ColBERT models to ONNX format for Rust inference"
 readme = "README.md"
 license = { text = "Apache-2.0" }
