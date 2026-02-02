@@ -133,6 +133,12 @@ EXAMPLES:
     # Set default context lines
     colgrep settings --default-lines 10
 
+    # Enable verbose output by default (full content with syntax highlighting)
+    colgrep settings --verbose
+
+    # Disable verbose output (compact filepath:lines format, this is the default)
+    colgrep settings --no-verbose
+
     # Switch to INT8 quantized model (faster inference)
     colgrep settings --int8
 
@@ -161,6 +167,7 @@ NOTES:
     • Values are stored in ~/.config/colgrep/config.json
     • Use 0 to reset a value to its default
     • These values override the CLI defaults when not explicitly specified
+    • Default output is compact (filepath:lines). Use -v or --verbose for full content
     • FP32 (full-precision) is the default
     • Pool factor 2 (default) reduces index size by ~50%. Use 1 to disable pooling
     • Parallel sessions default to CPU count. Batch-size 1 (default) maximizes throughput";
@@ -452,5 +459,13 @@ pub enum Commands {
         /// Smaller batches work better with parallel sessions.
         #[arg(long = "batch-size", value_name = "SIZE")]
         batch_size: Option<usize>,
+
+        /// Enable verbose output by default (show full content with syntax highlighting)
+        #[arg(long)]
+        verbose: bool,
+
+        /// Disable verbose output (show compact filepath:lines format, this is the default)
+        #[arg(long = "no-verbose", conflicts_with = "verbose")]
+        no_verbose: bool,
     },
 }

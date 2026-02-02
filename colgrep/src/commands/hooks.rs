@@ -28,7 +28,9 @@ pub fn cmd_session_hook() -> Result<()> {
                 "- Exclude files: `colgrep --exclude=\"*_test.go\" \"query\"`\n",
                 "- Exclude dirs: `colgrep --exclude-dir=node_modules --exclude-dir=vendor \"query\"`\n",
                 "- Specific folders: `colgrep \"query\" ./src/api ./src/auth`\n",
-                "- Specific files: `colgrep \"query\" ./main.rs ./lib.rs`"
+                "- Specific files: `colgrep \"query\" ./main.rs ./lib.rs`\n\n",
+                "OUTPUT MODES:\n",
+                "- Show content for one query: `colgrep -n 10 \"query\"` or `colgrep -c \"query\"``"
             )
         }
     });

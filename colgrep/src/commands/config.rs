@@ -88,6 +88,7 @@ pub fn cmd_set_model(model: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_config(
     default_k: Option<usize>,
     default_n: Option<usize>,
@@ -96,6 +97,8 @@ pub fn cmd_config(
     pool_factor: Option<usize>,
     parallel_sessions: Option<usize>,
     batch_size: Option<usize>,
+    verbose: bool,
+    no_verbose: bool,
 ) -> Result<()> {
     let mut config = Config::load()?;
 
@@ -107,6 +110,8 @@ pub fn cmd_config(
         && pool_factor.is_none()
         && parallel_sessions.is_none()
         && batch_size.is_none()
+        && !verbose
+        && !no_verbose
     {
         println!("Current configuration:");
         println!();
@@ -164,6 +169,13 @@ pub fn cmd_config(
             None => println!("  n:           6 (default)"),
         }
 
+        // verbose
+        if config.is_verbose() {
+            println!("  verbose:     true");
+        } else {
+            println!("  verbose:     false (default)");
+        }
+
         println!();
         println!(
             "Use --default-results or --default-lines to set values. Use 0 to reset to default."
@@ -172,6 +184,7 @@ pub fn cmd_config(
         println!("Use --pool-factor to set embedding compression (1=disabled, 2+=enabled). Use 0 to reset.");
         println!("Use --parallel to set number of parallel ONNX sessions. Use 0 to reset to auto (CPU count).");
         println!("Use --batch-size to set batch size per session. Use 0 to reset to default (1).");
+        println!("Use --verbose or --no-verbose to set default output mode.");
         return Ok(());
     }
 
@@ -250,6 +263,17 @@ pub fn cmd_config(
             config.set_batch_size(bs);
             println!("✅ Set batch size to {}", bs);
         }
+        changed = true;
+    }
+
+    // Set verbose or no_verbose
+    if verbose {
+        config.set_verbose(true);
+        println!("✅ Enabled verbose output by default");
+        changed = true;
+    } else if no_verbose {
+        config.clear_verbose();
+        println!("✅ Disabled verbose output (compact mode is now default)");
         changed = true;
     }
 

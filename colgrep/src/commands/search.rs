@@ -306,6 +306,14 @@ pub fn resolve_context_lines(cli_n: Option<usize>, default: usize) -> usize {
     default
 }
 
+/// Resolve verbose: saved config > default (false)
+pub fn resolve_verbose() -> bool {
+    if let Ok(config) = Config::load() {
+        return config.is_verbose();
+    }
+    false
+}
+
 /// Resolve pool_factor: --no-pool > --pool-factor > config > default (2)
 pub fn resolve_pool_factor(cli_pool_factor: Option<usize>, no_pool: bool) -> Option<usize> {
     if no_pool {
@@ -335,7 +343,7 @@ pub fn cmd_search(
     include_patterns: &[String],
     files_only: bool,
     show_content: bool,
-    context_lines: usize,
+    cli_context_lines: Option<usize>,
     text_pattern: Option<&str>,
     extended_regexp: bool,
     fixed_strings: bool,
@@ -346,6 +354,8 @@ pub fn cmd_search(
     pool_factor: Option<usize>,
     auto_confirm: bool,
 ) -> Result<()> {
+    // Resolve context_lines: CLI > config > default (20)
+    let context_lines = resolve_context_lines(cli_context_lines, 20);
     // Collect results from all paths
     let mut all_results: Vec<colgrep::SearchResult> = Vec::new();
     let mut path_errors: Vec<String> = Vec::new();
@@ -435,163 +445,73 @@ pub fn cmd_search(
             return Ok(());
         }
 
-        // Pre-compile pattern matchers ONCE before the display loop.
-        // This avoids expensive regex compilation on every result.
-        let text_pattern_matcher = text_pattern
-            .map(|p| PatternMatcher::new(p, effective_extended_regexp, fixed_strings, word_regexp));
+        // Resolve verbose mode from config, but force verbose if -c or -n > 0 is used
+        let verbose = if show_content || cli_context_lines.is_some_and(|n| n > 0) {
+            true // Force verbose when user explicitly requests content display
+        } else {
+            resolve_verbose()
+        };
 
-        // For query matching (when no -e pattern), use literal matching
-        let query_matcher = PatternMatcher::new(query, false, true, false);
-
-        // Separate results into code files and documents/config files
-        let (code_results, doc_results): (Vec<_>, Vec<_>) = results
-            .iter()
-            .partition(|r| !is_text_format(r.unit.language));
-
-        let half_context = context_lines / 2;
-        let has_text_pattern = text_pattern.is_some();
-
-        // Calculate max line number across all results for consistent alignment
-        let max_line_num = results.iter().map(|r| r.unit.end_line).max().unwrap_or(1);
-        let line_num_width = max_line_num.to_string().len().max(4);
-
-        // Display code results first, grouped by file
-        if !code_results.is_empty() {
-            let grouped = group_results_by_file(&code_results);
-            for (file, file_results) in grouped {
-                // Print file header (file paths are absolute from search_single_path)
-                println!("file: {}", file.display().to_string().cyan());
-                for result in file_results {
-                    let file_to_read = &result.unit.file;
-                    if let Ok(content) = std::fs::read_to_string(file_to_read) {
-                        let lines: Vec<&str> = content.lines().collect();
-                        let end = result.unit.end_line.min(lines.len());
-                        let max_lines = if show_content {
-                            usize::MAX
-                        } else {
-                            context_lines
-                        };
-
-                        if has_text_pattern {
-                            let file_matches = text_pattern_matcher
-                                .as_ref()
-                                .unwrap()
-                                .find_matches_in_unit(&result.unit);
-                            let ranges = calc_display_ranges(
-                                &file_matches,
-                                result.unit.line,
-                                end,
-                                half_context,
-                                max_lines,
-                                true,
-                            );
-                            print_highlighted_ranges(
-                                file_to_read,
-                                &lines,
-                                &ranges,
-                                end,
-                                line_num_width,
-                            );
-                        } else {
-                            let query_matches = query_matcher.find_matches_in_unit(&result.unit);
-                            if !query_matches.is_empty() {
-                                let ranges = calc_display_ranges(
-                                    &query_matches,
-                                    result.unit.line,
-                                    end,
-                                    half_context,
-                                    max_lines,
-                                    true,
-                                );
-                                print_highlighted_ranges(
-                                    file_to_read,
-                                    &lines,
-                                    &ranges,
-                                    end,
-                                    line_num_width,
-                                );
-                            } else {
-                                // No exact match - find most representative line(s) based on token overlap
-                                let representative_lines = find_representative_lines(
-                                    &result.unit.code,
-                                    result.unit.line,
-                                    query,
-                                );
-                                if !representative_lines.is_empty() {
-                                    let ranges = calc_display_ranges(
-                                        &representative_lines,
-                                        result.unit.line,
-                                        end,
-                                        half_context,
-                                        max_lines,
-                                        true,
-                                    );
-                                    print_highlighted_ranges(
-                                        file_to_read,
-                                        &lines,
-                                        &ranges,
-                                        end,
-                                        line_num_width,
-                                    );
-                                } else {
-                                    // Final fallback: show from beginning
-                                    let start = result.unit.line.saturating_sub(1);
-                                    if start < lines.len() {
-                                        print_highlighted_content(
-                                            file_to_read,
-                                            &lines,
-                                            start,
-                                            max_lines,
-                                            end,
-                                            line_num_width,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                println!();
+        if !verbose {
+            // Non-verbose (compact) mode: show filepath:lines (score: X.XX) ordered by score
+            for result in &results {
+                let file_path = result.unit.file.display();
+                let start_line = result.unit.line;
+                let end_line = result.unit.end_line;
+                let score = result.score;
+                println!(
+                    "{}:{}-{} (score: {:.2})",
+                    file_path, start_line, end_line, score
+                );
             }
-        }
+        } else {
+            // Verbose mode: full content grouped by file with syntax highlighting
 
-        // Display document/config results after, grouped by file
-        if !doc_results.is_empty() {
-            let grouped = group_results_by_file(&doc_results);
-            for (file, file_results) in grouped {
-                println!("file: {}", file.display().to_string().cyan());
-                for result in file_results {
-                    let file_to_read = &result.unit.file;
-                    if let Ok(content) = std::fs::read_to_string(file_to_read) {
-                        let lines: Vec<&str> = content.lines().collect();
-                        let end = result.unit.end_line.min(lines.len());
-                        let max_lines = if show_content { 250 } else { context_lines };
+            // Pre-compile pattern matchers ONCE before the display loop.
+            // This avoids expensive regex compilation on every result.
+            let text_pattern_matcher = text_pattern.map(|p| {
+                PatternMatcher::new(p, effective_extended_regexp, fixed_strings, word_regexp)
+            });
 
-                        if has_text_pattern {
-                            let file_matches = text_pattern_matcher
-                                .as_ref()
-                                .unwrap()
-                                .find_matches_in_unit(&result.unit);
-                            let ranges = calc_display_ranges(
-                                &file_matches,
-                                result.unit.line,
-                                end,
-                                half_context,
-                                max_lines,
-                                true,
-                            );
-                            print_highlighted_ranges(
-                                file_to_read,
-                                &lines,
-                                &ranges,
-                                end,
-                                line_num_width,
-                            );
-                        } else {
-                            let query_matches = query_matcher.find_matches_in_unit(&result.unit);
-                            if !query_matches.is_empty() {
+            // For query matching (when no -e pattern), use literal matching
+            let query_matcher = PatternMatcher::new(query, false, true, false);
+
+            // Separate results into code files and documents/config files
+            let (code_results, doc_results): (Vec<_>, Vec<_>) = results
+                .iter()
+                .partition(|r| !is_text_format(r.unit.language));
+
+            let half_context = context_lines / 2;
+            let has_text_pattern = text_pattern.is_some();
+
+            // Calculate max line number across all results for consistent alignment
+            let max_line_num = results.iter().map(|r| r.unit.end_line).max().unwrap_or(1);
+            let line_num_width = max_line_num.to_string().len().max(4);
+
+            // Display code results first, grouped by file
+            if !code_results.is_empty() {
+                let grouped = group_results_by_file(&code_results);
+                for (file, file_results) in grouped {
+                    // Print file header (file paths are absolute from search_single_path)
+                    println!("file: {}", file.display().to_string().cyan());
+                    for result in file_results {
+                        let file_to_read = &result.unit.file;
+                        if let Ok(content) = std::fs::read_to_string(file_to_read) {
+                            let lines: Vec<&str> = content.lines().collect();
+                            let end = result.unit.end_line.min(lines.len());
+                            let max_lines = if show_content {
+                                usize::MAX
+                            } else {
+                                context_lines
+                            };
+
+                            if has_text_pattern {
+                                let file_matches = text_pattern_matcher
+                                    .as_ref()
+                                    .unwrap()
+                                    .find_matches_in_unit(&result.unit);
                                 let ranges = calc_display_ranges(
-                                    &query_matches,
+                                    &file_matches,
                                     result.unit.line,
                                     end,
                                     half_context,
@@ -606,15 +526,11 @@ pub fn cmd_search(
                                     line_num_width,
                                 );
                             } else {
-                                // No exact match - find most representative line(s) based on token overlap
-                                let representative_lines = find_representative_lines(
-                                    &result.unit.code,
-                                    result.unit.line,
-                                    query,
-                                );
-                                if !representative_lines.is_empty() {
+                                let query_matches =
+                                    query_matcher.find_matches_in_unit(&result.unit);
+                                if !query_matches.is_empty() {
                                     let ranges = calc_display_ranges(
-                                        &representative_lines,
+                                        &query_matches,
                                         result.unit.line,
                                         end,
                                         half_context,
@@ -629,24 +545,144 @@ pub fn cmd_search(
                                         line_num_width,
                                     );
                                 } else {
-                                    // Final fallback: show from beginning
-                                    let start = result.unit.line.saturating_sub(1);
-                                    if start < lines.len() {
-                                        print_highlighted_content(
+                                    // No exact match - find most representative line(s) based on token overlap
+                                    let representative_lines = find_representative_lines(
+                                        &result.unit.code,
+                                        result.unit.line,
+                                        query,
+                                    );
+                                    if !representative_lines.is_empty() {
+                                        let ranges = calc_display_ranges(
+                                            &representative_lines,
+                                            result.unit.line,
+                                            end,
+                                            half_context,
+                                            max_lines,
+                                            true,
+                                        );
+                                        print_highlighted_ranges(
                                             file_to_read,
                                             &lines,
-                                            start,
-                                            max_lines,
+                                            &ranges,
                                             end,
                                             line_num_width,
                                         );
+                                    } else {
+                                        // Final fallback: show from beginning
+                                        let start = result.unit.line.saturating_sub(1);
+                                        if start < lines.len() {
+                                            print_highlighted_content(
+                                                file_to_read,
+                                                &lines,
+                                                start,
+                                                max_lines,
+                                                end,
+                                                line_num_width,
+                                            );
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                    println!();
                 }
-                println!();
+            }
+
+            // Display document/config results after, grouped by file
+            if !doc_results.is_empty() {
+                let grouped = group_results_by_file(&doc_results);
+                for (file, file_results) in grouped {
+                    println!("file: {}", file.display().to_string().cyan());
+                    for result in file_results {
+                        let file_to_read = &result.unit.file;
+                        if let Ok(content) = std::fs::read_to_string(file_to_read) {
+                            let lines: Vec<&str> = content.lines().collect();
+                            let end = result.unit.end_line.min(lines.len());
+                            let max_lines = if show_content { 250 } else { context_lines };
+
+                            if has_text_pattern {
+                                let file_matches = text_pattern_matcher
+                                    .as_ref()
+                                    .unwrap()
+                                    .find_matches_in_unit(&result.unit);
+                                let ranges = calc_display_ranges(
+                                    &file_matches,
+                                    result.unit.line,
+                                    end,
+                                    half_context,
+                                    max_lines,
+                                    true,
+                                );
+                                print_highlighted_ranges(
+                                    file_to_read,
+                                    &lines,
+                                    &ranges,
+                                    end,
+                                    line_num_width,
+                                );
+                            } else {
+                                let query_matches =
+                                    query_matcher.find_matches_in_unit(&result.unit);
+                                if !query_matches.is_empty() {
+                                    let ranges = calc_display_ranges(
+                                        &query_matches,
+                                        result.unit.line,
+                                        end,
+                                        half_context,
+                                        max_lines,
+                                        true,
+                                    );
+                                    print_highlighted_ranges(
+                                        file_to_read,
+                                        &lines,
+                                        &ranges,
+                                        end,
+                                        line_num_width,
+                                    );
+                                } else {
+                                    // No exact match - find most representative line(s) based on token overlap
+                                    let representative_lines = find_representative_lines(
+                                        &result.unit.code,
+                                        result.unit.line,
+                                        query,
+                                    );
+                                    if !representative_lines.is_empty() {
+                                        let ranges = calc_display_ranges(
+                                            &representative_lines,
+                                            result.unit.line,
+                                            end,
+                                            half_context,
+                                            max_lines,
+                                            true,
+                                        );
+                                        print_highlighted_ranges(
+                                            file_to_read,
+                                            &lines,
+                                            &ranges,
+                                            end,
+                                            line_num_width,
+                                        );
+                                    } else {
+                                        // Final fallback: show from beginning
+                                        let start = result.unit.line.saturating_sub(1);
+                                        if start < lines.len() {
+                                            print_highlighted_content(
+                                                file_to_read,
+                                                &lines,
+                                                start,
+                                                max_lines,
+                                                end,
+                                                line_num_width,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    println!();
+                }
             }
         }
     }

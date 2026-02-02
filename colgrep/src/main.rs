@@ -14,7 +14,7 @@ use colgrep::{
 };
 
 use cli::{Cli, Commands};
-use commands::search::{resolve_context_lines, resolve_pool_factor, resolve_top_k};
+use commands::search::{resolve_pool_factor, resolve_top_k};
 use commands::{
     cmd_clear, cmd_config, cmd_reset_stats, cmd_search, cmd_session_hook, cmd_set_model, cmd_stats,
     cmd_status,
@@ -118,7 +118,7 @@ fn main() -> Result<()> {
                     &include_patterns,
                     files_only,
                     show_content,
-                    resolve_context_lines(context_lines, 20),
+                    context_lines, // Pass raw Option to detect explicit -n flag
                     text_pattern.as_deref(),
                     extended_regexp,
                     fixed_strings,
@@ -147,6 +147,8 @@ fn main() -> Result<()> {
             pool_factor,
             parallel_sessions,
             batch_size,
+            verbose,
+            no_verbose,
         }) => cmd_config(
             default_k,
             default_n,
@@ -155,6 +157,8 @@ fn main() -> Result<()> {
             pool_factor,
             parallel_sessions,
             batch_size,
+            verbose,
+            no_verbose,
         ),
         None => {
             // Default: run search if query is provided
@@ -176,7 +180,7 @@ fn main() -> Result<()> {
                     &cli.include_patterns,
                     cli.files_only,
                     cli.show_content,
-                    resolve_context_lines(cli.context_lines, 20),
+                    cli.context_lines, // Pass raw Option to detect explicit -n flag
                     cli.text_pattern.as_deref(),
                     cli.extended_regexp,
                     cli.fixed_strings,

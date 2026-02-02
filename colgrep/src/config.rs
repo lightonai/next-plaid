@@ -122,6 +122,12 @@ pub struct Config {
     /// Smaller batches work better with parallel sessions
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_size: Option<usize>,
+
+    /// Verbose output mode (default: false)
+    /// When false, shows compact output: filepath:lines (score: X.XX)
+    /// When true, shows full content grouped by file with syntax highlighting
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verbose: Option<bool>,
 }
 
 impl Config {
@@ -269,6 +275,22 @@ impl Config {
     /// Clear the batch size setting (revert to default)
     pub fn clear_batch_size(&mut self) {
         self.batch_size = None;
+    }
+
+    /// Check if verbose output mode is enabled
+    /// Defaults to false (compact output)
+    pub fn is_verbose(&self) -> bool {
+        self.verbose.unwrap_or(false)
+    }
+
+    /// Set verbose output mode
+    pub fn set_verbose(&mut self, verbose: bool) {
+        self.verbose = Some(verbose);
+    }
+
+    /// Clear the verbose setting (revert to default: false)
+    pub fn clear_verbose(&mut self) {
+        self.verbose = None;
     }
 }
 
