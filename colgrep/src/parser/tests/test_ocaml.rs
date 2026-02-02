@@ -16,7 +16,7 @@ fn test_basic_function() {
 
     let expected = r#"Function: greet
 Signature: let greet name =
-Variables: greet
+Parameters: name
 Code:
 let greet name =
   "Hello, " ^ name ^ "!"
@@ -37,7 +37,7 @@ let add a b = a + b
     let expected = r#"Function: add
 Signature: let add a b = a + b
 Description: Calculates the sum of two numbers.
-Variables: add
+Parameters: a, b
 Code:
 let add a b = a + b
 File: test test.ml"#;
@@ -57,7 +57,8 @@ fn test_recursive_function() {
 
     let expected = "Function: factorial
 Signature: let rec factorial n =
-Variables: factorial
+Parameters: n
+Calls: factorial
 Code:
 let rec factorial n =
   if n <= 1 then 1
@@ -91,7 +92,7 @@ end
 
     let helper_expected = "Function: helper
 Signature: let helper x = x * 2
-Variables: helper
+Parameters: x
 Code:
   let helper x = x * 2
 File: test test.ml";
@@ -102,7 +103,7 @@ File: test test.ml";
 
     let another_expected = "Function: another
 Signature: let another y = y + 1
-Variables: another
+Parameters: y
 Code:
   let another y = y + 1
 File: test test.ml";
@@ -120,7 +121,7 @@ fn test_function_with_type_annotation() {
 
     let expected = "Function: add
 Signature: let add (a : int) (b : int) : int = a + b
-Variables: add
+Parameters: a, b
 Code:
 let add (a : int) (b : int) : int = a + b
 File: test test.ml";
@@ -140,7 +141,7 @@ fn test_pattern_matching() {
 
     let expected = "Function: length
 Signature: let rec length = function
-Variables: length
+Calls: length
 Code:
 let rec length = function
   | [] -> 0
@@ -195,7 +196,7 @@ fn test_let_binding_with_match() {
 
     let expected = "Function: first_or_default
 Signature: let first_or_default default = function
-Variables: first_or_default
+Parameters: default
 Code:
 let first_or_default default = function
   | [] -> default
@@ -218,7 +219,8 @@ and odd n =
 
     let even_expected = "Function: even
 Signature: let rec even n =
-Variables: even
+Parameters: n
+Calls: odd
 Code:
 let rec even n =
   if n = 0 then true else odd (n - 1)
@@ -230,7 +232,8 @@ File: test test.ml";
 
     let odd_expected = "Function: odd
 Signature: and odd n =
-Variables: odd
+Parameters: n
+Calls: even
 Code:
 and odd n =
   if n = 0 then false else even (n - 1)

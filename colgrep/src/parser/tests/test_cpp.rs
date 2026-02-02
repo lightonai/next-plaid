@@ -151,7 +151,7 @@ private:
     let text = build_embedding_text(unit);
     let expected = r#"Function: Person
 Signature: Person(const std::string& name, int age)
-Parameters: age
+Parameters: name, age
 Code:
     Person(const std::string& name, int age)
         : name_(name), age_(age) {}
@@ -199,9 +199,10 @@ std::vector<int> filter_positive(const std::vector<int>& nums) {
     let text = build_embedding_text(unit);
     let expected = r#"Function: filter_positive
 Signature: std::vector<int> filter_positive(const std::vector<int>& nums) {
+Parameters: nums
 Returns: std::vector<int>
 Calls: back_inserter, begin, copy_if, end
-Variables: std::vector<int>
+Variables: result
 Code:
 std::vector<int> filter_positive(const std::vector<int>& nums) {
     std::vector<int> result;
@@ -274,6 +275,7 @@ private:
     let text = build_embedding_text(unit);
     let expected = r#"Function: operator+
 Signature: Vector operator+(const Vector& other) const {
+Parameters: other
 Returns: Vector
 Calls: Vector
 Code:

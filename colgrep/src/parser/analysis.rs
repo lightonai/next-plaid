@@ -3,6 +3,33 @@
 use super::types::Language;
 use tree_sitter::Node;
 
+/// Find the identifier inside a C/C++ declarator.
+/// Handles: identifier, pointer_declarator, array_declarator, function_declarator,
+/// parenthesized_declarator, reference_declarator (C++ references)
+fn find_identifier_in_declarator<'a>(node: Node<'a>, _bytes: &[u8]) -> Option<Node<'a>> {
+    match node.kind() {
+        "identifier" => Some(node),
+        "pointer_declarator"
+        | "array_declarator"
+        | "function_declarator"
+        | "parenthesized_declarator"
+        | "reference_declarator" => {
+            // The identifier is nested inside, try declarator field first
+            if let Some(inner) = node.child_by_field_name("declarator") {
+                return find_identifier_in_declarator(inner, _bytes);
+            }
+            // For function pointers like (*func), check children
+            for child in node.children(&mut node.walk()) {
+                if let Some(found) = find_identifier_in_declarator(child, _bytes) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Extract docstring from a function or class node.
 pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<String> {
     match lang {
@@ -335,8 +362,20 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
             node.children(&mut node.walk())
                 .find(|child| child.kind() == "parameters")
         }
-        Language::Php | Language::Lua | Language::Elixir | Language::Haskell | Language::Ocaml => {
+        Language::Php | Language::Lua | Language::Elixir | Language::Haskell => {
             node.child_by_field_name("parameters")
+        }
+        Language::Ocaml => {
+            // OCaml parameters are in let_binding children
+            // For value_definition, we need to find the let_binding first
+            if node.kind() == "value_definition" {
+                node.children(&mut node.walk())
+                    .find(|c| c.kind() == "let_binding")
+            } else if node.kind() == "let_binding" {
+                Some(node)
+            } else {
+                None
+            }
         }
         _ => None,
     };
@@ -348,7 +387,12 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
     let mut result = Vec::new();
     for child in params.children(&mut params.walk()) {
         let kind = child.kind();
-        if kind.contains("parameter") || kind == "identifier" {
+        // For OCaml, parameters are direct children with kind "parameter"
+        // Also handle "typed" for typed parameters like (a : int)
+        if kind.contains("parameter")
+            || kind == "identifier"
+            || (lang == Language::Ocaml && kind == "typed")
+        {
             // Go: handle grouped parameters like `a, b int`
             if lang == Language::Go && kind == "parameter_declaration" {
                 // Iterate all children to find all identifiers
@@ -385,13 +429,36 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
                         .child_by_field_name("pattern")
                         .filter(|c| c.kind() == "identifier")
                 } else if matches!(lang, Language::C | Language::Cpp) {
-                    // For C/C++, parameter_declaration has a "declarator" field containing the identifier
+                    // For C/C++, parameter_declaration has a "declarator" field
+                    // This can be: identifier, pointer_declarator, array_declarator, function_declarator
                     child
                         .child_by_field_name("declarator")
-                        .filter(|c| c.kind() == "identifier")
+                        .and_then(|d| find_identifier_in_declarator(d, bytes))
                 } else if lang == Language::Kotlin {
                     // For Kotlin, the identifier is a direct child of the parameter node
                     child.child(0).filter(|c| c.kind() == "identifier")
+                } else if lang == Language::Ocaml {
+                    // For OCaml, parameter contains value_pattern or typed_pattern
+                    // value_pattern contains the actual identifier
+                    // Use named_child(0) to skip anonymous nodes like parentheses
+                    fn find_ocaml_param_name<'a>(node: Node<'a>) -> Option<Node<'a>> {
+                        match node.kind() {
+                            "value_pattern" | "value_name" => {
+                                // value_pattern text is the identifier
+                                Some(node)
+                            }
+                            "typed" | "typed_pattern" => {
+                                // typed/typed_pattern has value_pattern as first named child
+                                node.named_child(0).and_then(find_ocaml_param_name)
+                            }
+                            "parameter" => {
+                                // parameter has value_pattern or typed_pattern as named child
+                                node.named_child(0).and_then(find_ocaml_param_name)
+                            }
+                            _ => None,
+                        }
+                    }
+                    find_ocaml_param_name(child)
                 } else {
                     None
                 }
@@ -462,7 +529,7 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
         Language::Lua => &["function_call"],
         Language::Elixir => &["call"],
         Language::Haskell => &["function_application"],
-        Language::Ocaml => &["application"],
+        Language::Ocaml => &["application_expression"],
         _ => return calls,
     };
 
@@ -586,18 +653,35 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
         Language::Lua => &["variable_declaration", "local_variable_declaration"],
         Language::Elixir => &["match"],
         Language::Haskell => &["function_binding"],
-        Language::Ocaml => &["let_binding"],
+        // OCaml: Don't extract let_binding as variable since it's the function definition itself
+        Language::Ocaml => &[],
         _ => return vars,
     };
 
-    fn visit(node: Node, bytes: &[u8], var_types: &[&str], vars: &mut Vec<String>) {
+    fn visit(node: Node, bytes: &[u8], var_types: &[&str], vars: &mut Vec<String>, lang: Language) {
         if var_types.contains(&node.kind()) {
-            if let Some(name_node) = node
-                .child_by_field_name("left")
-                .or_else(|| node.child_by_field_name("name"))
-                .or_else(|| node.child_by_field_name("pattern"))
-                .or_else(|| node.child(0))
-            {
+            // For C/C++, get the declarator field which contains the variable name
+            let name_node = if matches!(lang, Language::C | Language::Cpp) {
+                // For init_declarator: get declarator field
+                if node.kind() == "init_declarator" {
+                    node.child_by_field_name("declarator")
+                        .and_then(|d| find_identifier_in_declarator(d, bytes))
+                } else if node.kind() == "declaration" {
+                    // For declaration without init (e.g., `int x;` or `std::vector<int> result;`)
+                    // Get the declarator field directly
+                    node.child_by_field_name("declarator")
+                        .and_then(|d| find_identifier_in_declarator(d, bytes))
+                } else {
+                    None
+                }
+            } else {
+                node.child_by_field_name("left")
+                    .or_else(|| node.child_by_field_name("name"))
+                    .or_else(|| node.child_by_field_name("pattern"))
+                    .or_else(|| node.child(0))
+            };
+
+            if let Some(name_node) = name_node {
                 if let Ok(text) = name_node.utf8_text(bytes) {
                     let name = text.trim();
                     if !name.is_empty()
@@ -614,11 +698,11 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
             }
         }
         for child in node.children(&mut node.walk()) {
-            visit(child, bytes, var_types, vars);
+            visit(child, bytes, var_types, vars, lang);
         }
     }
 
-    visit(node, bytes, var_types, &mut vars);
+    visit(node, bytes, var_types, &mut vars, lang);
     vars.sort();
     vars.dedup();
     vars

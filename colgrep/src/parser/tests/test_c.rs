@@ -84,8 +84,9 @@ fn test_pointer_parameters() {
     let text = build_embedding_text(func);
     let expected = r#"Function: swap
 Signature: void swap(int *a, int *b) {
+Parameters: a, b
 Returns: void
-Variables: int, temp
+Variables: temp
 Code:
 void swap(int *a, int *b) {
     int temp = *a;
@@ -132,7 +133,7 @@ int main(int argc, char *argv[]) {
     let text = build_embedding_text(func);
     let expected = r#"Function: main
 Signature: int main(int argc, char *argv[]) {
-Parameters: argc
+Parameters: argc, argv
 Returns: int
 Calls: printf
 Code:
@@ -178,9 +179,9 @@ fn test_function_declaration_with_array_param() {
     let text = build_embedding_text(func);
     let expected = r#"Function: process_array
 Signature: void process_array(int arr[], int size) {
-Parameters: size
+Parameters: arr, size
 Returns: void
-Variables: i, int
+Variables: i
 Code:
 void process_array(int arr[], int size) {
     for (int i = 0; i < size; i++) {
@@ -210,7 +211,7 @@ Point create_point(int x, int y) {
 Signature: Point create_point(int x, int y) {
 Parameters: x, y
 Returns: Point
-Variables: Point, p
+Variables: p
 Code:
 Point create_point(int x, int y) {
     Point p = {x, y};
@@ -233,10 +234,10 @@ fn test_function_pointer_param() {
     let text = build_embedding_text(func);
     let expected = r#"Function: apply
 Signature: void apply(int *arr, int size, int (*func)(int)) {
-Parameters: size
+Parameters: arr, size, func
 Returns: void
 Calls: func
-Variables: i, int
+Variables: i
 Code:
 void apply(int *arr, int size, int (*func)(int)) {
     for (int i = 0; i < size; i++) {

@@ -26,10 +26,10 @@ mod vue;
 #[cfg(test)]
 mod tests;
 
-// Legacy tests (to be migrated)
+// Core parser tests (language detection, call graph, control flow, etc.)
 #[cfg(test)]
-#[path = "tests_legacy.rs"]
-mod tests_legacy;
+#[path = "test_core.rs"]
+mod test_core;
 
 // Re-exports
 pub use call_graph::build_call_graph;

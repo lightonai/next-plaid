@@ -142,46 +142,43 @@ File: src / utils / http client http_client.py
 
 ---
 
-### C
+### C ✅ COMPLETED
 
 **Current State:**
-- Name/Signature
-- Description (/* block comments */)
-- Returns
-- Calls
-- Variables
+- Name/Signature ✓
+- Description (/* block comments */) ✓
+- Parameters ✓ (now extracts all parameter types: simple, pointer, array, function pointer)
+- Returns ✓
+- Calls ✓
+- Variables ✓ (fixed to exclude type names)
 
-**Missing:**
-- **Parameters**: Not extracted despite being in signature
-- **Uses**: Header/type references not tracked
+**Remaining:**
+- **Uses**: Header/type references not tracked (lower priority)
 
-**Recommended Improvements:**
-1. Extract parameter names from function declarations
-2. Track struct/typedef references
-
-**Note:** Variables incorrectly includes type declarations (e.g., `int, temp`)
+**Changes Made:**
+- Added `find_identifier_in_declarator()` helper to recursively find identifiers in nested declarators
+- Fixed parameter extraction for pointer params (`int *a`), array params (`int arr[]`), and function pointer params (`int (*func)(int)`)
+- Fixed Variables extraction to get declarator field instead of type, excluding type names like `int`
 
 ---
 
-### C++
+### C++ ✅ COMPLETED
 
 **Current State:**
-- Name/Signature
-- Description (Doxygen /** comments */)
-- Returns
-- Calls
-- Variables
+- Name/Signature ✓
+- Description (Doxygen /** comments */) ✓
+- Parameters ✓ (now extracts all parameter types including reference params like `const T&`)
+- Returns ✓
+- Calls ✓
+- Variables ✓ (fixed to exclude type names)
 
-**Missing:**
-- **Parameters**: Not extracted
-- **Uses**: Class/template references not tracked
+**Remaining:**
+- **Uses**: Class/template references not tracked (lower priority)
 
-**Recommended Improvements:**
-1. Extract parameter names from function declarations
-2. Parse Doxygen `@param` and `@return` tags
-3. Track template types and class references
-
-**Note:** Methods in classes extracted as Function instead of Method
+**Changes Made:**
+- Added `reference_declarator` handling to `find_identifier_in_declarator()` for C++ references
+- Fixed parameter extraction for reference params (`const std::string& name`)
+- Fixed Variables extraction to get actual variable names instead of type names
 
 ---
 
@@ -320,26 +317,23 @@ File: src / utils / http client http_client.py
 
 ---
 
-### OCaml
+### OCaml ✅ COMPLETED
 
 **Current State:**
-- Name/Signature
-- Description ((** OCamldoc *))
-- Variables
+- Name/Signature ✓
+- Description ((** OCamldoc *)) ✓
+- Parameters ✓ (now extracts both simple and typed parameters)
+- Calls ✓ (now extracts function calls from application_expression)
 
-**Missing:**
-- **Parameters**: Not extracted despite being in signature
-- **Returns**: Not extracted from type annotations
-- **Calls**: Not extracted
-- **Uses**: Module/type references not tracked
+**Remaining:**
+- **Returns**: Not extracted from type annotations (lower priority)
+- **Uses**: Module/type references not tracked (lower priority)
 
-**Recommended Improvements:**
-1. Extract parameter names from function definitions
-2. Parse type annotations for return types
-3. Extract function calls from expressions
-4. Track opened modules and type references
-
-**Note:** Variables includes function name itself which is incorrect
+**Changes Made:**
+- Added OCaml parameter extraction handling for `parameter`, `value_pattern`, and `typed_pattern` nodes
+- Used `named_child(0)` instead of `child(0)` to skip anonymous nodes like parentheses
+- Fixed function call extraction to use `application_expression` instead of `application`
+- Removed function name from Variables by excluding `let_binding` from var_types
 
 ---
 
@@ -538,21 +532,21 @@ Languages still needing improvements:
 
 | Language | Name | Sig | Desc | Params | Returns | Calls | Vars | Uses |
 |----------|------|-----|------|--------|---------|-------|------|------|
-| Python   |  +   |  +  |  +   |   ~    |    +    |   +   |  +   |  -   |
+| Python   |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  -   |
 | JavaScript|  +  |  +  |  ~   |   +    |    -    |   +   |  +   |  -   |
-| TypeScript|  +  |  +  |  -   |   -    |    +    |   +   |  +   |  -   |
-| Rust     |  +   |  +  |  +   |   -    |    +    |   +   |  +   |  -   |
-| Go       |  +   |  +  |  +   |   ~    |    +    |   +   |  +   |  -   |
+| TypeScript|  +  |  +  |  -   |   +    |    +    |   +   |  +   |  -   |
+| Rust     |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  -   |
+| Go       |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  -   |
 | Java     |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  -   |
-| C        |  +   |  +  |  +   |   -    |    +    |   +   |  ~   |  -   |
-| C++      |  +   |  +  |  +   |   -    |    +    |   +   |  ~   |  -   |
+| C        |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  -   |
+| C++      |  +   |  +  |  +   |   +    |    +    |   +   |  +   |  -   |
 | Kotlin   |  +   |  +  |  +   |   +    |    -    |   ~   |  -   |  -   |
 | Scala    |  +   |  +  |  +   |   +    |    -    |   +   |  -   |  -   |
 | Swift    |  +   |  +  |  +   |   +    |    -    |   +   |  +   |  -   |
 | Ruby     |  +   |  +  |  +   |   +    |    -    |   +   |  +   |  -   |
 | Elixir   |  -   |  +  |  -   |   -    |    -    |   ~   |  -   |  ~   |
 | Haskell  |  +   |  ~  |  -   |   -    |    -    |   -   |  -   |  -   |
-| OCaml    |  +   |  +  |  +   |   -    |    -    |   -   |  ~   |  -   |
+| OCaml    |  +   |  +  |  +   |   +    |    -    |   +   |  -   |  -   |
 | PHP      |  +   |  +  |  +   |   +    |    -    |   +   |  -   |  -   |
 | C#       |  +   |  +  |  -   |   +    |    -    |   +   |  +   |  -   |
 | Lua      |  +   |  +  |  +   |   +    |    -    |   +   |  +   |  -   |
