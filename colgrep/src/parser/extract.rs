@@ -27,11 +27,8 @@ pub fn extract_function(
     let code_start = find_start_with_attributes(ast_start_line, lines, lang);
     let start_line = code_start;
 
-    let unit_type = if parent_class.is_some() {
-        UnitType::Method
-    } else {
-        UnitType::Function
-    };
+    // Determine if this is a method based on parent class or language-specific patterns
+    let (unit_type, effective_parent) = determine_function_type(node, bytes, lang, parent_class);
 
     let mut unit = CodeUnit::new(
         name,
@@ -40,7 +37,7 @@ pub fn extract_function(
         end_line + 1,
         lang,
         unit_type,
-        parent_class,
+        effective_parent.as_deref().or(parent_class),
     );
 
     // Layer 1: AST
@@ -121,6 +118,7 @@ pub fn extract_class(
 }
 
 /// Extract a constant or static declaration from an AST node.
+/// For JS/TS, if the value is an arrow function, extract as Function instead.
 pub fn extract_constant(
     node: Node,
     path: &Path,
@@ -138,6 +136,19 @@ pub fn extract_constant(
     // For Python, only capture UPPER_CASE names (convention for constants)
     if lang == Language::Python && !is_python_constant_name(&name) {
         return None;
+    }
+
+    // For JS/TS, check if this is an arrow function assigned to a const
+    // If so, extract it as a Function instead of Constant
+    if matches!(
+        lang,
+        Language::JavaScript | Language::TypeScript | Language::Vue | Language::Svelte
+    ) {
+        if let Some(unit) =
+            extract_arrow_function_as_function(node, path, lines, bytes, lang, file_imports, &name)
+        {
+            return Some(unit);
+        }
     }
 
     // Include preceding attributes in the line range
@@ -359,6 +370,162 @@ fn get_constant_type(node: Node, bytes: &[u8], lang: Language) -> Option<String>
         }
         _ => None,
     }
+}
+
+/// Extract an arrow function assigned to a const as a Function unit.
+/// Returns Some(CodeUnit) if this is an arrow function, None otherwise.
+fn extract_arrow_function_as_function(
+    node: Node,
+    path: &Path,
+    lines: &[&str],
+    bytes: &[u8],
+    lang: Language,
+    file_imports: &[String],
+    name: &str,
+) -> Option<CodeUnit> {
+    use super::analysis::{
+        extract_control_flow, extract_function_calls, extract_parameters, extract_return_type,
+        extract_variables, filter_used_imports,
+    };
+
+    // Look for arrow_function in variable_declarator
+    let arrow_node = find_arrow_function(node)?;
+
+    let ast_start_line = node.start_position().row;
+    let end_line = node.end_position().row;
+    let code_start = find_start_with_attributes(ast_start_line, lines, lang);
+
+    let mut unit = CodeUnit::new(
+        name.to_string(),
+        path.to_path_buf(),
+        code_start + 1,
+        end_line + 1,
+        lang,
+        UnitType::Function,
+        None,
+    );
+
+    // Layer 1: AST
+    unit.signature = lines
+        .get(ast_start_line)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    unit.docstring = super::analysis::extract_docstring(node, lines, lang);
+    unit.parameters = extract_parameters(arrow_node, bytes, lang);
+    unit.return_type = extract_return_type(arrow_node, bytes, lang);
+
+    // Layer 2: Call Graph
+    unit.calls = extract_function_calls(arrow_node, bytes, lang);
+
+    // Layer 3: Control Flow
+    let (complexity, has_loops, has_branches, has_error_handling) =
+        extract_control_flow(arrow_node, lang);
+    unit.complexity = complexity;
+    unit.has_loops = has_loops;
+    unit.has_branches = has_branches;
+    unit.has_error_handling = has_error_handling;
+
+    // Layer 4: Data Flow
+    unit.variables = extract_variables(arrow_node, bytes, lang);
+
+    // Layer 5: Dependencies
+    unit.imports = filter_used_imports(&unit.calls, file_imports);
+
+    // Full source content
+    let content_end = (end_line + 1).min(lines.len());
+    unit.code = lines[code_start..content_end].join("\n");
+
+    Some(unit)
+}
+
+/// Find an arrow_function node within a variable declaration.
+fn find_arrow_function(node: Node) -> Option<Node> {
+    // Check children recursively for arrow_function
+    fn find_recursive(node: Node) -> Option<Node> {
+        if node.kind() == "arrow_function" {
+            return Some(node);
+        }
+        for child in node.children(&mut node.walk()) {
+            if let Some(found) = find_recursive(child) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    find_recursive(node)
+}
+
+/// Determine if a function should be a Method based on language-specific patterns.
+/// Returns (UnitType, Option<parent_class_name>)
+fn determine_function_type(
+    node: Node,
+    bytes: &[u8],
+    lang: Language,
+    parent_class: Option<&str>,
+) -> (UnitType, Option<String>) {
+    // If already has a parent class, it's a method
+    if parent_class.is_some() {
+        return (UnitType::Method, None);
+    }
+
+    match lang {
+        // Go: Check for method receiver (parameter_list before function name)
+        Language::Go => {
+            // In Go, method_declaration has a "receiver" field
+            if node.kind() == "method_declaration" {
+                if let Some(receiver) = node.child_by_field_name("receiver") {
+                    // Extract receiver type name
+                    if let Some(type_name) = extract_go_receiver_type(receiver, bytes) {
+                        return (UnitType::Method, Some(type_name));
+                    }
+                }
+            }
+            (UnitType::Function, None)
+        }
+        // Rust: Check if function is inside an impl block by looking at parent
+        Language::Rust => {
+            // Walk up to check if parent is impl_item
+            if let Some(parent) = node.parent() {
+                if parent.kind() == "declaration_list" {
+                    if let Some(grandparent) = parent.parent() {
+                        if grandparent.kind() == "impl_item" {
+                            // Extract impl type name
+                            if let Some(type_name) = extract_rust_impl_type(grandparent, bytes) {
+                                return (UnitType::Method, Some(type_name));
+                            }
+                        }
+                    }
+                }
+            }
+            (UnitType::Function, None)
+        }
+        _ => (UnitType::Function, None),
+    }
+}
+
+/// Extract the receiver type name from a Go method receiver.
+fn extract_go_receiver_type(receiver: Node, bytes: &[u8]) -> Option<String> {
+    // receiver is a parameter_list containing one parameter with a type
+    for child in receiver.children(&mut receiver.walk()) {
+        if child.kind() == "parameter_declaration" {
+            if let Some(type_node) = child.child_by_field_name("type") {
+                // Handle pointer types (*Type)
+                let type_text = type_node.utf8_text(bytes).ok()?;
+                let type_name = type_text.trim_start_matches('*').trim();
+                return Some(type_name.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Extract the type name from a Rust impl block.
+fn extract_rust_impl_type(impl_node: Node, bytes: &[u8]) -> Option<String> {
+    // impl_item has a "type" field for the implementing type
+    if let Some(type_node) = impl_node.child_by_field_name("type") {
+        return type_node.utf8_text(bytes).ok().map(|s| s.to_string());
+    }
+    None
 }
 
 /// Fill gaps between code units with RawCode units to achieve 100% file coverage.

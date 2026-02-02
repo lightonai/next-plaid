@@ -55,7 +55,6 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
         | Language::Java
         | Language::CSharp
         | Language::Kotlin
-        | Language::Swift
         | Language::Scala
         | Language::Php => {
             // Look for JSDoc or similar comment above
@@ -130,6 +129,179 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
             }
             None
         }
+        Language::Swift => {
+            // Swift uses /// doc comments (like Rust)
+            let mut doc_lines = Vec::new();
+            let start_row = node.start_position().row;
+            if start_row > 0 {
+                for i in (0..start_row).rev() {
+                    let line = lines.get(i)?.trim();
+                    if line.starts_with("///") {
+                        doc_lines.insert(0, line.trim_start_matches("///").trim());
+                    } else if line.is_empty() {
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            if doc_lines.is_empty() {
+                None
+            } else {
+                Some(doc_lines.join(" "))
+            }
+        }
+        Language::Go => {
+            // Look for // comments immediately preceding the function
+            let mut doc_lines = Vec::new();
+            let start_row = node.start_position().row;
+            if start_row > 0 {
+                for i in (0..start_row).rev() {
+                    let line = lines.get(i)?.trim();
+                    if line.starts_with("//") {
+                        doc_lines.insert(0, line.trim_start_matches("//").trim());
+                    } else if line.is_empty() {
+                        // Allow empty lines between comment and declaration
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            if doc_lines.is_empty() {
+                None
+            } else {
+                Some(doc_lines.join(" "))
+            }
+        }
+        Language::C | Language::Cpp => {
+            // Look for /* */ block comments or /// doc comments
+            let start_row = node.start_position().row;
+            if start_row > 0 {
+                // First check for /// style comments (like Doxygen)
+                let mut doc_lines = Vec::new();
+                for i in (0..start_row).rev() {
+                    let line = lines.get(i)?.trim();
+                    if line.starts_with("///") {
+                        doc_lines.insert(0, line.trim_start_matches("///").trim());
+                    } else if line.is_empty() {
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+                if !doc_lines.is_empty() {
+                    return Some(doc_lines.join(" "));
+                }
+
+                // Check for /* */ block comment
+                let prev_line = lines.get(start_row - 1)?.trim();
+                if prev_line.ends_with("*/") {
+                    for i in (0..start_row).rev() {
+                        let line = lines.get(i)?.trim();
+                        if line.starts_with("/**") || line.starts_with("/*") {
+                            let doc: String = lines[i..start_row]
+                                .iter()
+                                .map(|l| {
+                                    l.trim()
+                                        .trim_start_matches("/**")
+                                        .trim_start_matches("/*")
+                                        .trim_start_matches('*')
+                                        .trim_end_matches("*/")
+                                        .trim()
+                                })
+                                .filter(|l| !l.is_empty())
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            return Some(doc);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Language::Ruby => {
+            // Look for # comments immediately preceding the method
+            let mut doc_lines = Vec::new();
+            let start_row = node.start_position().row;
+            if start_row > 0 {
+                for i in (0..start_row).rev() {
+                    let line = lines.get(i)?.trim();
+                    if line.starts_with('#') {
+                        doc_lines.insert(0, line.trim_start_matches('#').trim());
+                    } else if line.is_empty() {
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            if doc_lines.is_empty() {
+                None
+            } else {
+                Some(doc_lines.join(" "))
+            }
+        }
+        Language::Ocaml => {
+            // Look for (** *) OCamldoc comments
+            let start_row = node.start_position().row;
+            if start_row > 0 {
+                let prev_line = lines.get(start_row - 1)?.trim();
+                if prev_line.ends_with("*)") {
+                    for i in (0..start_row).rev() {
+                        let line = lines.get(i)?.trim();
+                        if line.starts_with("(**") {
+                            let doc: String = lines[i..start_row]
+                                .iter()
+                                .map(|l| {
+                                    l.trim()
+                                        .trim_start_matches("(**")
+                                        .trim_start_matches("(*")
+                                        .trim_end_matches("*)")
+                                        .trim()
+                                })
+                                .filter(|l| !l.is_empty())
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            return Some(doc);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Language::Lua => {
+            // Look for --- or -- comments (LuaDoc style)
+            // LuaDoc uses --- for the first line and -- for continuation
+            let mut doc_lines = Vec::new();
+            let mut found_triple_dash = false;
+            let start_row = node.start_position().row;
+            if start_row > 0 {
+                for i in (0..start_row).rev() {
+                    let line = lines.get(i)?.trim();
+                    if line.starts_with("---") {
+                        doc_lines.insert(0, line.trim_start_matches("---").trim());
+                        found_triple_dash = true;
+                    } else if line.starts_with("--") {
+                        // Include -- lines as part of the doc block
+                        doc_lines.insert(0, line.trim_start_matches("--").trim());
+                    } else if line.is_empty() {
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            // Only return docstring if we found at least one --- line
+            if !found_triple_dash {
+                doc_lines.clear();
+            }
+            if doc_lines.is_empty() {
+                None
+            } else {
+                Some(doc_lines.join(" "))
+            }
+        }
         _ => None,
     }
 }
@@ -147,14 +319,25 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
             .child_by_field_name("declarator")
             .and_then(|d| d.child_by_field_name("parameters")),
         Language::Ruby => node.child_by_field_name("parameters"),
-        Language::Kotlin
-        | Language::Swift
-        | Language::Scala
-        | Language::Php
-        | Language::Lua
-        | Language::Elixir
-        | Language::Haskell
-        | Language::Ocaml => node.child_by_field_name("parameters"),
+        Language::Kotlin => node.child_by_field_name("parameters").or_else(|| {
+            // Kotlin uses function_value_parameters
+            node.children(&mut node.walk())
+                .find(|child| child.kind() == "function_value_parameters")
+        }),
+        Language::Swift => {
+            // Swift has parameters as direct children of function_declaration
+            // Return the node itself and handle parameter extraction in the loop below
+            Some(node)
+        }
+        Language::Scala => {
+            // Scala has both type_parameters and parameters with the same field name
+            // We need to find the actual parameters node (not type_parameters)
+            node.children(&mut node.walk())
+                .find(|child| child.kind() == "parameters")
+        }
+        Language::Php | Language::Lua | Language::Elixir | Language::Haskell | Language::Ocaml => {
+            node.child_by_field_name("parameters")
+        }
         _ => None,
     };
 
@@ -166,17 +349,75 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
     for child in params.children(&mut params.walk()) {
         let kind = child.kind();
         if kind.contains("parameter") || kind == "identifier" {
-            if let Some(name) = child.child_by_field_name("name").or_else(|| {
+            // Go: handle grouped parameters like `a, b int`
+            if lang == Language::Go && kind == "parameter_declaration" {
+                // Iterate all children to find all identifiers
+                for sub in child.children(&mut child.walk()) {
+                    if sub.kind() == "identifier" {
+                        if let Ok(text) = sub.utf8_text(bytes) {
+                            if !text.is_empty() {
+                                result.push(text.to_string());
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Try to get the name from a "name" field first (works for most languages)
+            let name_node = child.child_by_field_name("name").or_else(|| {
                 if child.kind() == "identifier" {
                     Some(child)
+                } else if lang == Language::Python {
+                    // For Python typed_parameter, the identifier is a direct child, not a named field
+                    child.child(0).filter(|c| c.kind() == "identifier")
+                } else if lang == Language::Rust {
+                    // For Rust, parameters have a "pattern" field containing the identifier
+                    child
+                        .child_by_field_name("pattern")
+                        .filter(|c| c.kind() == "identifier")
+                } else if matches!(
+                    lang,
+                    Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte
+                ) {
+                    // For TypeScript/JavaScript, parameters have a "pattern" field
+                    child
+                        .child_by_field_name("pattern")
+                        .filter(|c| c.kind() == "identifier")
+                } else if matches!(lang, Language::C | Language::Cpp) {
+                    // For C/C++, parameter_declaration has a "declarator" field containing the identifier
+                    child
+                        .child_by_field_name("declarator")
+                        .filter(|c| c.kind() == "identifier")
+                } else if lang == Language::Kotlin {
+                    // For Kotlin, the identifier is a direct child of the parameter node
+                    child.child(0).filter(|c| c.kind() == "identifier")
                 } else {
                     None
                 }
-            }) {
+            });
+
+            if let Some(name) = name_node {
                 if let Ok(text) = name.utf8_text(bytes) {
                     if !text.is_empty() && text != "self" && text != "this" && text != "cls" {
                         result.push(text.to_string());
                     }
+                }
+            }
+        }
+        // Handle Python *args and **kwargs (list_splat_pattern, dictionary_splat_pattern)
+        else if lang == Language::Python
+            && (kind == "list_splat_pattern" || kind == "dictionary_splat_pattern")
+        {
+            // The identifier is inside these patterns (after * or **)
+            for sub in child.children(&mut child.walk()) {
+                if sub.kind() == "identifier" {
+                    if let Ok(text) = sub.utf8_text(bytes) {
+                        if !text.is_empty() {
+                            result.push(text.to_string());
+                        }
+                    }
+                    break;
                 }
             }
         }

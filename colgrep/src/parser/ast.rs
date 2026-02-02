@@ -104,7 +104,12 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
             kind,
             "create_table_statement" | "create_view_statement" | "create_index_statement"
         ),
-        // C and text/config formats
+        // C: structs, unions, enums
+        Language::C => matches!(
+            kind,
+            "struct_specifier" | "union_specifier" | "enum_specifier"
+        ),
+        // Text/config formats
         _ => false,
     }
 }
@@ -171,7 +176,16 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
         Language::Zig => node.child_by_field_name("body"),
         Language::Julia => node.child_by_field_name("body"),
         Language::Sql => None, // SQL tables don't have a body with methods
-        // C, Lua, and text/config formats
+        Language::C => {
+            // Look for field_declaration_list in struct_specifier
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "field_declaration_list" {
+                    return Some(child);
+                }
+            }
+            None
+        }
+        // Lua and text/config formats
         _ => None,
     }
 }
@@ -189,6 +203,19 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("property")),
         Language::C | Language::Cpp => {
+            // For structs/unions/enums, look for name field or type_identifier
+            if matches!(
+                node.kind(),
+                "struct_specifier" | "union_specifier" | "enum_specifier"
+            ) {
+                return node
+                    .child_by_field_name("name")
+                    .or_else(|| {
+                        node.children(&mut node.walk())
+                            .find(|child| child.kind() == "type_identifier")
+                    })
+                    .and_then(|n| n.utf8_text(bytes).ok().map(|s| s.to_string()));
+            }
             node.child_by_field_name("declarator").and_then(|d| {
                 // Handle function declarator
                 if d.kind() == "function_declarator" {

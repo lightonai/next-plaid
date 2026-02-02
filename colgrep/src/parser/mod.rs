@@ -22,8 +22,14 @@ mod text;
 pub mod types;
 mod vue;
 
+// New per-language tests
 #[cfg(test)]
 mod tests;
+
+// Legacy tests (to be migrated)
+#[cfg(test)]
+#[path = "tests_legacy.rs"]
+mod tests_legacy;
 
 // Re-exports
 pub use call_graph::build_call_graph;
