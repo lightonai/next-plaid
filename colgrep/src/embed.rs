@@ -38,12 +38,10 @@ fn normalize_path_for_embedding(path_str: &str) -> String {
     for (i, &c) in chars.iter().enumerate() {
         match c {
             '/' | '\\' => {
-                // Add space before and after path separators, normalize \ to /
+                // Replace path separators with spaces
                 if !result.ends_with(' ') && !result.is_empty() {
                     result.push(' ');
                 }
-                result.push('/');
-                result.push(' ');
             }
             '_' | '-' | '.' => {
                 // Replace underscores, hyphens, and dots with spaces
@@ -172,16 +170,16 @@ mod tests {
     fn test_normalize_path_separators() {
         assert_eq!(
             normalize_path_for_embedding("src/parser/mod.rs"),
-            "src / parser / mod mod.rs"
+            "src parser mod mod.rs"
         );
     }
 
     #[test]
     fn test_normalize_backslash_separators() {
-        // Backslashes are normalized to forward slashes
+        // Backslashes are replaced with spaces
         assert_eq!(
             normalize_path_for_embedding("src\\parser\\mod.rs"),
-            "src / parser / mod mod.rs"
+            "src parser mod mod.rs"
         );
     }
 
@@ -221,7 +219,7 @@ mod tests {
     fn test_normalize_combined() {
         assert_eq!(
             normalize_path_for_embedding("src/utils/HttpClientHelper.rs"),
-            "src / utils / http client helper HttpClientHelper.rs"
+            "src utils http client helper HttpClientHelper.rs"
         );
     }
 
@@ -229,7 +227,7 @@ mod tests {
     fn test_normalize_snake_case_path() {
         assert_eq!(
             normalize_path_for_embedding("src/my_module/file_utils.py"),
-            "src / my module / file utils file_utils.py"
+            "src my module file utils file_utils.py"
         );
     }
 
@@ -264,7 +262,7 @@ mod tests {
     fn test_normalize_no_extension() {
         assert_eq!(
             normalize_path_for_embedding("src/Makefile"),
-            "src / makefile Makefile"
+            "src makefile Makefile"
         );
     }
 }

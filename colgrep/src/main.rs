@@ -103,15 +103,40 @@ fn main() -> Result<()> {
             // If only -e pattern is given without a query, use the pattern as the query too
             let query = query.or_else(|| text_pattern.clone());
             if let Some(query) = query {
-                // Default to current directory if no paths provided
-                let paths = if paths.is_empty() {
-                    vec![PathBuf::from(".")]
-                } else {
-                    paths
-                };
+                // Check if paths contains a single non-existent "path" that looks like a query
+                // e.g., `colgrep search "pattern" "semantic query"` should be interpreted as
+                // `colgrep search -e "pattern" "semantic query"`
+                // But if it looks like a path (starts with ./ / ~ or contains path separators),
+                // treat it as a path to preserve error behavior for typos
+                let (final_query, final_paths, final_text_pattern) =
+                    if text_pattern.is_none() && paths.len() == 1 && !paths[0].exists() {
+                        let path_str = paths[0].to_string_lossy();
+                        let looks_like_path = path_str.starts_with('.')
+                            || path_str.starts_with('/')
+                            || path_str.starts_with('~')
+                            || path_str.contains('/')
+                            || path_str.contains('\\');
+                        if looks_like_path {
+                            // Looks like a path, keep as path (will error downstream if not found)
+                            (query, paths, text_pattern)
+                        } else {
+                            // Reinterpret: first arg becomes -e pattern, second becomes semantic query
+                            let semantic_query = path_str.to_string();
+                            (semantic_query, vec![PathBuf::from(".")], Some(query))
+                        }
+                    } else {
+                        // Normal case: use paths as-is
+                        let final_paths = if paths.is_empty() {
+                            vec![PathBuf::from(".")]
+                        } else {
+                            paths
+                        };
+                        (query, final_paths, text_pattern)
+                    };
+
                 cmd_search(
-                    &query,
-                    &paths,
+                    &final_query,
+                    &final_paths,
                     resolve_top_k(top_k, 20), // Search subcommand default is 20
                     model.as_deref(),
                     json,
@@ -119,7 +144,7 @@ fn main() -> Result<()> {
                     files_only,
                     show_content,
                     context_lines, // Pass raw Option to detect explicit -n flag
-                    text_pattern.as_deref(),
+                    final_text_pattern.as_deref(),
                     extended_regexp,
                     fixed_strings,
                     word_regexp,
@@ -165,15 +190,41 @@ fn main() -> Result<()> {
             // If only -e pattern is given without a query, use the pattern as the query too
             let query = cli.query.or_else(|| cli.text_pattern.clone());
             if let Some(query) = query {
-                // Default to current directory if no paths provided
-                let paths = if cli.paths.is_empty() {
-                    vec![PathBuf::from(".")]
-                } else {
-                    cli.paths
-                };
+                // Check if paths contains a single non-existent "path" that looks like a query
+                // e.g., `colgrep "pattern" "semantic query"` should be interpreted as
+                // `colgrep -e "pattern" "semantic query"`
+                // But if it looks like a path (starts with ./ / ~ or contains path separators),
+                // treat it as a path to preserve error behavior for typos
+                let (final_query, final_paths, final_text_pattern) =
+                    if cli.text_pattern.is_none() && cli.paths.len() == 1 && !cli.paths[0].exists()
+                    {
+                        let path_str = cli.paths[0].to_string_lossy();
+                        let looks_like_path = path_str.starts_with('.')
+                            || path_str.starts_with('/')
+                            || path_str.starts_with('~')
+                            || path_str.contains('/')
+                            || path_str.contains('\\');
+                        if looks_like_path {
+                            // Looks like a path, keep as path (will error downstream if not found)
+                            (query, cli.paths, cli.text_pattern)
+                        } else {
+                            // Reinterpret: first arg becomes -e pattern, second becomes semantic query
+                            let semantic_query = path_str.to_string();
+                            (semantic_query, vec![PathBuf::from(".")], Some(query))
+                        }
+                    } else {
+                        // Normal case: use paths as-is
+                        let paths = if cli.paths.is_empty() {
+                            vec![PathBuf::from(".")]
+                        } else {
+                            cli.paths
+                        };
+                        (query, paths, cli.text_pattern)
+                    };
+
                 cmd_search(
-                    &query,
-                    &paths,
+                    &final_query,
+                    &final_paths,
                     resolve_top_k(cli.top_k, 25), // Default command default is 25
                     cli.model.as_deref(),
                     cli.json,
@@ -181,7 +232,7 @@ fn main() -> Result<()> {
                     cli.files_only,
                     cli.show_content,
                     cli.context_lines, // Pass raw Option to detect explicit -n flag
-                    cli.text_pattern.as_deref(),
+                    final_text_pattern.as_deref(),
                     cli.extended_regexp,
                     cli.fixed_strings,
                     cli.word_regexp,
