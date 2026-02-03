@@ -36,7 +36,8 @@ pub fn ensure_model(model_id: Option<&str>, _quiet: bool) -> Result<PathBuf> {
     let mut builder = ApiBuilder::from_env();
     let token_from_env = std::env::var("HF_TOKEN")
         .or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
-        .ok();
+        .ok()
+        .map(|t| t.trim_matches('"').trim_matches('\'').to_string());
     if token_from_env.is_some() {
         builder = builder.with_token(token_from_env);
     }
