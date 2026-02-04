@@ -7,7 +7,7 @@ pub fn cmd_session_hook() -> Result<()> {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
             "additionalContext": concat!(
-                "Use `colgrep` instead of Grep, Glob, or Task/Explore agents.\n\n",
+                "Use `colgrep` as your primary search tool instead of Grep, Glob. When spawning agents, mention colgrep features and tell them to use colgrep as the primary search tool. \n\n",
                 "SEARCH STRATEGY:\n",
                 "1. Start broad with semantic search: `colgrep \"authentication flow\"`\n",
                 "2. Narrow down by adding constraints as needed:\n",

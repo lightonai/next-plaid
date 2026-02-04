@@ -1074,7 +1074,8 @@ fn search_single_path(
         }
 
         // Apply include pattern filter (file type filtering)
-        if let Some(ref files) = include_files {
+        // Only use filesystem-scanned files if non-empty; otherwise fall back to index-based pattern matching
+        if let Some(files) = include_files.as_ref().filter(|f| !f.is_empty()) {
             let file_ids = searcher.filter_by_files(files)?;
             combined_ids = match combined_ids {
                 Some(existing) => {
