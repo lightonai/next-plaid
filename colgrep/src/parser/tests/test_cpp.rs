@@ -38,8 +38,8 @@ private:
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
-    // Now correctly extracts Calculator class and add method
-    assert_eq!(units.len(), 2);
+    // Class is extracted as a single chunk with method inside
+    assert_eq!(units.len(), 1);
 
     let class = get_unit_by_name(&units, "Calculator").unwrap();
     let class_text = build_embedding_text(class);
@@ -58,19 +58,11 @@ private:
 File: test test.cpp"#;
     assert_eq!(class_text, expected_class);
 
-    let unit = get_unit_by_name(&units, "add").unwrap();
-    let text = build_embedding_text(unit);
-    let expected = r#"Method: add
-Signature: int add(int a, int b) {
-Class: Calculator
-Parameters: a, b
-Returns: int
-Code:
-    int add(int a, int b) {
-        return a + b;
-    }
-File: test test.cpp"#;
-    assert_eq!(text, expected);
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "add").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -89,22 +81,34 @@ public:
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
-    assert_eq!(units.len(), 2);
+    // Class is extracted as a single chunk with doxygen comment and method inside
+    assert_eq!(units.len(), 1);
 
-    let unit = get_unit_by_name(&units, "add").unwrap();
-    let text = build_embedding_text(unit);
-    let expected = r#"Method: add
-Signature: int add(int a, int b) {
-Class: Math
-Description: @brief Calculates the sum of two numbers. @param a First number @param b Second number @return Sum of a and b /
-Parameters: a, b
-Returns: int
+    let class_unit = get_unit_by_name(&units, "Math").unwrap();
+    let class_text = build_embedding_text(class_unit);
+    let expected = r#"Class: Math
+Signature: class Math {
 Code:
+class Math {
+public:
+    /**
+     * @brief Calculates the sum of two numbers.
+     * @param a First number
+     * @param b Second number
+     * @return Sum of a and b
+     */
     int add(int a, int b) {
         return a + b;
     }
+};
 File: test test.cpp"#;
-    assert_eq!(text, expected);
+    assert_eq!(class_text, expected);
+
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "add").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -165,26 +169,33 @@ private:
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
-    // Now extracts Person class and Person constructor (both named "Person")
-    assert_eq!(units.len(), 2);
+    // Class is extracted as a single chunk with constructor inside
+    assert_eq!(units.len(), 1);
 
-    // Get the constructor (Method), not the class
-    let constructors: Vec<_> = units
-        .iter()
-        .filter(|u| u.unit_type == crate::parser::UnitType::Method)
-        .collect();
-    assert_eq!(constructors.len(), 1);
-    let unit = constructors[0];
-    let text = build_embedding_text(unit);
-    let expected = r#"Method: Person
-Signature: Person(const std::string& name, int age)
-Class: Person
-Parameters: name, age
+    let class_unit = get_unit_by_name(&units, "Person").unwrap();
+    let class_text = build_embedding_text(class_unit);
+    let expected = r#"Class: Person
+Signature: class Person {
 Code:
+class Person {
+public:
     Person(const std::string& name, int age)
         : name_(name), age_(age) {}
+
+private:
+    std::string name_;
+    int age_;
+};
 File: test test.cpp"#;
-    assert_eq!(text, expected);
+    assert_eq!(class_text, expected);
+
+    // Verify NO separate constructor unit exists (constructor has same name as class)
+    let person_units: Vec<_> = units.iter().filter(|u| u.name == "Person").collect();
+    assert_eq!(
+        person_units.len(),
+        1,
+        "Should only have 1 Person unit (the class), not separate constructor"
+    );
 }
 
 #[test]
@@ -196,18 +207,31 @@ public:
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
-    // Now extracts Shape class and ~Shape destructor
-    assert_eq!(units.len(), 2);
+    // Class is extracted as a single chunk with virtual methods inside
+    assert_eq!(units.len(), 1);
 
-    let unit = get_unit_by_name(&units, "~Shape").unwrap();
-    let text = build_embedding_text(unit);
-    let expected = r#"Method: ~Shape
-Signature: virtual ~Shape() = default;
-Class: Shape
+    let class_unit = get_unit_by_name(&units, "Shape").unwrap();
+    let class_text = build_embedding_text(class_unit);
+    let expected = r#"Class: Shape
+Signature: class Shape {
 Code:
+class Shape {
+public:
+    virtual double area() const = 0;
     virtual ~Shape() = default;
+};
 File: test test.cpp"#;
-    assert_eq!(text, expected);
+    assert_eq!(class_text, expected);
+
+    // Verify NO separate method/destructor units exist
+    assert!(
+        get_unit_by_name(&units, "~Shape").is_none(),
+        "Destructors should not be extracted separately from classes"
+    );
+    assert!(
+        get_unit_by_name(&units, "area").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -255,12 +279,14 @@ fn test_struct_with_methods() {
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
-    assert_eq!(units.len(), 2);
+    // Struct is extracted as a single chunk with method inside
+    assert_eq!(units.len(), 1);
 
     let unit = get_unit_by_name(&units, "Point").unwrap();
     let text = build_embedding_text(unit);
     let expected = r#"Class: Point
 Signature: struct Point {
+Calls: sqrt
 Code:
 struct Point {
     double x, y;
@@ -272,19 +298,11 @@ struct Point {
 File: test test.cpp"#;
     assert_eq!(text, expected);
 
-    let unit = get_unit_by_name(&units, "distance").unwrap();
-    let text = build_embedding_text(unit);
-    let expected = r#"Method: distance
-Signature: double distance() const {
-Class: Point
-Returns: double
-Calls: sqrt
-Code:
-    double distance() const {
-        return std::sqrt(x*x + y*y);
-    }
-File: test test.cpp"#;
-    assert_eq!(text, expected);
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "distance").is_none(),
+        "Methods should not be extracted separately from structs"
+    );
 }
 
 #[test]
@@ -300,23 +318,32 @@ private:
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
-    // Now extracts Vector class and operator+ method
-    assert_eq!(units.len(), 2);
+    // Class is extracted as a single chunk with operator overload inside
+    assert_eq!(units.len(), 1);
 
-    let unit = get_unit_by_name(&units, "operator+").unwrap();
-    let text = build_embedding_text(unit);
-    let expected = r#"Method: operator+
-Signature: Vector operator+(const Vector& other) const {
-Class: Vector
-Parameters: other
-Returns: Vector
+    let class_unit = get_unit_by_name(&units, "Vector").unwrap();
+    let class_text = build_embedding_text(class_unit);
+    let expected = r#"Class: Vector
+Signature: class Vector {
 Calls: Vector
 Code:
+class Vector {
+public:
     Vector operator+(const Vector& other) const {
         return Vector(x + other.x, y + other.y);
     }
+
+private:
+    double x, y;
+};
 File: test test.cpp"#;
-    assert_eq!(text, expected);
+    assert_eq!(class_text, expected);
+
+    // Verify NO separate operator method unit exists
+    assert!(
+        get_unit_by_name(&units, "operator+").is_none(),
+        "Operator overloads should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -360,8 +387,22 @@ public:
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
+    // Both classes are extracted as single chunks
+    assert_eq!(units.len(), 2);
+
     let animal = get_unit_by_name(&units, "Animal").unwrap();
     let animal_text = build_embedding_text(animal);
+    let expected_animal = r#"Class: Animal
+Signature: class Animal {
+Code:
+class Animal {
+public:
+    virtual void speak() {
+        std::cout << "..." << std::endl;
+    }
+};
+File: test test.cpp"#;
+    assert_eq!(animal_text, expected_animal);
     // Animal has no parent
     assert!(!animal_text.contains("Extends:"));
 
@@ -379,6 +420,12 @@ public:
 };
 File: test test.cpp"#;
     assert_eq!(dog_text, expected_dog);
+
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "speak").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]

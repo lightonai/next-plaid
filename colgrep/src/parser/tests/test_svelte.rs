@@ -22,14 +22,7 @@ fn test_basic_component() {
     assert_eq!(units.len(), 3);
 
     let text = build_embedding_text(&units[0]);
-    assert_eq!(
-        text,
-        "Constant: count
-Signature: let count = 0;
-Code:
-    let count = 0;
-File: test test.svelte"
-    );
+    assert_eq!(text, "    let count = 0;");
 
     let text = build_embedding_text(&units[1]);
     assert_eq!(
@@ -46,13 +39,9 @@ File: test test.svelte"
     let text = build_embedding_text(&units[2]);
     assert_eq!(
         text,
-        "Code block: template
-Signature: <button on:click={increment}>
-Code:
-<button on:click={increment}>
+        "<button on:click={increment}>
     Clicked {count} times
-</button>
-File: test test.svelte"
+</button>"
     );
 }
 
@@ -72,14 +61,7 @@ fn test_reactive_declarations() {
     assert_eq!(units.len(), 2);
 
     let text = build_embedding_text(&units[0]);
-    assert_eq!(
-        text,
-        "Constant: count
-Signature: let count = 0;
-Code:
-    let count = 0;
-File: test test.svelte"
-    );
+    assert_eq!(text, "    let count = 0;");
 
     let text = build_embedding_text(&units[1]);
     assert_eq!(
@@ -109,12 +91,7 @@ fn test_props() {
 
     let name_unit = get_unit_by_name(&units, "name").unwrap();
     let name_text = build_embedding_text(name_unit);
-    let expected_name = r#"Constant: name
-Signature: export let name = 'World';
-Code:
-    export let name = 'World';
-File: test test.svelte"#;
-    assert_eq!(name_text, expected_name);
+    assert_eq!(name_text, "    export let name = 'World';");
 
     let greet_unit = get_unit_by_name(&units, "greet").unwrap();
     let greet_text = build_embedding_text(greet_unit);

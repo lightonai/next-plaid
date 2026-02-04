@@ -77,6 +77,11 @@ fn normalize_path_for_embedding(path_str: &str) -> String {
 /// Build text representation combining all 5 analysis layers.
 /// This rich text is what gets embedded by ColBERT for semantic search.
 pub fn build_embedding_text(unit: &CodeUnit) -> String {
+    // For RawCode and Constant units, return just the raw code content
+    if unit.unit_type == UnitType::RawCode || unit.unit_type == UnitType::Constant {
+        return unit.code.clone();
+    }
+
     let mut parts = Vec::new();
 
     // === Layer 1: AST (Identity + Signature) ===

@@ -69,10 +69,12 @@ fn test_class_definition() {
 }"#;
     let units = parse(source, Language::Swift, "test.swift");
 
+    // Class is extracted as a single chunk with all members inside
     let class = get_unit_by_name(&units, "Person").unwrap();
     let text = build_embedding_text(class);
     let expected = r#"Class: Person
 Signature: class Person {
+Variables: age, name
 Code:
 class Person {
     var name: String
@@ -90,17 +92,11 @@ class Person {
 File: test test.swift"#;
     assert_eq!(text, expected);
 
-    let method = get_unit_by_name(&units, "greet").unwrap();
-    let text = build_embedding_text(method);
-    let expected = r#"Method: greet
-Signature: func greet() -> String {
-Class: Person
-Code:
-    func greet() -> String {
-        return "Hello, I'm \(name)"
-    }
-File: test test.swift"#;
-    assert_eq!(text, expected);
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "greet").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -115,10 +111,13 @@ fn test_struct_definition() {
 }"#;
     let units = parse(source, Language::Swift, "test.swift");
 
+    // Struct is extracted as a single chunk with all members inside
     let class = get_unit_by_name(&units, "Point").unwrap();
     let text = build_embedding_text(class);
     let expected = r#"Class: Point
 Signature: struct Point {
+Calls: sqrt
+Variables: x, y
 Code:
 struct Point {
     var x: Double
@@ -131,18 +130,11 @@ struct Point {
 File: test test.swift"#;
     assert_eq!(text, expected);
 
-    let method = get_unit_by_name(&units, "distance").unwrap();
-    let text = build_embedding_text(method);
-    let expected = r#"Method: distance
-Signature: func distance() -> Double {
-Class: Point
-Calls: sqrt
-Code:
-    func distance() -> Double {
-        return sqrt(x*x + y*y)
-    }
-File: test test.swift"#;
-    assert_eq!(text, expected);
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "distance").is_none(),
+        "Methods should not be extracted separately from structs"
+    );
 }
 
 #[test]
@@ -239,6 +231,7 @@ fn test_enum_definition() {
     let text = build_embedding_text(enum_unit);
     let expected = r#"Class: Status
 Signature: enum Status {
+Variables: description
 Code:
 enum Status {
     case active
@@ -266,17 +259,25 @@ fn test_extension() {
 }"#;
     let units = parse(source, Language::Swift, "test.swift");
 
-    let method = get_unit_by_name(&units, "addExclamation").unwrap();
-    let text = build_embedding_text(method);
-    let expected = r#"Method: addExclamation
-Signature: func addExclamation() -> String {
-Class: String
+    // Extension is extracted as a single chunk with all methods inside
+    let ext = get_unit_by_name(&units, "String").unwrap();
+    let text = build_embedding_text(ext);
+    let expected = r#"Class: String
+Signature: extension String {
 Code:
+extension String {
     func addExclamation() -> String {
         return self + "!"
     }
+}
 File: test test.swift"#;
     assert_eq!(text, expected);
+
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "addExclamation").is_none(),
+        "Extension methods should not be extracted separately"
+    );
 }
 
 #[test]
@@ -319,6 +320,8 @@ struct Clamped<Value: Comparable> {
     let text = build_embedding_text(class);
     let expected = r#"Class: Clamped
 Signature: @propertyWrapper
+Calls: max, min
+Variables: range, wrappedValue
 Code:
 @propertyWrapper
 struct Clamped<Value: Comparable> {
@@ -346,14 +349,30 @@ class Dog: Animal {
 }"#;
     let units = parse(source, Language::Swift, "test.swift");
 
+    // Animal class is extracted as a single chunk
     let animal = get_unit_by_name(&units, "Animal").unwrap();
     let animal_text = build_embedding_text(animal);
+    assert_eq!(
+        animal_text,
+        r#"Class: Animal
+Signature: class Animal {
+Code:
+class Animal {
+    func speak() -> String {
+        return "..."
+    }
+}
+File: test test.swift"#
+    );
     // Animal has no parent
     assert!(!animal_text.contains("Extends:"));
 
+    // Dog class is extracted as a single chunk with inheritance info
     let dog = get_unit_by_name(&units, "Dog").unwrap();
     let dog_text = build_embedding_text(dog);
-    let expected_dog = r#"Class: Dog
+    assert_eq!(
+        dog_text,
+        r#"Class: Dog
 Signature: class Dog: Animal {
 Extends: Animal
 Code:
@@ -362,8 +381,14 @@ class Dog: Animal {
         return "Woof!"
     }
 }
-File: test test.swift"#;
-    assert_eq!(dog_text, expected_dog);
+File: test test.swift"#
+    );
+
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "speak").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]

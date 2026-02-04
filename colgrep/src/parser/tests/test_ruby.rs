@@ -67,6 +67,7 @@ end
 "#;
     let units = parse(source, Language::Ruby, "test.rb");
 
+    // Class is extracted as a single chunk with methods inside
     let class_unit = get_unit_by_name(&units, "Calculator").unwrap();
     let class_text = build_embedding_text(class_unit);
     let expected_class = r#"Class: Calculator
@@ -84,31 +85,15 @@ end
 File: test test.rb"#;
     assert_eq!(class_text, expected_class);
 
-    let init_unit = get_unit_by_name(&units, "initialize").unwrap();
-    let init_text = build_embedding_text(init_unit);
-    let expected_init = r#"Method: initialize
-Signature: def initialize(value = 0)
-Class: Calculator
-Parameters: value
-Code:
-  def initialize(value = 0)
-    @value = value
-  end
-File: test test.rb"#;
-    assert_eq!(init_text, expected_init);
-
-    let add_unit = get_unit_by_name(&units, "add").unwrap();
-    let add_text = build_embedding_text(add_unit);
-    let expected_add = r#"Method: add
-Signature: def add(x)
-Class: Calculator
-Parameters: x
-Code:
-  def add(x)
-    @value += x
-  end
-File: test test.rb"#;
-    assert_eq!(add_text, expected_add);
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "initialize").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
+    assert!(
+        get_unit_by_name(&units, "add").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -169,6 +154,7 @@ end
 "#;
     let units = parse(source, Language::Ruby, "test.rb");
 
+    // Module is extracted as a single chunk with methods inside
     let module_unit = get_unit_by_name(&units, "Utils").unwrap();
     let module_text = build_embedding_text(module_unit);
     let expected_module = r#"Class: Utils
@@ -186,31 +172,15 @@ end
 File: test test.rb"#;
     assert_eq!(module_text, expected_module);
 
-    let helper_unit = get_unit_by_name(&units, "helper").unwrap();
-    let helper_text = build_embedding_text(helper_unit);
-    let expected_helper = r#"Method: helper
-Signature: def self.helper(x)
-Class: Utils
-Parameters: x
-Code:
-  def self.helper(x)
-    x * 2
-  end
-File: test test.rb"#;
-    assert_eq!(helper_text, expected_helper);
-
-    let instance_helper_unit = get_unit_by_name(&units, "instance_helper").unwrap();
-    let instance_helper_text = build_embedding_text(instance_helper_unit);
-    let expected_instance_helper = r#"Method: instance_helper
-Signature: def instance_helper(x)
-Class: Utils
-Parameters: x
-Code:
-  def instance_helper(x)
-    x + 1
-  end
-File: test test.rb"#;
-    assert_eq!(instance_helper_text, expected_instance_helper);
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "helper").is_none(),
+        "Methods should not be extracted separately from modules"
+    );
+    assert!(
+        get_unit_by_name(&units, "instance_helper").is_none(),
+        "Methods should not be extracted separately from modules"
+    );
 }
 
 #[test]
@@ -255,10 +225,12 @@ end
 "#;
     let units = parse(source, Language::Ruby, "test.rb");
 
+    // Class is extracted as a single chunk with class method inside
     let class_unit = get_unit_by_name(&units, "Factory").unwrap();
     let class_text = build_embedding_text(class_unit);
     let expected_class = r#"Class: Factory
 Signature: class Factory
+Calls: new
 Code:
 class Factory
   def self.create(type)
@@ -271,22 +243,11 @@ end
 File: test test.rb"#;
     assert_eq!(class_text, expected_class);
 
-    let method_unit = get_unit_by_name(&units, "create").unwrap();
-    let method_text = build_embedding_text(method_unit);
-    let expected_method = r#"Method: create
-Signature: def self.create(type)
-Class: Factory
-Parameters: type
-Calls: new
-Code:
-  def self.create(type)
-    case type
-    when :widget then Widget.new
-    when :gadget then Gadget.new
-    end
-  end
-File: test test.rb"#;
-    assert_eq!(method_text, expected_method);
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "create").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -342,10 +303,12 @@ end
 "#;
     let units = parse(source, Language::Ruby, "test.rb");
 
+    // Class is extracted as a single chunk with attr accessors and method inside
     let class_unit = get_unit_by_name(&units, "Person").unwrap();
     let class_text = build_embedding_text(class_unit);
     let expected_class = r#"Class: Person
 Signature: class Person
+Calls: attr_accessor, attr_reader
 Code:
 class Person
   attr_reader :name
@@ -359,19 +322,11 @@ end
 File: test test.rb"#;
     assert_eq!(class_text, expected_class);
 
-    let init_unit = get_unit_by_name(&units, "initialize").unwrap();
-    let init_text = build_embedding_text(init_unit);
-    let expected_init = r#"Method: initialize
-Signature: def initialize(name, age)
-Class: Person
-Parameters: name, age
-Code:
-  def initialize(name, age)
-    @name = name
-    @age = age
-  end
-File: test test.rb"#;
-    assert_eq!(init_text, expected_init);
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "initialize").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -390,6 +345,7 @@ end
 "#;
     let units = parse(source, Language::Ruby, "test.rb");
 
+    // Class is extracted as a single chunk with all methods (public and private) inside
     let class_unit = get_unit_by_name(&units, "Service").unwrap();
     let class_text = build_embedding_text(class_unit);
     let expected_class = r#"Class: Service
@@ -409,29 +365,15 @@ end
 File: test test.rb"#;
     assert_eq!(class_text, expected_class);
 
-    let public_unit = get_unit_by_name(&units, "public_method").unwrap();
-    let public_text = build_embedding_text(public_unit);
-    let expected_public = r#"Method: public_method
-Signature: def public_method
-Class: Service
-Code:
-  def public_method
-    helper
-  end
-File: test test.rb"#;
-    assert_eq!(public_text, expected_public);
-
-    let helper_unit = get_unit_by_name(&units, "helper").unwrap();
-    let helper_text = build_embedding_text(helper_unit);
-    let expected_helper = r#"Method: helper
-Signature: def helper
-Class: Service
-Code:
-  def helper
-    "secret"
-  end
-File: test test.rb"#;
-    assert_eq!(helper_text, expected_helper);
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "public_method").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
+    assert!(
+        get_unit_by_name(&units, "helper").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -450,11 +392,23 @@ end
 "#;
     let units = parse(source, Language::Ruby, "test.rb");
 
+    // Animal class is extracted as a single chunk
     let animal = get_unit_by_name(&units, "Animal").unwrap();
     let animal_text = build_embedding_text(animal);
+    let expected_animal = r#"Class: Animal
+Signature: class Animal
+Code:
+class Animal
+  def speak
+    "..."
+  end
+end
+File: test test.rb"#;
+    assert_eq!(animal_text, expected_animal);
     // Animal has no parent
     assert!(!animal_text.contains("Extends:"));
 
+    // Dog class is extracted as a single chunk with inheritance info
     let dog = get_unit_by_name(&units, "Dog").unwrap();
     let dog_text = build_embedding_text(dog);
     let expected_dog = r#"Class: Dog
@@ -468,6 +422,12 @@ class Dog < Animal
 end
 File: test test.rb"#;
     assert_eq!(dog_text, expected_dog);
+
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "speak").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]

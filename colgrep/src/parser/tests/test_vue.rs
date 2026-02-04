@@ -35,7 +35,10 @@ export default {
     assert_eq!(text, "Function: increment\nSignature: increment() {\nCode:\n        increment() {\n            this.count++\n        }\nFile: test test.vue");
 
     let text = build_embedding_text(&units[2]);
-    assert_eq!(text, "Code block: template\nSignature: <button @click=\"increment\">{{ count }}</button>\nCode:\n    <button @click=\"increment\">{{ count }}</button>\nFile: test test.vue");
+    assert_eq!(
+        text,
+        "    <button @click=\"increment\">{{ count }}</button>"
+    );
 }
 
 #[test]
@@ -59,13 +62,16 @@ function increment() {
     assert_eq!(units.len(), 3);
 
     let text = build_embedding_text(&units[0]);
-    assert_eq!(text, "Constant: count\nSignature: const count = ref(0)\nCode:\nconst count = ref(0)\nFile: test test.vue");
+    assert_eq!(text, "const count = ref(0)");
 
     let text = build_embedding_text(&units[1]);
     assert_eq!(text, "Function: increment\nSignature: function increment() {\nCode:\nfunction increment() {\n    count.value++\n}\nFile: test test.vue");
 
     let text = build_embedding_text(&units[2]);
-    assert_eq!(text, "Code block: template\nSignature: <button @click=\"increment\">{{ count }}</button>\nCode:\n    <button @click=\"increment\">{{ count }}</button>\nFile: test test.vue");
+    assert_eq!(
+        text,
+        "    <button @click=\"increment\">{{ count }}</button>"
+    );
 }
 
 #[test]
@@ -97,7 +103,10 @@ export default defineComponent({
     assert_eq!(text, "Function: setup\nSignature: setup() {\nCalls: ref\nVariables: const, user\nCode:\n    setup() {\n        const user = ref<User>({ name: 'John', age: 30 })\n        return { user }\n    }\nFile: test test.vue");
 
     let text = build_embedding_text(&units[2]);
-    assert_eq!(text, "Constant: user\nSignature: const user = ref<User>({ name: 'John', age: 30 })\nCode:\n        const user = ref<User>({ name: 'John', age: 30 })\nFile: test test.vue");
+    assert_eq!(
+        text,
+        "        const user = ref<User>({ name: 'John', age: 30 })"
+    );
 }
 
 #[test]

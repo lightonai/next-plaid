@@ -91,6 +91,7 @@ fn test_class_definition() {
 }"#;
     let units = parse(source, Language::JavaScript, "test.js");
 
+    // Class is extracted as a single chunk with all methods inside
     let class = get_unit_by_name(&units, "Calculator").unwrap();
     let class_text = build_embedding_text(class);
     let expected_class = r#"Class: Calculator
@@ -109,19 +110,15 @@ class Calculator {
 File: test test.js"#;
     assert_eq!(class_text, expected_class);
 
-    let add = get_unit_by_name(&units, "add").unwrap();
-    let add_text = build_embedding_text(add);
-    let expected_add = r#"Method: add
-Signature: add(x) {
-Class: Calculator
-Parameters: x
-Code:
-    add(x) {
-        this.value += x;
-        return this.value;
-    }
-File: test test.js"#;
-    assert_eq!(add_text, expected_add);
+    // Verify NO separate method units exist - methods are inside the class chunk
+    assert!(
+        get_unit_by_name(&units, "add").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
+    assert!(
+        get_unit_by_name(&units, "constructor").is_none(),
+        "Constructors should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -233,20 +230,12 @@ function fetchData() {
 
     let api_url = get_unit_by_name(&units, "API_URL").unwrap();
     let api_text = build_embedding_text(api_url);
-    let expected_api = r#"Constant: API_URL
-Signature: const API_URL = "https://api.example.com";
-Code:
-const API_URL = "https://api.example.com";
-File: test test.js"#;
+    let expected_api = r#"const API_URL = "https://api.example.com";"#;
     assert_eq!(api_text, expected_api);
 
     let max_retries = get_unit_by_name(&units, "MAX_RETRIES").unwrap();
     let max_text = build_embedding_text(max_retries);
-    let expected_max = r#"Constant: MAX_RETRIES
-Signature: const MAX_RETRIES = 3;
-Code:
-const MAX_RETRIES = 3;
-File: test test.js"#;
+    let expected_max = r#"const MAX_RETRIES = 3;"#;
     assert_eq!(max_text, expected_max);
 }
 

@@ -211,6 +211,7 @@ fn test_companion_object() {
     let text = build_embedding_text(unit);
     let expected = r#"Class: Factory
 Signature: class Factory {
+Calls: Factory
 Code:
 class Factory {
     companion object {

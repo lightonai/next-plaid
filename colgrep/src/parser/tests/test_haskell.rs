@@ -50,11 +50,7 @@ fn test_data_type() {
     assert_eq!(units.len(), 1);
     let unit = &units[0];
     let text = build_embedding_text(unit);
-    let expected = r#"Code block: raw_code_1
-Signature: data Person = Person { name :: String, age :: Int }
-Code:
-data Person = Person { name :: String, age :: Int }
-File: test test.hs"#;
+    let expected = r#"data Person = Person { name :: String, age :: Int }"#;
     assert_eq!(text, expected);
 }
 
@@ -70,14 +66,10 @@ fn test_type_class() {
     assert_eq!(units.len(), 1);
     let unit = &units[0];
     let text = build_embedding_text(unit);
-    let expected = r#"Code block: raw_code_1
-Signature: class Eq a => Ord a where
-Code:
-class Eq a => Ord a where
+    let expected = r#"class Eq a => Ord a where
   compare :: a -> a -> Ordering
   (<) :: a -> a -> Bool
-  (>) :: a -> a -> Bool
-File: test test.hs"#;
+  (>) :: a -> a -> Bool"#;
     assert_eq!(text, expected);
 }
 
@@ -180,11 +172,7 @@ File: test test.hs"#;
 
     let unit1 = &units[1];
     let text1 = build_embedding_text(unit1);
-    let expected1 = r#"Code block: raw_code_1
-Signature: instance Show Person where
-Code:
-instance Show Person where
-File: test test.hs"#;
+    let expected1 = r#"instance Show Person where"#;
     assert_eq!(text1, expected1);
 }
 
@@ -199,13 +187,9 @@ type Person = (Name, Age)
     assert_eq!(units.len(), 1);
     let unit = &units[0];
     let text = build_embedding_text(unit);
-    let expected = r#"Code block: raw_code_1
-Signature: type Name = String
-Code:
-type Name = String
+    let expected = r#"type Name = String
 type Age = Int
-type Person = (Name, Age)
-File: test test.hs"#;
+type Person = (Name, Age)"#;
     assert_eq!(text, expected);
 }
 

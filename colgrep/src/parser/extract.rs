@@ -123,14 +123,155 @@ pub fn extract_class(
     unit.docstring = extract_docstring(node, lines, lang);
     unit.extends = extract_parent_class(node, bytes, lang);
 
-    // Layer 5: Dependencies (classes can have imports)
-    unit.imports = file_imports.to_vec();
+    // Layer 1: Type parameters (generics like <T, U>)
+    unit.parameters = extract_class_type_parameters(node, bytes, lang);
+
+    // Layer 2: Call Graph (classes can have calls in method bodies and initializers)
+    unit.calls = extract_function_calls(node, bytes, lang);
+
+    // Layer 4: Data Flow - extract class attributes/variables (deduplicated)
+    unit.variables = extract_variables(node, bytes, lang);
+
+    // Layer 5: Dependencies
+    // Get modules used via attribute access (e.g., `json` from `json.loads()`)
+    let used_modules = extract_used_modules(node, bytes, lang);
+    // Filter to only modules that are actually imported (case-insensitive)
+    unit.imports = file_imports
+        .iter()
+        .filter(|import| {
+            used_modules
+                .iter()
+                .any(|m| m.to_lowercase() == import.to_lowercase())
+                || unit.calls.iter().any(|call| {
+                    call.to_lowercase().contains(&import.to_lowercase())
+                        || import.to_lowercase().contains(&call.to_lowercase())
+                })
+        })
+        .cloned()
+        .collect();
 
     // Full source content
     let content_end = (end_line + 1).min(lines.len());
     unit.code = lines[code_start..content_end].join("\n");
 
     Some(unit)
+}
+
+/// Extract type parameters from a class/struct declaration (generics like <T, U>).
+fn extract_class_type_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    let type_params_node = match lang {
+        Language::Java | Language::Scala => node.child_by_field_name("type_parameters"),
+        Language::TypeScript | Language::Vue | Language::Svelte => {
+            node.child_by_field_name("type_parameters")
+        }
+        Language::Rust => node.child_by_field_name("type_parameters"),
+        Language::CSharp => node.child_by_field_name("type_parameters"),
+        Language::Kotlin => node.child_by_field_name("type_parameters"),
+        Language::Swift => {
+            // Swift uses generic_parameter_clause
+            node.children(&mut node.walk())
+                .find(|c| c.kind() == "generic_parameter_clause")
+        }
+        Language::Cpp => {
+            // C++ templates: look for template_parameter_list in parent template_declaration
+            if let Some(parent) = node.parent() {
+                if parent.kind() == "template_declaration" {
+                    return extract_cpp_template_params(parent, bytes);
+                }
+            }
+            None
+        }
+        _ => None,
+    };
+
+    let Some(params) = type_params_node else {
+        return Vec::new();
+    };
+
+    let mut result = Vec::new();
+    extract_type_param_names(params, bytes, lang, &mut result);
+    result
+}
+
+/// Recursively extract type parameter names from a type_parameters node.
+fn extract_type_param_names(node: Node, bytes: &[u8], lang: Language, result: &mut Vec<String>) {
+    let kind = node.kind();
+
+    // Match type parameter identifier nodes based on language
+    let is_type_param = match lang {
+        Language::Java => kind == "type_identifier" || kind == "identifier",
+        Language::TypeScript | Language::Vue | Language::Svelte => {
+            kind == "type_identifier" || kind == "identifier"
+        }
+        Language::Rust => kind == "type_identifier" || kind == "identifier",
+        Language::CSharp => kind == "identifier",
+        Language::Kotlin => kind == "type_identifier" || kind == "simple_identifier",
+        Language::Swift => kind == "type_identifier" || kind == "simple_identifier",
+        Language::Scala => kind == "identifier" || kind == "type_identifier",
+        _ => false,
+    };
+
+    if is_type_param {
+        if let Ok(text) = node.utf8_text(bytes) {
+            let name = text.trim();
+            // Skip common keywords that might appear
+            if !name.is_empty()
+                && name != "extends"
+                && name != "super"
+                && name != "where"
+                && !result.contains(&name.to_string())
+            {
+                result.push(name.to_string());
+            }
+        }
+        return; // Don't recurse into type parameter identifiers
+    }
+
+    // Recurse into children
+    for child in node.children(&mut node.walk()) {
+        extract_type_param_names(child, bytes, lang, result);
+    }
+}
+
+/// Extract template parameters from C++ template_declaration.
+fn extract_cpp_template_params(node: Node, bytes: &[u8]) -> Vec<String> {
+    let mut result = Vec::new();
+
+    fn visit(node: Node, bytes: &[u8], result: &mut Vec<String>) {
+        // Look for type_parameter_declaration or template_type_parameter
+        if node.kind() == "type_parameter_declaration"
+            || node.kind() == "template_type_parameter"
+            || node.kind() == "type_identifier"
+        {
+            // Get the identifier
+            if node.kind() == "type_identifier" {
+                if let Ok(text) = node.utf8_text(bytes) {
+                    let name = text.trim();
+                    if !name.is_empty() && !result.contains(&name.to_string()) {
+                        result.push(name.to_string());
+                    }
+                }
+                return;
+            }
+            // For type_parameter_declaration, find the identifier child
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "type_identifier" || child.kind() == "identifier" {
+                    if let Ok(text) = child.utf8_text(bytes) {
+                        let name = text.trim();
+                        if !name.is_empty() && !result.contains(&name.to_string()) {
+                            result.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        for child in node.children(&mut node.walk()) {
+            visit(child, bytes, result);
+        }
+    }
+
+    visit(node, bytes, &mut result);
+    result
 }
 
 /// Extract a constant or static declaration from an AST node.

@@ -286,22 +286,12 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);"#;
 
     let max_size = get_unit_by_name(&units, "MAX_SIZE").unwrap();
     let max_text = build_embedding_text(max_size);
-    let expected_max = r#"Constant: MAX_SIZE
-Signature: const MAX_SIZE: usize = 1024;
-Type: usize
-Code:
-const MAX_SIZE: usize = 1024;
-File: test test.rs"#;
+    let expected_max = r#"const MAX_SIZE: usize = 1024;"#;
     assert_eq!(max_text, expected_max);
 
     let counter = get_unit_by_name(&units, "COUNTER").unwrap();
     let counter_text = build_embedding_text(counter);
-    let expected_counter = r#"Constant: COUNTER
-Signature: static COUNTER: AtomicUsize = AtomicUsize::new(0);
-Type: AtomicUsize
-Code:
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-File: test test.rs"#;
+    let expected_counter = r#"static COUNTER: AtomicUsize = AtomicUsize::new(0);"#;
     assert_eq!(counter_text, expected_counter);
 }
 

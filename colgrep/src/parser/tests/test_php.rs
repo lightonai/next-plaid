@@ -78,10 +78,13 @@ class Person {
 "#;
     let units = parse(source, Language::Php, "test.php");
 
+    // Class is extracted as a single chunk with all methods inside
     let class = get_unit_by_name(&units, "Person").unwrap();
     let class_text = build_embedding_text(class);
 
-    let expected_class = "Class: Person
+    assert_eq!(
+        class_text,
+        "Class: Person
 Signature: class Person {
 Code:
 class Person {
@@ -97,23 +100,18 @@ class Person {
         return \"Hello, I'm \" . $this->name;
     }
 }
-File: test test.php";
+File: test test.php"
+    );
 
-    assert_eq!(class_text, expected_class);
-
-    let method = get_unit_by_name(&units, "greet").unwrap();
-    let method_text = build_embedding_text(method);
-
-    let expected_method = "Method: greet
-Signature: public function greet() {
-Class: Person
-Code:
-    public function greet() {
-        return \"Hello, I'm \" . $this->name;
-    }
-File: test test.php";
-
-    assert_eq!(method_text, expected_method);
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "greet").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
+    assert!(
+        get_unit_by_name(&units, "__construct").is_none(),
+        "Constructor should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -151,10 +149,13 @@ class Utils {
 "#;
     let units = parse(source, Language::Php, "test.php");
 
+    // Class is extracted as a single chunk with static method inside
     let class = get_unit_by_name(&units, "Utils").unwrap();
     let class_text = build_embedding_text(class);
 
-    let expected_class = "Class: Utils
+    assert_eq!(
+        class_text,
+        "Class: Utils
 Signature: class Utils {
 Code:
 class Utils {
@@ -162,23 +163,14 @@ class Utils {
         return \"help\";
     }
 }
-File: test test.php";
+File: test test.php"
+    );
 
-    assert_eq!(class_text, expected_class);
-
-    let method = get_unit_by_name(&units, "helper").unwrap();
-    let method_text = build_embedding_text(method);
-
-    let expected_method = "Method: helper
-Signature: public static function helper(): string {
-Class: Utils
-Code:
-    public static function helper(): string {
-        return \"help\";
-    }
-File: test test.php";
-
-    assert_eq!(method_text, expected_method);
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "helper").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -191,19 +183,31 @@ interface Drawable {
 "#;
     let units = parse(source, Language::Php, "test.php");
 
+    // Interface is extracted as a single chunk with all method signatures inside
     let interface = get_unit_by_name(&units, "Drawable").unwrap();
     let text = build_embedding_text(interface);
 
-    let expected = "Class: Drawable
+    assert_eq!(
+        text,
+        "Class: Drawable
 Signature: interface Drawable {
 Code:
 interface Drawable {
     public function draw(): void;
     public function getBounds(): array;
 }
-File: test test.php";
+File: test test.php"
+    );
 
-    assert_eq!(text, expected);
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "draw").is_none(),
+        "Interface methods should not be extracted separately"
+    );
+    assert!(
+        get_unit_by_name(&units, "getBounds").is_none(),
+        "Interface methods should not be extracted separately"
+    );
 }
 
 #[test]
@@ -242,10 +246,13 @@ trait Loggable {
 "#;
     let units = parse(source, Language::Php, "test.php");
 
+    // Trait is extracted as a single chunk with all methods inside
     let trait_unit = get_unit_by_name(&units, "Loggable").unwrap();
     let text = build_embedding_text(trait_unit);
 
-    let expected = "Class: Loggable
+    assert_eq!(
+        text,
+        "Class: Loggable
 Signature: trait Loggable {
 Code:
 trait Loggable {
@@ -253,9 +260,14 @@ trait Loggable {
         echo $message;
     }
 }
-File: test test.php";
+File: test test.php"
+    );
 
-    assert_eq!(text, expected);
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "log").is_none(),
+        "Trait methods should not be extracted separately"
+    );
 }
 
 #[test]
@@ -271,10 +283,13 @@ abstract class Shape {
 "#;
     let units = parse(source, Language::Php, "test.php");
 
+    // Abstract class is extracted as a single chunk with all methods inside
     let class = get_unit_by_name(&units, "Shape").unwrap();
     let class_text = build_embedding_text(class);
 
-    let expected_class = "Class: Shape
+    assert_eq!(
+        class_text,
+        "Class: Shape
 Signature: abstract class Shape {
 Code:
 abstract class Shape {
@@ -284,23 +299,18 @@ abstract class Shape {
         return \"I am a shape\";
     }
 }
-File: test test.php";
+File: test test.php"
+    );
 
-    assert_eq!(class_text, expected_class);
-
-    let method = get_unit_by_name(&units, "describe").unwrap();
-    let method_text = build_embedding_text(method);
-
-    let expected_method = "Method: describe
-Signature: public function describe(): string {
-Class: Shape
-Code:
-    public function describe(): string {
-        return \"I am a shape\";
-    }
-File: test test.php";
-
-    assert_eq!(method_text, expected_method);
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "describe").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
+    assert!(
+        get_unit_by_name(&units, "area").is_none(),
+        "Abstract methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -375,24 +385,46 @@ class Dog extends Animal {
 "#;
     let units = parse(source, Language::Php, "test.php");
 
+    // Animal class is extracted as a single chunk
     let animal = get_unit_by_name(&units, "Animal").unwrap();
     let animal_text = build_embedding_text(animal);
+    assert_eq!(
+        animal_text,
+        r#"Class: Animal
+Signature: class Animal {
+Code:
+class Animal {
+    public function speak() {
+        return "...";
+    }
+}
+File: test test.php"#
+    );
     // Animal has no parent
     assert!(!animal_text.contains("Extends:"));
 
+    // Dog class is extracted as a single chunk with inheritance info
     let dog = get_unit_by_name(&units, "Dog").unwrap();
     let dog_text = build_embedding_text(dog);
-    let expected_dog = "Class: Dog
+    assert_eq!(
+        dog_text,
+        r#"Class: Dog
 Signature: class Dog extends Animal {
 Extends: Animal
 Code:
 class Dog extends Animal {
     public function speak() {
-        return \"Woof!\";
+        return "Woof!";
     }
 }
-File: test test.php";
-    assert_eq!(dog_text, expected_dog);
+File: test test.php"#
+    );
+
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "speak").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]

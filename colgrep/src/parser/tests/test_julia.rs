@@ -16,13 +16,9 @@ end
     let units = parse(source, Language::Julia, "test.jl");
     assert_eq!(units.len(), 1);
     let text = build_embedding_text(&units[0]);
-    let expected = r#"Code block: raw_code_1
-Signature: function greet(name)
-Code:
-function greet(name)
+    let expected = r#"function greet(name)
     return "Hello, $name!"
-end
-File: test test.jl"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -38,16 +34,12 @@ end
     let units = parse(source, Language::Julia, "test.jl");
     assert_eq!(units.len(), 1);
     let text = build_embedding_text(&units[0]);
-    let expected = r#"Code block: raw_code_1
-Signature: """
-Code:
-"""
+    let expected = r#""""
 Calculates the sum of two numbers.
 """
 function add(a, b)
     return a + b
-end
-File: test test.jl"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -59,12 +51,8 @@ multiply(a, b) = a * b
     let units = parse(source, Language::Julia, "test.jl");
     assert_eq!(units.len(), 1);
     let text = build_embedding_text(&units[0]);
-    let expected = r#"Code block: raw_code_1
-Signature: add(a, b) = a + b
-Code:
-add(a, b) = a + b
-multiply(a, b) = a * b
-File: test test.jl"#;
+    let expected = r#"add(a, b) = a + b
+multiply(a, b) = a * b"#;
     assert_eq!(text, expected);
 }
 
@@ -77,13 +65,9 @@ end"#;
     assert_eq!(units.len(), 1);
     let text = build_embedding_text(&units[0]);
 
-    let expected = r#"Code block: raw_code_1
-Signature: function add(a::Int, b::Int)::Int
-Code:
-function add(a::Int, b::Int)::Int
+    let expected = r#"function add(a::Int, b::Int)::Int
     return a + b
-end
-File: test test.jl"#;
+end"#;
     assert_eq!(text, expected);
 }
 

@@ -38,7 +38,7 @@ pub use types::{CodeUnit, Language, UnitType};
 
 // Internal imports
 use analysis::extract_file_imports;
-use ast::{find_class_body, get_node_name, is_class_node, is_constant_node, is_function_node};
+use ast::{get_node_name, is_class_node, is_constant_node, is_function_node};
 use extract::{extract_class, extract_constant, extract_function, fill_raw_code_gaps};
 use language::get_tree_sitter_language;
 use text::extract_text_units;
@@ -147,28 +147,13 @@ fn extract_from_node(
     }
     // Check if this is a class definition
     else if is_class_node(kind, lang) {
-        if let Some(class_name) = get_node_name(node, bytes, lang) {
-            // Extract class itself
+        if get_node_name(node, bytes, lang).is_some() {
+            // Extract class as a single chunk (do NOT recurse into methods)
+            // This keeps the entire class as one unit for better semantic coherence
             if let Some(unit) = extract_class(node, path, lines, bytes, lang, file_imports) {
                 units.push(unit);
             }
-
-            // Recurse into class body to find methods
-            if let Some(body) = find_class_body(node, lang) {
-                for child in body.children(&mut body.walk()) {
-                    extract_from_node(
-                        child,
-                        path,
-                        lines,
-                        bytes,
-                        lang,
-                        units,
-                        Some(&class_name),
-                        file_imports,
-                    );
-                }
-            }
-            return; // Don't recurse again for class nodes
+            return; // Don't recurse into class body - keep class as single chunk
         }
     }
     // Check if this is a top-level constant/static declaration (only at module level)

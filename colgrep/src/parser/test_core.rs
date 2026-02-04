@@ -454,15 +454,26 @@ class Person:
         return f"Hello, I'm {self.name}"
 "#;
     let units = extract_units(Path::new("test.py"), source, Language::Python);
-    assert!(units
+    // Class should be extracted as a single chunk
+    let class_unit = units
         .iter()
-        .any(|u| u.name == "Person" && u.unit_type == UnitType::Class));
-    assert!(units
-        .iter()
-        .any(|u| u.name == "__init__" && u.unit_type == UnitType::Method));
-    assert!(units
-        .iter()
-        .any(|u| u.name == "greet" && u.unit_type == UnitType::Method));
+        .find(|u| u.name == "Person" && u.unit_type == UnitType::Class);
+    assert!(class_unit.is_some(), "Should extract Person class");
+    // Methods should be contained in the class code, not as separate chunks
+    let class_code = &class_unit.unwrap().code;
+    assert!(
+        class_code.contains("__init__"),
+        "Class code should contain __init__ method"
+    );
+    assert!(
+        class_code.contains("greet"),
+        "Class code should contain greet method"
+    );
+    // No separate method chunks
+    assert!(
+        !units.iter().any(|u| u.unit_type == UnitType::Method),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -529,12 +540,23 @@ class Calculator {
 }
 "#;
     let units = extract_units(Path::new("test.ts"), source, Language::TypeScript);
-    assert!(units
+    // Class should be extracted as a single chunk
+    let class_unit = units
         .iter()
-        .any(|u| u.name == "Calculator" && u.unit_type == UnitType::Class));
-    assert!(units
-        .iter()
-        .any(|u| u.name == "add" && u.unit_type == UnitType::Method));
+        .find(|u| u.name == "Calculator" && u.unit_type == UnitType::Class);
+    assert!(class_unit.is_some(), "Should extract Calculator class");
+    // Methods should be contained in the class code, not as separate chunks
+    assert!(
+        class_unit.unwrap().code.contains("add"),
+        "Class code should contain add method"
+    );
+    // No separate method chunks
+    assert!(
+        !units
+            .iter()
+            .any(|u| u.name == "add" && u.unit_type == UnitType::Method),
+        "Methods should not be extracted separately"
+    );
 }
 
 #[test]
@@ -569,12 +591,21 @@ public class Calculator {
 }
 "#;
     let units = extract_units(Path::new("Test.java"), source, Language::Java);
-    assert!(units
+    // Class should be extracted as a single chunk
+    let class_unit = units
         .iter()
-        .any(|u| u.name == "Calculator" && u.unit_type == UnitType::Class));
-    assert!(units
-        .iter()
-        .any(|u| u.name == "add" && u.unit_type == UnitType::Method));
+        .find(|u| u.name == "Calculator" && u.unit_type == UnitType::Class);
+    assert!(class_unit.is_some(), "Should extract Calculator class");
+    // Methods should be contained in the class code, not as separate chunks
+    assert!(
+        class_unit.unwrap().code.contains("add"),
+        "Class code should contain add method"
+    );
+    // No separate method chunks
+    assert!(
+        !units.iter().any(|u| u.unit_type == UnitType::Method),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -1462,6 +1493,128 @@ if __name__ == "__main__":
     assert!(
         raw.code.contains("if __name__"),
         "Raw should contain if __name__"
+    );
+
+    verify_coverage_and_no_duplicates(source, Language::Python, "test.py");
+}
+
+#[test]
+fn test_python_class_as_single_chunk() {
+    // Test that a Python class with methods is extracted as a single chunk,
+    // NOT split into separate method chunks.
+    // Structure: function -> class with 3 classmethods -> function
+    // Expected: 5 chunks (raw_code for import, func_before, MyClass, func_after, raw_code for main)
+    let source = r#"import sys
+
+def func_before():
+    """Function before the class."""
+    return "before"
+
+class MyClass:
+    """A class with three classmethods."""
+
+    @classmethod
+    def method_one(cls):
+        """First method."""
+        return 1
+
+    @classmethod
+    def method_two(cls):
+        """Second method."""
+        return 2
+
+    @classmethod
+    def method_three(cls):
+        """Third method."""
+        return 3
+
+def func_after():
+    """Function after the class."""
+    return "after"
+
+if __name__ == "__main__":
+    pass
+"#;
+    let units = extract_units(Path::new("test.py"), source, Language::Python);
+
+    // Count by type
+    let functions: Vec<_> = units
+        .iter()
+        .filter(|u| u.unit_type == UnitType::Function)
+        .collect();
+    let classes: Vec<_> = units
+        .iter()
+        .filter(|u| u.unit_type == UnitType::Class)
+        .collect();
+    let methods: Vec<_> = units
+        .iter()
+        .filter(|u| u.unit_type == UnitType::Method)
+        .collect();
+    let raw_code: Vec<_> = units
+        .iter()
+        .filter(|u| u.unit_type == UnitType::RawCode)
+        .collect();
+
+    // Should have exactly 2 functions
+    assert_eq!(
+        functions.len(),
+        2,
+        "Should have 2 functions (func_before, func_after), got: {:?}",
+        functions.iter().map(|u| &u.name).collect::<Vec<_>>()
+    );
+    assert!(functions.iter().any(|u| u.name == "func_before"));
+    assert!(functions.iter().any(|u| u.name == "func_after"));
+
+    // Should have exactly 1 class
+    assert_eq!(
+        classes.len(),
+        1,
+        "Should have 1 class (MyClass), got: {:?}",
+        classes.iter().map(|u| &u.name).collect::<Vec<_>>()
+    );
+    assert_eq!(classes[0].name, "MyClass");
+
+    // The class chunk should contain ALL methods in its code
+    let class_code = &classes[0].code;
+    assert!(
+        class_code.contains("method_one"),
+        "Class code should contain method_one"
+    );
+    assert!(
+        class_code.contains("method_two"),
+        "Class code should contain method_two"
+    );
+    assert!(
+        class_code.contains("method_three"),
+        "Class code should contain method_three"
+    );
+
+    // Should have NO separate method chunks - methods are inside the class chunk
+    assert_eq!(
+        methods.len(),
+        0,
+        "Should have 0 separate method chunks (methods are inside class), got: {:?}",
+        methods.iter().map(|u| &u.name).collect::<Vec<_>>()
+    );
+
+    // Should have 2 raw_code chunks (import statement, main block)
+    assert_eq!(
+        raw_code.len(),
+        2,
+        "Should have 2 raw_code chunks, got: {:?}",
+        raw_code.iter().map(|u| &u.code).collect::<Vec<_>>()
+    );
+
+    // Total should be 5 chunks: 2 functions + 1 class + 2 raw_code
+    assert_eq!(
+        units.len(),
+        5,
+        "Should have exactly 5 chunks total, got {} chunks: {:?}",
+        units.len(),
+        units
+            .iter()
+            .map(|u| format!("{}:{:?}", u.name, u.unit_type))
+            .collect::<Vec<_>>()
     );
 
     verify_coverage_and_no_duplicates(source, Language::Python, "test.py");

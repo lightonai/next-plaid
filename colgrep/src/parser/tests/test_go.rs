@@ -197,10 +197,7 @@ type Writer interface {
 
     let unit = units.first().unwrap();
     let text = build_embedding_text(unit);
-    let expected = r#"Code block: raw_code_1
-Signature: package main
-Code:
-package main
+    let expected = r#"package main
 
 type Reader interface {
     Read(p []byte) (n int, err error)
@@ -208,8 +205,7 @@ type Reader interface {
 
 type Writer interface {
     Write(p []byte) (n int, err error)
-}
-File: test test.go"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -284,11 +280,7 @@ const (
 
     let max_size = get_unit_by_name(&units, "MaxSize").unwrap();
     let text = build_embedding_text(max_size);
-    let expected = r#"Constant: MaxSize
-Signature: const MaxSize = 1024
-Code:
-const MaxSize = 1024
-File: test test.go"#;
+    let expected = r#"const MaxSize = 1024"#;
     assert_eq!(text, expected);
 }
 

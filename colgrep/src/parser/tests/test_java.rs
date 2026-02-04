@@ -13,6 +13,8 @@ fn test_basic_method() {
 }"#;
     let units = parse(source, Language::Java, "Calculator.java");
 
+    // Class should be extracted as a single chunk containing all methods
+    // Methods are NOT extracted separately - they remain inside the class chunk
     let class_unit = get_unit_by_name(&units, "Calculator").unwrap();
     let class_text = build_embedding_text(class_unit);
     let class_expected = r#"Class: Calculator
@@ -26,20 +28,11 @@ public class Calculator {
 File: calculator Calculator.java"#;
     assert_eq!(class_text, class_expected);
 
-    let method = get_unit_by_name(&units, "add").unwrap();
-    let text = build_embedding_text(method);
-
-    let expected = "Method: add
-Signature: public int add(int a, int b) {
-Class: Calculator
-Parameters: a, b
-Returns: int
-Code:
-    public int add(int a, int b) {
-        return a + b;
-    }
-File: calculator Calculator.java";
-    assert_eq!(text, expected);
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "add").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -57,21 +50,31 @@ fn test_method_with_javadoc() {
 }"#;
     let units = parse(source, Language::Java, "Math.java");
 
-    let method = get_unit_by_name(&units, "add").unwrap();
-    let text = build_embedding_text(method);
-
-    let expected = "Method: add
-Signature: public int add(int a, int b) {
-Class: Math
-Description: Calculates the sum of two numbers. @param a First number @param b Second number @return Sum of a and b /
-Parameters: a, b
-Returns: int
+    // Class is extracted as a single chunk with javadoc and method inside
+    let class_unit = get_unit_by_name(&units, "Math").unwrap();
+    let class_text = build_embedding_text(class_unit);
+    let class_expected = r#"Class: Math
+Signature: public class Math {
 Code:
+public class Math {
+    /**
+     * Calculates the sum of two numbers.
+     * @param a First number
+     * @param b Second number
+     * @return Sum of a and b
+     */
     public int add(int a, int b) {
         return a + b;
     }
-File: math Math.java";
-    assert_eq!(text, expected);
+}
+File: math Math.java"#;
+    assert_eq!(class_text, class_expected);
+
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "add").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -83,22 +86,27 @@ fn test_static_method() {
 }"#;
     let units = parse(source, Language::Java, "Utils.java");
 
-    let method = get_unit_by_name(&units, "format").unwrap();
-    let text = build_embedding_text(method);
-
-    let expected = "Method: format
-Signature: public static String format(String template, Object... args) {
-Class: Utils
-Parameters: template
-Returns: String
+    // Class is extracted as a single chunk with static method inside
+    let class_unit = get_unit_by_name(&units, "Utils").unwrap();
+    let class_text = build_embedding_text(class_unit);
+    let class_expected = r#"Class: Utils
+Signature: public class Utils {
 Calls: format
 Variables: args
 Code:
+public class Utils {
     public static String format(String template, Object... args) {
         return String.format(template, args);
     }
-File: utils Utils.java";
-    assert_eq!(text, expected);
+}
+File: utils Utils.java"#;
+    assert_eq!(class_text, class_expected);
+
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "format").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -116,10 +124,13 @@ fn test_method_with_generics() {
 }"#;
     let units = parse(source, Language::Java, "Container.java");
 
+    // Class is extracted as a single chunk with all methods inside
     let class_unit = get_unit_by_name(&units, "Container").unwrap();
     let class_text = build_embedding_text(class_unit);
     let class_expected = r#"Class: Container
 Signature: public class Container<T> {
+Parameters: T
+Variables: value
 Code:
 public class Container<T> {
     private T value;
@@ -135,32 +146,15 @@ public class Container<T> {
 File: container Container.java"#;
     assert_eq!(class_text, class_expected);
 
-    let get_unit = get_unit_by_name(&units, "getValue").unwrap();
-    let get_text = build_embedding_text(get_unit);
-    let get_expected = r#"Method: getValue
-Signature: public T getValue() {
-Class: Container
-Returns: T
-Code:
-    public T getValue() {
-        return value;
-    }
-File: container Container.java"#;
-    assert_eq!(get_text, get_expected);
-
-    let set_unit = get_unit_by_name(&units, "setValue").unwrap();
-    let set_text = build_embedding_text(set_unit);
-    let set_expected = r#"Method: setValue
-Signature: public void setValue(T value) {
-Class: Container
-Parameters: value
-Returns: void
-Code:
-    public void setValue(T value) {
-        this.value = value;
-    }
-File: container Container.java"#;
-    assert_eq!(set_text, set_expected);
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "getValue").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
+    assert!(
+        get_unit_by_name(&units, "setValue").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -180,6 +174,7 @@ fn test_constructor() {
     let class_text = build_embedding_text(class_unit);
     let class_expected = r#"Class: Person
 Signature: public class Person {
+Variables: age, name
 Code:
 public class Person {
     private String name;
@@ -224,21 +219,26 @@ fn test_method_throws() {
 }"#;
     let units = parse(source, Language::Java, "FileReader.java");
 
-    let method = get_unit_by_name(&units, "read").unwrap();
-    let text = build_embedding_text(method);
-
-    let expected = "Method: read
-Signature: public String read(String path) throws IOException {
-Class: FileReader
-Parameters: path
-Returns: String
+    // Class is extracted as a single chunk with method inside
+    let class_unit = get_unit_by_name(&units, "FileReader").unwrap();
+    let class_text = build_embedding_text(class_unit);
+    let class_expected = r#"Class: FileReader
+Signature: public class FileReader {
 Calls: of, readString
 Code:
+public class FileReader {
     public String read(String path) throws IOException {
         return Files.readString(Path.of(path));
     }
-File: file reader FileReader.java";
-    assert_eq!(text, expected);
+}
+File: file reader FileReader.java"#;
+    assert_eq!(class_text, class_expected);
+
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "read").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -264,6 +264,7 @@ fn test_enum() {
     let text = build_embedding_text(unit);
     let expected = r#"Class: Status
 Signature: public enum Status {
+Variables: value
 Code:
 public enum Status {
     ACTIVE("active"),
@@ -295,10 +296,12 @@ fn test_abstract_class() {
 }"#;
     let units = parse(source, Language::Java, "Shape.java");
 
+    // Abstract class is extracted as a single chunk with all methods inside
     let class_unit = get_unit_by_name(&units, "Shape").unwrap();
     let class_text = build_embedding_text(class_unit);
     let class_expected = r#"Class: Shape
 Signature: public abstract class Shape {
+Calls: println
 Code:
 public abstract class Shape {
     public abstract double area();
@@ -310,19 +313,15 @@ public abstract class Shape {
 File: shape Shape.java"#;
     assert_eq!(class_text, class_expected);
 
-    let method_unit = get_unit_by_name(&units, "describe").unwrap();
-    let method_text = build_embedding_text(method_unit);
-    let method_expected = r#"Method: describe
-Signature: public void describe() {
-Class: Shape
-Returns: void
-Calls: println
-Code:
-    public void describe() {
-        System.out.println("I am a shape");
-    }
-File: shape Shape.java"#;
-    assert_eq!(method_text, method_expected);
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "describe").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
+    assert!(
+        get_unit_by_name(&units, "area").is_none(),
+        "Abstract methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -341,20 +340,36 @@ fn test_annotations() {
 }"#;
     let units = parse(source, Language::Java, "Service.java");
 
-    let method = get_unit_by_name(&units, "toString").unwrap();
-    let text = build_embedding_text(method);
-    let expected = r#"Method: toString
-Signature: @Override
-Class: Service
-Returns: String
+    // Class is extracted as a single chunk with annotated methods inside
+    let class_unit = get_unit_by_name(&units, "Service").unwrap();
+    let class_text = build_embedding_text(class_unit);
+    let class_expected = r#"Class: Service
+Signature: public class Service {
 Code:
+public class Service {
     @Override
     @Deprecated
     public String toString() {
         return "Service";
     }
+
+    @PostConstruct
+    public void init() {
+        // Initialize
+    }
+}
 File: service Service.java"#;
-    assert_eq!(text, expected);
+    assert_eq!(class_text, class_expected);
+
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "toString").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
+    assert!(
+        get_unit_by_name(&units, "init").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -368,22 +383,28 @@ fn test_lambda_expression() {
 }"#;
     let units = parse(source, Language::Java, "StreamExample.java");
 
-    let unit = get_unit_by_name(&units, "filter").unwrap();
-    let text = build_embedding_text(unit);
-    let expected = r#"Method: filter
-Signature: public List<String> filter(List<String> items) {
-Class: StreamExample
-Parameters: items
-Returns: List<String>
+    // Class is extracted as a single chunk with lambda-containing method inside
+    let class_unit = get_unit_by_name(&units, "StreamExample").unwrap();
+    let class_text = build_embedding_text(class_unit);
+    let class_expected = r#"Class: StreamExample
+Signature: public class StreamExample {
 Calls: collect, filter, startsWith, stream, toList
 Code:
+public class StreamExample {
     public List<String> filter(List<String> items) {
         return items.stream()
             .filter(s -> s.startsWith("a"))
             .collect(Collectors.toList());
     }
+}
 File: stream example StreamExample.java"#;
-    assert_eq!(text, expected);
+    assert_eq!(class_text, class_expected);
+
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "filter").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -412,6 +433,7 @@ public class Dog extends Animal {
     let expected_dog = r#"Class: Dog
 Signature: public class Dog extends Animal {
 Extends: Animal
+Calls: println
 Code:
 public class Dog extends Animal {
     @Override
@@ -435,19 +457,25 @@ public class ListUtils {
 }"#;
     let units = parse(source, Language::Java, "ListUtils.java");
 
-    let unit = get_unit_by_name(&units, "createList").unwrap();
-    let text = build_embedding_text(unit);
-
-    let expected = r#"Method: createList
-Signature: public List<String> createList() {
-Class: ListUtils
-Returns: List<String>
+    // Class is extracted as a single chunk with method inside
+    let class_unit = get_unit_by_name(&units, "ListUtils").unwrap();
+    let class_text = build_embedding_text(class_unit);
+    let class_expected = r#"Class: ListUtils
+Signature: public class ListUtils {
 Calls: new
 Uses: ArrayList
 Code:
+public class ListUtils {
     public List<String> createList() {
         return new ArrayList<String>();
     }
+}
 File: list utils ListUtils.java"#;
-    assert_eq!(text, expected);
+    assert_eq!(class_text, class_expected);
+
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "createList").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }

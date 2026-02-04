@@ -67,11 +67,13 @@ fn test_class_definition() {
         return self.value"#;
     let units = parse(source, Language::Python, "test.py");
 
+    // Class should be extracted as a single chunk containing all methods
     let class = get_unit_by_name(&units, "Calculator").unwrap();
     let class_text = build_embedding_text(class);
     let expected_class = r#"Class: Calculator
 Signature: class Calculator:
 Description: """A simple calculator class.
+Variables: self.value
 Code:
 class Calculator:
     """A simple calculator class."""
@@ -86,35 +88,19 @@ class Calculator:
 File: test test.py"#;
     assert_eq!(class_text, expected_class);
 
-    let init = get_unit_by_name(&units, "__init__").unwrap();
-    let init_text = build_embedding_text(init);
-    let expected_init = r#"Method: __init__
-Signature: def __init__(self, value: int = 0):
-Class: Calculator
-Parameters: value
-Variables: self.value
-Code:
-    def __init__(self, value: int = 0):
-        self.value = value
-File: test test.py"#;
-    assert_eq!(init_text, expected_init);
+    // Methods should NOT be extracted separately - they are part of the class chunk
+    assert!(
+        get_unit_by_name(&units, "__init__").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
+    assert!(
+        get_unit_by_name(&units, "add").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 
-    let add = get_unit_by_name(&units, "add").unwrap();
-    let add_text = build_embedding_text(add);
-    let expected_add = r#"Method: add
-Signature: def add(self, x: int) -> int:
-Class: Calculator
-Description: """Add x to the current value.
-Parameters: x
-Returns: int
-Variables: self.value
-Code:
-    def add(self, x: int) -> int:
-        """Add x to the current value."""
-        self.value += x
-        return self.value
-File: test test.py"#;
-    assert_eq!(add_text, expected_add);
+    // Verify class code contains all methods
+    assert!(class.code.contains("__init__"));
+    assert!(class.code.contains("add"));
 }
 
 #[test]
@@ -250,20 +236,12 @@ def process():
 
     let max_size = get_unit_by_name(&units, "MAX_SIZE").unwrap();
     let max_text = build_embedding_text(max_size);
-    let expected_max = r#"Constant: MAX_SIZE
-Signature: MAX_SIZE = 1024
-Code:
-MAX_SIZE = 1024
-File: test test.py"#;
+    let expected_max = r#"MAX_SIZE = 1024"#;
     assert_eq!(max_text, expected_max);
 
     let default_name = get_unit_by_name(&units, "DEFAULT_NAME").unwrap();
     let default_text = build_embedding_text(default_name);
-    let expected_default = r#"Constant: DEFAULT_NAME
-Signature: DEFAULT_NAME = "test"
-Code:
-DEFAULT_NAME = "test"
-File: test test.py"#;
+    let expected_default = r#"DEFAULT_NAME = "test""#;
     assert_eq!(default_text, expected_default);
 
     // regular_var should not be extracted as it's lowercase

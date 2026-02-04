@@ -56,26 +56,25 @@ fn test_class_definition() {
 }"#;
     let units = parse(source, Language::Scala, "test.scala");
 
+    // Class is extracted as a single chunk with method inside
     let class = get_unit_by_name(&units, "Person").unwrap();
     let text = build_embedding_text(class);
-    let expected = r#"Class: Person
+    assert_eq!(
+        text,
+        r#"Class: Person
 Signature: class Person(val name: String, var age: Int) {
 Code:
 class Person(val name: String, var age: Int) {
   def greet(): String = s"Hello, I'm $name"
 }
-File: test test.scala"#;
-    assert_eq!(text, expected);
+File: test test.scala"#
+    );
 
-    let method = get_unit_by_name(&units, "greet").unwrap();
-    let text = build_embedding_text(method);
-    let expected = r#"Method: greet
-Signature: def greet(): String = s"Hello, I'm $name"
-Class: Person
-Code:
-  def greet(): String = s"Hello, I'm $name"
-File: test test.scala"#;
-    assert_eq!(text, expected);
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "greet").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -102,29 +101,28 @@ fn test_object_definition() {
 }"#;
     let units = parse(source, Language::Scala, "test.scala");
 
+    // Object is extracted as a single chunk with method inside
     let class = get_unit_by_name(&units, "Utils").unwrap();
     let text = build_embedding_text(class);
-    let expected = r#"Class: Utils
+    assert_eq!(
+        text,
+        r#"Class: Utils
 Signature: object Utils {
+Variables: constant
 Code:
 object Utils {
   def helper(x: Int): Int = x * 2
 
   val constant: String = "value"
 }
-File: test test.scala"#;
-    assert_eq!(text, expected);
+File: test test.scala"#
+    );
 
-    let method = get_unit_by_name(&units, "helper").unwrap();
-    let text = build_embedding_text(method);
-    let expected = r#"Method: helper
-Signature: def helper(x: Int): Int = x * 2
-Class: Utils
-Parameters: x
-Code:
-  def helper(x: Int): Int = x * 2
-File: test test.scala"#;
-    assert_eq!(text, expected);
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "helper").is_none(),
+        "Methods should not be extracted separately from objects"
+    );
 }
 
 #[test]
@@ -135,17 +133,30 @@ fn test_trait_definition() {
 }"#;
     let units = parse(source, Language::Scala, "test.scala");
 
+    // Trait is extracted as a single chunk with all method signatures inside
     let class = get_unit_by_name(&units, "Drawable").unwrap();
     let text = build_embedding_text(class);
-    let expected = r#"Class: Drawable
+    assert_eq!(
+        text,
+        r#"Class: Drawable
 Signature: trait Drawable {
 Code:
 trait Drawable {
   def draw(): Unit
   def bounds: Rectangle
 }
-File: test test.scala"#;
-    assert_eq!(text, expected);
+File: test test.scala"#
+    );
+
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "draw").is_none(),
+        "Trait methods should not be extracted separately"
+    );
+    assert!(
+        get_unit_by_name(&units, "bounds").is_none(),
+        "Trait methods should not be extracted separately"
+    );
 }
 
 #[test]
@@ -183,17 +194,26 @@ fn test_implicit_class() {
 }"#;
     let units = parse(source, Language::Scala, "test.scala");
 
+    // Implicit class is extracted as a single chunk with method inside
     let class = get_unit_by_name(&units, "StringOps").unwrap();
     let text = build_embedding_text(class);
-    let expected = r#"Class: StringOps
+    assert_eq!(
+        text,
+        r#"Class: StringOps
 Signature: implicit class StringOps(val s: String) extends AnyVal {
 Extends: AnyVal
 Code:
 implicit class StringOps(val s: String) extends AnyVal {
   def addExclamation: String = s + "!"
 }
-File: test test.scala"#;
-    assert_eq!(text, expected);
+File: test test.scala"#
+    );
+
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "addExclamation").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -207,6 +227,7 @@ case class Failure(message: String) extends Result[Nothing]"#;
     let text = build_embedding_text(class);
     let expected = r#"Class: Result
 Signature: sealed trait Result[+T]
+Parameters: T
 Code:
 sealed trait Result[+T]
 File: test test.scala"#;
@@ -217,6 +238,7 @@ File: test test.scala"#;
     let expected = r#"Class: Success
 Signature: case class Success[T](value: T) extends Result[T]
 Extends: Result
+Parameters: T
 Code:
 case class Success[T](value: T) extends Result[T]
 File: test test.scala"#;
@@ -243,30 +265,46 @@ object Circle {
 }"#;
     let units = parse(source, Language::Scala, "test.scala");
 
-    // There are two Circle units - the class and the object. Get them both.
+    // There are two Circle units - the class and the companion object
     let circles: Vec<_> = units.iter().filter(|u| u.name == "Circle").collect();
     assert_eq!(circles.len(), 2);
 
+    // Class is extracted as a single chunk
     let class = circles[0];
     let text = build_embedding_text(class);
-    let expected = r#"Class: Circle
+    assert_eq!(
+        text,
+        r#"Class: Circle
 Signature: class Circle(val radius: Double)
 Code:
 class Circle(val radius: Double)
-File: test test.scala"#;
-    assert_eq!(text, expected);
+File: test test.scala"#
+    );
 
+    // Companion object is extracted as a single chunk with methods inside
     let object = circles[1];
     let text = build_embedding_text(object);
-    let expected = r#"Class: Circle
+    assert_eq!(
+        text,
+        r#"Class: Circle
 Signature: object Circle {
 Code:
 object Circle {
   def apply(radius: Double): Circle = new Circle(radius)
   def unit: Circle = new Circle(1.0)
 }
-File: test test.scala"#;
-    assert_eq!(text, expected);
+File: test test.scala"#
+    );
+
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "apply").is_none(),
+        "Methods should not be extracted separately from objects"
+    );
+    assert!(
+        get_unit_by_name(&units, "unit").is_none(),
+        "Methods should not be extracted separately from objects"
+    );
 }
 
 #[test]
@@ -301,22 +339,42 @@ class Dog extends Animal {
 }"#;
     let units = parse(source, Language::Scala, "test.scala");
 
+    // Animal class is extracted as a single chunk with method inside
     let animal = get_unit_by_name(&units, "Animal").unwrap();
     let animal_text = build_embedding_text(animal);
+    assert_eq!(
+        animal_text,
+        r#"Class: Animal
+Signature: class Animal {
+Code:
+class Animal {
+  def speak(): String = "..."
+}
+File: test test.scala"#
+    );
     // Animal has no parent
     assert!(!animal_text.contains("Extends:"));
 
+    // Dog class is extracted as a single chunk with inheritance info
     let dog = get_unit_by_name(&units, "Dog").unwrap();
     let dog_text = build_embedding_text(dog);
-    let expected_dog = r#"Class: Dog
+    assert_eq!(
+        dog_text,
+        r#"Class: Dog
 Signature: class Dog extends Animal {
 Extends: Animal
 Code:
 class Dog extends Animal {
   override def speak(): String = "Woof!"
 }
-File: test test.scala"#;
-    assert_eq!(dog_text, expected_dog);
+File: test test.scala"#
+    );
+
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "speak").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]

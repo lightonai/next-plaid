@@ -18,13 +18,9 @@ fn test_basic_function() {
     assert_eq!(units.len(), 1);
     let text = build_embedding_text(&units[0]);
 
-    let expected = r#"Code block: raw_code_1
-Signature: fn add(a: i32, b: i32) i32 {
-Code:
-fn add(a: i32, b: i32) i32 {
+    let expected = r#"fn add(a: i32, b: i32) i32 {
     return a + b;
-}
-File: test test.zig"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -40,14 +36,10 @@ fn add(a: i32, b: i32) i32 {
     assert_eq!(units.len(), 1);
     let text = build_embedding_text(&units[0]);
 
-    let expected = r#"Code block: raw_code_1
-Signature: /// Calculates the sum of two numbers.
-Code:
-/// Calculates the sum of two numbers.
+    let expected = r#"/// Calculates the sum of two numbers.
 fn add(a: i32, b: i32) i32 {
     return a + b;
-}
-File: test test.zig"#;
+}"#;
     assert_eq!(text, expected);
 }
 

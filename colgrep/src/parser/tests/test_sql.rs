@@ -19,15 +19,11 @@ fn test_create_table() {
     let unit = &units[0];
     let text = build_embedding_text(unit);
 
-    let expected = r#"Code block: raw_code_1
-Signature: CREATE TABLE users (
-Code:
-CREATE TABLE users (
+    let expected = r#"CREATE TABLE users (
     id INT PRIMARY KEY,
     name VARCHAR(255),
     email VARCHAR(255)
-);
-File: test test.sql"#;
+);"#;
     assert_eq!(text, expected);
 }
 
@@ -49,15 +45,11 @@ CREATE TABLE users (
     let unit = &units[0];
     let text = build_embedding_text(unit);
 
-    let expected = r#"Code block: raw_code_1
-Signature: -- User information table
-Code:
--- User information table
+    let expected = r#"-- User information table
 CREATE TABLE users (
     id INT PRIMARY KEY,
     name VARCHAR(255)
-);
-File: test test.sql"#;
+);"#;
     assert_eq!(text, expected);
 }
 

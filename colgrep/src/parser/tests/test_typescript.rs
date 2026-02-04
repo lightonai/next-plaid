@@ -113,9 +113,12 @@ fn test_class_with_types() {
 }"#;
     let units = parse(source, Language::TypeScript, "test.ts");
 
-    let class = get_unit_by_name(&units, "Calculator").unwrap();
-    let class_text = build_embedding_text(class);
-    let expected_class = r#"Class: Calculator
+    // Class is extracted as a single chunk with all methods inside
+    let class_unit = get_unit_by_name(&units, "Calculator").unwrap();
+    let class_text = build_embedding_text(class_unit);
+    assert_eq!(
+        class_text,
+        r#"Class: Calculator
 Signature: class Calculator {
 Code:
 class Calculator {
@@ -130,23 +133,14 @@ class Calculator {
         return this.value;
     }
 }
-File: test test.ts"#;
-    assert_eq!(class_text, expected_class);
+File: test test.ts"#
+    );
 
-    let add = get_unit_by_name(&units, "add").unwrap();
-    let add_text = build_embedding_text(add);
-    let expected_add = r#"Method: add
-Signature: public add(x: number): number {
-Class: Calculator
-Parameters: x
-Returns: : number
-Code:
-    public add(x: number): number {
-        this.value += x;
-        return this.value;
-    }
-File: test test.ts"#;
-    assert_eq!(add_text, expected_add);
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "add").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -252,7 +246,9 @@ class Service {
 
     let log = get_unit_by_name(&units, "Log").unwrap();
     let log_text = build_embedding_text(log);
-    let expected_log = r#"Function: Log
+    assert_eq!(
+        log_text,
+        r#"Function: Log
 Signature: function Log(target: any, key: string) {
 Parameters: target, key
 Calls: log
@@ -260,13 +256,17 @@ Code:
 function Log(target: any, key: string) {
     console.log(`Called ${key}`);
 }
-File: test test.ts"#;
-    assert_eq!(log_text, expected_log);
+File: test test.ts"#
+    );
 
+    // Class is extracted as a single chunk with decorated method inside
     let service = get_unit_by_name(&units, "Service").unwrap();
     let service_text = build_embedding_text(service);
-    let expected_service = r#"Class: Service
+    assert_eq!(
+        service_text,
+        r#"Class: Service
 Signature: class Service {
+Calls: log
 Code:
 class Service {
     @Log
@@ -274,8 +274,14 @@ class Service {
         console.log("doing something");
     }
 }
-File: test test.ts"#;
-    assert_eq!(service_text, expected_service);
+File: test test.ts"#
+    );
+
+    // Verify NO separate method unit exists
+    assert!(
+        get_unit_by_name(&units, "doSomething").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
@@ -287,22 +293,12 @@ const CONFIG: Config = { timeout: 5000 };"#;
 
     let api_url = get_unit_by_name(&units, "API_URL").unwrap();
     let api_text = build_embedding_text(api_url);
-    let expected_api = r#"Constant: API_URL
-Signature: const API_URL: string = "https://api.example.com";
-Type: : string
-Code:
-const API_URL: string = "https://api.example.com";
-File: test test.ts"#;
+    let expected_api = r#"const API_URL: string = "https://api.example.com";"#;
     assert_eq!(api_text, expected_api);
 
     let max_retries = get_unit_by_name(&units, "MAX_RETRIES").unwrap();
     let max_text = build_embedding_text(max_retries);
-    let expected_max = r#"Constant: MAX_RETRIES
-Signature: const MAX_RETRIES: number = 3;
-Type: : number
-Code:
-const MAX_RETRIES: number = 3;
-File: test test.ts"#;
+    let expected_max = r#"const MAX_RETRIES: number = 3;"#;
     assert_eq!(max_text, expected_max);
 }
 
@@ -321,14 +317,30 @@ class Dog extends Animal {
 }"#;
     let units = parse(source, Language::TypeScript, "test.ts");
 
+    // Animal class is extracted as a single chunk
     let animal = get_unit_by_name(&units, "Animal").unwrap();
     let animal_text = build_embedding_text(animal);
+    assert_eq!(
+        animal_text,
+        r#"Class: Animal
+Signature: class Animal {
+Code:
+class Animal {
+    speak(): string {
+        return "...";
+    }
+}
+File: test test.ts"#
+    );
     // Animal has no parent
     assert!(!animal_text.contains("Extends:"));
 
+    // Dog class is extracted as a single chunk with inheritance info
     let dog = get_unit_by_name(&units, "Dog").unwrap();
     let dog_text = build_embedding_text(dog);
-    let expected_dog = r#"Class: Dog
+    assert_eq!(
+        dog_text,
+        r#"Class: Dog
 Signature: class Dog extends Animal {
 Extends: Animal
 Code:
@@ -337,8 +349,14 @@ class Dog extends Animal {
         return "Woof!";
     }
 }
-File: test test.ts"#;
-    assert_eq!(dog_text, expected_dog);
+File: test test.ts"#
+    );
+
+    // Verify NO separate method units exist
+    assert!(
+        get_unit_by_name(&units, "speak").is_none(),
+        "Methods should not be extracted separately from classes"
+    );
 }
 
 #[test]
