@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "next-plaid-client"
-version = "0.9.0"
+version = "0.9.1"
 description = "Python SDK for the Next Plaid ColBERT Search API"
 readme = "README.md"
 license = { text = "Apache-2.0" }
