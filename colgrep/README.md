@@ -313,6 +313,14 @@ colgrep --install-claude-code
 
 **IMPORTANT: You must restart Claude Code after installation for the plugin to take effect.**
 
+The integration includes intelligent hooks that:
+- Check if your project needs indexing before injecting colgrep context
+- Return empty if >3000 chunks need indexing (prevents slow operations on large projects)
+- Return empty if index is desynced (needs repair)
+- Only suggest colgrep when it's ready to use
+
+This ensures Claude Code only uses colgrep when it will provide fast, reliable results.
+
 To uninstall:
 ```bash
 colgrep --uninstall-claude-code

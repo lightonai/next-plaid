@@ -155,6 +155,17 @@ cargo install colgrep --features "accelerate,coreml"
 
 The `--uninstall` command completely removes colgrep: uninstalls from all AI tools, clears all indexes, and removes all data.
 
+#### Smart Claude Code Integration
+
+The Claude Code integration includes intelligent hooks that adapt to your project:
+
+- **Automatic readiness checks**: Before suggesting colgrep, checks if index exists and how many chunks need indexing
+- **Prevents slow operations**: Returns empty if >3000 chunks need indexing (avoids blocking large projects)
+- **Desync detection**: Returns empty if index is desynced (needs repair before use)
+- **Agent awareness**: Reminds the model to inject colgrep instructions when spawning agents
+
+This ensures Claude Code only uses colgrep when it will provide fast, reliable results. On large unindexed projects, Claude Code won't suggest colgrep until you've indexed it manually with `colgrep "test" -k 1`.
+
 ### Usage
 
 Start searching within your codebase to index the project, or let your agent do it for you:
