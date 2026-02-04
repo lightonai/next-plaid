@@ -275,6 +275,159 @@ impl IndexBuilder {
         }
     }
 
+    /// Reconstruct IndexState from the filtering database.
+    ///
+    /// This is used when state.json is missing/empty but the index exists.
+    /// Queries the filtering DB for all indexed file paths and rebuilds the state
+    /// by computing hashes and mtimes for files that still exist on disk.
+    ///
+    /// Files that no longer exist are scheduled for deletion from the index.
+    fn reconstruct_state_from_filtering_db(&self, index_path_str: &str) -> Result<IndexState> {
+        // Get all metadata from filtering DB
+        let all_metadata = filtering::get(index_path_str, None, &[], None)?;
+
+        if all_metadata.is_empty() {
+            anyhow::bail!("Filtering database is empty, cannot reconstruct state");
+        }
+
+        // Extract unique file paths from metadata
+        let mut unique_files: HashSet<PathBuf> = HashSet::new();
+        for meta in &all_metadata {
+            if let Some(file_str) = meta.get("file").and_then(|v| v.as_str()) {
+                unique_files.insert(PathBuf::from(file_str));
+            }
+        }
+
+        if unique_files.is_empty() {
+            anyhow::bail!("No file paths found in filtering database");
+        }
+
+        // Rebuild state by checking which files still exist
+        let mut state = IndexState::default();
+
+        for file_path in unique_files {
+            let full_path = self.project_root.join(&file_path);
+
+            // Only add files that still exist on disk
+            if full_path.exists() {
+                if let (Ok(hash), Ok(mtime)) = (hash_file(&full_path), get_mtime(&full_path)) {
+                    state.files.insert(
+                        file_path,
+                        FileInfo {
+                            content_hash: hash,
+                            mtime,
+                        },
+                    );
+                }
+            }
+            // Files that don't exist will be detected as deleted in incremental_update
+        }
+
+        Ok(state)
+    }
+
+    /// Reconcile document count mismatch between filtering DB and vector index.
+    ///
+    /// This handles the case where the counts don't match, typically due to
+    /// interrupted indexing operations.
+    ///
+    /// Strategy:
+    /// - If filtering has MORE docs than vector index: delete orphan entries from filtering
+    /// - If vector index has MORE docs than filtering: accept it (orphan embeddings don't affect search)
+    fn reconcile_document_counts(
+        &self,
+        index_path_str: &str,
+        filtering_count: usize,
+        vector_count: usize,
+    ) -> Result<()> {
+        if filtering_count > vector_count {
+            // Filtering DB has orphan entries (docs without embeddings)
+            // Get all doc IDs from filtering that exceed the vector index count
+            // The vector index uses sequential IDs starting from 0, so any ID >= vector_count is orphan
+            let all_metadata = filtering::get(index_path_str, None, &[], None)?;
+
+            let orphan_ids: Vec<i64> = all_metadata
+                .iter()
+                .filter_map(|meta| meta.get("_subset_").and_then(|v| v.as_i64()))
+                .filter(|&id| id >= vector_count as i64)
+                .collect();
+
+            if !orphan_ids.is_empty() {
+                // Delete orphan entries from filtering DB
+                filtering::delete(index_path_str, &orphan_ids)?;
+            }
+        }
+        // If vector_count > filtering_count, the orphan embeddings don't affect search
+        // results since filtering is used to select which docs to return.
+        // We can safely proceed with incremental update.
+
+        Ok(())
+    }
+
+    /// Automatically repair sync issues between the vector index and metadata DB.
+    ///
+    /// Handles two cases:
+    /// 1. DB has more records than index: Delete extra DB records (IDs >= index count)
+    /// 2. Index has more documents than DB: Delete extra documents from index (IDs >= DB count)
+    ///
+    /// Returns Ok(true) if repair was performed, Ok(false) if no repair needed.
+    fn repair_index_db_sync(&self, index_path: &Path) -> Result<bool> {
+        let index_path_str = index_path.to_str().unwrap();
+
+        // Check if both exist
+        if !index_path.join("metadata.json").exists() {
+            return Ok(false); // No index yet
+        }
+        if !filtering::exists(index_path_str) {
+            return Ok(false); // No DB yet
+        }
+
+        let index_metadata =
+            Metadata::load_from_path(index_path).context("Failed to load index metadata")?;
+        let db_count = filtering::count(index_path_str).context("Failed to get DB count")?;
+
+        let index_count = index_metadata.num_documents;
+
+        if index_count == db_count {
+            return Ok(false); // Already in sync
+        }
+
+        eprintln!(
+            "⚠️  Index/DB desync detected: index has {} docs, DB has {} records",
+            index_count, db_count
+        );
+
+        if db_count > index_count {
+            // DB has extra records - delete them
+            let extra_ids: Vec<i64> = (index_count as i64..db_count as i64).collect();
+            filtering::delete(index_path_str, &extra_ids)
+                .context("Failed to delete extra DB records")?;
+            eprintln!("🔧 Deleted {} orphan DB records", extra_ids.len());
+        } else {
+            // Index has extra documents - delete them
+            let extra_ids: Vec<i64> = (db_count as i64..index_count as i64).collect();
+            delete_from_index(&extra_ids, index_path_str)
+                .context("Failed to delete extra index documents")?;
+            eprintln!("🔧 Deleted {} orphan index documents", extra_ids.len());
+        }
+
+        // Verify repair succeeded
+        let new_index_metadata = Metadata::load_from_path(index_path)
+            .context("Failed to reload index metadata after repair")?;
+        let new_db_count =
+            filtering::count(index_path_str).context("Failed to get DB count after repair")?;
+
+        if new_index_metadata.num_documents != new_db_count {
+            anyhow::bail!(
+                "Repair failed: index still has {} documents but DB has {} records",
+                new_index_metadata.num_documents,
+                new_db_count
+            );
+        }
+
+        Ok(true)
+    }
+
     /// Single entry point for indexing.
     /// - Creates index if none exists
     /// - Updates incrementally if files changed
@@ -299,20 +452,55 @@ impl IndexBuilder {
             return self.full_rebuild(languages);
         }
 
-        // State is out of sync with index (e.g., state.json was deleted but index exists)
-        // Do a full rebuild to avoid UNIQUE constraint errors when re-adding existing docs
-        if state.files.is_empty() {
+        // Validate filtering DB is not corrupted (can be read)
+        if filtering::count(index_path_str).is_err() {
+            eprintln!("⚠️  Filtering database corrupted, rebuilding index...");
             return self.full_rebuild(languages);
         }
 
+        // State is out of sync with index (e.g., state.json was deleted but index exists)
+        // Try to reconstruct state from filtering DB instead of full rebuild
+        let state = if state.files.is_empty() {
+            match self.reconstruct_state_from_filtering_db(index_path_str) {
+                Ok(reconstructed) => {
+                    eprintln!(
+                        "📋 Reconstructed state from index ({} files)",
+                        reconstructed.files.len()
+                    );
+                    reconstructed.save(&self.index_dir)?;
+                    reconstructed
+                }
+                Err(_) => {
+                    // Failed to reconstruct, fall back to full rebuild
+                    return self.full_rebuild(languages);
+                }
+            }
+        } else {
+            state
+        };
+
         // Check if metadata DB is in sync with vector index
-        // If document counts don't match, do a full rebuild to avoid UNIQUE constraint errors
-        // Use Metadata::load_from_path which infers num_documents from doclens files if missing
+        // If document counts don't match, try to reconcile instead of full rebuild
         if let Ok(metadata_count) = filtering::count(index_path_str) {
             if let Ok(index_metadata) = Metadata::load_from_path(&index_path) {
                 if metadata_count != index_metadata.num_documents {
-                    // Metadata DB and vector index are out of sync
-                    return self.full_rebuild(languages);
+                    // Try to reconcile the mismatch
+                    match self.reconcile_document_counts(
+                        index_path_str,
+                        metadata_count,
+                        index_metadata.num_documents,
+                    ) {
+                        Ok(()) => {
+                            eprintln!(
+                                "🔧 Reconciled index (filtering: {}, vector: {})",
+                                metadata_count, index_metadata.num_documents
+                            );
+                        }
+                        Err(_) => {
+                            // Failed to reconcile, fall back to full rebuild
+                            return self.full_rebuild(languages);
+                        }
+                    }
                 }
             }
         }
@@ -417,10 +605,8 @@ impl IndexBuilder {
 
         // Delete old entries for changed files before re-indexing
         // This prevents duplicates when a file's content has changed
-        if filtering::exists(index_path_str) {
-            for file_path in &files_changed {
-                self.delete_file_from_index(index_path_str, file_path)?;
-            }
+        for file_path in &files_changed {
+            self.delete_file_from_index(index_path_str, file_path)?;
         }
 
         // Load or create state
@@ -566,6 +752,8 @@ impl IndexBuilder {
             // Interrupts are deferred during index writes to ensure data consistency
             {
                 let _guard = CriticalSectionGuard::new();
+
+                // STEP 1: Update vector index first
                 let (_, doc_ids) = MmapIndex::update_or_create(
                     &chunk_embeddings,
                     index_path_str,
@@ -573,16 +761,24 @@ impl IndexBuilder {
                     &update_config,
                 )?;
 
-                // Store metadata for this chunk
+                // STEP 2: Update filtering DB with the actual doc_ids
                 let metadata: Vec<serde_json::Value> = unit_chunk
                     .iter()
                     .map(|u| serde_json::to_value(u).unwrap())
                     .collect();
 
-                if filtering::exists(index_path_str) {
-                    filtering::update(index_path_str, &metadata, &doc_ids)?;
+                let db_result = if filtering::exists(index_path_str) {
+                    filtering::update(index_path_str, &metadata, &doc_ids)
                 } else {
-                    filtering::create(index_path_str, &metadata, &doc_ids)?;
+                    filtering::create(index_path_str, &metadata, &doc_ids)
+                };
+
+                if let Err(e) = db_result {
+                    // ROLLBACK: Remove docs we just added to index
+                    if let Err(rollback_err) = delete_from_index(&doc_ids, index_path_str) {
+                        eprintln!("⚠️  Rollback failed: {}", rollback_err);
+                    }
+                    return Err(e.into());
                 }
             }
         }
@@ -727,6 +923,12 @@ impl IndexBuilder {
         let plan = self.compute_update_plan(old_state, languages)?;
         let index_path = get_vector_index_path(&self.index_dir);
         let index_path_str = index_path.to_str().unwrap();
+
+        // Repair any desync between vector index and filtering DB before proceeding
+        if let Err(e) = self.repair_index_db_sync(&index_path) {
+            eprintln!("⚠️  Repair failed: {}, falling back to full rebuild", e);
+            return self.full_rebuild(languages);
+        }
 
         // 0. Clean up orphaned entries (files in index but not on disk)
         // This handles directory deletion/rename and any inconsistencies
@@ -949,6 +1151,8 @@ impl IndexBuilder {
                 // Interrupts are deferred during index writes to ensure data consistency
                 {
                     let _guard = CriticalSectionGuard::new();
+
+                    // STEP 1: Update vector index first
                     let (_, doc_ids) = MmapIndex::update_or_create(
                         &chunk_embeddings,
                         index_path_str,
@@ -956,12 +1160,19 @@ impl IndexBuilder {
                         &update_config,
                     )?;
 
-                    // Store metadata for this chunk
+                    // STEP 2: Update filtering DB with the actual doc_ids
                     let metadata: Vec<serde_json::Value> = unit_chunk
                         .iter()
                         .map(|u| serde_json::to_value(u).unwrap())
                         .collect();
-                    filtering::update(index_path_str, &metadata, &doc_ids)?;
+
+                    if let Err(e) = filtering::update(index_path_str, &metadata, &doc_ids) {
+                        // ROLLBACK: Remove docs we just added to index
+                        if let Err(rollback_err) = delete_from_index(&doc_ids, index_path_str) {
+                            eprintln!("⚠️  Rollback failed: {}", rollback_err);
+                        }
+                        return Err(e.into());
+                    }
                 }
             }
 
@@ -1220,9 +1431,11 @@ impl IndexBuilder {
         Ok(plan)
     }
 
-    /// Delete all chunks for a file from both vector index and metadata DB
+    /// Delete all chunks for a file from vector index and filtering DB.
     fn delete_file_from_index(&self, index_path: &str, file_path: &Path) -> Result<()> {
         let file_str = file_path.to_string_lossy().to_string();
+
+        // Get doc IDs directly from filtering DB
         let ids =
             filtering::where_condition(index_path, "file = ?", &[serde_json::json!(file_str)])
                 .unwrap_or_default();
@@ -1237,18 +1450,17 @@ impl IndexBuilder {
     /// Clean up orphaned entries: files in index but not on disk
     /// This handles directory deletion/rename and any state inconsistencies
     fn cleanup_orphaned_entries(&self, index_path: &str) -> Result<usize> {
-        // Get all unique file paths from the index
+        // Get all indexed files from filtering DB
         let all_metadata = filtering::get(index_path, None, &[], None).unwrap_or_default();
-
-        let mut indexed_files: HashSet<String> = HashSet::new();
+        let mut files: HashSet<String> = HashSet::new();
         for meta in &all_metadata {
             if let Some(file) = meta.get("file").and_then(|v| v.as_str()) {
-                indexed_files.insert(file.to_string());
+                files.insert(file.to_string());
             }
         }
 
         let mut deleted_count = 0;
-        for file_str in indexed_files {
+        for file_str in files {
             let full_path = self.project_root.join(&file_str);
             if !full_path.exists() {
                 // File no longer exists on disk - delete from index
@@ -1381,6 +1593,8 @@ impl IndexBuilder {
             // Interrupts are deferred during index writes to ensure data consistency
             {
                 let _guard = CriticalSectionGuard::new();
+
+                // STEP 1: Update vector index first
                 let (_, doc_ids) = MmapIndex::update_or_create(
                     &chunk_embeddings,
                     index_path_str,
@@ -1388,16 +1602,24 @@ impl IndexBuilder {
                     &update_config,
                 )?;
 
-                // Store metadata for this chunk
+                // STEP 2: Update filtering DB with the actual doc_ids
                 let metadata: Vec<serde_json::Value> = unit_chunk
                     .iter()
                     .map(|u| serde_json::to_value(u).unwrap())
                     .collect();
 
-                if filtering::exists(index_path_str) {
-                    filtering::update(index_path_str, &metadata, &doc_ids)?;
+                let db_result = if filtering::exists(index_path_str) {
+                    filtering::update(index_path_str, &metadata, &doc_ids)
                 } else {
-                    filtering::create(index_path_str, &metadata, &doc_ids)?;
+                    filtering::create(index_path_str, &metadata, &doc_ids)
+                };
+
+                if let Err(e) = db_result {
+                    // ROLLBACK: Remove docs we just added to index
+                    if let Err(rollback_err) = delete_from_index(&doc_ids, index_path_str) {
+                        eprintln!("⚠️  Rollback failed: {}", rollback_err);
+                    }
+                    return Err(e.into());
                 }
             }
         }
