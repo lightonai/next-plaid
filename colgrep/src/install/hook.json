@@ -29,8 +29,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat <<'EOF'\n{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"IMPORTANT: Include colgrep instructions in your agent prompt. Add this to your prompt: Use colgrep (via Bash) for ALL code searches instead of Grep/Glob tools. Examples: colgrep query ./src, colgrep -e pattern, colgrep -l --include=*.rs query . Do NOT use Grep or Glob tools.\"}}\nEOF",
-            "timeout": 5
+            "command": "colgrep --task-hook",
+            "timeout": 10
           }
         ]
       }

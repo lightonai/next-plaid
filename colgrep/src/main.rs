@@ -17,7 +17,7 @@ use cli::{Cli, Commands};
 use commands::search::{resolve_pool_factor, resolve_top_k};
 use commands::{
     cmd_clear, cmd_config, cmd_reset_stats, cmd_search, cmd_session_hook, cmd_set_model, cmd_stats,
-    cmd_status,
+    cmd_status, cmd_task_hook,
 };
 
 fn main() -> Result<()> {
@@ -58,6 +58,10 @@ fn main() -> Result<()> {
 
     if cli.session_hook {
         return cmd_session_hook();
+    }
+
+    if cli.task_hook {
+        return cmd_task_hook();
     }
 
     if cli.stats {

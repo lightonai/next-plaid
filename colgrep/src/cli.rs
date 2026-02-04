@@ -301,6 +301,10 @@ pub struct Cli {
     #[arg(long = "session-hook", hide = true)]
     pub session_hook: bool,
 
+    /// Internal: Claude Code task hook (outputs JSON reminder for agent prompts)
+    #[arg(long = "task-hook", hide = true)]
+    pub task_hook: bool,
+
     /// Disable embedding pooling (use full embeddings, slower but more precise)
     #[arg(long = "no-pool")]
     pub no_pool: bool,

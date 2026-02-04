@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
+use serde_json;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -192,11 +193,102 @@ pub fn install_claude_code() -> Result<()> {
     Ok(())
 }
 
+/// Get the Claude Code settings.json path
+fn get_claude_settings_path() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("Could not determine home directory")?;
+    Ok(home.join(".claude").join("settings.json"))
+}
+
+/// Remove colgrep-related hooks from ~/.claude/settings.json
+fn remove_hooks_from_settings() -> Result<bool> {
+    let settings_path = get_claude_settings_path()?;
+
+    if !settings_path.exists() {
+        return Ok(false);
+    }
+
+    let content = fs::read_to_string(&settings_path).context("Failed to read settings.json")?;
+
+    let mut settings: serde_json::Value =
+        serde_json::from_str(&content).context("Failed to parse settings.json")?;
+
+    let mut modified = false;
+
+    // Remove hooks that contain "colgrep" in their commands
+    if let Some(hooks) = settings.get_mut("hooks") {
+        if let Some(hooks_obj) = hooks.as_object_mut() {
+            for (_event_name, matchers) in hooks_obj.iter_mut() {
+                if let Some(matchers_arr) = matchers.as_array_mut() {
+                    // Filter out matchers that have colgrep-related hooks
+                    let original_len = matchers_arr.len();
+                    matchers_arr.retain(|matcher| {
+                        if let Some(hooks_list) = matcher.get("hooks").and_then(|h| h.as_array()) {
+                            // Check if any hook command contains "colgrep"
+                            let has_colgrep = hooks_list.iter().any(|hook| {
+                                hook.get("command")
+                                    .and_then(|c| c.as_str())
+                                    .map(|cmd| cmd.contains("colgrep"))
+                                    .unwrap_or(false)
+                            });
+                            !has_colgrep // Keep only non-colgrep hooks
+                        } else {
+                            true // Keep if no hooks array
+                        }
+                    });
+                    if matchers_arr.len() != original_len {
+                        modified = true;
+                    }
+                }
+            }
+
+            // Remove empty hook event arrays
+            let empty_events: Vec<String> = hooks_obj
+                .iter()
+                .filter(|(_, v)| v.as_array().map(|a| a.is_empty()).unwrap_or(false))
+                .map(|(k, _)| k.clone())
+                .collect();
+
+            for event in empty_events {
+                hooks_obj.remove(&event);
+                modified = true;
+            }
+        }
+
+        // If hooks object is now empty, remove it entirely
+        if hooks.as_object().map(|o| o.is_empty()).unwrap_or(false) {
+            if let Some(settings_obj) = settings.as_object_mut() {
+                settings_obj.remove("hooks");
+                modified = true;
+            }
+        }
+    }
+
+    if modified {
+        let new_content =
+            serde_json::to_string_pretty(&settings).context("Failed to serialize settings.json")?;
+        fs::write(&settings_path, new_content).context("Failed to write settings.json")?;
+    }
+
+    Ok(modified)
+}
+
 /// Uninstall the colgrep plugin from Claude Code
 pub fn uninstall_claude_code() -> Result<()> {
     let shell = get_shell();
 
-    // Step 1: Uninstall the plugin
+    // Step 1: Remove hooks from settings.json
+    println!("Removing colgrep hooks from settings...");
+    match remove_hooks_from_settings() {
+        Ok(true) => println!("{} Removed colgrep hooks from settings.json", "✓".green()),
+        Ok(false) => println!("  No colgrep hooks found in settings.json"),
+        Err(e) => eprintln!(
+            "{} Failed to clean settings.json: {}",
+            "Warning:".yellow(),
+            e
+        ),
+    }
+
+    // Step 2: Uninstall the plugin
     println!("Uninstalling colgrep plugin...");
     let plugin_uninstall = Command::new(&shell)
         .args(["-c", &format!("claude plugin uninstall {}", PLUGIN_NAME)])
@@ -219,7 +311,7 @@ pub fn uninstall_claude_code() -> Result<()> {
         println!("{} Uninstalled colgrep plugin", "✓".green());
     }
 
-    // Step 2: Remove from marketplace
+    // Step 3: Remove from marketplace
     println!("Removing colgrep from marketplace...");
     let marketplace_remove = Command::new(&shell)
         .args([
@@ -249,7 +341,7 @@ pub fn uninstall_claude_code() -> Result<()> {
         println!("{} Removed colgrep from marketplace", "✓".green());
     }
 
-    // Step 3: Clean up local plugin files
+    // Step 4: Clean up local plugin files
     if let Ok(plugin_dir) = get_plugin_dir() {
         if plugin_dir.exists() {
             if let Err(e) = fs::remove_dir_all(&plugin_dir) {
