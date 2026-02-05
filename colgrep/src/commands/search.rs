@@ -840,25 +840,11 @@ fn search_single_path(
     };
 
     // Get files matching include patterns (for file-type filtering)
-    let include_files: Option<Vec<String>> = if !include_patterns.is_empty() {
-        let builder = IndexBuilder::with_options(
-            &effective_root,
-            &model_path,
-            quantized,
-            pool_factor,
-            parallel_sessions,
-            batch_size,
-        )?;
-        let paths = builder.scan_files_matching_patterns(include_patterns)?;
-        Some(
-            paths
-                .iter()
-                .map(|p| p.to_string_lossy().to_string())
-                .collect(),
-        )
-    } else {
-        None
-    };
+    // BUG FIX: Don't scan filesystem for --include patterns.
+    // The filesystem scan finds files that aren't in the index, causing
+    // filter_by_files() to return empty results. Instead, let the code
+    // fall through to filter_by_file_patterns() which queries the index directly.
+    let include_files: Option<Vec<String>> = None;
 
     // Auto-index: always do incremental update (no grep-based selective indexing)
     {

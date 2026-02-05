@@ -1933,6 +1933,73 @@ fn glob_to_regex(pattern: &str) -> String {
     regex
 }
 
+/// Check if a string contains glob pattern metacharacters
+fn is_glob_pattern(pattern: &str) -> bool {
+    pattern.contains('*') || pattern.contains('?') || pattern.contains('[')
+}
+
+/// Convert a directory pattern (literal or glob) to a regex pattern
+/// Supports both literal directory names and glob patterns:
+/// - Literal: "vendor" -> "(^|/)vendor/" (matches any directory named vendor)
+/// - Glob: "*/plugins" -> "^[^/]*/plugins/" (matches plugins under any single-level parent)
+/// - Glob: "**/test_*" -> "(^|.*/)test_[^/]*/" (matches test_* directories at any depth)
+fn dir_pattern_to_regex(pattern: &str) -> String {
+    if is_glob_pattern(pattern) {
+        // Handle as glob pattern - convert to regex for directory matching
+        let mut regex = String::new();
+
+        // Handle leading patterns
+        let pattern = if let Some(stripped) = pattern.strip_prefix("**/") {
+            // ** matches any depth including zero
+            regex.push_str("(^|.*/)");
+            stripped
+        } else if let Some(stripped) = pattern.strip_prefix("*/") {
+            // * matches exactly one directory level
+            regex.push_str("^[^/]*/");
+            stripped
+        } else if let Some(stripped) = pattern.strip_prefix('/') {
+            regex.push('^');
+            stripped
+        } else {
+            // No leading slash - match at any position like literal directories
+            regex.push_str("(^|/)");
+            pattern
+        };
+
+        let mut chars = pattern.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '*' => {
+                    if chars.peek() == Some(&'*') {
+                        chars.next(); // consume second *
+                        if chars.peek() == Some(&'/') {
+                            chars.next(); // consume /
+                            regex.push_str("(.*/)?");
+                        } else {
+                            regex.push_str(".*");
+                        }
+                    } else {
+                        regex.push_str("[^/]*");
+                    }
+                }
+                '?' => regex.push('.'),
+                '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                    regex.push('\\');
+                    regex.push(c);
+                }
+                _ => regex.push(c),
+            }
+        }
+
+        // Ensure pattern matches directories (with trailing slash)
+        regex.push('/');
+        regex
+    } else {
+        // Handle as literal directory name (current behavior)
+        format!("(^|/){}/", regex::escape(pattern))
+    }
+}
+
 /// Check if a file path matches any of the glob patterns
 fn matches_glob_pattern(path: &Path, patterns: &[String]) -> bool {
     if patterns.is_empty() {
@@ -2099,7 +2166,7 @@ impl Searcher {
         let matching_ids: Vec<i64> = all_metadata
             .into_iter()
             .filter_map(|row| {
-                let doc_id = row.get("_id")?.as_i64()?;
+                let doc_id = row.get("_subset_")?.as_i64()?;
                 let file = row.get("file")?.as_str()?;
                 let path = Path::new(file);
                 if glob_set.is_match(path) {
@@ -2142,6 +2209,9 @@ impl Searcher {
 
     /// Get document IDs for code units NOT in excluded directories (SQL-based)
     /// Uses REGEXP to filter out files in any of the specified directories
+    /// Supports both literal directory names and glob patterns:
+    /// - Literal: "vendor", "node_modules", ".claude/plugins"
+    /// - Glob: "*/plugins", "**/test_*", "**/*_generated"
     pub fn filter_exclude_by_dirs(&self, dirs: &[String]) -> Result<Vec<i64>> {
         if dirs.is_empty() {
             // No exclusions - return all IDs
@@ -2150,11 +2220,9 @@ impl Searcher {
         }
 
         // Build regex to match paths containing any of the excluded directories
-        // e.g., ["vendor", "node_modules"] -> "(^|/)vendor/|(^|/)node_modules/"
-        let dir_patterns: Vec<String> = dirs
-            .iter()
-            .map(|d| format!("(^|/){}/", regex::escape(d)))
-            .collect();
+        // Supports both literal names and glob patterns
+        // e.g., ["vendor", "*/plugins"] -> "(^|/)vendor/|(^|/)[^/]*/plugins/"
+        let dir_patterns: Vec<String> = dirs.iter().map(|d| dir_pattern_to_regex(d)).collect();
 
         let combined_regex = dir_patterns.join("|");
 
@@ -2752,5 +2820,78 @@ mod tests {
             "Disjoint results produced duplicates"
         );
         assert_eq!(sorted.len(), 6);
+    }
+
+    #[test]
+    fn test_is_glob_pattern() {
+        assert!(is_glob_pattern("*.rs"));
+        assert!(is_glob_pattern("**/test"));
+        assert!(is_glob_pattern("foo?bar"));
+        assert!(is_glob_pattern("[abc]"));
+        assert!(!is_glob_pattern("vendor"));
+        assert!(!is_glob_pattern("node_modules"));
+        assert!(!is_glob_pattern(".claude/plugins"));
+    }
+
+    #[test]
+    fn test_dir_pattern_to_regex_literal() {
+        // Literal directory names should work as before
+        assert_eq!(dir_pattern_to_regex("vendor"), "(^|/)vendor/");
+        assert_eq!(dir_pattern_to_regex("node_modules"), "(^|/)node_modules/");
+        assert_eq!(
+            dir_pattern_to_regex(".claude/plugins"),
+            "(^|/)\\.claude/plugins/"
+        );
+    }
+
+    #[test]
+    fn test_dir_pattern_to_regex_glob() {
+        // Test single wildcard prefix - matches exactly one level
+        let pattern = dir_pattern_to_regex("*/plugins");
+        assert_eq!(pattern, "^[^/]*/plugins/");
+
+        // Test double wildcard - matches any depth
+        let pattern = dir_pattern_to_regex("**/test_*");
+        assert_eq!(pattern, "(^|.*/)test_[^/]*/");
+
+        // Test wildcard at the end (no prefix slash)
+        let pattern = dir_pattern_to_regex(".claude/*");
+        assert_eq!(pattern, "(^|/)\\.claude/[^/]*/");
+    }
+
+    #[test]
+    fn test_dir_pattern_to_regex_matching() {
+        // Test that regex patterns match expected paths
+        use regex::Regex;
+
+        // Literal directory pattern - matches at any depth
+        let pattern = dir_pattern_to_regex("vendor");
+        let re = Regex::new(&pattern).unwrap();
+        assert!(re.is_match("vendor/package.json"));
+        assert!(re.is_match("src/vendor/lib.rs"));
+        assert!(!re.is_match("vendorfile.txt"));
+
+        // Glob pattern: */plugins - matches exactly one level deep
+        let pattern = dir_pattern_to_regex("*/plugins");
+        let re = Regex::new(&pattern).unwrap();
+        assert!(re.is_match(".claude/plugins/tool.json"));
+        assert!(re.is_match("foo/plugins/bar.txt"));
+        assert!(!re.is_match("plugins/direct.txt")); // needs parent
+        assert!(!re.is_match("a/b/plugins/deep.txt")); // too deep (two levels)
+
+        // Glob pattern: **/test_* - matches at any depth
+        let pattern = dir_pattern_to_regex("**/test_*");
+        let re = Regex::new(&pattern).unwrap();
+        assert!(re.is_match("test_utils/helper.rs"));
+        assert!(re.is_match("src/test_integration/spec.rs"));
+        assert!(re.is_match("a/b/c/test_foo/file.rs"));
+        assert!(!re.is_match("src/testing/file.rs"));
+
+        // Glob pattern with wildcard in middle - matches at any position
+        let pattern = dir_pattern_to_regex(".claude/*");
+        let re = Regex::new(&pattern).unwrap();
+        assert!(re.is_match(".claude/plugins/file.json"));
+        assert!(re.is_match("foo/.claude/bar/test.txt"));
+        assert!(!re.is_match(".claude/file.json")); // .claude is not a parent dir
     }
 }
