@@ -231,7 +231,12 @@ pub fn cmd_session_hook() -> Result<()> {
                 "- Exclude dirs: `colgrep --exclude-dir=node_modules --exclude-dir=vendor \"query\"`\n",
                 "- Specific folders: `colgrep \"query\" ./src/api ./src/auth`\n",
                 "- Specific files: `colgrep \"query\" ./main.rs ./lib.rs`\n\n",
-                "Show code content with -n: `colgrep -n 6 \"query\" -k 5`"
+                "IMPORTANT - COLGREP BEHAVIOR:\n",
+                "- First query may take 30-90 seconds (model loading + index building)\n",
+                "- Subsequent queries are fast (<5 seconds)\n",
+                "- NEVER run colgrep in background mode - wait for the result\n",
+                "- NEVER fall back to grep/rg while colgrep is running\n",
+                "- If colgrep returns no results, try broader semantic terms or regex-only mode\n",
             )
         }
     });
@@ -271,9 +276,14 @@ pub fn cmd_task_hook() -> Result<()> {
                 "- Filter by type: `colgrep --include=\"*.rs\" \"query\"`\n",
                 "- Multiple types: `colgrep --include=\"*.{ts,tsx}\" \"query\"`\n",
                 "- List files only: `colgrep -l \"query\"`\n",
-                "- More context: `colgrep -n 8 \"query\" -k 5`\n",
                 "- Exclude tests: `colgrep --exclude=\"*_test.go\" \"query\"`\n",
                 "- Whole word: `colgrep -e \"test\" -w \"testing\"`\n\n",
+                "IMPORTANT - COLGREP BEHAVIOR:\n",
+                "- First query may take 30-90 seconds (model loading + index building)\n",
+                "- Subsequent queries are fast (<5 seconds)\n",
+                "- NEVER run colgrep in background mode - wait for the result\n",
+                "- NEVER fall back to grep/rg while colgrep is running\n",
+                "- If colgrep returns no results, try broader semantic terms or regex-only mode\n\n",
                 "DO NOT use Grep or Glob tools - use colgrep via Bash instead.\n",
                 "---\n\n",
                 "Agents MUST use colgrep for all code searches to get semantic results."
