@@ -69,7 +69,7 @@ use state::{ApiConfig, AppState};
 #[openapi(
     info(
         title = "Next-Plaid API",
-        version = "0.9.1",
+        version = "0.9.2",
         description = "REST API for next-plaid multi-vector search engine.\n\nNext-Plaid implements the PLAID algorithm for efficient ColBERT-style retrieval with support for:\n- Multi-vector document embeddings\n- Batch query search\n- SQLite-based metadata filtering\n- Memory-mapped indices for low RAM usage",
         license(name = "Apache-2.0", url = "https://www.apache.org/licenses/LICENSE-2.0"),
     ),
