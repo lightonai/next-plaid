@@ -105,38 +105,68 @@ fn main() -> Result<()> {
             auto_confirm,
         }) => {
             // If only -e pattern is given without a query, use the pattern as the query too
+            let original_query = query.clone();
             let query = query.or_else(|| text_pattern.clone());
             if let Some(query) = query {
-                // Check if paths contains a single non-existent "path" that looks like a query
-                // e.g., `colgrep search "pattern" "semantic query"` should be interpreted as
-                // `colgrep search -e "pattern" "semantic query"`
-                // But if it looks like a path (starts with ./ / ~ or contains path separators),
-                // treat it as a path to preserve error behavior for typos
-                let (final_query, final_paths, final_text_pattern) =
-                    if text_pattern.is_none() && paths.len() == 1 && !paths[0].exists() {
-                        let path_str = paths[0].to_string_lossy();
-                        let looks_like_path = path_str.starts_with('.')
-                            || path_str.starts_with('/')
-                            || path_str.starts_with('~')
-                            || path_str.contains('/')
-                            || path_str.contains('\\');
-                        if looks_like_path {
-                            // Looks like a path, keep as path (will error downstream if not found)
-                            (query, paths, text_pattern)
-                        } else {
-                            // Reinterpret: first arg becomes -e pattern, second becomes semantic query
-                            let semantic_query = path_str.to_string();
-                            (semantic_query, vec![PathBuf::from(".")], Some(query))
-                        }
+                // Helper to check if a string looks like a path
+                let looks_like_path = |s: &str| {
+                    s.starts_with('.')
+                        || s.starts_with('/')
+                        || s.starts_with('~')
+                        || s.contains('/')
+                        || s.contains('\\')
+                };
+
+                // Check if -e was provided and the "query" looks like a path
+                // e.g., `colgrep search -e "pattern" ./src` parses as query="./src", paths=[]
+                // We want: query="pattern", paths=["./src"]
+                let (final_query, final_paths, final_text_pattern) = if text_pattern.is_some()
+                    && original_query.is_some()
+                    && looks_like_path(&query)
+                {
+                    // The "query" is actually a path - use text_pattern as query
+                    let text_pattern_str = text_pattern.clone().unwrap();
+                    let mut new_paths = paths;
+                    new_paths.insert(0, PathBuf::from(&query)); // Add the misplaced "query" as first path
+                    (text_pattern_str, new_paths, text_pattern)
+                } else if text_pattern.is_none()
+                    && !paths.is_empty()
+                    && !paths[0].exists()
+                    && !looks_like_path(&paths[0].to_string_lossy())
+                {
+                    // Check if first "path" is actually a semantic query
+                    // e.g., `colgrep search "pattern" "semantic query"` should be interpreted as
+                    // `colgrep search -e "pattern" "semantic query"`
+                    // e.g., `colgrep search "pattern" "semantic query" ./src ./lib` should be interpreted as
+                    // `colgrep search -e "pattern" "semantic query" ./src ./lib`
+                    let path_str = paths[0].to_string_lossy().to_string();
+                    let remaining_paths: Vec<PathBuf> = paths.into_iter().skip(1).collect();
+
+                    // Use remaining paths if any exist, otherwise default to current directory
+                    let actual_paths = if remaining_paths.is_empty() {
+                        vec![PathBuf::from(".")]
                     } else {
-                        // Normal case: use paths as-is
-                        let final_paths = if paths.is_empty() {
-                            vec![PathBuf::from(".")]
-                        } else {
-                            paths
-                        };
-                        (query, final_paths, text_pattern)
+                        remaining_paths
                     };
+
+                    // Reinterpret: first arg becomes -e pattern, second becomes semantic query
+                    (path_str, actual_paths, Some(query))
+                } else if text_pattern.is_none()
+                    && !paths.is_empty()
+                    && !paths[0].exists()
+                    && looks_like_path(&paths[0].to_string_lossy())
+                {
+                    // First path looks like a path but doesn't exist - keep as-is for error reporting
+                    (query, paths, text_pattern)
+                } else {
+                    // Normal case: use paths as-is
+                    let final_paths = if paths.is_empty() {
+                        vec![PathBuf::from(".")]
+                    } else {
+                        paths
+                    };
+                    (query, final_paths, text_pattern)
+                };
 
                 // Default k: 10 if -n is provided, 15 otherwise
                 let default_k = if context_lines.is_some() { 10 } else { 15 };
@@ -195,39 +225,68 @@ fn main() -> Result<()> {
         None => {
             // Default: run search if query is provided
             // If only -e pattern is given without a query, use the pattern as the query too
+            let original_query = cli.query.clone();
             let query = cli.query.or_else(|| cli.text_pattern.clone());
             if let Some(query) = query {
-                // Check if paths contains a single non-existent "path" that looks like a query
-                // e.g., `colgrep "pattern" "semantic query"` should be interpreted as
-                // `colgrep -e "pattern" "semantic query"`
-                // But if it looks like a path (starts with ./ / ~ or contains path separators),
-                // treat it as a path to preserve error behavior for typos
-                let (final_query, final_paths, final_text_pattern) =
-                    if cli.text_pattern.is_none() && cli.paths.len() == 1 && !cli.paths[0].exists()
-                    {
-                        let path_str = cli.paths[0].to_string_lossy();
-                        let looks_like_path = path_str.starts_with('.')
-                            || path_str.starts_with('/')
-                            || path_str.starts_with('~')
-                            || path_str.contains('/')
-                            || path_str.contains('\\');
-                        if looks_like_path {
-                            // Looks like a path, keep as path (will error downstream if not found)
-                            (query, cli.paths, cli.text_pattern)
-                        } else {
-                            // Reinterpret: first arg becomes -e pattern, second becomes semantic query
-                            let semantic_query = path_str.to_string();
-                            (semantic_query, vec![PathBuf::from(".")], Some(query))
-                        }
+                // Helper to check if a string looks like a path
+                let looks_like_path = |s: &str| {
+                    s.starts_with('.')
+                        || s.starts_with('/')
+                        || s.starts_with('~')
+                        || s.contains('/')
+                        || s.contains('\\')
+                };
+
+                // Check if -e was provided and the "query" looks like a path
+                // e.g., `colgrep -e "pattern" ./src` parses as query="./src", paths=[]
+                // We want: query="pattern", paths=["./src"]
+                let (final_query, final_paths, final_text_pattern) = if cli.text_pattern.is_some()
+                    && original_query.is_some()
+                    && looks_like_path(&query)
+                {
+                    // The "query" is actually a path - use text_pattern as query
+                    let text_pattern = cli.text_pattern.clone().unwrap();
+                    let mut paths = cli.paths;
+                    paths.insert(0, PathBuf::from(&query)); // Add the misplaced "query" as first path
+                    (text_pattern, paths, cli.text_pattern)
+                } else if cli.text_pattern.is_none()
+                    && !cli.paths.is_empty()
+                    && !cli.paths[0].exists()
+                    && !looks_like_path(&cli.paths[0].to_string_lossy())
+                {
+                    // Check if first "path" is actually a semantic query
+                    // e.g., `colgrep "pattern" "semantic query"` should be interpreted as
+                    // `colgrep -e "pattern" "semantic query"`
+                    // e.g., `colgrep "pattern" "semantic query" ./src ./lib` should be interpreted as
+                    // `colgrep -e "pattern" "semantic query" ./src ./lib`
+                    let path_str = cli.paths[0].to_string_lossy().to_string();
+                    let remaining_paths: Vec<PathBuf> = cli.paths.into_iter().skip(1).collect();
+
+                    // Use remaining paths if any exist, otherwise default to current directory
+                    let actual_paths = if remaining_paths.is_empty() {
+                        vec![PathBuf::from(".")]
                     } else {
-                        // Normal case: use paths as-is
-                        let paths = if cli.paths.is_empty() {
-                            vec![PathBuf::from(".")]
-                        } else {
-                            cli.paths
-                        };
-                        (query, paths, cli.text_pattern)
+                        remaining_paths
                     };
+
+                    // Reinterpret: first arg becomes -e pattern, second becomes semantic query
+                    (path_str, actual_paths, Some(query))
+                } else if cli.text_pattern.is_none()
+                    && !cli.paths.is_empty()
+                    && !cli.paths[0].exists()
+                    && looks_like_path(&cli.paths[0].to_string_lossy())
+                {
+                    // First path looks like a path but doesn't exist - keep as-is for error reporting
+                    (query, cli.paths, cli.text_pattern)
+                } else {
+                    // Normal case: use paths as-is
+                    let paths = if cli.paths.is_empty() {
+                        vec![PathBuf::from(".")]
+                    } else {
+                        cli.paths
+                    };
+                    (query, paths, cli.text_pattern)
+                };
 
                 // Default k: 10 if -n is provided, 15 otherwise
                 let default_k = if cli.context_lines.is_some() { 10 } else { 15 };
