@@ -1,8 +1,8 @@
 use anyhow::Result;
 
 use colgrep::{
-    ensure_model, get_colgrep_data_dir, Config, DEFAULT_BATCH_SIZE, DEFAULT_MODEL,
-    DEFAULT_POOL_FACTOR,
+    ensure_model, ensure_onnx_runtime, get_colgrep_data_dir, Config, DEFAULT_BATCH_SIZE,
+    DEFAULT_MODEL, DEFAULT_POOL_FACTOR,
 };
 
 pub fn cmd_set_model(model: &str) -> Result<()> {
@@ -34,6 +34,9 @@ pub fn cmd_set_model(model: &str) -> Result<()> {
             return Err(e);
         }
     };
+
+    // Ensure ONNX Runtime is available before loading the model
+    ensure_onnx_runtime()?;
 
     // Try to load the model to verify it's compatible
     // Suppress stderr during model loading to hide CoreML's harmless
