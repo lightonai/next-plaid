@@ -44,8 +44,9 @@ EXAMPLES:
     colgrep clear
     colgrep clear --all
 
-    # Change default model
+    # Change default model (clears existing indexes)
     colgrep set-model lightonai/LateOn-Code-edge
+    HF_TOKEN=hf_xxx colgrep set-model myorg/private-model
 
 SUPPORTED LANGUAGES:
     Python, Rust, TypeScript, JavaScript, Go, Java, C, C++, C#, Ruby,
@@ -114,13 +115,30 @@ EXAMPLES:
 
 pub const SET_MODEL_HELP: &str = "\
 EXAMPLES:
-    # Set default model
+    # Set default model (public HuggingFace model)
     colgrep set-model lightonai/LateOn-Code-edge
 
+    # Use a different public model
+    colgrep set-model colbert-ir/colbertv2.0
+
+    # Use a private HuggingFace model (requires HF_TOKEN)
+    HF_TOKEN=hf_xxx colgrep set-model myorg/private-model
+
+    # Use a local model directory
+    colgrep set-model /path/to/local/model
+
+AUTHENTICATION:
+    For private HuggingFace models, set your token via environment variable:
+    • HF_TOKEN=hf_xxx colgrep set-model org/private-model
+    • export HF_TOKEN=hf_xxx && colgrep set-model org/private-model
+
+    Token priority: HF_TOKEN > HUGGING_FACE_HUB_TOKEN > ~/.cache/huggingface/token
+
 NOTES:
-    • Changing models clears all existing indexes (dimensions differ)
-    • The model is downloaded from HuggingFace automatically
-    • Model preference is stored in ~/.config/colgrep/config.json";
+    • Changing models clears all existing indexes (embedding dimensions differ)
+    • The model is downloaded from HuggingFace and cached automatically
+    • Model preference is stored in ~/.config/colgrep/config.json
+    • Use 'colgrep settings' to view the current model";
 
 pub const CONFIG_HELP: &str = "\
 EXAMPLES:
