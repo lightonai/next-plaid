@@ -304,8 +304,8 @@ Any PyLate-compatible ColBERT model from HuggingFace including onnx ready models
 ```sh
 lightonai/GTE-ModernColBERT-v1 (text retrieval, lightweight)
 lightonai/answerai-colbert-small-v1-onnx (text retrieval, more accurate)
-lightonai/LateOn-Code-v0-edge (code search, lightweight)
-lightonai/LateOn-Code-v0 (code search, more accurate)
+lightonai/LateOn-Code-edge (code search, lightweight)
+lightonai/LateOn-Code (code search, more accurate)
 ```
 
 ## License

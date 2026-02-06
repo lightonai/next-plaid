@@ -220,13 +220,18 @@ colgrep -n 10 "database"
 ### Exclusions
 
 ```bash
-# Exclude patterns
+# Exclude file patterns
 colgrep --exclude="*.test.ts" "component"
 colgrep --exclude="*_mock.go" "service"
 
-# Exclude directories
+# Exclude directories (literal names)
 colgrep --exclude-dir="vendor" "import"
 colgrep --exclude-dir="node_modules" --exclude-dir="dist" "config"
+
+# Exclude directories (glob patterns)
+colgrep --exclude-dir="*/plugins" "query"
+colgrep --exclude-dir="**/test_*" "implementation"
+colgrep --exclude-dir=".claude/*" "code"
 ```
 
 ### Code-Only Mode
