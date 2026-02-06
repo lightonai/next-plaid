@@ -86,7 +86,7 @@ NextPlaid can load FastPlaid-generated indexes directly.
 
 **Coding agents spend most of their time searching. ColGREP makes that search meaningful.**
 
-It parses your codebase with tree-sitter, indexes functions, methods, and classes, and embeds each unit with [LateOn-Code](lightonai/LateOn-Code-v0-edge) which has 17M parameters. Searches combine **regex filtering** with **semantic ranking**.
+It parses your codebase with tree-sitter, indexes functions, methods, and classes, and embeds each unit with [LateOn-Code](lightonai/LateOn-Code-edge) which has 17M parameters. Searches combine **regex filtering** with **semantic ranking**.
 
 The index lives locally. Your code never leaves your machine.
 
@@ -189,12 +189,12 @@ colgrep --include="*.py" "database query"
 colgrep --exclude-dir="node_modules" "config loading"
 ```
 
-The default model is `lightonai/LateOn-Code-v0-edge`.
+The default model is `lightonai/LateOn-Code-edge`.
 
-For higher accuracy you can switch to `lightonai/LateOn-Code-v0`:
+For higher accuracy you can switch to `lightonai/LateOn-Code`:
 
 ```bash
-colgrep set-model lightonai/LateOn-Code-v0
+colgrep set-model lightonai/LateOn-Code
 ```
 
 To clear the index for the current project:
@@ -236,16 +236,16 @@ To reset to defaults (INT8, pool-factor 2):
 colgrep settings --int8 --pool-factor 2
 ```
 
-For even better search quality, switch to the larger `lightonai/LateOn-Code-v0` model (138M parameters vs 17M for the default edge model). This significantly improves semantic understanding but increases indexing time:
+For even better search quality, switch to the larger `lightonai/LateOn-Code` model (138M parameters vs 17M for the default edge model). This significantly improves semantic understanding but increases indexing time:
 
 ```bash
-colgrep set-model lightonai/LateOn-Code-v0
+colgrep set-model lightonai/LateOn-Code
 ```
 
 To switch back to the fast edge model:
 
 ```bash
-colgrep set-model lightonai/LateOn-Code-v0-edge
+colgrep set-model lightonai/LateOn-Code-edge
 ```
 
 View current settings:
@@ -346,8 +346,8 @@ Available models which can be served with NextPlaid and used with ColGREP withou
 
 | Model                                    | Use case                    | Authors |
 | ---------------------------------------- | --------------------------- | ------- |
-| lightonai/LateOn-Code-v0-edge            | Code search, lightweight    |
-| lightonai/LateOn-Code-v0                 | Code search, accurate       |
+| lightonai/LateOn-Code-edge               | Code search, lightweight    |
+| lightonai/LateOn-Code                    | Code search, accurate       |
 | lightonai/mxbai-edge-colbert-v0-32m-onnx | Text retrieval, lightweight |
 | lightonai/answerai-colbert-small-v1-onnx | Text retrieval, lightweight |
 | lightonai/GTE-ModernColBERT-v1           | Text retrieval, accurate    |

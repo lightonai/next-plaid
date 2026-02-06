@@ -82,7 +82,7 @@ pub struct IndexBuilder {
     pool_factor: Option<usize>,
     /// If true, skip user confirmation for large indexes
     auto_confirm: bool,
-    /// Model name/id for display (e.g., "lightonai/LateOn-Code-v0-edge")
+    /// Model name/id for display (e.g., "lightonai/LateOn-Code-edge")
     model_name: Option<String>,
 }
 

@@ -336,15 +336,15 @@ mod tests {
     #[test]
     fn test_config_serialization() {
         let mut config = Config::default();
-        config.set_default_model("lightonai/LateOn-Code-v0-edge");
+        config.set_default_model("lightonai/LateOn-Code-edge");
 
         let json = serde_json::to_string(&config).unwrap();
-        assert!(json.contains("lightonai/LateOn-Code-v0-edge"));
+        assert!(json.contains("lightonai/LateOn-Code-edge"));
 
         let deserialized: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(
             deserialized.get_default_model(),
-            Some("lightonai/LateOn-Code-v0-edge")
+            Some("lightonai/LateOn-Code-edge")
         );
     }
 

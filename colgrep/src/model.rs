@@ -2,7 +2,7 @@ use anyhow::Result;
 use hf_hub::api::sync::ApiBuilder;
 use std::path::PathBuf;
 
-pub const DEFAULT_MODEL: &str = "lightonai/LateOn-Code-v0-edge";
+pub const DEFAULT_MODEL: &str = "lightonai/LateOn-Code-edge";
 
 /// Files required for ColBERT model
 const REQUIRED_FILES: &[&str] = &[

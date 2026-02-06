@@ -1,7 +1,7 @@
 {
   "name": "colgrep",
   "description": "Search code and text files efficiently using semantic and lexical search.",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "author": {
     "name": "Raphael Sourty"
   },

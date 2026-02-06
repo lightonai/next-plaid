@@ -47,6 +47,7 @@ colgrep --json "<query>"                          # JSON output
 | `-F`            | Fixed string (no regex) for `-e`            | `colgrep -e "foo[bar]" -F "query"`           |
 | `-w`            | Whole word match for `-e`                   | `colgrep -e "test" -w "testing"`             |
 | `-k, --results` | Number of results to return                 | `colgrep --results 20 "query"`               |
+| `-n, --lines`   | Number of context lines (default: 6)        | `colgrep -n 10 "query"`                      |
 | `-l`            | List files only                             | `colgrep -l "authentication"`                |
 | `-r`            | Recursive (default, for compatibility)      | `colgrep -r "query"`                         |
 | `--include`     | Include files matching pattern (repeatable) | `colgrep --include="*.py" "query"`           |

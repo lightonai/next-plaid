@@ -57,4 +57,4 @@ __all__ = [
     "supported_languages",
 ]
 
-__version__ = "0.9.2"
+__version__ = "0.9.3"

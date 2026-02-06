@@ -45,7 +45,7 @@ EXAMPLES:
     colgrep clear --all
 
     # Change default model
-    colgrep set-model lightonai/LateOn-Code-v0
+    colgrep set-model lightonai/LateOn-Code-edge
 
 SUPPORTED LANGUAGES:
     Python, Rust, TypeScript, JavaScript, Go, Java, C, C++, C#, Ruby,
@@ -93,7 +93,7 @@ GREP COMPATIBILITY:
     -w, --word-regexp      Match whole words only for -e pattern
     --include          Filter files by glob pattern
     --exclude          Exclude files matching pattern
-    --exclude-dir      Exclude directories";
+    --exclude-dir      Exclude directories (supports glob patterns: vendor, */plugins, **/test_*)";
 
 pub const STATUS_HELP: &str = "\
 EXAMPLES:
@@ -115,7 +115,7 @@ EXAMPLES:
 pub const SET_MODEL_HELP: &str = "\
 EXAMPLES:
     # Set default model
-    colgrep set-model lightonai/LateOn-Code-v0
+    colgrep set-model lightonai/LateOn-Code-edge
 
 NOTES:
     • Changing models clears all existing indexes (dimensions differ)
@@ -253,7 +253,8 @@ pub struct Cli {
     #[arg(long = "exclude", value_name = "PATTERN")]
     pub exclude_patterns: Vec<String>,
 
-    /// Exclude directories (can be repeated)
+    /// Exclude directories - supports literal names and glob patterns (can be repeated)
+    /// Examples: vendor, node_modules, */plugins, **/test_*, .claude/*
     #[arg(long = "exclude-dir", value_name = "DIR")]
     pub exclude_dirs: Vec<String>,
 
@@ -382,7 +383,8 @@ pub enum Commands {
         #[arg(long = "exclude", value_name = "PATTERN")]
         exclude_patterns: Vec<String>,
 
-        /// Exclude directories (can be repeated)
+        /// Exclude directories - supports literal names and glob patterns (can be repeated)
+        /// Examples: vendor, node_modules, */plugins, **/test_*, .claude/*
         #[arg(long = "exclude-dir", value_name = "DIR")]
         exclude_dirs: Vec<String>,
 
@@ -426,7 +428,7 @@ pub enum Commands {
     /// Set the default ColBERT model to use for indexing and search
     #[command(after_help = SET_MODEL_HELP)]
     SetModel {
-        /// HuggingFace model ID (e.g., "lightonai/LateOn-Code-v0")
+        /// HuggingFace model ID (e.g., "lightonai/LateOn-Code-edge")
         model: String,
     },
 
