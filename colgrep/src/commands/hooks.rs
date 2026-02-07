@@ -6,8 +6,8 @@ use next_plaid::{filtering, Metadata};
 
 use colgrep::index::state::hash_file;
 use colgrep::{
-    detect_language, extract_units, get_index_dir_for_project, get_vector_index_path, index_exists,
-    path_contains_ignored_dir, IndexState,
+    detect_language, extract_units, find_parent_index, get_index_dir_for_project,
+    get_vector_index_path, index_exists, path_contains_ignored_dir, IndexState,
 };
 
 /// Threshold for chunks to index - if more than this, don't inject colgrep context
@@ -179,11 +179,17 @@ fn count_chunks_in_files(project_root: &Path, files: &[PathBuf]) -> usize {
 
 /// Check if colgrep context should be injected
 /// Returns false if:
+/// - No index exists for this project
 /// - Index exists but is desynced
 /// - Chunks to index > threshold
 fn should_inject_colgrep_context(project_root: &Path) -> bool {
-    // First check for desync (fast check)
-    if index_exists(project_root) && is_index_desynced(project_root) {
+    // No index exists for this path or any parent project - don't promote colgrep
+    if !index_exists(project_root) && !matches!(find_parent_index(project_root), Ok(Some(_))) {
+        return false;
+    }
+
+    // Check for desync (fast check)
+    if is_index_desynced(project_root) {
         return false;
     }
 
