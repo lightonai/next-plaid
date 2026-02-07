@@ -180,9 +180,7 @@ pub fn cmd_config(
         }
 
         println!();
-        println!(
-            "Use --default-results or --default-lines to set values. Use 0 to reset to default."
-        );
+        println!("Use --k or --n to set values. Use 0 to reset to default.");
         println!("Use --fp32 or --int8 to change model precision.");
         println!("Use --pool-factor to set embedding compression (1=disabled, 2+=enabled). Use 0 to reset.");
         println!("Use --parallel to set number of parallel ONNX sessions. Use 0 to reset to auto (CPU count).");

@@ -214,6 +214,9 @@ colgrep clear --all
 By default, colgrep uses INT8 quantization and pool-factor 2 for optimal performance. You can adjust these settings:
 
 ```bash
+# Set default number of results
+colgrep settings --k 25
+
 # Use FP32 full precision (more accurate, slower)
 colgrep settings --fp32
 

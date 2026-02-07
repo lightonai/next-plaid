@@ -276,22 +276,19 @@ colgrep --stats
 
 ```bash
 # Show current config
-colgrep config
+colgrep settings
 
 # Set default results count
-colgrep config --k 20
-
-# Set default context lines
-colgrep config --n 10
+colgrep settings --k 20
 
 # Use INT8 quantized model (default, faster)
-colgrep config --int8
+colgrep settings --int8
 
 # Use FP32 full precision (more accurate)
-colgrep config --fp32
+colgrep settings --fp32
 
 # Reset to defaults (INT8, pool-factor 2)
-colgrep config --k 0 --n 0
+colgrep settings --k 0 --n 0
 ```
 
 ### Change Model
@@ -319,6 +316,7 @@ colgrep --install-claude-code
 **IMPORTANT: You must restart Claude Code after installation for the plugin to take effect.**
 
 The integration includes intelligent hooks that:
+
 - Check if your project needs indexing before injecting colgrep context
 - Return empty if >3000 chunks need indexing (prevents slow operations on large projects)
 - Return empty if index is desynced (needs repair)
@@ -327,6 +325,7 @@ The integration includes intelligent hooks that:
 This ensures Claude Code only uses colgrep when it will provide fast, reliable results.
 
 To uninstall:
+
 ```bash
 colgrep --uninstall-claude-code
 ```

@@ -146,10 +146,7 @@ EXAMPLES:
     colgrep settings
 
     # Set default number of results
-    colgrep settings --default-results 20
-
-    # Set default context lines
-    colgrep settings --default-lines 10
+    colgrep settings --k 20
 
     # Enable verbose output by default (full content with syntax highlighting)
     colgrep settings --verbose
@@ -176,10 +173,10 @@ EXAMPLES:
     colgrep settings --batch-size 2
 
     # Set both at once
-    colgrep settings --default-results 25 --default-lines 8
+    colgrep settings --k 25 --n 8
 
     # Reset to defaults (unset)
-    colgrep settings --default-results 0 --default-lines 0
+    colgrep settings --k 0 --n 0
 
 NOTES:
     • Values are stored in ~/.config/colgrep/config.json
@@ -454,11 +451,11 @@ pub enum Commands {
     #[command(name = "settings", after_help = CONFIG_HELP)]
     Settings {
         /// Set default number of results (use 0 to reset to default)
-        #[arg(long = "default-results")]
+        #[arg(long = "k")]
         default_k: Option<usize>,
 
         /// Set default context lines (use 0 to reset to default)
-        #[arg(long = "default-lines")]
+        #[arg(long = "n")]
         default_n: Option<usize>,
 
         /// Use full-precision (FP32) model (default)
