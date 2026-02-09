@@ -34,6 +34,9 @@
 # Environment variables (optional):
 #   HF_TOKEN: Token for private HuggingFace models
 #   MODELS_DIR: Directory to store downloaded models (default: /models)
+#   RATE_LIMIT_ENABLED: Enable rate limiting (default: false)
+#   RATE_LIMIT_PER_SECOND: Max requests/s when rate limiting is enabled (default: 50)
+#   RATE_LIMIT_BURST_SIZE: Burst size when rate limiting is enabled (default: 100)
 # =============================================================================
 
 # =============================================================================

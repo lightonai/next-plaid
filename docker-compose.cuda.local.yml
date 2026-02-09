@@ -31,9 +31,10 @@ services:
     environment:
       - RUST_LOG=info
       - NVIDIA_VISIBLE_DEVICES=all
-      # Rate limiting configuration
-      - RATE_LIMIT_PER_SECOND=${RATE_LIMIT_PER_SECOND:-100}
-      - RATE_LIMIT_BURST_SIZE=${RATE_LIMIT_BURST_SIZE:-200}
+      # Rate limiting (disabled by default, uncomment to enable)
+      # - RATE_LIMIT_ENABLED=true
+      # - RATE_LIMIT_PER_SECOND=${RATE_LIMIT_PER_SECOND:-100}
+      # - RATE_LIMIT_BURST_SIZE=${RATE_LIMIT_BURST_SIZE:-200}
       - CONCURRENCY_LIMIT=${CONCURRENCY_LIMIT:-200}
       # Document processing configuration
       - MAX_QUEUED_TASKS_PER_INDEX=${MAX_QUEUED_TASKS_PER_INDEX:-20}

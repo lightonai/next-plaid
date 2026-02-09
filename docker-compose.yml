@@ -24,8 +24,9 @@
 #   --cuda                 Use CUDA (for GPU builds)
 #
 # Rate Limiting & Concurrency (via environment variables):
-#   RATE_LIMIT_PER_SECOND       Max requests per second (default: 50)
-#   RATE_LIMIT_BURST_SIZE       Burst size for rate limiting (default: 100)
+#   RATE_LIMIT_ENABLED          Enable rate limiting (default: false)
+#   RATE_LIMIT_PER_SECOND       Max requests per second (default: 50, when enabled)
+#   RATE_LIMIT_BURST_SIZE       Burst size for rate limiting (default: 100, when enabled)
 #   CONCURRENCY_LIMIT           Max concurrent in-flight requests (default: 100)
 #   MAX_QUEUED_TASKS_PER_INDEX  Max queued updates/deletes per index (default: 10)
 #   MAX_BATCH_DOCUMENTS         Max documents to batch before processing (default: 300)
@@ -71,9 +72,10 @@ services:
       - ${NEXT_PLAID_MODELS:-~/.cache/huggingface/next-plaid}:/models
     environment:
       - RUST_LOG=info
-      # Rate limiting configuration
-      - RATE_LIMIT_PER_SECOND=${RATE_LIMIT_PER_SECOND:-50}
-      - RATE_LIMIT_BURST_SIZE=${RATE_LIMIT_BURST_SIZE:-100}
+      # Rate limiting (disabled by default, uncomment to enable)
+      # - RATE_LIMIT_ENABLED=true
+      # - RATE_LIMIT_PER_SECOND=${RATE_LIMIT_PER_SECOND:-50}
+      # - RATE_LIMIT_BURST_SIZE=${RATE_LIMIT_BURST_SIZE:-100}
       - CONCURRENCY_LIMIT=${CONCURRENCY_LIMIT:-100}
       # Document processing configuration
       - MAX_QUEUED_TASKS_PER_INDEX=${MAX_QUEUED_TASKS_PER_INDEX:-10}

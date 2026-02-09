@@ -21,8 +21,9 @@
 #   --document-length <N>  Max document length in tokens (default: 300)
 #
 # Rate Limiting & Concurrency (via environment variables):
-#   RATE_LIMIT_PER_SECOND       Max requests per second (default: 100)
-#   RATE_LIMIT_BURST_SIZE       Burst size for rate limiting (default: 200)
+#   RATE_LIMIT_ENABLED          Enable rate limiting (default: false)
+#   RATE_LIMIT_PER_SECOND       Max requests per second (default: 100, when enabled)
+#   RATE_LIMIT_BURST_SIZE       Burst size for rate limiting (default: 200, when enabled)
 #   CONCURRENCY_LIMIT           Max concurrent in-flight requests (default: 200)
 #   MAX_QUEUED_TASKS_PER_INDEX  Max queued updates/deletes per index (default: 20)
 #   MAX_BATCH_DOCUMENTS         Max documents to batch before processing (default: 500)
@@ -70,9 +71,10 @@ services:
     environment:
       - RUST_LOG=info
       - NVIDIA_VISIBLE_DEVICES=all
-      # Rate limiting configuration
-      - RATE_LIMIT_PER_SECOND=${RATE_LIMIT_PER_SECOND:-100}
-      - RATE_LIMIT_BURST_SIZE=${RATE_LIMIT_BURST_SIZE:-200}
+      # Rate limiting (disabled by default, uncomment to enable)
+      # - RATE_LIMIT_ENABLED=true
+      # - RATE_LIMIT_PER_SECOND=${RATE_LIMIT_PER_SECOND:-100}
+      # - RATE_LIMIT_BURST_SIZE=${RATE_LIMIT_BURST_SIZE:-200}
       - CONCURRENCY_LIMIT=${CONCURRENCY_LIMIT:-200}
       # Document processing configuration
       - MAX_QUEUED_TASKS_PER_INDEX=${MAX_QUEUED_TASKS_PER_INDEX:-20}

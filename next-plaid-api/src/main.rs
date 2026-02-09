@@ -288,6 +288,10 @@ async fn shutdown_signal() {
 /// Build the API router.
 fn build_router(state: Arc<AppState>) -> Router {
     // Read rate limit configuration from environment variables
+    let rate_limit_enabled: bool = std::env::var("RATE_LIMIT_ENABLED")
+        .ok()
+        .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
+        .unwrap_or(false);
     let rate_limit_per_second: u64 = std::env::var("RATE_LIMIT_PER_SECOND")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -301,14 +305,15 @@ fn build_router(state: Arc<AppState>) -> Router {
         .and_then(|v| v.parse().ok())
         .unwrap_or(100);
 
-    // Configure rate limiting
-    let governor_conf = GovernorConfigBuilder::default()
-        .per_second(rate_limit_per_second)
-        .burst_size(rate_limit_burst_size)
-        .finish()
-        .expect("Failed to build rate limiter config");
-
-    let governor_layer = GovernorLayer::new(governor_conf).error_handler(rate_limit_error);
+    if rate_limit_enabled {
+        tracing::info!(
+            rate_limit_per_second,
+            rate_limit_burst_size,
+            "rate_limiting.enabled"
+        );
+    } else {
+        tracing::info!("rate_limiting.disabled");
+    }
 
     // Health endpoint - exempt from rate limiting to ensure monitoring always works
     // Uses cached model info so it never blocks on model operations
@@ -464,9 +469,22 @@ fn build_router(state: Arc<AppState>) -> Router {
                 .allow_origin(Any)
                 .allow_methods(Any)
                 .allow_headers(Any),
-        )
-        // Rate limiting (configurable via RATE_LIMIT_PER_SECOND and RATE_LIMIT_BURST_SIZE)
-        .layer(governor_layer)
+        );
+
+    // Conditionally apply rate limiting (enabled via RATE_LIMIT_ENABLED=true)
+    let api_router = if rate_limit_enabled {
+        let governor_conf = GovernorConfigBuilder::default()
+            .per_second(rate_limit_per_second)
+            .burst_size(rate_limit_burst_size)
+            .finish()
+            .expect("Failed to build rate limiter config");
+        let governor_layer = GovernorLayer::new(governor_conf).error_handler(rate_limit_error);
+        api_router.layer(governor_layer)
+    } else {
+        api_router
+    };
+
+    let api_router = api_router
         // Global concurrency limit (configurable via CONCURRENCY_LIMIT)
         .layer(ConcurrencyLimitLayer::new(concurrency_limit))
         // Allow large payloads for embedding uploads (100 MB)
