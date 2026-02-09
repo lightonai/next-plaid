@@ -259,6 +259,10 @@ endif
 	@sed -i '' '/^\[project\]/,/^\[/{s/^version = "[^"]*"/version = "$(VERSION)"/;}' colgrep/python-sdk/pyproject.toml
 	@sed -i '' 's/__version__ = "[^"]*"/__version__ = "$(VERSION)"/' colgrep/python-sdk/python/colgrep_parser/__init__.py
 	@echo "  ✓ Updated colgrep/python-sdk versions"
+	@# Update Docker image tags in READMEs and Cargo.toml
+	@sed -i '' 's/next-plaid:cpu-[0-9]*\.[0-9]*\.[0-9]*/next-plaid:cpu-$(VERSION)/g' README.md next-plaid-api/README.md Cargo.toml
+	@sed -i '' 's/next-plaid:cuda-[0-9]*\.[0-9]*\.[0-9]*/next-plaid:cuda-$(VERSION)/g' README.md next-plaid-api/README.md Cargo.toml
+	@echo "  ✓ Updated Docker image tags"
 	@# Update README crate version (major.minor only)
 	@sed -i '' 's/next-plaid = "[0-9]*\.[0-9]*"/next-plaid = "$(shell echo $(VERSION) | cut -d. -f1,2)"/' README.md
 	@echo "  ✓ Updated README.md crate version"
@@ -273,6 +277,7 @@ endif
 	@echo "  - next-plaid-api/src/main.rs (OpenAPI)"
 	@echo "  - next-plaid-api/python-sdk/{pyproject.toml,__init__.py}"
 	@echo "  - next-plaid-onnx/python/{pyproject.toml,__init__.py,cli.py,test}"
+	@echo "  - README.md, next-plaid-api/README.md, Cargo.toml (Docker tags)"
 	@echo "  - README.md (crate version)"
 	@echo ""
 	@echo "Don't forget to:"
