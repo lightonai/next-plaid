@@ -21,7 +21,7 @@
 
 ## ColGREP
 
-Semantic code search for your terminal and your coding agents. Searches combine regex filtering with semantic ranking — all local, your code never leaves your machine.
+Semantic code search for your terminal and your coding agents. Searches combine regex filtering with semantic ranking. All local, your code never leaves your machine.
 
 ### Quick start
 
@@ -37,7 +37,7 @@ Search:
 colgrep "database connection pooling"
 ```
 
-That's it. The first run builds the index automatically.
+That's it. The first run builds the index automatically. No server, no API, no dependencies. ColGREP is a single Rust binary with everything baked in.
 
 Regex meets semantics:
 
@@ -61,16 +61,16 @@ colgrep -e "async.*await" "error handling"
 flowchart TD
     A["Your codebase"] --> B["Tree-sitter"]
     B --> C["Structured representation"]
-    C --> D["ColBERT encoder"]
-    D --> E["PLAID index"]
+    C --> D["LateOn-Code-edge · 17M"]
+    D --> E["NextPlaid"]
     E --> F["Search"]
 
     B -.- B1["Parse functions, methods, classes"]
     C -.- C1["Signature, params, calls, docstring, code"]
-    D -.- D1["Multi-vector embedding per code unit
-LateOn-Code · 17M params · runs on CPU"]
-    E -.- E1["Quantized · memory-mapped · incremental"]
-    F -.- F1["Regex filter → semantic ranking → results"]
+    D -.- D1["Multi-vector embedding per code unit · runs on CPU"]
+    E -.- E1["Rust index binary · quantized · memory-mapped · incremental"]
+    F -.- F1["grep-compatible flags · SQLite filtering · semantic ranking
+100% local, your code never leaves your machine"]
 
     style A fill:#4a90d9,stroke:#357abd,color:#fff
     style B fill:#50b86c,stroke:#3d9956,color:#fff
@@ -85,7 +85,7 @@ LateOn-Code · 17M params · runs on CPU"]
     style F1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
 ```
 
-**What the model sees** — each code unit is converted to structured text before embedding:
+**What the model sees.** Each code unit is converted to structured text before embedding:
 
 ```
 Function: fetch_with_retry
@@ -109,22 +109,22 @@ This structured input gives the model richer signal than raw code alone.
 
 ## Why multi-vector?
 
-Standard vector search collapses an entire document into **one** embedding. That's a lossy summary — fine for short text, bad for code where a single function has a name, parameters, a docstring, control flow, and dependencies.
+Standard vector search collapses an entire document into **one** embedding. That's a lossy summary. Fine for short text, bad for code where a single function has a name, parameters, a docstring, control flow, and dependencies.
 
-Multi-vector keeps ~300 embeddings of dimension 128 per document instead of one. At query time, each query token finds its best match across all document tokens (**MaxSim**). More storage upfront — that's what NextPlaid solves with quantization and memory-mapped indexing.
+Multi-vector keeps ~300 embeddings of dimension 128 per document instead of one. At query time, each query token finds its best match across all document tokens (**MaxSim**). More storage upfront. That's what NextPlaid solves with quantization and memory-mapped indexing.
 
 ---
 
 ## NextPlaid
 
-A local-first multi-vector database with a REST API. It's what powers ColGREP under the hood — but it's a general-purpose engine you can use for any retrieval workload.
+A local-first multi-vector database with a REST API. It's what powers ColGREP under the hood, but it's a general-purpose engine you can use for any retrieval workload.
 
-- **Built-in encoding** — pass text, get results. Ships with ONNX Runtime for ColBERT models, no external inference server needed.
-- **Memory-mapped indices** — low RAM footprint, indices live on disk and are paged in on demand.
-- **Product quantization** — 2-bit or 4-bit compression. A million documents fit in memory.
-- **Incremental updates** — add and delete documents without rebuilding the index.
-- **Metadata pre-filtering** — SQL WHERE clauses on a built-in SQLite store. Filter *before* search so only matching documents are scored.
-- **CPU-optimized** — designed to run fast on CPU. CUDA supported when you need it.
+- **Built-in encoding.** Pass text, get results. Ships with ONNX Runtime for ColBERT models, no external inference server needed.
+- **Memory-mapped indices.** Low RAM footprint, indices live on disk and are paged in on demand.
+- **Product quantization.** 2-bit or 4-bit compression. A million documents fit in memory.
+- **Incremental updates.** Add and delete documents without rebuilding the index.
+- **Metadata pre-filtering.** SQL WHERE clauses on a built-in SQLite store. Filter *before* search so only matching documents are scored.
+- **CPU-optimized.** Designed to run fast on CPU. CUDA supported when you need it.
 
 For GPU-accelerated batch indexing without an API, see [FastPlaid](https://github.com/lightonai/fast-plaid).
 
@@ -164,7 +164,7 @@ client = NextPlaidClient("http://localhost:8080")
 # Create index
 client.create_index("docs", IndexConfig(nbits=4))
 
-# Add documents — text is encoded server-side
+# Add documents, text is encoded server-side
 client.add(
     "docs",
     documents=[
