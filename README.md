@@ -1,43 +1,61 @@
 <div align="center">
-  <h1>NextPlaid & ColGREP</h1>
-  <p>Multi-vector search, from database to coding agents</p>
+  <h1>NextPlaid &amp; ColGREP</h1>
+  <p><b>Multi-vector search</b>, from database to coding agents</p>
+
+  <p>
+    <a href="https://lightonai.github.io/next-plaid/"><b>Docs</b></a>
+    ·
+    <a href="#quickstart"><b>Quickstart</b></a>
+    ·
+    <a href="#nextplaid"><b>NextPlaid</b></a>
+    ·
+    <a href="#colgrep"><b>ColGREP</b></a>
+    ·
+    <a href="#models"><b>Models</b></a>
+  </p>
 </div>
 
 <p align="center">
-  <img width=500 src="https://github.com/lightonai/next-plaid/blob/main/docs/logo.png"/>
+  <img width="520" src="docs/logo.png" alt="NextPlaid & ColGREP logo"/>
 </p>
 
-&nbsp;
+---
 
 ## What this is
 
-This repository contains two closely related projects built around **multi-vector retrieval**:
+This repository contains **two closely related projects** built around **multi-vector retrieval**:
 
 - **NextPlaid** — a local-first, multi-vector database.
-- **ColGREP** — a code search tool built on top of it for coding agents.
+- **ColGREP** — a code search tool built on top of NextPlaid for coding agents.
 
-Multi-vector retrieval keeps multiple embeddings per document instead of collapsing everything into one. This preserves fine-grained signals in long text and code, at the cost of more indexing work upfront but much better precision at query time.
+### Why multi-vector?
 
-[Documentation](https://lightonai.github.io/next-plaid/)
+Instead of collapsing a document into a single embedding, multi-vector retrieval keeps **multiple embeddings per document** (often per token/chunk).  
+This preserves fine-grained signals in long text and code:
 
-## NextPlaid
+- ✅ better precision at query time
+- ✅ more robust retrieval for long documents
+- ⚠️ more indexing work upfront
 
-**NextPlaid** is a multi-vector database written in Rust.
+📚 **Documentation:** https://lightonai.github.io/next-plaid/
 
-Instead of crushing a document into a single embedding, it stores **one embedding per token**. Indexes are memory-mapped to keep RAM usage low, product quantization (4-bit) keeps storage small, and incremental updates mean you don’t rebuild the world every time something changes. Metadata filtering is handled via SQLite. It provides pre-filtering, re-ranking, and batching.
+---
 
-It runs well on CPU and exposes a simple REST API. If you want to create a multi-vector index and you don't care about the API/tooling, check out [FastPlaid](https://github.com/lightonai/fast-plaid) which supports GPU acceleration when creating the index.
+## Quickstart
 
-### Docker
+### Run NextPlaid (Docker)
+
+**CPU**
 
 ```bash
 docker pull ghcr.io/lightonai/lategrep:cpu-latest
 docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
   ghcr.io/lightonai/lategrep:cpu-latest \
   --model lightonai/answerai-colbert-small-v1-onnx --int8
+
 ```
 
-With GPU support:
+**GPU**
 
 ```bash
 docker pull ghcr.io/lightonai/lategrep:cuda-latest
@@ -46,7 +64,7 @@ docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
   --model lightonai/GTE-ModernColBERT-v1 --cuda
 ```
 
-### Python SDK
+### Query from Python
 
 ```bash
 pip install next-plaid-client
@@ -56,39 +74,52 @@ pip install next-plaid-client
 from next_plaid_client import NextPlaidClient, IndexConfig
 
 client = NextPlaidClient("http://localhost:8080")
+
 client.create_index("docs", IndexConfig(nbits=4))
 client.add(
     "docs",
-    documents=["next-plaid is a multi-vector database", "colgrep is a code search tool based on Next-Plaid"],
+    documents=[
+        "next-plaid is a multi-vector database",
+        "colgrep is a code search tool based on NextPlaid",
+    ],
     metadata=[{"id": "doc_1"}, {"id": "doc_2"}],
 )
+
+# Search
 results = client.search("docs", ["coding agent tool"])
-results = client.search("docs", ["vector-database"], filter_condition="id = ?", filter_parameters=["doc_1"])
+
+# Search + metadata filtering
+results = client.search(
+    "docs",
+    ["vector-database"],
+    filter_condition="id = ?",
+    filter_parameters=["doc_1"],
+)
+
+# Delete by predicate
 client.delete("docs", "id = ?", ["doc_1"])
 client.delete("docs", "id IN (?, ?)", ["doc_1", "doc_2"])
 ```
 
-### Rust crate
+---
 
-```toml
-[dependencies]
-next-plaid = "0.9"
-```
+## NextPlaid
 
-For GPU-accelerated indexing in Python, see [FastPlaid](https://github.com/lightonai/fast-plaid).  
-NextPlaid can load FastPlaid-generated indexes directly.
+NextPlaid is identical to [FastPlaid](https://github.com/lightonai/fast-plaid) but with a REST API and optimized for CPU usage. If you don't care about API/tooling and just want fast indexing, see [FastPlaid](https://github.com/lightonai/fast-plaid) (GPU-accelerated indexing).
 
 ---
 
 ## ColGREP
 
-**ColGREP** applies the same ideas to code search.
+Coding agents spend most of their time searching. ColGREP makes that search meaningful. ColGREP is a local-first code search tool built on top of NextPlaid, designed for coding agents like Claude Code, OpenCode, and Codex.
 
-**Coding agents spend most of their time searching. ColGREP makes that search meaningful.**
+**How it works:**
 
-It parses your codebase with tree-sitter, indexes functions, methods, and classes, and embeds each unit with [LateOn-Code](lightonai/LateOn-Code-edge) which has 17M parameters. Searches combine **regex filtering** with **semantic ranking**.
-
-The index lives locally. Your code never leaves your machine.
+- parses your codebase with tree-sitter
+- indexes functions / methods / classes / raw code
+- embeds each unit with LateOn-Code (`lightonai/LateOn-Code-edge`, 17M params)
+- searches combine regex filtering + semantic ranking
+- everything stays local, your code never leaves your machine
 
 ### Install
 
@@ -96,25 +127,23 @@ The index lives locally. Your code never leaves your machine.
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/lategrep/releases/latest/download/colgrep-installer.sh | sh
 ```
 
-#### Cuda acceleration:
+Then go to your codebase and run `colgrep "search query"` to create your first index. Don't run `colgrep` from the root of your drive (e.g. `C:\`) or home directory (`~`) to avoid indexing everything.
+
+**CUDA acceleration**
 
 ```bash
 sudo apt install libopenblas-dev
 cargo install colgrep --features cuda,openblas
 ```
 
-#### OpenBLAS Acceleration (Linux)
-
-OpenBLAS provides optimized BLAS for vector operations, significantly improving search performance. Install it before building with the `openblas` feature:
+**OpenBLAS acceleration (Linux)**
 
 ```bash
 sudo apt install libopenblas-dev
 cargo install colgrep --features openblas
 ```
 
-#### Apple Accelerate + CoreML (macOS)
-
-Apple Accelerate (vector operations) and CoreML (model inference) are built into macOS and require no additional installation:
+**Apple Accelerate + CoreML (macOS)**
 
 ```bash
 cargo install colgrep --features "accelerate,coreml"
@@ -127,32 +156,19 @@ cargo install colgrep --features "accelerate,coreml"
 | Claude Code | `colgrep --install-claude-code` | `colgrep --uninstall-claude-code` |
 | OpenCode    | `colgrep --install-opencode`    | `colgrep --uninstall-opencode`    |
 | Codex       | `colgrep --install-codex`       | `colgrep --uninstall-codex`       |
-| **All**     | —                               | `colgrep --uninstall`             |
+| All         | —                               | `colgrep --uninstall`             |
 
-**IMPORTANT: After running `colgrep --install-claude-code`, you must restart Claude Code for the plugin to take effect.**
+> **IMPORTANT:** After running `colgrep --install-claude-code`, restart Claude Code for the plugin to take effect.
 
-The `--uninstall` command completely removes colgrep: uninstalls from all AI tools, clears all indexes, and removes all data.
-
-#### Smart Claude Code Integration
-
-The Claude Code integration includes intelligent hooks that adapt to your project:
-
-- **Automatic readiness checks**: Before suggesting colgrep, checks if index exists and how many chunks need indexing
-- **Prevents slow operations**: Returns empty if >3000 chunks need indexing (avoids blocking large projects)
-- **Desync detection**: Returns empty if index is desynced (needs repair before use)
-- **Agent awareness**: Reminds the model to inject colgrep instructions when spawning agents
-
-This ensures Claude Code only uses colgrep when it will provide fast, reliable results. On large unindexed projects, Claude Code won't suggest colgrep until you've indexed it manually with `colgrep "test" -k 1`.
+`colgrep --uninstall` completely removes ColGREP: uninstalls from all AI tools, clears all indexes, and removes all data.
 
 ### Usage
 
-Start searching within your codebase to index the project, or let your agent do it for you:
+Start searching within your codebase (first run builds the index):
 
 ```bash
 colgrep "database connection pooling"
 ```
-
-The first search builds the index, it might take few minutes on large codebase. After that, only modified files are re-indexed.
 
 Regex meets semantics:
 
@@ -167,29 +183,23 @@ colgrep --include="*.py" "database query"
 colgrep --exclude-dir="node_modules" "config loading"
 ```
 
-The default model is `lightonai/LateOn-Code-edge`.
-
-For higher accuracy you can switch to `lightonai/LateOn-Code`:
+Model switching:
 
 ```bash
+# Default: lightonai/LateOn-Code-edge
 colgrep set-model lightonai/LateOn-Code
 ```
 
-To clear the index for the current project:
+Index management:
 
 ```bash
 colgrep clear
-```
-
-To clear all the indexes:
-
-```bash
 colgrep clear --all
 ```
 
 ### Performance tuning
 
-By default, colgrep uses INT8 quantization and pool-factor 2 for optimal performance. You can adjust these settings:
+By default, ColGREP uses INT8 quantization and pool-factor 2.
 
 ```bash
 # Set default number of results
@@ -207,37 +217,19 @@ colgrep settings --fp32 --pool-factor 1
 
 | Setting           | Effect                                   | Trade-off                                  |
 | ----------------- | ---------------------------------------- | ------------------------------------------ |
-| `--int8`          | Uses INT8 quantized model (default)      | ~2x faster inference, minimal quality loss |
+| `--int8`          | Uses INT8 quantized model (default)      | ~2× faster inference, minimal quality loss |
 | `--pool-factor 1` | No pooling                               | Maximum precision, larger index            |
 | `--pool-factor 2` | Pools every 2 token embeddings (default) | ~50% smaller index, faster search          |
 
-To reset to defaults (INT8, pool-factor 2):
+Reset to defaults:
 
 ```bash
 colgrep settings --int8 --pool-factor 2
 ```
 
-For even better search quality, switch to the larger `lightonai/LateOn-Code` model (138M parameters vs 17M for the default edge model). This significantly improves semantic understanding but increases indexing time:
+### Embedding input format
 
-```bash
-colgrep set-model lightonai/LateOn-Code
-```
-
-To switch back to the fast edge model:
-
-```bash
-colgrep set-model lightonai/LateOn-Code-edge
-```
-
-View current settings:
-
-```bash
-colgrep settings
-```
-
-### Embedding Input Format
-
-Each code unit is converted to a structured text before encoding. Example for a Python function:
+Each code unit is converted to a structured text before encoding.
 
 **Original code:**
 
@@ -276,9 +268,9 @@ def fetch_with_retry(url: str, max_retries: int = 3) -> Response:
 File: src / utils / http client http_client.py
 ```
 
-File paths are normalized: separators become spaced, underscores/hyphens become spaces, CamelCase is split.
+Paths are normalized: separators become spaced, underscores/hyphens become spaces, CamelCase is split.
 
-### Features
+### Feature cheatsheet
 
 | Feature                | Command                                               |
 | ---------------------- | ----------------------------------------------------- |
@@ -310,30 +302,31 @@ File paths are normalized: separators become spaced, underscores/hyphens become 
 
 ## Models
 
-Any HuggingFace ColBERT-style model can be exported to ONNX. By default, both FP32 and INT8 quantized versions are created. INT8 quantization reduces size (~4x smaller) and improves speed with minimal quality loss.
+Any HuggingFace ColBERT-style model can be exported to ONNX. By default, both FP32 and INT8 quantized versions are created. INT8 quantization reduces size (~4× smaller) and improves speed with minimal quality loss.
 
 ```bash
-# Install the export tool
 pip install pylate-onnx-export
 
-# Export model to a specific directory (creates model.onnx and model_int8.onnx)
+# Export model (creates model.onnx and model_int8.onnx)
 pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models
 
-# Export and push to HuggingFace Hub
+# Export + push to HuggingFace Hub
 pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models --push-to-hub myorg/my-onnx-model
 ```
 
-Available models which can be served with NextPlaid and used with ColGREP without export:
+### Ready-to-use models
 
-| Model                                    | Use case                    | Authors |
-| ---------------------------------------- | --------------------------- | ------- |
-| lightonai/LateOn-Code-edge               | Code search, lightweight    |
-| lightonai/LateOn-Code                    | Code search, accurate       |
-| lightonai/mxbai-edge-colbert-v0-32m-onnx | Text retrieval, lightweight |
-| lightonai/answerai-colbert-small-v1-onnx | Text retrieval, lightweight |
-| lightonai/GTE-ModernColBERT-v1           | Text retrieval, accurate    |
+These can be served with NextPlaid and used with ColGREP without export:
 
-Any PyLate-compatible ColBERT model from HuggingFace can be used: [HuggingFace Hub](https://huggingface.co/models?other=PyLate) when converted to ONNX with `pylate-onnx-export`.
+| Model                                      | Use case                    |
+| ------------------------------------------ | --------------------------- |
+| `lightonai/LateOn-Code-edge`               | Code search, lightweight    |
+| `lightonai/LateOn-Code`                    | Code search, accurate       |
+| `lightonai/mxbai-edge-colbert-v0-32m-onnx` | Text retrieval, lightweight |
+| `lightonai/answerai-colbert-small-v1-onnx` | Text retrieval, lightweight |
+| `lightonai/GTE-ModernColBERT-v1`           | Text retrieval, accurate    |
+
+Any [PyLate-compatible ColBERT model](https://huggingface.co/models?other=PyLate) from HuggingFace can be used when converted to ONNX.
 
 ---
 

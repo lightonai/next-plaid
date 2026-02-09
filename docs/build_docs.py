@@ -6,6 +6,7 @@ Generates minimal HTML pages suitable for LLM copy-paste.
 
 import argparse
 import re
+import shutil
 from pathlib import Path
 
 
@@ -281,6 +282,14 @@ def main():
         output_path = output_dir / html_name
         output_path.write_text(page, encoding="utf-8")
         print(f"Generated: {output_path.relative_to(root)}")
+
+    # Copy static assets (images) referenced in READMEs
+    for ext in ("*.png", "*.jpg", "*.jpeg", "*.svg", "*.gif"):
+        for img in root.glob(f"docs/{ext}"):
+            dest = output_dir / "docs" / img.name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(img, dest)
+            print(f"Copied: {img.relative_to(root)} -> docs/{img.name}")
 
     print(f"\nDocs built in: {output_dir}")
     return 0
