@@ -16,7 +16,7 @@
 </div>
 
 <p align="center">
-  <img width="520" src="docs/logo.png" alt="NextPlaid & ColGREP logo"/>
+  <img width="680" src="docs/colgrep-demo.gif" alt="ColGREP demo"/>
 </p>
 
 ---

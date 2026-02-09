@@ -45,6 +45,9 @@ next-plaid-onnx/python/build/
 *.npy
 test_index/
 
+# Demo
+/demo/
+
 # Documentation build
 /benchmarks/_build/
 /benchmarks/evaluation_datasets/
