@@ -1,7 +1,7 @@
 <div align="center">
   <h1>NextPlaid API</h1>
   <p>A REST API for multi-vector search with built-in text encoding.<br/>
-  Async batching, metadata filtering, rate limiting, Swagger UI. Powers the <a href="../">NextPlaid</a> ecosystem.</p>
+  Async batching, metadata filtering, optional rate limiting, Swagger UI. Powers the <a href="../">NextPlaid</a> ecosystem.</p>
 
   <p>
     <a href="#quick-start"><b>Quick Start</b></a>
@@ -393,7 +393,7 @@ All errors return JSON:
 | `MODEL_NOT_LOADED` | 400 | Encoding endpoint needs `--model` |
 | `MODEL_ERROR` | 500 | ONNX inference failed |
 | `SERVICE_UNAVAILABLE` | 503 | Queue full, retry later |
-| `RATE_LIMITED` | 429 | Too many requests (retry after 2s) |
+| `RATE_LIMITED` | 429 | Too many requests, requires `RATE_LIMIT_ENABLED` (retry after 2s) |
 | `INTERNAL_ERROR` | 500 | Unexpected server error |
 
 ---
@@ -592,7 +592,7 @@ flowchart TD
     end
 
     subgraph Middleware
-        RL["Rate Limiter<br/>token bucket"]
+        RL["Rate Limiter<br/>token bucket · optional"]
         CL["Concurrency Limiter"]
         TR["Tracing<br/>X-Request-ID"]
         TO["Timeout<br/>30s health · 300s ops"]
@@ -664,13 +664,14 @@ flowchart LR
 
 ### Rate Limiting
 
-The API applies configurable rate limiting via a token bucket algorithm:
+Rate limiting is **optional and disabled by default**. Enable it by setting `RATE_LIMIT_ENABLED=true`. When enabled, the API applies a token bucket algorithm to a subset of routes:
 
-| Scope | Rate limited? | Why |
-| ----- | ------------- | --- |
+| Scope | Rate limited? | Why exempt |
+| ----- | ------------- | ---------- |
 | `/health`, `/` | No | Monitoring must always work |
 | `GET /indices`, `GET /indices/{name}` | No | Clients poll during async operations |
 | `POST /indices/{name}/update*` | No | Has per-index semaphore protection |
+| `DELETE /indices/{name}`, `DELETE /indices/{name}/documents` | No | Has internal batching |
 | `/encode`, `/rerank*` | No | Has internal backpressure via queue |
 | Everything else | Yes | Standard rate limiting |
 
@@ -682,8 +683,9 @@ The API applies configurable rate limiting via a token bucket algorithm:
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
-| `RATE_LIMIT_PER_SECOND` | `50` | Sustained requests/second |
-| `RATE_LIMIT_BURST_SIZE` | `100` | Max burst size |
+| `RATE_LIMIT_ENABLED` | `false` | Enable rate limiting (`true`, `1`, or `yes` to enable) |
+| `RATE_LIMIT_PER_SECOND` | `50` | Sustained requests/second (when enabled) |
+| `RATE_LIMIT_BURST_SIZE` | `100` | Max burst size (when enabled) |
 | `CONCURRENCY_LIMIT` | `100` | Max concurrent in-flight requests |
 
 ### Document Batching
