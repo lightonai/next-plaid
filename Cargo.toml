@@ -44,7 +44,7 @@ github-releases-body = """
 Semantic code search for your codebase. Install with:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/nxt-plaid/releases/latest/download/colgrep-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh
 ```
 
 The installer automatically detects your platform and downloads the optimized binary (CoreML + Accelerate on Apple Silicon, Accelerate on Intel Mac).
@@ -55,17 +55,19 @@ Multi-vector database with REST API. Run with Docker:
 
 **CPU:**
 ```bash
-docker pull ghcr.io/lightonai/nxt-plaid:cpu-latest
+docker pull ghcr.io/lightonai/next-plaid:cpu-1.0.0
 docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/nxt-plaid:cpu-latest \
+  ghcr.io/lightonai/next-plaid:cpu-1.0.0 \
+  --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/answerai-colbert-small-v1-onnx --int8
 ```
 
 **GPU (CUDA):**
 ```bash
-docker pull ghcr.io/lightonai/nxt-plaid:cuda-latest
+docker pull ghcr.io/lightonai/next-plaid:cuda-1.0.0
 docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/nxt-plaid:cuda-latest \
+  ghcr.io/lightonai/next-plaid:cuda-1.0.0 \
+  --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/GTE-ModernColBERT-v1 --cuda
 ```
 """

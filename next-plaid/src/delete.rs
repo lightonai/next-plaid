@@ -255,6 +255,7 @@ fn delete_from_index_impl(doc_ids: &[i64], index_path: &str, clean_buffer: bool)
         num_embeddings: total_embeddings,
         avg_doclen: final_avg_doclen,
         num_documents: final_num_documents,
+        embedding_dim: metadata.embedding_dim,
         next_plaid_compatible: metadata.next_plaid_compatible,
     };
 

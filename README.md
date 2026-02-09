@@ -48,19 +48,20 @@ This preserves fine-grained signals in long text and code:
 **CPU**
 
 ```bash
-docker pull ghcr.io/lightonai/next-plaid:cpu-latest
+docker pull ghcr.io/lightonai/next-plaid:cpu-1.0.0
 docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cpu-latest \
+  ghcr.io/lightonai/next-plaid:cpu-1.0.0 \
+  --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/answerai-colbert-small-v1-onnx --int8
-
 ```
 
 **GPU**
 
 ```bash
-docker pull ghcr.io/lightonai/next-plaid:cuda-latest
+docker pull ghcr.io/lightonai/next-plaid:cuda-1.0.0
 docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cuda-latest \
+  ghcr.io/lightonai/next-plaid:cuda-1.0.0 \
+  --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/GTE-ModernColBERT-v1 --cuda
 ```
 

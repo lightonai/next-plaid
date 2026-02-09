@@ -401,7 +401,7 @@ impl AppState {
             for entry in entries.flatten() {
                 if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                     let path = entry.path();
-                    if path.join("metadata.json").exists() {
+                    if path.join("metadata.json").exists() || path.join("config.json").exists() {
                         if let Some(name) = entry.file_name().to_str() {
                             names.push(name.to_string());
                         }
@@ -440,10 +440,26 @@ impl AppState {
         let path = self.index_path(name);
         let path_str = path.to_string_lossy().to_string();
 
-        // Try to load metadata from disk
+        // Use cached config to get nbits and max_documents (avoids repeated file reads)
+        let stored_config = self.get_index_config(name);
+        let max_documents = stored_config.as_ref().and_then(|c| c.max_documents);
+        let nbits = stored_config.as_ref().map(|c| c.nbits).unwrap_or(4);
+
+        // Try to load metadata from disk (may not exist for empty/declared indices)
         let metadata_path = path.join("metadata.json");
         if !metadata_path.exists() {
-            return Err(crate::error::ApiError::IndexNotFound(name.to_string()));
+            // Empty index (declared but no documents yet)
+            return Ok(crate::models::IndexSummary {
+                name: name.to_string(),
+                num_documents: 0,
+                num_embeddings: 0,
+                num_partitions: 0,
+                dimension: 0,
+                nbits,
+                avg_doclen: 0.0,
+                has_metadata: false,
+                max_documents,
+            });
         }
 
         // Read metadata.json directly to avoid loading the full index
@@ -456,9 +472,6 @@ impl AppState {
         })?;
 
         let has_metadata = next_plaid::filtering::exists(&path_str);
-
-        // Use cached config to get max_documents (avoids repeated file reads)
-        let max_documents = self.get_index_config(name).and_then(|c| c.max_documents);
 
         Ok(crate::models::IndexSummary {
             name: name.to_string(),

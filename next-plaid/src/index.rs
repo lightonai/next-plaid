@@ -112,6 +112,9 @@ pub struct Metadata {
     /// Total number of documents
     #[serde(default)]
     pub num_documents: usize,
+    /// Embedding dimension (columns of centroids matrix)
+    #[serde(default)]
+    pub embedding_dim: usize,
     /// Whether the index has been converted to next-plaid compatible format.
     /// If false or missing, the index may need fast-plaid to next-plaid conversion.
     #[serde(default)]
@@ -477,6 +480,7 @@ pub fn create_index_files(
         num_embeddings: total_embeddings,
         avg_doclen,
         num_documents,
+        embedding_dim,
         next_plaid_compatible: true, // Created by next-plaid, always compatible
     };
 

@@ -1324,9 +1324,27 @@ pub async fn delete_index(
     let lock = get_index_lock(&name);
     let _guard = lock.lock().await;
 
+    // Stop background workers by removing their queue entries.
+    // Dropping the sender closes the channel, causing workers to exit.
+    let queue_key = state.index_path(&name).to_string_lossy().to_string();
+    if let Some(queues) = BATCH_QUEUES.get() {
+        if let Ok(mut map) = queues.lock() {
+            map.remove(&queue_key);
+        }
+    }
+    if let Some(queues) = DELETE_BATCH_QUEUES.get() {
+        if let Ok(mut map) = queues.lock() {
+            map.remove(&queue_key);
+        }
+    }
+
     // Unload from memory and invalidate caches
     state.unload_index(&name);
     state.invalidate_config_cache(&name);
+
+    // Drop the lock guard before removing the directory, so the async mutex
+    // isn't held while we delete (similar to colgrep's drop(lock) pattern).
+    drop(_guard);
 
     // Delete from disk
     let path = state.index_path(&name);

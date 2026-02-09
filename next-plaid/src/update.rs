@@ -875,6 +875,7 @@ pub fn update_index(
         num_embeddings,
         avg_doclen: new_avg_doclen,
         num_documents: total_num_documents,
+        embedding_dim,
         next_plaid_compatible: true,
     };
 
