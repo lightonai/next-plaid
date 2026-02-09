@@ -12,6 +12,9 @@ use crate::codec::CentroidStore;
 use crate::error::Result;
 use crate::maxsim;
 
+/// Per-token top-k heaps and per-centroid max scores from a batch of centroids.
+type ProbePartial = (Vec<BinaryHeap<(Reverse<OrdF32>, usize)>>, HashMap<usize, f32>);
+
 /// Maximum number of documents to decompress concurrently during exact scoring.
 /// This limits peak memory usage from parallel decompression.
 /// With 128 docs × ~300KB per doc = ~40MB max concurrent decompression memory.
@@ -227,55 +230,93 @@ fn ivf_probe_batched(
     let num_centroids = centroids.nrows();
     let num_tokens = query.nrows();
 
-    // Min-heap per query token to track top centroids
-    // Entry: (Reverse(score), centroid_id) - Reverse for min-heap behavior
-    let mut heaps: Vec<BinaryHeap<(Reverse<OrdF32>, usize)>> = (0..num_tokens)
-        .map(|_| BinaryHeap::with_capacity(n_probe + 1))
+    // Build batch ranges for parallel processing
+    let batch_ranges: Vec<(usize, usize)> = (0..num_centroids)
+        .step_by(batch_size)
+        .map(|start| (start, (start + batch_size).min(num_centroids)))
         .collect();
 
-    // Track max score per centroid for threshold filtering
-    let mut max_scores: HashMap<usize, f32> = HashMap::new();
+    // Process centroid batches in parallel. Each rayon thread computes a GEMM
+    // (with single-threaded BLAS via OPENBLAS_NUM_THREADS=1) and maintains local
+    // per-token top-k heaps. Memory is bounded: rayon's thread pool ensures at most
+    // num_cpus batch_scores matrices (each batch_size × num_tokens × 4 bytes) exist
+    // simultaneously, same as the sequential approach where num_cpus queries each
+    // process one batch at a time.
+    let local_results: Vec<ProbePartial> = batch_ranges
+        .par_iter()
+        .map(|&(batch_start, batch_end)| {
+            let mut heaps: Vec<BinaryHeap<(Reverse<OrdF32>, usize)>> = (0..num_tokens)
+                .map(|_| BinaryHeap::with_capacity(n_probe + 1))
+                .collect();
+            let mut max_scores: HashMap<usize, f32> = HashMap::new();
 
-    for batch_start in (0..num_centroids).step_by(batch_size) {
-        let batch_end = (batch_start + batch_size).min(num_centroids);
+            // Get batch view (zero-copy from mmap)
+            let batch_centroids = centroids.slice_rows(batch_start, batch_end);
 
-        // Get batch view (zero-copy from mmap)
-        let batch_centroids = centroids.slice_rows(batch_start, batch_end);
+            // Compute scores: [num_tokens, batch_size] — single-threaded BLAS
+            let batch_scores = query.dot(&batch_centroids.t());
 
-        // Compute scores: [num_tokens, batch_size]
-        let batch_scores = query.dot(&batch_centroids.t());
+            // Update local heaps with this batch's scores
+            for (q_idx, heap) in heaps.iter_mut().enumerate() {
+                for (local_c, &score) in batch_scores.row(q_idx).iter().enumerate() {
+                    let global_c = batch_start + local_c;
+                    let entry = (Reverse(OrdF32(score)), global_c);
 
-        // Update heaps with this batch's scores
-        for (q_idx, heap) in heaps.iter_mut().enumerate() {
-            for (local_c, &score) in batch_scores.row(q_idx).iter().enumerate() {
-                let global_c = batch_start + local_c;
-                let entry = (Reverse(OrdF32(score)), global_c);
-
-                if heap.len() < n_probe {
-                    heap.push(entry);
-                    // Track max score for threshold filtering
-                    max_scores
-                        .entry(global_c)
-                        .and_modify(|s| *s = s.max(score))
-                        .or_insert(score);
-                } else if let Some(&(Reverse(OrdF32(min_score)), _)) = heap.peek() {
-                    if score > min_score {
-                        heap.pop();
+                    if heap.len() < n_probe {
                         heap.push(entry);
-                        // Track max score for threshold filtering
                         max_scores
                             .entry(global_c)
                             .and_modify(|s| *s = s.max(score))
                             .or_insert(score);
+                    } else if let Some(&(Reverse(OrdF32(min_score)), _)) = heap.peek() {
+                        if score > min_score {
+                            heap.pop();
+                            heap.push(entry);
+                            max_scores
+                                .entry(global_c)
+                                .and_modify(|s| *s = s.max(score))
+                                .or_insert(score);
+                        }
                     }
                 }
             }
+
+            (heaps, max_scores)
+        })
+        .collect();
+
+    // Merge local heaps into final result (lightweight: each heap has at most
+    // n_probe entries, and there are num_batches heaps per token to merge)
+    let mut final_heaps: Vec<BinaryHeap<(Reverse<OrdF32>, usize)>> = (0..num_tokens)
+        .map(|_| BinaryHeap::with_capacity(n_probe + 1))
+        .collect();
+    let mut final_max_scores: HashMap<usize, f32> = HashMap::new();
+
+    for (local_heaps, local_max_scores) in local_results {
+        for (q_idx, local_heap) in local_heaps.into_iter().enumerate() {
+            for entry in local_heap {
+                let (Reverse(OrdF32(score)), _) = entry;
+                if final_heaps[q_idx].len() < n_probe {
+                    final_heaps[q_idx].push(entry);
+                } else if let Some(&(Reverse(OrdF32(min_score)), _)) = final_heaps[q_idx].peek() {
+                    if score > min_score {
+                        final_heaps[q_idx].pop();
+                        final_heaps[q_idx].push(entry);
+                    }
+                }
+            }
+        }
+        for (c, score) in local_max_scores {
+            final_max_scores
+                .entry(c)
+                .and_modify(|s| *s = s.max(score))
+                .or_insert(score);
         }
     }
 
     // Union top centroids across all query tokens
     let mut selected: HashSet<usize> = HashSet::new();
-    for heap in heaps {
+    for heap in final_heaps {
         for (_, c) in heap {
             selected.insert(c);
         }
@@ -283,7 +324,8 @@ fn ivf_probe_batched(
 
     // Apply centroid score threshold if set
     if let Some(threshold) = centroid_score_threshold {
-        selected.retain(|c| max_scores.get(c).copied().unwrap_or(f32::NEG_INFINITY) >= threshold);
+        selected
+            .retain(|c| final_max_scores.get(c).copied().unwrap_or(f32::NEG_INFINITY) >= threshold);
     }
 
     selected.into_iter().collect()

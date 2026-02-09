@@ -216,6 +216,8 @@ EXPOSE 8080
 # Default environment variables
 ENV RUST_LOG=info
 ENV INDEX_DIR=/data/indices
+# Prevent OpenBLAS thread explosion when used alongside rayon parallelism
+ENV OPENBLAS_NUM_THREADS=1
 # Memory-mapped indices are always enabled for efficient memory usage
 # Set HF_MODEL_ID to auto-download model from HuggingFace Hub
 # Example: ENV HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1
@@ -275,6 +277,8 @@ EXPOSE 8080
 # Default environment variables
 ENV RUST_LOG=info
 ENV INDEX_DIR=/data/indices
+# Prevent OpenBLAS thread explosion when used alongside rayon parallelism
+ENV OPENBLAS_NUM_THREADS=1
 # Memory-mapped indices are always enabled for efficient memory usage
 # Set HF_MODEL_ID to auto-download model from HuggingFace Hub
 # Example: ENV HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1
