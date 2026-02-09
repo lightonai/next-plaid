@@ -18,7 +18,7 @@ This repository contains two closely related projects built around **multi-vecto
 
 Multi-vector retrieval keeps multiple embeddings per document instead of collapsing everything into one. This preserves fine-grained signals in long text and code, at the cost of more indexing work upfront but much better precision at query time.
 
-[Documentation](https://lightonai.github.io/lategrep/)
+[Documentation](https://lightonai.github.io/next-plaid/)
 
 ## NextPlaid
 
@@ -96,21 +96,11 @@ The index lives locally. Your code never leaves your machine.
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/lategrep/releases/latest/download/colgrep-installer.sh | sh
 ```
 
-Or via Cargo (install Rust first with `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`):
+#### Cuda acceleration:
 
 ```bash
-cargo install colgrep
-```
-
-With features:
-
-```bash
-# macOS with Apple Accelerate + CoreML (recommended for M1/M2/M3/M4)
-cargo install colgrep --features "accelerate,coreml"
-# Linux with OpenBLAS
-cargo install colgrep --features openblas
-# Linux with CUDA GPU support
-cargo install colgrep --features cuda
+sudo apt install libopenblas-dev
+cargo install colgrep --features cuda,openblas
 ```
 
 #### OpenBLAS Acceleration (Linux)
@@ -118,19 +108,7 @@ cargo install colgrep --features cuda
 OpenBLAS provides optimized BLAS for vector operations, significantly improving search performance. Install it before building with the `openblas` feature:
 
 ```bash
-# Debian/Ubuntu
 sudo apt install libopenblas-dev
-
-# Fedora/RHEL/CentOS
-sudo dnf install openblas-devel
-
-# Arch Linux
-sudo pacman -S openblas
-```
-
-Then install with the feature enabled:
-
-```bash
 cargo install colgrep --features openblas
 ```
 
