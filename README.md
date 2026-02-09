@@ -149,6 +149,17 @@ cargo install colgrep --features openblas
 cargo install colgrep --features "accelerate,coreml"
 ```
 
+### Uninstall
+
+```bash
+# Remove agent integrations, indexes, and all data
+colgrep --uninstall
+
+# Remove the binary and install receipt
+rm ~/.cargo/bin/colgrep
+rm -rf ~/.config/colgrep
+```
+
 ### Agent integrations
 
 | Tool        | Install                         | Uninstall                         |
