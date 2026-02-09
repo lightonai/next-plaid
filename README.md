@@ -53,7 +53,7 @@ colgrep -e "async.*await" "error handling"
 | OpenCode    | `colgrep --install-opencode`    |
 | Codex       | `colgrep --install-codex`       |
 
-> Restart your agent after installing.
+> Restart your agent after installing. Claude Code has full hooks support. OpenCode and Codex integrations are basic for now, PRs welcome.
 
 ### How it works
 
@@ -97,7 +97,14 @@ Calls: range, client.get
 Variables: i, e
 Uses: client, RequestError
 Code:
-def fetch_with_retry(url: str, max_retries: int = 3) -> Response: ...
+def fetch_with_retry(url: str, max_retries: int = 3) -> Response:
+    """Fetches data from a URL with retry logic."""
+    for i in range(max_retries):
+        try:
+            return client.get(url)
+        except RequestError as e:
+            if i == max_retries - 1:
+                raise e
 File: src / utils / http client http_client.py
 ```
 

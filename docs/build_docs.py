@@ -181,8 +181,12 @@ def markdown_to_html(md_content: str) -> str:
         lang_match = re.match(r'```(\w*)\n', block)
         lang = lang_match.group(1) if lang_match else ''
         code = block[len(lang_match.group(0)) if lang_match else 3:-3]
-        code = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        html = html.replace(f"__CODE_BLOCK_{i}__", f'<pre><code class="{lang}">{code}</code></pre>')
+        if lang == 'mermaid':
+            # Mermaid blocks: use <pre class="mermaid"> without <code> wrapper or escaping
+            html = html.replace(f"__CODE_BLOCK_{i}__", f'<pre class="mermaid">{code}</pre>')
+        else:
+            code = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            html = html.replace(f"__CODE_BLOCK_{i}__", f'<pre><code class="{lang}">{code}</code></pre>')
 
     # Restore inline code
     for i, code in enumerate(inline_codes):
@@ -241,6 +245,10 @@ a {{ color: #0066cc; }}
 <main>
 {content}
 </main>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({{ startOnLoad: true }});
+</script>
 </body>
 </html>
 '''
