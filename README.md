@@ -48,9 +48,9 @@ This preserves fine-grained signals in long text and code:
 **CPU**
 
 ```bash
-docker pull ghcr.io/lightonai/lategrep:cpu-latest
+docker pull ghcr.io/lightonai/next-plaid:cpu-latest
 docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/lategrep:cpu-latest \
+  ghcr.io/lightonai/next-plaid:cpu-latest \
   --model lightonai/answerai-colbert-small-v1-onnx --int8
 
 ```
@@ -58,9 +58,9 @@ docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
 **GPU**
 
 ```bash
-docker pull ghcr.io/lightonai/lategrep:cuda-latest
+docker pull ghcr.io/lightonai/next-plaid:cuda-latest
 docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/lategrep:cuda-latest \
+  ghcr.io/lightonai/next-plaid:cuda-latest \
   --model lightonai/GTE-ModernColBERT-v1 --cuda
 ```
 
@@ -124,7 +124,7 @@ Coding agents spend most of their time searching. ColGREP makes that search mean
 ### Install
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/lategrep/releases/latest/download/colgrep-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh
 ```
 
 Then go to your codebase and run `colgrep "search query"` to create your first index. Don't run `colgrep` from the root of your drive (e.g. `C:\`) or home directory (`~`) to avoid indexing everything.
@@ -350,7 +350,7 @@ Apache-2.0
 ```bibtex
 @software{next-plaid,
   title  = {NextPlaid: Multi-vector search, from database to coding agents.},
-  url    = {https://github.com/lightonai/lategrep},
+  url    = {https://github.com/lightonai/next-plaid},
   author = {Raphaël Sourty},
   year   = {2026},
 }

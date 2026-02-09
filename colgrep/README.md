@@ -11,20 +11,20 @@ Semantic code search powered by ColBERT multi-vector embeddings and the PLAID al
 **macOS / Linux:**
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/lategrep/releases/latest/download/colgrep-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/nxt-plaid/releases/latest/download/colgrep-installer.sh | sh
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-powershell -c "irm https://github.com/lightonai/lategrep/releases/latest/download/colgrep-installer.ps1 | iex"
+powershell -c "irm https://github.com/lightonai/nxt-plaid/releases/latest/download/colgrep-installer.ps1 | iex"
 ```
 
 **Specific Version:**
 
 ```bash
 # Replace 0.4.0 with desired version
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/lategrep/releases/download/0.4.0/colgrep-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/nxt-plaid/releases/download/0.4.0/colgrep-installer.sh | sh
 ```
 
 ### Using Cargo (crates.io)
@@ -44,8 +44,8 @@ cargo install colgrep
 ### Build from Source
 
 ```bash
-git clone https://github.com/lightonai/lategrep.git
-cd lategrep
+git clone https://github.com/lightonai/nxt-plaid.git
+cd nxt-plaid
 cargo install --path colgrep
 ```
 

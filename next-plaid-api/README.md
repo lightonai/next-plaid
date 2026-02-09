@@ -60,14 +60,14 @@ Pre-built Docker images are available on GitHub Container Registry:
 
 ```bash
 # CPU variant (supports amd64 and arm64)
-docker pull ghcr.io/lightonai/lategrep:cpu-latest
+docker pull ghcr.io/lightonai/nxt-plaid:cpu-latest
 
 # CUDA variant (amd64 only, requires NVIDIA GPU)
-docker pull ghcr.io/lightonai/lategrep:cuda-latest
+docker pull ghcr.io/lightonai/nxt-plaid:cuda-latest
 
 # Specific version
-docker pull ghcr.io/lightonai/lategrep:cpu-0.4.0
-docker pull ghcr.io/lightonai/lategrep:cuda-0.4.0
+docker pull ghcr.io/lightonai/nxt-plaid:cpu-0.4.0
+docker pull ghcr.io/lightonai/nxt-plaid:cuda-0.4.0
 ```
 
 ### Docker Run Commands
@@ -80,7 +80,7 @@ docker run -d \
   -p 8080:8080 \
   -v ~/.local/share/next-plaid:/data/indices \
   -v ~/.cache/huggingface/next-plaid:/models \
-  ghcr.io/lightonai/lategrep:cpu-0.4.0 \
+  ghcr.io/lightonai/nxt-plaid:cpu-0.4.0 \
   --host 0.0.0.0 \
   --port 8080 \
   --index-dir /data/indices \
@@ -101,7 +101,7 @@ docker run -d \
   -e RUST_LOG=info \
   -e MAX_BATCH_DOCUMENTS=500 \
   -e MAX_BATCH_TEXTS=128 \
-  ghcr.io/lightonai/lategrep:cpu-0.4.0 \
+  ghcr.io/lightonai/nxt-plaid:cpu-0.4.0 \
   --host 0.0.0.0 \
   --port 8080 \
   --index-dir /data/indices \
@@ -120,7 +120,7 @@ docker run -d \
   --name next-plaid-api \
   -p 8080:8080 \
   -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/lategrep:cpu-0.4.0 \
+  ghcr.io/lightonai/nxt-plaid:cpu-0.4.0 \
   --host 0.0.0.0 \
   --port 8080 \
   --index-dir /data/indices
@@ -135,7 +135,7 @@ docker run -d \
   -p 8080:8080 \
   -v ~/.local/share/next-plaid:/data/indices \
   -v ~/.cache/huggingface/next-plaid:/models \
-  ghcr.io/lightonai/lategrep:cuda-0.4.0 \
+  ghcr.io/lightonai/nxt-plaid:cuda-0.4.0 \
   --host 0.0.0.0 \
   --port 8080 \
   --index-dir /data/indices \
@@ -161,7 +161,7 @@ docker run -d \
   -e MAX_BATCH_TEXTS=128 \
   --memory=16g \
   --restart unless-stopped \
-  ghcr.io/lightonai/lategrep:cuda-0.4.0 \
+  ghcr.io/lightonai/nxt-plaid:cuda-0.4.0 \
   --host 0.0.0.0 \
   --port 8080 \
   --index-dir /data/indices \
@@ -181,7 +181,7 @@ docker run -d \
   -p 8080:8080 \
   -v ~/.local/share/next-plaid:/data/indices \
   -v ~/.cache/huggingface/next-plaid:/models \
-  ghcr.io/lightonai/lategrep:cuda-0.4.0 \
+  ghcr.io/lightonai/nxt-plaid:cuda-0.4.0 \
   --host 0.0.0.0 \
   --port 8080 \
   --index-dir /data/indices \
@@ -194,10 +194,10 @@ docker run -d \
 
 #### Volume Mounts Explained
 
-| Mount | Container Path | Purpose |
-|-------|----------------|---------|
-| `~/.local/share/next-plaid` | `/data/indices` | Persistent index storage |
-| `~/.cache/huggingface/next-plaid` | `/models` | HuggingFace model cache |
+| Mount                             | Container Path  | Purpose                  |
+| --------------------------------- | --------------- | ------------------------ |
+| `~/.local/share/next-plaid`       | `/data/indices` | Persistent index storage |
+| `~/.cache/huggingface/next-plaid` | `/models`       | HuggingFace model cache  |
 
 #### Verify Container is Running
 
@@ -316,7 +316,7 @@ services:
       - /data/indices
       - --model
       - ${MODEL:-lightonai/answerai-colbert-small-v1-onnx}
-      - --int8  # Reduce precision for faster CPU inference, optional, you can remove this flag to use full precision
+      - --int8 # Reduce precision for faster CPU inference, optional, you can remove this flag to use full precision
       - --parallel
       - "16"
       - --batch-size
@@ -326,11 +326,12 @@ services:
       - --document-length
       - "300"
     healthcheck:
-      test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
+      test:
+        ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
       interval: 15s
       timeout: 5s
       retries: 2
-      start_period: 120s  # Longer start period for model download + loading
+      start_period: 120s # Longer start period for model download + loading
     restart: unless-stopped
     deploy:
       resources:
@@ -443,11 +444,12 @@ services:
       - --document-length
       - "300"
     healthcheck:
-      test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
+      test:
+        ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
       interval: 15s
       timeout: 5s
       retries: 2
-      start_period: 120s  # Longer start period for model download + CUDA initialization
+      start_period: 120s # Longer start period for model download + CUDA initialization
     restart: unless-stopped
     deploy:
       resources:
@@ -508,63 +510,63 @@ RUST_LOG=debug next-plaid-api --model ./models/colbert
 
 ### Health & Documentation
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health check with system info |
-| `GET` | `/` | Alias for `/health` |
-| `GET` | `/swagger-ui` | Swagger UI documentation |
-| `GET` | `/api-docs/openapi.json` | OpenAPI 3.0 specification |
+| Method | Path                     | Description                   |
+| ------ | ------------------------ | ----------------------------- |
+| `GET`  | `/health`                | Health check with system info |
+| `GET`  | `/`                      | Alias for `/health`           |
+| `GET`  | `/swagger-ui`            | Swagger UI documentation      |
+| `GET`  | `/api-docs/openapi.json` | OpenAPI 3.0 specification     |
 
 ### Index Management
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/indices` | List all indices |
-| `POST` | `/indices` | Declare a new index |
-| `GET` | `/indices/{name}` | Get index info |
-| `DELETE` | `/indices/{name}` | Delete an index |
-| `PUT` | `/indices/{name}/config` | Update index config |
+| Method   | Path                     | Description         |
+| -------- | ------------------------ | ------------------- |
+| `GET`    | `/indices`               | List all indices    |
+| `POST`   | `/indices`               | Declare a new index |
+| `GET`    | `/indices/{name}`        | Get index info      |
+| `DELETE` | `/indices/{name}`        | Delete an index     |
+| `PUT`    | `/indices/{name}/config` | Update index config |
 
 ### Documents
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/indices/{name}/documents` | Add documents (embeddings) |
-| `DELETE` | `/indices/{name}/documents` | Delete documents by filter |
-| `POST` | `/indices/{name}/update` | Update index (embeddings) |
-| `POST` | `/indices/{name}/update_with_encoding` | Update index (text, requires model) |
+| Method   | Path                                   | Description                         |
+| -------- | -------------------------------------- | ----------------------------------- |
+| `POST`   | `/indices/{name}/documents`            | Add documents (embeddings)          |
+| `DELETE` | `/indices/{name}/documents`            | Delete documents by filter          |
+| `POST`   | `/indices/{name}/update`               | Update index (embeddings)           |
+| `POST`   | `/indices/{name}/update_with_encoding` | Update index (text, requires model) |
 
 ### Search
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/indices/{name}/search` | Search with embeddings |
-| `POST` | `/indices/{name}/search/filtered` | Filtered search with embeddings |
-| `POST` | `/indices/{name}/search_with_encoding` | Search with text (requires model) |
-| `POST` | `/indices/{name}/search/filtered_with_encoding` | Filtered search with text |
+| Method | Path                                            | Description                       |
+| ------ | ----------------------------------------------- | --------------------------------- |
+| `POST` | `/indices/{name}/search`                        | Search with embeddings            |
+| `POST` | `/indices/{name}/search/filtered`               | Filtered search with embeddings   |
+| `POST` | `/indices/{name}/search_with_encoding`          | Search with text (requires model) |
+| `POST` | `/indices/{name}/search/filtered_with_encoding` | Filtered search with text         |
 
 ### Metadata
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/indices/{name}/metadata` | Get all metadata |
-| `GET` | `/indices/{name}/metadata/count` | Get metadata count |
-| `POST` | `/indices/{name}/metadata/check` | Check document IDs exist |
-| `POST` | `/indices/{name}/metadata/query` | Query with SQL condition |
-| `POST` | `/indices/{name}/metadata/get` | Get metadata by IDs or condition |
+| Method | Path                             | Description                      |
+| ------ | -------------------------------- | -------------------------------- |
+| `GET`  | `/indices/{name}/metadata`       | Get all metadata                 |
+| `GET`  | `/indices/{name}/metadata/count` | Get metadata count               |
+| `POST` | `/indices/{name}/metadata/check` | Check document IDs exist         |
+| `POST` | `/indices/{name}/metadata/query` | Query with SQL condition         |
+| `POST` | `/indices/{name}/metadata/get`   | Get metadata by IDs or condition |
 
 ### Encoding (requires `--model`)
 
-| Method | Path | Description |
-|--------|------|-------------|
+| Method | Path      | Description                |
+| ------ | --------- | -------------------------- |
 | `POST` | `/encode` | Encode texts to embeddings |
 
 ### Reranking
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/rerank` | Rerank with pre-computed embeddings |
-| `POST` | `/rerank_with_encoding` | Rerank with text (requires model) |
+| Method | Path                    | Description                         |
+| ------ | ----------------------- | ----------------------------------- |
+| `POST` | `/rerank`               | Rerank with pre-computed embeddings |
+| `POST` | `/rerank_with_encoding` | Rerank with text (requires model)   |
 
 ---
 
@@ -589,6 +591,7 @@ Content-Type: application/json
 ```
 
 **Response:**
+
 ```json
 {
   "name": "my_index",
@@ -622,6 +625,7 @@ Content-Type: application/json
 ```
 
 **Response:** `202 Accepted` (async processing)
+
 ```json
 "Update queued for batching"
 ```
@@ -666,6 +670,7 @@ Content-Type: application/json
 ```
 
 **Response:**
+
 ```json
 {
   "results": [
@@ -674,10 +679,10 @@ Content-Type: application/json
       "document_ids": [42, 17, 89, 5],
       "scores": [0.95, 0.87, 0.82, 0.75],
       "metadata": [
-        {"title": "Doc 42", "category": "science"},
-        {"title": "Doc 17", "category": "history"},
+        { "title": "Doc 42", "category": "science" },
+        { "title": "Doc 17", "category": "history" },
         null,
-        {"title": "Doc 5"}
+        { "title": "Doc 5" }
       ]
     }
   ],
@@ -725,6 +730,7 @@ Content-Type: application/json
 ```
 
 **Response:** `202 Accepted`
+
 ```json
 "Delete queued: 15 documents matching condition"
 ```
@@ -743,6 +749,7 @@ Content-Type: application/json
 ```
 
 **Response:**
+
 ```json
 {
   "embeddings": [
@@ -771,6 +778,7 @@ Content-Type: application/json
 ```
 
 **Response:**
+
 ```json
 {
   "results": [
@@ -789,6 +797,7 @@ GET /health
 ```
 
 **Response:**
+
 ```json
 {
   "status": "healthy",
@@ -842,20 +851,20 @@ All errors return JSON with this structure:
 }
 ```
 
-| Code | HTTP Status | Description |
-|------|-------------|-------------|
-| `INDEX_NOT_FOUND` | 404 | Index does not exist |
-| `INDEX_ALREADY_EXISTS` | 409 | Index already declared |
-| `INDEX_NOT_DECLARED` | 404 | Index must be created first |
-| `BAD_REQUEST` | 400 | Invalid request parameters |
-| `DIMENSION_MISMATCH` | 400 | Embedding dimension doesn't match index |
-| `METADATA_NOT_FOUND` | 404 | No metadata database for index |
-| `MODEL_NOT_LOADED` | 400 | Encoding endpoint requires `--model` |
-| `MODEL_ERROR` | 500 | Model inference failed |
-| `SERVICE_UNAVAILABLE` | 503 | Queue full, retry later |
-| `RATE_LIMITED` | 429 | Too many requests |
-| `INTERNAL_ERROR` | 500 | Unexpected server error |
-| `NEXT_PLAID_ERROR` | 500 | Core library error |
+| Code                   | HTTP Status | Description                             |
+| ---------------------- | ----------- | --------------------------------------- |
+| `INDEX_NOT_FOUND`      | 404         | Index does not exist                    |
+| `INDEX_ALREADY_EXISTS` | 409         | Index already declared                  |
+| `INDEX_NOT_DECLARED`   | 404         | Index must be created first             |
+| `BAD_REQUEST`          | 400         | Invalid request parameters              |
+| `DIMENSION_MISMATCH`   | 400         | Embedding dimension doesn't match index |
+| `METADATA_NOT_FOUND`   | 404         | No metadata database for index          |
+| `MODEL_NOT_LOADED`     | 400         | Encoding endpoint requires `--model`    |
+| `MODEL_ERROR`          | 500         | Model inference failed                  |
+| `SERVICE_UNAVAILABLE`  | 503         | Queue full, retry later                 |
+| `RATE_LIMITED`         | 429         | Too many requests                       |
+| `INTERNAL_ERROR`       | 500         | Unexpected server error                 |
+| `NEXT_PLAID_ERROR`     | 500         | Core library error                      |
 
 ---
 
@@ -863,32 +872,32 @@ All errors return JSON with this structure:
 
 ### Rate Limiting
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RATE_LIMIT_PER_SECOND` | 50 (CPU) / 100 (CUDA) | Sustained requests per second |
-| `RATE_LIMIT_BURST_SIZE` | 100 (CPU) / 200 (CUDA) | Maximum burst size |
-| `CONCURRENCY_LIMIT` | 100 (CPU) / 200 (CUDA) | Max concurrent in-flight requests |
+| Variable                | Default                | Description                       |
+| ----------------------- | ---------------------- | --------------------------------- |
+| `RATE_LIMIT_PER_SECOND` | 50 (CPU) / 100 (CUDA)  | Sustained requests per second     |
+| `RATE_LIMIT_BURST_SIZE` | 100 (CPU) / 200 (CUDA) | Maximum burst size                |
+| `CONCURRENCY_LIMIT`     | 100 (CPU) / 200 (CUDA) | Max concurrent in-flight requests |
 
 ### Document Batching
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MAX_QUEUED_TASKS_PER_INDEX` | 10 (CPU) / 20 (CUDA) | Max pending updates per index |
-| `MAX_BATCH_DOCUMENTS` | 300 (CPU) / 500 (CUDA) | Documents to batch before processing |
-| `BATCH_CHANNEL_SIZE` | 100 (CPU) / 200 (CUDA) | Buffer for document batch queue |
+| Variable                     | Default                | Description                          |
+| ---------------------------- | ---------------------- | ------------------------------------ |
+| `MAX_QUEUED_TASKS_PER_INDEX` | 10 (CPU) / 20 (CUDA)   | Max pending updates per index        |
+| `MAX_BATCH_DOCUMENTS`        | 300 (CPU) / 500 (CUDA) | Documents to batch before processing |
+| `BATCH_CHANNEL_SIZE`         | 100 (CPU) / 200 (CUDA) | Buffer for document batch queue      |
 
 ### Encode Batching
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MAX_BATCH_TEXTS` | 64 (CPU) / 128 (CUDA) | Texts to batch for encoding |
+| Variable                    | Default                | Description                   |
+| --------------------------- | ---------------------- | ----------------------------- |
+| `MAX_BATCH_TEXTS`           | 64 (CPU) / 128 (CUDA)  | Texts to batch for encoding   |
 | `ENCODE_BATCH_CHANNEL_SIZE` | 256 (CPU) / 512 (CUDA) | Buffer for encode batch queue |
 
 ### Logging
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RUST_LOG` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| Variable   | Default | Description                                  |
+| ---------- | ------- | -------------------------------------------- |
+| `RUST_LOG` | `info`  | Log level (`debug`, `info`, `warn`, `error`) |
 
 ---
 
@@ -970,13 +979,13 @@ index_directory/
 
 ## Cargo Features
 
-| Feature | Description |
-|---------|-------------|
-| `default` | No BLAS, no model support |
-| `openblas` | OpenBLAS for matrix operations (Linux) |
-| `accelerate` | Apple Accelerate (macOS) |
-| `model` | Enable ONNX model encoding endpoints |
-| `cuda` | CUDA acceleration for ONNX Runtime |
+| Feature      | Description                            |
+| ------------ | -------------------------------------- |
+| `default`    | No BLAS, no model support              |
+| `openblas`   | OpenBLAS for matrix operations (Linux) |
+| `accelerate` | Apple Accelerate (macOS)               |
+| `model`      | Enable ONNX model encoding endpoints   |
+| `cuda`       | CUDA acceleration for ONNX Runtime     |
 
 ### Build Examples
 
@@ -1029,20 +1038,20 @@ See `next-plaid-api/python-sdk/README.md` for full documentation.
 
 ## Dependencies
 
-| Crate | Version | Purpose |
-|-------|---------|---------|
-| `next-plaid` | workspace | Core PLAID index implementation |
-| `next-plaid-onnx` | workspace | ColBERT ONNX encoding (optional) |
-| `axum` | 0.8 | Web framework |
-| `tokio` | 1.0 | Async runtime |
-| `tower` | 0.5 | Middleware (rate limiting, concurrency) |
-| `tower-http` | 0.6 | HTTP middleware (CORS, tracing, timeout) |
-| `serde` | 1.0 | Serialization |
-| `ndarray` | 0.16 | N-dimensional arrays |
-| `utoipa` | 5 | OpenAPI generation |
-| `utoipa-swagger-ui` | 9 | Swagger UI |
-| `tower_governor` | 0.8 | Rate limiting |
-| `parking_lot` | 0.12 | Synchronization primitives |
+| Crate               | Version   | Purpose                                  |
+| ------------------- | --------- | ---------------------------------------- |
+| `next-plaid`        | workspace | Core PLAID index implementation          |
+| `next-plaid-onnx`   | workspace | ColBERT ONNX encoding (optional)         |
+| `axum`              | 0.8       | Web framework                            |
+| `tokio`             | 1.0       | Async runtime                            |
+| `tower`             | 0.5       | Middleware (rate limiting, concurrency)  |
+| `tower-http`        | 0.6       | HTTP middleware (CORS, tracing, timeout) |
+| `serde`             | 1.0       | Serialization                            |
+| `ndarray`           | 0.16      | N-dimensional arrays                     |
+| `utoipa`            | 5         | OpenAPI generation                       |
+| `utoipa-swagger-ui` | 9         | Swagger UI                               |
+| `tower_governor`    | 0.8       | Rate limiting                            |
+| `parking_lot`       | 0.12      | Synchronization primitives               |
 
 ---
 

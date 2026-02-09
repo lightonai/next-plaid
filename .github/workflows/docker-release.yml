@@ -16,10 +16,10 @@
 # Version is automatically extracted from Cargo.toml
 #
 # Images will be published as:
-#   - ghcr.io/<owner>/lategrep:cpu-<version>
-#   - ghcr.io/<owner>/lategrep:cpu-latest
-#   - ghcr.io/<owner>/lategrep:cuda-<version>
-#   - ghcr.io/<owner>/lategrep:cuda-latest
+#   - ghcr.io/<owner>/nxt-plaid:cpu-<version>
+#   - ghcr.io/<owner>/nxt-plaid:cpu-latest
+#   - ghcr.io/<owner>/nxt-plaid:cuda-<version>
+#   - ghcr.io/<owner>/nxt-plaid:cuda-latest
 # =============================================================================
 
 name: Docker Release
@@ -29,7 +29,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: lightonai/next-plaid
 
 jobs:
   get-version:
@@ -166,4 +166,4 @@ jobs:
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
         env:
           REGISTRY: ghcr.io
-          IMAGE_NAME: ${{ github.repository }}
+          IMAGE_NAME: lightonai/next-plaid
