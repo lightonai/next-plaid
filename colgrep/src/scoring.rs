@@ -2,7 +2,7 @@ use std::path::Path;
 
 use colgrep::CodeUnit;
 
-/// Compute boosted score based on literal query matches in code unit
+/// Compute final score with test function demotion
 pub fn compute_final_score(
     semantic_score: f32,
     query: &str,
@@ -12,20 +12,7 @@ pub fn compute_final_score(
     let mut score = semantic_score;
     let query_lower = query.to_lowercase();
 
-    // Boost if query appears literally in name (strongest boost)
-    if unit.name.to_lowercase().contains(&query_lower) {
-        score += 3.0;
-    }
-    // Boost if query appears literally in signature
-    if unit.signature.to_lowercase().contains(&query_lower) {
-        score += 2.0;
-    }
-    // Boost if query appears in code preview (moderate boost)
-    if unit.code.to_lowercase().contains(&query_lower) {
-        score += 1.0;
-    }
-
-    // Decrement score for test functions unless query or pattern contains "test"
+    // Demote test functions unless query or pattern contains "test"
     let query_has_test = query_lower.contains("test");
     let pattern_has_test = text_pattern
         .map(|p| p.to_lowercase().contains("test"))
@@ -96,7 +83,7 @@ mod tests {
 
     // Test compute_final_score function
     #[test]
-    fn test_compute_final_score_no_boost() {
+    fn test_compute_final_score_no_adjustment() {
         let unit = make_test_unit(
             "other_function",
             "fn other_function()",
@@ -104,78 +91,11 @@ mod tests {
             "test.rs",
         );
         let score = compute_final_score(5.0, "search_query", &unit, None);
-        // No matches, score should be unchanged
         assert_eq!(score, 5.0);
     }
 
     #[test]
-    fn test_compute_final_score_name_boost() {
-        let unit = make_test_unit(
-            "search_query_handler",
-            "fn search_query_handler()",
-            "handles queries",
-            "test.rs",
-        );
-        let score = compute_final_score(5.0, "search_query", &unit, None);
-        // Name contains query, should have +3.0 boost, signature too +2.0
-        assert!(score > 5.0);
-        assert_eq!(score, 5.0 + 3.0 + 2.0); // name + signature
-    }
-
-    #[test]
-    fn test_compute_final_score_signature_boost() {
-        let unit = make_test_unit(
-            "handler",
-            "fn handler(search_query: &str)",
-            "does something",
-            "test.rs",
-        );
-        let score = compute_final_score(5.0, "search_query", &unit, None);
-        // Signature contains query, should have +2.0 boost
-        assert_eq!(score, 5.0 + 2.0);
-    }
-
-    #[test]
-    fn test_compute_final_score_code_boost() {
-        let unit = make_test_unit(
-            "handler",
-            "fn handler()",
-            "processes search_query and returns",
-            "test.rs",
-        );
-        let score = compute_final_score(5.0, "search_query", &unit, None);
-        // Code preview contains query, should have +1.0 boost
-        assert_eq!(score, 5.0 + 1.0);
-    }
-
-    #[test]
-    fn test_compute_final_score_case_insensitive() {
-        let unit = make_test_unit(
-            "SEARCH_QUERY_HANDLER",
-            "fn SEARCH_QUERY_HANDLER()",
-            "handles queries",
-            "test.rs",
-        );
-        let score = compute_final_score(5.0, "search_query", &unit, None);
-        // Case insensitive match should work
-        assert!(score > 5.0);
-    }
-
-    #[test]
-    fn test_compute_final_score_all_boosts() {
-        let unit = make_test_unit(
-            "search_query",
-            "fn search_query(search_query: T)",
-            "search_query implementation",
-            "test.rs",
-        );
-        let score = compute_final_score(5.0, "search_query", &unit, None);
-        // All three locations contain query
-        assert_eq!(score, 5.0 + 3.0 + 2.0 + 1.0);
-    }
-
-    #[test]
-    fn test_compute_final_score_test_function_decremented() {
+    fn test_compute_final_score_test_function_demoted() {
         let unit = make_test_unit(
             "test_something",
             "fn test_something()",
@@ -183,12 +103,11 @@ mod tests {
             "test.rs",
         );
         let score = compute_final_score(5.0, "search_query", &unit, None);
-        // Test function should be decremented by 1.0
         assert_eq!(score, 5.0 - 1.0);
     }
 
     #[test]
-    fn test_compute_final_score_test_function_not_decremented_when_query_has_test() {
+    fn test_compute_final_score_test_function_not_demoted_when_query_has_test() {
         let unit = make_test_unit(
             "test_something",
             "fn test_something()",
@@ -196,12 +115,11 @@ mod tests {
             "test.rs",
         );
         let score = compute_final_score(5.0, "test", &unit, None);
-        // Query contains "test", so no decrement; name contains query so +3.0, signature +2.0
-        assert_eq!(score, 5.0 + 3.0 + 2.0);
+        assert_eq!(score, 5.0);
     }
 
     #[test]
-    fn test_compute_final_score_test_function_not_decremented_when_pattern_has_test() {
+    fn test_compute_final_score_test_function_not_demoted_when_pattern_has_test() {
         let unit = make_test_unit(
             "test_something",
             "fn test_something()",
@@ -209,7 +127,6 @@ mod tests {
             "test.rs",
         );
         let score = compute_final_score(5.0, "search_query", &unit, Some("test"));
-        // Pattern contains "test", so no decrement
         assert_eq!(score, 5.0);
     }
 

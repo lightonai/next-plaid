@@ -329,9 +329,8 @@ The search pipeline:
 2. **Pre-filter** by metadata if `--include`, `--exclude`, `--exclude-dir` or `--code-only` are set (SQLite)
 3. If `-e` pattern is provided: **regex filter** candidates, then score semantically
 4. **MaxSim** scoring against the PLAID index
-5. **Boost** scores for literal query matches in function name (+3), signature (+2), and code (+1)
-6. **Demote** test functions by -1 unless the query mentions "test"
-7. **Find representative lines** using weighted token matching with a sliding window
+5. **Demote** test functions by -1 unless the query mentions "test"
+6. **Find representative lines** using weighted token matching with a sliding window
 
 ---
 
