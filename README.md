@@ -1,17 +1,15 @@
 <div align="center">
-  <h1>NextPlaid &amp; ColGREP</h1>
-  <p><b>Multi-vector search</b>, from database to coding agents</p>
+  <h1>NextPlaid & ColGREP</h1>
+  <p><b>NextPlaid</b> is a multi-vector search engine. <b>ColGREP</b> is semantic code search, built on it.</p>
 
   <p>
-    <a href="https://lightonai.github.io/next-plaid/"><b>Docs</b></a>
-    ·
-    <a href="#quickstart"><b>Quickstart</b></a>
+    <a href="#colgrep"><b>ColGREP</b></a>
     ·
     <a href="#nextplaid"><b>NextPlaid</b></a>
     ·
-    <a href="#colgrep"><b>ColGREP</b></a>
-    ·
     <a href="#models"><b>Models</b></a>
+    ·
+    <a href="https://lightonai.github.io/next-plaid/"><b>Docs</b></a>
   </p>
 </div>
 
@@ -21,33 +19,121 @@
 
 ---
 
-## What this is
+## ColGREP
 
-This repository contains **two closely related projects** built around **multi-vector retrieval**:
+Semantic code search for your terminal and your coding agents. Searches combine regex filtering with semantic ranking — all local, your code never leaves your machine.
 
-- **NextPlaid** — a local-first, multi-vector database.
-- **ColGREP** — a code search tool built on top of NextPlaid for coding agents.
+### Quick start
 
-### Why multi-vector?
+Install:
 
-Instead of collapsing a document into a single embedding, multi-vector retrieval keeps **multiple embeddings per document** (often per token/chunk).  
-This preserves fine-grained signals in long text and code:
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh
+```
 
-- ✅ better precision at query time
-- ✅ more robust retrieval for long documents
-- ⚠️ more indexing work upfront
+Search:
 
-📚 **Documentation:** https://lightonai.github.io/next-plaid/
+```bash
+colgrep "database connection pooling"
+```
+
+That's it. The first run builds the index automatically.
+
+Regex meets semantics:
+
+```bash
+colgrep -e "async.*await" "error handling"
+```
+
+### Agent integrations
+
+| Tool        | Install                         |
+| ----------- | ------------------------------- |
+| Claude Code | `colgrep --install-claude-code` |
+| OpenCode    | `colgrep --install-opencode`    |
+| Codex       | `colgrep --install-codex`       |
+
+> Restart your agent after installing.
+
+### How it works
+
+```mermaid
+flowchart TD
+    A["Your codebase"] --> B["Tree-sitter"]
+    B --> C["Structured representation"]
+    C --> D["ColBERT encoder"]
+    D --> E["PLAID index"]
+    E --> F["Search"]
+
+    B -.- B1["Parse functions, methods, classes"]
+    C -.- C1["Signature, params, calls, docstring, code"]
+    D -.- D1["Multi-vector embedding per code unit
+LateOn-Code · 17M params · runs on CPU"]
+    E -.- E1["Quantized · memory-mapped · incremental"]
+    F -.- F1["Regex filter → semantic ranking → results"]
+
+    style A fill:#4a90d9,stroke:#357abd,color:#fff
+    style B fill:#50b86c,stroke:#3d9956,color:#fff
+    style C fill:#50b86c,stroke:#3d9956,color:#fff
+    style D fill:#e8913a,stroke:#d07a2e,color:#fff
+    style E fill:#e8913a,stroke:#d07a2e,color:#fff
+    style F fill:#9b59b6,stroke:#8445a0,color:#fff
+    style B1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+    style C1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+    style D1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+    style E1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+    style F1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+```
+
+**What the model sees** — each code unit is converted to structured text before embedding:
+
+```
+Function: fetch_with_retry
+Signature: def fetch_with_retry(url: str, max_retries: int = 3) -> Response
+Description: Fetches data from a URL with retry logic.
+Parameters: url, max_retries
+Returns: Response
+Calls: range, client.get
+Variables: i, e
+Uses: client, RequestError
+Code:
+def fetch_with_retry(url: str, max_retries: int = 3) -> Response: ...
+File: src / utils / http client http_client.py
+```
+
+This structured input gives the model richer signal than raw code alone.
+
+**More:** install variants, performance tuning, all flags and options → [colgrep/README.md](colgrep/README.md)
 
 ---
 
-## Quickstart
+## Why multi-vector?
 
-### Run NextPlaid (Docker)
+Standard vector search collapses an entire document into **one** embedding. That's a lossy summary — fine for short text, bad for code where a single function has a name, parameters, a docstring, control flow, and dependencies.
 
-**CPU**
+Multi-vector keeps ~300 embeddings of dimension 128 per document instead of one. At query time, each query token finds its best match across all document tokens (**MaxSim**). More storage upfront — that's what NextPlaid solves with quantization and memory-mapped indexing.
+
+---
+
+## NextPlaid
+
+A local-first multi-vector database with a REST API. It's what powers ColGREP under the hood — but it's a general-purpose engine you can use for any retrieval workload.
+
+- **Built-in encoding** — pass text, get results. Ships with ONNX Runtime for ColBERT models, no external inference server needed.
+- **Memory-mapped indices** — low RAM footprint, indices live on disk and are paged in on demand.
+- **Product quantization** — 2-bit or 4-bit compression. A million documents fit in memory.
+- **Incremental updates** — add and delete documents without rebuilding the index.
+- **Metadata pre-filtering** — SQL WHERE clauses on a built-in SQLite store. Filter *before* search so only matching documents are scored.
+- **CPU-optimized** — designed to run fast on CPU. CUDA supported when you need it.
+
+For GPU-accelerated batch indexing without an API, see [FastPlaid](https://github.com/lightonai/fast-plaid).
+
+### Quick start
+
+**Run the server (Docker):**
 
 ```bash
+# CPU
 docker pull ghcr.io/lightonai/next-plaid:cpu-1.0.1
 docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
   ghcr.io/lightonai/next-plaid:cpu-1.0.1 \
@@ -55,9 +141,8 @@ docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
   --model lightonai/answerai-colbert-small-v1-onnx --int8
 ```
 
-**GPU**
-
 ```bash
+# GPU
 docker pull ghcr.io/lightonai/next-plaid:cuda-1.0.1
 docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
   ghcr.io/lightonai/next-plaid:cuda-1.0.1 \
@@ -65,7 +150,7 @@ docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
   --model lightonai/GTE-ModernColBERT-v1 --cuda
 ```
 
-### Query from Python
+**Query from Python:**
 
 ```bash
 pip install next-plaid-client
@@ -76,7 +161,10 @@ from next_plaid_client import NextPlaidClient, IndexConfig
 
 client = NextPlaidClient("http://localhost:8080")
 
+# Create index
 client.create_index("docs", IndexConfig(nbits=4))
+
+# Add documents — text is encoded server-side
 client.add(
     "docs",
     documents=[
@@ -89,7 +177,7 @@ client.add(
 # Search
 results = client.search("docs", ["coding agent tool"])
 
-# Search + metadata filtering
+# Search with metadata filtering
 results = client.search(
     "docs",
     ["vector-database"],
@@ -99,222 +187,15 @@ results = client.search(
 
 # Delete by predicate
 client.delete("docs", "id = ?", ["doc_1"])
-client.delete("docs", "id IN (?, ?)", ["doc_1", "doc_2"])
 ```
 
----
-
-## NextPlaid
-
-NextPlaid is identical to [FastPlaid](https://github.com/lightonai/fast-plaid) but with a REST API and optimized for CPU usage. If you don't care about API/tooling and just want fast indexing, see [FastPlaid](https://github.com/lightonai/fast-plaid) (GPU-accelerated indexing).
-
----
-
-## ColGREP
-
-Coding agents spend most of their time searching. ColGREP makes that search meaningful. ColGREP is a local-first code search tool built on top of NextPlaid, designed for coding agents like Claude Code, OpenCode, and Codex.
-
-**How it works:**
-
-- parses your codebase with tree-sitter
-- indexes functions / methods / classes / raw code
-- embeds each unit with LateOn-Code (`lightonai/LateOn-Code-edge`, 17M params)
-- searches combine regex filtering + semantic ranking
-- everything stays local, your code never leaves your machine
-
-### Install
-
-```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh
-```
-
-Then go to your codebase and run `colgrep "search query"` to create your first index. Don't run `colgrep` from the root of your drive (e.g. `C:\`) or home directory (`~`) to avoid indexing everything.
-
-**CUDA acceleration**
-
-```bash
-sudo apt install libopenblas-dev
-cargo install colgrep --features cuda,openblas
-```
-
-**OpenBLAS acceleration (Linux)**
-
-```bash
-sudo apt install libopenblas-dev
-cargo install colgrep --features openblas
-```
-
-**Apple Accelerate + CoreML (macOS)**
-
-```bash
-cargo install colgrep --features "accelerate,coreml"
-```
-
-### Uninstall
-
-```bash
-# Remove agent integrations, indexes, and all data
-colgrep --uninstall
-
-# Remove the binary and install receipt
-rm ~/.cargo/bin/colgrep
-rm -rf ~/.config/colgrep
-```
-
-### Agent integrations
-
-| Tool        | Install                         | Uninstall                         |
-| ----------- | ------------------------------- | --------------------------------- |
-| Claude Code | `colgrep --install-claude-code` | `colgrep --uninstall-claude-code` |
-| OpenCode    | `colgrep --install-opencode`    | `colgrep --uninstall-opencode`    |
-| Codex       | `colgrep --install-codex`       | `colgrep --uninstall-codex`       |
-| All         | —                               | `colgrep --uninstall`             |
-
-> **IMPORTANT:** After running `colgrep --install-claude-code`, restart Claude Code for the plugin to take effect.
-
-`colgrep --uninstall` completely removes ColGREP: uninstalls from all AI tools, clears all indexes, and removes all data.
-
-### Usage
-
-Start searching within your codebase (first run builds the index):
-
-```bash
-colgrep "database connection pooling"
-```
-
-Regex meets semantics:
-
-```bash
-colgrep -e "async.*await" "error handling"
-```
-
-Scope your search:
-
-```bash
-colgrep --include="*.py" "database query"
-colgrep --exclude-dir="node_modules" "config loading"
-```
-
-Model switching:
-
-```bash
-# Default: lightonai/LateOn-Code-edge
-colgrep set-model lightonai/LateOn-Code
-```
-
-Index management:
-
-```bash
-colgrep clear
-colgrep clear --all
-```
-
-### Performance tuning
-
-By default, ColGREP uses INT8 quantization and pool-factor 2.
-
-```bash
-# Set default number of results
-colgrep settings --k 25
-
-# Use FP32 full precision (more accurate, slower)
-colgrep settings --fp32
-
-# Disable embedding pooling (larger index, more precision)
-colgrep settings --pool-factor 1
-
-# Combine both for maximum precision
-colgrep settings --fp32 --pool-factor 1
-```
-
-| Setting           | Effect                                   | Trade-off                                  |
-| ----------------- | ---------------------------------------- | ------------------------------------------ |
-| `--int8`          | Uses INT8 quantized model (default)      | ~2× faster inference, minimal quality loss |
-| `--pool-factor 1` | No pooling                               | Maximum precision, larger index            |
-| `--pool-factor 2` | Pools every 2 token embeddings (default) | ~50% smaller index, faster search          |
-
-Reset to defaults:
-
-```bash
-colgrep settings --int8 --pool-factor 2
-```
-
-### Embedding input format
-
-Each code unit is converted to a structured text before encoding.
-
-**Original code:**
-
-```python
-# src/utils/http_client.py
-def fetch_with_retry(url: str, max_retries: int = 3) -> Response:
-    """Fetches data from a URL with retry logic."""
-    for i in range(max_retries):
-        try:
-            return client.get(url)
-        except RequestError as e:
-            if i == max_retries - 1:
-                raise e
-```
-
-**Model input:**
-
-```
-Function: fetch_with_retry
-Signature: def fetch_with_retry(url: str, max_retries: int = 3) -> Response
-Description: Fetches data from a URL with retry logic.
-Parameters: url, max_retries
-Returns: Response
-Calls: range, client.get
-Variables: i, e
-Uses: client, RequestError
-Code:
-def fetch_with_retry(url: str, max_retries: int = 3) -> Response:
-    """Fetches data from a URL with retry logic."""
-    for i in range(max_retries):
-        try:
-            return client.get(url)
-        except RequestError as e:
-            if i == max_retries - 1:
-                raise e
-File: src / utils / http client http_client.py
-```
-
-Paths are normalized: separators become spaced, underscores/hyphens become spaces, CamelCase is split.
-
-### Feature cheatsheet
-
-| Feature                | Command                                               |
-| ---------------------- | ----------------------------------------------------- |
-| Basic semantic search  | `colgrep "error handling" --results 5`                |
-| Exploration mode (-k)  | `colgrep "search function" -k 5`                      |
-| Search specific folder | `colgrep "index" ./next-plaid/src -k 3`               |
-| Multiple directories   | `colgrep "Result" ./next-plaid ./next-plaid-api -k 5` |
-| Include .rs files      | `colgrep --include="*.rs" "parse" -k 3`               |
-| Recursive glob         | `colgrep --include="src/**/*.rs" "config" -k 3`       |
-| Brace expansion        | `colgrep --include="*.{rs,py}" "model" -k 3`          |
-| Exclude files          | `colgrep --exclude="*test*" "search" -k 3`            |
-| Exclude directory      | `colgrep --exclude-dir=tests "handler" -k 3`          |
-| Pattern-only search    | `colgrep -e "async fn" -k 5`                          |
-| Pattern + file filter  | `colgrep -e "pub struct" --include="*.rs" -k 3`       |
-| Hybrid text+semantic   | `colgrep -e "Result" "error handling" -k 3`           |
-| Extended regex (-E)    | `colgrep -e "async\|await" -E "concurrency" -k 3`     |
-| Fixed string (-F)      | `colgrep -e "Vec<" -F "collection types" -k 3`        |
-| Whole word (-w)        | `colgrep -e "test" -w "testing utilities" -k 3`       |
-| List files only (-l)   | `colgrep -l "authentication" -k 5`                    |
-| Show content (-c)      | `colgrep -c "default config" -k 1`                    |
-| Context lines (-n)     | `colgrep -n 10 "error" -k 1`                          |
-| JSON output            | `colgrep --json "search" -k 2`                        |
-| Glob-style file find   | `colgrep -l --include="src/**/*.rs" "" .`             |
-| Status command         | `colgrep status`                                      |
-| Settings command       | `colgrep settings`                                    |
-| Help command           | `colgrep help`                                        |
+**More:** REST API reference, Docker Compose, environment variables → [next-plaid-api/README.md](next-plaid-api/README.md)
 
 ---
 
 ## Models
 
-Any HuggingFace ColBERT-style model can be exported to ONNX. By default, both FP32 and INT8 quantized versions are created. INT8 quantization reduces size (~4× smaller) and improves speed with minimal quality loss.
+Any HuggingFace ColBERT-style model can be exported to ONNX. By default, both FP32 and INT8 quantized versions are created. INT8 quantization reduces size (~4x smaller) and improves speed with minimal quality loss.
 
 ```bash
 pip install pylate-onnx-export
