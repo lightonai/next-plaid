@@ -2748,7 +2748,7 @@ provides-extras = ["dev", "fast-plaid", "eval"]
 
 [[package]]
 name = "next-plaid-client"
-version = "0.9.3"
+version = "0.9.4"
 source = { directory = "../../next-plaid-api/python-sdk" }
 dependencies = [
     { name = "httpx" },
