@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "colgrep-parser"
-version = "1.0.1"
+version = "1.0.2"
 description = "Python bindings for colgrep code parser - extract functions, classes, and code structure from source files"
 readme = "README.md"
 license = { text = "MIT" }

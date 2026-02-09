@@ -10,7 +10,7 @@
     {
       "name": "colgrep",
       "source": "./plugins/colgrep",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "author": {
         "name": "Raphael Sourty"
       }
