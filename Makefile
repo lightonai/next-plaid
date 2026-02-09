@@ -266,6 +266,17 @@ endif
 	@# Update README crate version (major.minor only)
 	@sed -i '' 's/next-plaid = "[0-9]*\.[0-9]*"/next-plaid = "$(shell echo $(VERSION) | cut -d. -f1,2)"/' README.md
 	@echo "  ✓ Updated README.md crate version"
+	@# Update lock files
+	@cargo check --quiet
+	@echo "  ✓ Updated Cargo.lock"
+	@cd colgrep/python-sdk && cargo update --workspace --quiet
+	@echo "  ✓ Updated colgrep/python-sdk/Cargo.lock"
+	@cd colgrep/python-sdk && uv lock --quiet
+	@echo "  ✓ Updated colgrep/python-sdk/uv.lock"
+	@cd docs/benchmarks && uv lock --quiet
+	@echo "  ✓ Updated docs/benchmarks/uv.lock"
+	@cd next-plaid-onnx/python && uv lock --quiet
+	@echo "  ✓ Updated next-plaid-onnx/python/uv.lock"
 	@echo ""
 	@echo "Version bumped to $(VERSION). Files updated:"
 	@echo "  - Cargo.toml (workspace version)"
@@ -279,7 +290,6 @@ endif
 	@echo "  - next-plaid-onnx/python/{pyproject.toml,__init__.py,cli.py,test}"
 	@echo "  - README.md, next-plaid-api/README.md, Cargo.toml (Docker tags)"
 	@echo "  - README.md (crate version)"
+	@echo "  - Lock files (Cargo.lock, uv.lock)"
 	@echo ""
-	@echo "Don't forget to:"
-	@echo "  1. Run 'cargo check' to verify Cargo.lock updates"
-	@echo "  2. Commit the changes"
+	@echo "Don't forget to commit the changes"

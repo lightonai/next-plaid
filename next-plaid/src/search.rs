@@ -13,7 +13,10 @@ use crate::error::Result;
 use crate::maxsim;
 
 /// Per-token top-k heaps and per-centroid max scores from a batch of centroids.
-type ProbePartial = (Vec<BinaryHeap<(Reverse<OrdF32>, usize)>>, HashMap<usize, f32>);
+type ProbePartial = (
+    Vec<BinaryHeap<(Reverse<OrdF32>, usize)>>,
+    HashMap<usize, f32>,
+);
 
 /// Maximum number of documents to decompress concurrently during exact scoring.
 /// This limits peak memory usage from parallel decompression.
@@ -324,8 +327,13 @@ fn ivf_probe_batched(
 
     // Apply centroid score threshold if set
     if let Some(threshold) = centroid_score_threshold {
-        selected
-            .retain(|c| final_max_scores.get(c).copied().unwrap_or(f32::NEG_INFINITY) >= threshold);
+        selected.retain(|c| {
+            final_max_scores
+                .get(c)
+                .copied()
+                .unwrap_or(f32::NEG_INFINITY)
+                >= threshold
+        });
     }
 
     selected.into_iter().collect()
