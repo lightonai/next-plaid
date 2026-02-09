@@ -87,16 +87,17 @@ flowchart TD
 
 **What the model sees.** Each code unit is converted to structured text before embedding:
 
-```
-Function: fetch_with_retry
-Signature: def fetch_with_retry(url: str, max_retries: int = 3) -> Response
-Description: Fetches data from a URL with retry logic.
-Parameters: url, max_retries
-Returns: Response
-Calls: range, client.get
-Variables: i, e
-Uses: client, RequestError
-Code:
+```python
+# Function: fetch_with_retry
+# Signature: def fetch_with_retry(url: str, max_retries: int = 3) -> Response
+# Description: Fetches data from a URL with retry logic.
+# Parameters: url, max_retries
+# Returns: Response
+# Calls: range, client.get
+# Variables: i, e
+# Uses: client, RequestError
+# File: src/utils/http_client.py
+
 def fetch_with_retry(url: str, max_retries: int = 3) -> Response:
     """Fetches data from a URL with retry logic."""
     for i in range(max_retries):
@@ -105,7 +106,6 @@ def fetch_with_retry(url: str, max_retries: int = 3) -> Response:
         except RequestError as e:
             if i == max_retries - 1:
                 raise e
-File: src / utils / http client http_client.py
 ```
 
 This structured input gives the model richer signal than raw code alone.
@@ -130,7 +130,7 @@ A local-first multi-vector database with a REST API. It's what powers ColGREP un
 - **Memory-mapped indices.** Low RAM footprint, indices live on disk and are paged in on demand.
 - **Product quantization.** 2-bit or 4-bit compression. A million documents fit in memory.
 - **Incremental updates.** Add and delete documents without rebuilding the index.
-- **Metadata pre-filtering.** SQL WHERE clauses on a built-in SQLite store. Filter *before* search so only matching documents are scored.
+- **Metadata pre-filtering.** SQL WHERE clauses on a built-in SQLite store. Filter _before_ search so only matching documents are scored.
 - **CPU-optimized.** Designed to run fast on CPU. CUDA supported when you need it.
 
 For GPU-accelerated batch indexing without an API, see [FastPlaid](https://github.com/lightonai/fast-plaid).
@@ -195,6 +195,8 @@ results = client.search(
 # Delete by predicate
 client.delete("docs", "id = ?", ["doc_1"])
 ```
+
+Once the server is running: [Swagger UI](http://localhost:8080/swagger-ui) · [OpenAPI spec](http://localhost:8080/api-docs/openapi.json)
 
 **More:** REST API reference, Docker Compose, environment variables → [next-plaid-api/README.md](next-plaid-api/README.md)
 
