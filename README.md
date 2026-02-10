@@ -133,7 +133,7 @@ A local-first multi-vector database with a REST API. It's what powers ColGREP un
 - **Metadata pre-filtering.** SQL WHERE clauses on a built-in SQLite store. Filter _before_ search so only matching documents are scored.
 - **CPU-optimized.** Designed to run fast on CPU. CUDA supported when you need it.
 
-For GPU-accelerated batch indexing without an API, see [FastPlaid](https://github.com/lightonai/fast-plaid).
+**NextPlaid vs [FastPlaid](https://github.com/lightonai/fast-plaid).** FastPlaid is a GPU batch indexer. Ideal when you have 1M+ documents to index in a single pass. NextPlaid wraps the same FastPlaid algorithm into a production API that handles documents as they arrive: incremental updates, concurrent reads/writes, deletions, and built-in encoding. Use FastPlaid for bulk offline indexing and experiments, NextPlaid for serving and streaming ingestion.
 
 ### Quick start
 
@@ -199,6 +199,23 @@ client.delete("docs", "id = ?", ["doc_1"])
 Once the server is running: [Swagger UI](http://localhost:8080/swagger-ui) · [OpenAPI spec](http://localhost:8080/api-docs/openapi.json)
 
 **More:** REST API reference, Docker Compose, environment variables → [next-plaid-api/README.md](next-plaid-api/README.md)
+
+---
+
+## API Benchmarks
+
+End-to-end benchmarks against the NextPlaid API on [BEIR](https://github.com/beir-cellar/beir) datasets. Documents are uploaded as raw text in parallel batches of 64. Search queries are sent as raw text, one at a time, with 16 concurrent workers to simulate real user traffic. All throughput numbers (docs/s, QPS) include encoding time — the model runs inside the API, so every document and query is embedded on the fly within the API.
+
+**Setup:** `lightonai/GTE-ModernColBERT-v1` on NVIDIA H100 80GB, `top_k=100`, `n_ivf_probe=8`, `n_full_scores=4096`. CPU search uses INT8-quantized ONNX encoding on the same machine.
+
+| Dataset  | Documents | MAP | NDCG@10 | NDCG@100 | Recall@10 | Recall@100 | Indexing (docs/s) | GPU QPS | GPU P95 (ms) | CPU QPS | CPU P95 (ms) |
+| -------- | --------: | --: | ------: | -------: | --------: | ---------: | ----------------: | ------: | -----------: | ------: | -----------: |
+| arguana  |     8,674 | 0.2457 |  0.3499 |   0.3995 |    0.7126 |     0.9337 |              77.1 |    13.6 |        170.1 |    17.4 |        454.7 |
+| fiqa     |    57,638 | 0.3871 |  0.4506 |   0.5129 |    0.5184 |     0.7459 |              41.3 |    18.2 |        170.6 |    17.6 |        259.1 |
+| nfcorpus |     3,633 | 0.1870 |  0.3828 |   0.3427 |    0.1828 |     0.3228 |              86.7 |     6.6 |        262.1 |    16.9 |        219.4 |
+| quora    |   522,931 | 0.8170 |  0.8519 |   0.8644 |    0.9309 |     0.9730 |             105.5 |    20.9 |        126.2 |    17.7 |        235.1 |
+| scidocs  |    25,657 | 0.1352 |  0.1914 |   0.2732 |    0.2020 |     0.4418 |              46.9 |    17.5 |        139.3 |    16.5 |        281.7 |
+| scifact  |     5,183 | 0.7186 |  0.7593 |   0.7775 |    0.8829 |     0.9633 |              53.1 |     7.9 |        169.5 |    16.9 |        305.4 |
 
 ---
 
