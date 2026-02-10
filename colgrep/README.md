@@ -19,12 +19,7 @@
 
 ---
 
-<!--
-  🥚 Congrats, you found an easter egg!
-  ColGREP hasn't been officially announced yet.
-  If you're reading this, please keep it between us for a few days.
-  We'll bring snacks to the launch party.
--->
+> 🥚 Congrats, you found an easter egg! ColGREP hasn't been officially announced yet. If you're reading this, please keep it between us for a few days. We'll bring snacks to the launch party.
 
 ## Quick Start
 
