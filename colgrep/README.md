@@ -1,4 +1,5 @@
 <div align="center">
+  <img width="200" src="../docs/logo.png" alt="ColGREP logo"/>
   <h1>ColGREP</h1>
   <p>Semantic code search powered by ColBERT multi-vector embeddings and the PLAID algorithm.<br/>
   A single Rust binary. No server. No API keys. 100% local.</p>

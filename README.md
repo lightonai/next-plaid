@@ -1,10 +1,8 @@
 <div align="center">
-  <h1>NextPlaid & ColGREP</h1>
-  <p><b>NextPlaid</b> is a multi-vector search engine. <b>ColGREP</b> is semantic code search, built on it.</p>
+  <h1>NextPlaid</h1>
+  <p>A local-first multi-vector search engine with built-in encoding, quantization, and memory-mapped indices.</p>
 
   <p>
-    <a href="#colgrep"><b>ColGREP</b></a>
-    ·
     <a href="#nextplaid"><b>NextPlaid</b></a>
     ·
     <a href="#models"><b>Models</b></a>
@@ -12,105 +10,6 @@
     <a href="https://lightonai.github.io/next-plaid/"><b>Docs</b></a>
   </p>
 </div>
-
-<p align="center">
-  <img width="680" src="docs/colgrep-demo.gif" alt="ColGREP demo"/>
-</p>
-
----
-
-## ColGREP
-
-Semantic code search for your terminal and your coding agents. Searches combine regex filtering with semantic ranking. All local, your code never leaves your machine.
-
-### Quick start
-
-Install:
-
-```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh
-```
-
-Search:
-
-```bash
-colgrep "database connection pooling"
-```
-
-That's it. The first run builds the index automatically. No server, no API, no dependencies. ColGREP is a single Rust binary with everything baked in.
-
-Regex meets semantics:
-
-```bash
-colgrep -e "async.*await" "error handling"
-```
-
-### Agent integrations
-
-| Tool        | Install                         |
-| ----------- | ------------------------------- |
-| Claude Code | `colgrep --install-claude-code` |
-| OpenCode    | `colgrep --install-opencode`    |
-| Codex       | `colgrep --install-codex`       |
-
-> Restart your agent after installing. Claude Code has full hooks support. OpenCode and Codex integrations are basic for now, PRs welcome.
-
-### How it works
-
-```mermaid
-flowchart TD
-    A["Your codebase"] --> B["Tree-sitter"]
-    B --> C["Structured representation"]
-    C --> D["LateOn-Code-edge · 17M"]
-    D --> E["NextPlaid"]
-    E --> F["Search"]
-
-    B -.- B1["Parse functions, methods, classes"]
-    C -.- C1["Signature, params, calls, docstring, code"]
-    D -.- D1["Multi-vector embedding per code unit · runs on CPU"]
-    E -.- E1["Rust index binary · quantized · memory-mapped · incremental"]
-    F -.- F1["grep-compatible flags · SQLite filtering · semantic ranking
-100% local, your code never leaves your machine"]
-
-    style A fill:#4a90d9,stroke:#357abd,color:#fff
-    style B fill:#50b86c,stroke:#3d9956,color:#fff
-    style C fill:#50b86c,stroke:#3d9956,color:#fff
-    style D fill:#e8913a,stroke:#d07a2e,color:#fff
-    style E fill:#e8913a,stroke:#d07a2e,color:#fff
-    style F fill:#9b59b6,stroke:#8445a0,color:#fff
-    style B1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
-    style C1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
-    style D1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
-    style E1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
-    style F1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
-```
-
-**What the model sees.** Each code unit is converted to structured text before embedding:
-
-```python
-# Function: fetch_with_retry
-# Signature: def fetch_with_retry(url: str, max_retries: int = 3) -> Response
-# Description: Fetches data from a URL with retry logic.
-# Parameters: url, max_retries
-# Returns: Response
-# Calls: range, client.get
-# Variables: i, e
-# Uses: client, RequestError
-# File: src/utils/http_client.py
-
-def fetch_with_retry(url: str, max_retries: int = 3) -> Response:
-    """Fetches data from a URL with retry logic."""
-    for i in range(max_retries):
-        try:
-            return client.get(url)
-        except RequestError as e:
-            if i == max_retries - 1:
-                raise e
-```
-
-This structured input gives the model richer signal than raw code alone.
-
-**More:** install variants, performance tuning, all flags and options → [colgrep/README.md](colgrep/README.md)
 
 ---
 
@@ -124,7 +23,7 @@ Multi-vector keeps ~300 embeddings of dimension 128 per document instead of one.
 
 ## NextPlaid
 
-A local-first multi-vector database with a REST API. It's what powers ColGREP under the hood, but it's a general-purpose engine you can use for any retrieval workload.
+A local-first multi-vector database with a REST API. A general-purpose engine you can use for any retrieval workload.
 
 - **Built-in encoding.** Pass text, get results. Ships with ONNX Runtime for ColBERT models, no external inference server needed.
 - **Memory-mapped indices.** Low RAM footprint, indices live on disk and are paged in on demand.
@@ -133,7 +32,7 @@ A local-first multi-vector database with a REST API. It's what powers ColGREP un
 - **Metadata pre-filtering.** SQL WHERE clauses on a built-in SQLite store. Filter _before_ search so only matching documents are scored.
 - **CPU-optimized.** Designed to run fast on CPU. CUDA supported when you need it.
 
-**NextPlaid vs [FastPlaid](https://github.com/lightonai/fast-plaid).** FastPlaid is a GPU batch indexer. Ideal when you have 1M+ documents to index in a single pass. NextPlaid wraps the same FastPlaid algorithm into a production API that handles documents as they arrive: incremental updates, concurrent reads/writes, deletions, and built-in encoding. Use FastPlaid for bulk offline indexing and experiments, NextPlaid for serving and streaming ingestion.
+**NextPlaid vs [FastPlaid](https://github.com/lightonai/fast-plaid).** FastPlaid is a GPU batch indexer built for large-scale, single-pass workloads. NextPlaid wraps the same FastPlaid algorithm into a production API that handles documents as they arrive: incremental updates, concurrent reads/writes, deletions, and built-in encoding. Use FastPlaid for bulk offline indexing and experiments, NextPlaid for serving and streaming ingestion.
 
 ### Quick start
 
@@ -176,7 +75,7 @@ client.add(
     "docs",
     documents=[
         "next-plaid is a multi-vector database",
-        "colgrep is a code search tool based on NextPlaid",
+        "multi-vector search is efficient and accurate",
     ],
     metadata=[{"id": "doc_1"}, {"id": "doc_2"}],
 )
@@ -208,8 +107,8 @@ End-to-end benchmarks against the NextPlaid API on [BEIR](https://github.com/bei
 
 **Setup:** `lightonai/GTE-ModernColBERT-v1` on NVIDIA H100 80GB, `top_k=100`, `n_ivf_probe=8`, `n_full_scores=4096`. CPU search uses INT8-quantized ONNX encoding on the same machine.
 
-| Dataset  | Documents | MAP | NDCG@10 | NDCG@100 | Recall@10 | Recall@100 | Indexing (docs/s) | GPU QPS | GPU P95 (ms) | CPU QPS | CPU P95 (ms) |
-| -------- | --------: | --: | ------: | -------: | --------: | ---------: | ----------------: | ------: | -----------: | ------: | -----------: |
+| Dataset  | Documents |    MAP | NDCG@10 | NDCG@100 | Recall@10 | Recall@100 | Indexing (docs/s) | GPU QPS | GPU P95 (ms) | CPU QPS | CPU P95 (ms) |
+| -------- | --------: | -----: | ------: | -------: | --------: | ---------: | ----------------: | ------: | -----------: | ------: | -----------: |
 | arguana  |     8,674 | 0.2457 |  0.3499 |   0.3995 |    0.7126 |     0.9337 |              77.1 |    13.6 |        170.1 |    17.4 |        454.7 |
 | fiqa     |    57,638 | 0.3871 |  0.4506 |   0.5129 |    0.5184 |     0.7459 |              41.3 |    18.2 |        170.6 |    17.6 |        259.1 |
 | nfcorpus |     3,633 | 0.1870 |  0.3828 |   0.3427 |    0.1828 |     0.3228 |              86.7 |     6.6 |        262.1 |    16.9 |        219.4 |
@@ -235,7 +134,7 @@ pylate-onnx-export lightonai/GTE-ModernColBERT-v1 -o ./my-models --push-to-hub m
 
 ### Ready-to-use models
 
-These can be served with NextPlaid and used with ColGREP without export:
+These can be served with NextPlaid without export:
 
 | Model                                      | Use case                    |
 | ------------------------------------------ | --------------------------- |
@@ -257,9 +156,11 @@ Apache-2.0
 
 ```bibtex
 @software{next-plaid,
-  title  = {NextPlaid: Multi-vector search, from database to coding agents.},
+  title  = {NextPlaid: A local-first multi-vector search engine.},
   url    = {https://github.com/lightonai/next-plaid},
   author = {Raphaël Sourty},
   year   = {2026},
 }
 ```
+
+> **Coming this week:** Multi-vector search as a single binary for agentic search built with Next-Plaid. No server, no dependencies. Stay tuned. Don't tell people about it yet. It's a secret. Shh.
