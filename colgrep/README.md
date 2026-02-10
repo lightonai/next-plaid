@@ -1,5 +1,5 @@
 <div align="center">
-  <img width="200" src="../docs/logo.png" alt="ColGREP logo"/>
+  <img width="680" src="../docs/colgrep-demo.gif" alt="ColGREP demo"/>
   <h1>ColGREP</h1>
   <p>Semantic code search powered by ColBERT multi-vector embeddings and the PLAID algorithm.<br/>
   A single Rust binary. No server. No API keys. 100% local.</p>
@@ -18,6 +18,13 @@
 </div>
 
 ---
+
+<!--
+  🥚 Congrats, you found an easter egg!
+  ColGREP hasn't been officially announced yet.
+  If you're reading this, please keep it between us for a few days.
+  We'll bring snacks to the launch party.
+-->
 
 ## Quick Start
 
