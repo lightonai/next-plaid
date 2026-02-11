@@ -4,7 +4,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use ndarray::Array1;
-use ndarray::{Array2, ArrayView2, Axis};
+use ndarray::{Array2, ArrayView2};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -115,87 +115,6 @@ fn colbert_score(query: &ArrayView2<f32>, doc: &ArrayView2<f32>) -> f32 {
 /// Uses SIMD-accelerated max reduction and BLAS for matrix multiplication.
 fn colbert_score_cpu(query: &ArrayView2<f32>, doc: &ArrayView2<f32>) -> f32 {
     maxsim::maxsim_score(query, doc)
-}
-
-/// Compute adaptive IVF probe for filtered search on memory-mapped index.
-///
-/// Ensures enough centroids are probed to cover at least `top_k` candidates from the subset.
-/// This function counts how many subset documents are in each centroid, then greedily
-/// selects centroids (by query similarity) until the cumulative document count reaches `top_k`.
-#[allow(clippy::too_many_arguments)]
-fn compute_adaptive_ivf_probe_mmap(
-    query_centroid_scores: &Array2<f32>,
-    mmap_codes: &crate::mmap::MmapNpyArray1I64,
-    doc_offsets: &[usize],
-    num_docs: usize,
-    subset: &[i64],
-    top_k: usize,
-    n_ivf_probe: usize,
-    centroid_score_threshold: Option<f32>,
-) -> Vec<usize> {
-    // Count unique docs per centroid for subset
-    let mut centroid_doc_counts: HashMap<usize, HashSet<i64>> = HashMap::new();
-    for &doc_id in subset {
-        let doc_idx = doc_id as usize;
-        if doc_idx < num_docs {
-            let start = doc_offsets[doc_idx];
-            let end = doc_offsets[doc_idx + 1];
-            let codes = mmap_codes.slice(start, end);
-            for &c in codes.iter() {
-                centroid_doc_counts
-                    .entry(c as usize)
-                    .or_default()
-                    .insert(doc_id);
-            }
-        }
-    }
-
-    if centroid_doc_counts.is_empty() {
-        return vec![];
-    }
-
-    // Score each centroid by max query-centroid similarity
-    let mut scored_centroids: Vec<(usize, f32, usize)> = centroid_doc_counts
-        .into_iter()
-        .map(|(c, docs)| {
-            let max_score: f32 = query_centroid_scores
-                .axis_iter(Axis(0))
-                .map(|q| q[c])
-                .max_by(|a, b| a.partial_cmp(b).unwrap())
-                .unwrap_or(0.0);
-            (c, max_score, docs.len())
-        })
-        .collect();
-
-    // Apply threshold if set
-    if let Some(threshold) = centroid_score_threshold {
-        scored_centroids.retain(|(_, score, _)| *score >= threshold);
-    }
-
-    // Sort by score descending
-    scored_centroids.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-    // Greedily select centroids until we cover top_k candidates
-    let mut cumulative_docs = 0;
-    let mut n_probe = 0;
-
-    for (_, _, doc_count) in &scored_centroids {
-        cumulative_docs += doc_count;
-        n_probe += 1;
-        // Stop when we have enough coverage AND met minimum probe requirement
-        if cumulative_docs >= top_k && n_probe >= n_ivf_probe {
-            break;
-        }
-    }
-
-    // Ensure at least n_ivf_probe centroids (unless fewer exist)
-    n_probe = n_probe.max(n_ivf_probe.min(scored_centroids.len()));
-
-    scored_centroids
-        .iter()
-        .take(n_probe)
-        .map(|(c, _, _)| *c)
-        .collect()
 }
 
 /// Wrapper for f32 to use with BinaryHeap (implements Ord)
@@ -420,50 +339,82 @@ pub fn search_one_mmap(
     let num_query_tokens = query.nrows();
 
     // Decide whether to use batched mode for memory efficiency
-    let use_batched = params.centroid_batch_size > 0
-        && num_centroids > params.centroid_batch_size
-        && subset.is_none();
+    let use_batched = params.centroid_batch_size > 0 && num_centroids > params.centroid_batch_size;
 
     if use_batched {
         // Batched path: memory-efficient IVF probing for large centroid counts
-        return search_one_mmap_batched(index, query, params);
+        return search_one_mmap_batched(index, query, params, subset);
     }
 
     // Standard path: compute full query-centroid scores upfront
     let query_centroid_scores = query.dot(&index.codec.centroids_view().t());
 
-    // Find top IVF cells to probe
-    let cells_to_probe: Vec<usize> = if let Some(subset_docs) = subset {
-        // Use adaptive IVF probing that ensures enough centroids to cover top_k candidates
-        compute_adaptive_ivf_probe_mmap(
-            &query_centroid_scores,
-            &index.mmap_codes,
-            index.doc_offsets.as_slice().unwrap(),
-            index.doc_lengths.len(),
-            subset_docs,
-            params.top_k,
-            params.n_ivf_probe,
-            params.centroid_score_threshold,
-        )
-    } else {
-        // Standard path: select top-k centroids per query token
+    // When subset is provided, pre-compute eligible centroids: only those containing
+    // at least one embedding from a subset document. Centroids without subset docs
+    // can't contribute candidates, so skipping them is a pure optimization.
+    let eligible_centroids: Option<HashSet<usize>> = subset.map(|subset_docs| {
+        let mut centroids = HashSet::new();
+        for &doc_id in subset_docs {
+            let doc_idx = doc_id as usize;
+            if doc_idx < index.doc_lengths.len() {
+                let start = index.doc_offsets[doc_idx];
+                let end = index.doc_offsets[doc_idx + 1];
+                let codes = index.mmap_codes.slice(start, end);
+                for &c in codes.iter() {
+                    centroids.insert(c as usize);
+                }
+            }
+        }
+        centroids
+    });
+
+    // When pre-filtering, scale n_ivf_probe by the document ratio to compensate
+    // for candidates lost to filtering. If 50% of docs are filtered out, we probe
+    // ~2x more centroids to find enough relevant candidates.
+    // No filter: n_ivf_probe unchanged.
+    let effective_n_ivf_probe = match (&eligible_centroids, subset) {
+        (Some(eligible), Some(subset_docs)) if !eligible.is_empty() => {
+            let num_docs = index.doc_lengths.len();
+            let subset_len = subset_docs.len();
+            let scaled = if subset_len > 0 {
+                (params.n_ivf_probe as u64 * num_docs as u64 / subset_len as u64) as usize
+            } else {
+                params.n_ivf_probe
+            };
+            scaled.max(params.n_ivf_probe).min(eligible.len())
+        }
+        _ => params.n_ivf_probe,
+    };
+
+    // Find top IVF cells to probe using per-token top-k selection.
+    // When pre-filtering, only score eligible centroids (same selection logic,
+    // smaller pool). This can only improve recall for subset docs since
+    // ineligible centroids would have wasted probe slots.
+    let cells_to_probe: Vec<usize> = {
         let mut selected_centroids = HashSet::new();
 
         for q_idx in 0..num_query_tokens {
-            let mut centroid_scores: Vec<(usize, f32)> = (0..num_centroids)
-                .map(|c| (c, query_centroid_scores[[q_idx, c]]))
-                .collect();
+            let mut centroid_scores: Vec<(usize, f32)> = match &eligible_centroids {
+                Some(eligible) => eligible
+                    .iter()
+                    .map(|&c| (c, query_centroid_scores[[q_idx, c]]))
+                    .collect(),
+                None => (0..num_centroids)
+                    .map(|c| (c, query_centroid_scores[[q_idx, c]]))
+                    .collect(),
+            };
 
             // Partial selection: O(K) average instead of O(K log K) for full sort
-            // After this, the top n_ivf_probe elements are in positions 0..n_ivf_probe
+            // After this, the top n elements are in positions 0..n
             // (but not sorted among themselves - which is fine since we use a HashSet)
-            if centroid_scores.len() > params.n_ivf_probe {
-                centroid_scores.select_nth_unstable_by(params.n_ivf_probe - 1, |a, b| {
+            let n_probe = effective_n_ivf_probe.min(centroid_scores.len());
+            if centroid_scores.len() > n_probe {
+                centroid_scores.select_nth_unstable_by(n_probe - 1, |a, b| {
                     b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
                 });
             }
 
-            for (c, _) in centroid_scores.iter().take(params.n_ivf_probe) {
+            for (c, _) in centroid_scores.iter().take(n_probe) {
                 selected_centroids.insert(*c);
             }
         }
@@ -577,6 +528,7 @@ fn search_one_mmap_batched(
     index: &crate::index::MmapIndex,
     query: &Array2<f32>,
     params: &SearchParameters,
+    subset: Option<&[i64]>,
 ) -> Result<QueryResult> {
     let num_query_tokens = query.nrows();
 
@@ -590,7 +542,13 @@ fn search_one_mmap_batched(
     );
 
     // Step 2: Get candidate documents from IVF
-    let candidates = index.get_candidates(&cells_to_probe);
+    let mut candidates = index.get_candidates(&cells_to_probe);
+
+    // Filter by subset if provided
+    if let Some(subset_docs) = subset {
+        let subset_set: HashSet<i64> = subset_docs.iter().copied().collect();
+        candidates.retain(|&c| subset_set.contains(&c));
+    }
 
     if candidates.is_empty() {
         return Ok(QueryResult {
