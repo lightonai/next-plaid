@@ -864,11 +864,12 @@ impl IndexBuilder {
 
         pb.finish_and_clear();
 
-        new_state.save(&self.index_dir)?;
-
         if was_interrupted || is_interrupted() {
+            // Don't save state — the index has partial data.
             anyhow::bail!("Indexing interrupted by user");
         }
+
+        new_state.save(&self.index_dir)?;
 
         Ok(UpdateStats {
             added: files_added.len(),
@@ -976,13 +977,15 @@ impl IndexBuilder {
             false
         };
 
-        // Save state and project metadata (even if interrupted, save what we have)
-        state.save(&self.index_dir)?;
-        ProjectMetadata::new(&self.project_root).save(&self.index_dir)?;
-
         if was_interrupted {
+            // Don't save state — the index is partial. Next run will detect the
+            // mismatch (state missing or stale vs. partial index) and rebuild.
             anyhow::bail!("Indexing interrupted by user");
         }
+
+        // Save state and project metadata only on successful completion
+        state.save(&self.index_dir)?;
+        ProjectMetadata::new(&self.project_root).save(&self.index_dir)?;
 
         Ok(UpdateStats {
             added: files.len(),
@@ -1120,9 +1123,9 @@ impl IndexBuilder {
         }
 
         if parsing_interrupted {
-            // Save partial state before exiting
-            state.save(&self.index_dir)?;
-            eprintln!("⚠️  Indexing interrupted during parsing. Partial state saved.");
+            // Don't save state — the index may be inconsistent (changed files were
+            // deleted from the index but not re-added). Next run will detect the
+            // mismatch and re-index properly.
             anyhow::bail!("Indexing interrupted by user");
         }
 
@@ -1258,11 +1261,13 @@ impl IndexBuilder {
             pb.finish_and_clear();
         }
 
-        state.save(&self.index_dir)?;
-
         if was_interrupted || is_interrupted() {
+            // Don't save state — the index has partial data. Next run will detect
+            // the mismatch and re-index the missing files.
             anyhow::bail!("Indexing interrupted by user");
         }
+
+        state.save(&self.index_dir)?;
 
         Ok(UpdateStats {
             added: plan.added.len(),
