@@ -161,6 +161,7 @@ colgrep --json "auth" | jq '.[] | .unit.file'
 
 | Command | Description |
 | ------- | ----------- |
+| `colgrep init` | Build or update the index |
 | `colgrep status` | Show index status for current project |
 | `colgrep clear` | Clear index for current project |
 | `colgrep clear --all` | Clear all indexes |
@@ -340,6 +341,10 @@ The search pipeline:
 ## Index Management
 
 ```bash
+# Build or update index
+colgrep init
+colgrep init ~/projects/myapp
+
 # Check index status
 colgrep status
 

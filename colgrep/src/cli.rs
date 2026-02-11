@@ -37,6 +37,10 @@ EXAMPLES:
     # Output as JSON for scripting
     colgrep --json \"authentication\" | jq '.[] | .unit.file'
 
+    # Build or update index (without searching)
+    colgrep init
+    colgrep init ~/projects/myapp
+
     # Check index status
     colgrep status
 
@@ -142,6 +146,26 @@ NOTES:
     • The model is downloaded from HuggingFace and cached automatically
     • Model preference is stored in ~/.config/colgrep/config.json
     • Use 'colgrep settings' to view the current model";
+
+pub const INIT_HELP: &str = "\
+EXAMPLES:
+    # Build or update index for the current directory
+    colgrep init
+
+    # Build or update index for a specific project
+    colgrep init ~/projects/myapp
+
+    # Force auto-confirm for large codebases
+    colgrep init -y
+
+    # Use a specific model
+    colgrep init --model lightonai/LateOn-Code-edge
+
+NOTES:
+    • Creates a new index if none exists
+    • Incrementally updates the index if files changed
+    • Useful for pre-warming the index before searching
+    • Subsequent searches will be fast since the index is already built";
 
 pub const CONFIG_HELP: &str = "\
 EXAMPLES:
@@ -452,6 +476,30 @@ pub enum Commands {
 
     /// Update colgrep to the latest version
     Update,
+
+    /// Build or update the index without searching
+    #[command(after_help = INIT_HELP)]
+    Init {
+        /// Project directory (default: current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Disable embedding pooling (use full embeddings, slower but more precise)
+        #[arg(long = "no-pool")]
+        no_pool: bool,
+
+        /// Set embedding pool factor (default: 2, higher = fewer embeddings = faster)
+        #[arg(long = "pool-factor", value_name = "FACTOR")]
+        pool_factor: Option<usize>,
+
+        /// Automatically confirm indexing without prompting (for large codebases > 10K code units)
+        #[arg(short = 'y', long = "yes")]
+        auto_confirm: bool,
+    },
 
     /// View or set configuration options (default k, n values)
     #[command(name = "settings", after_help = CONFIG_HELP)]
