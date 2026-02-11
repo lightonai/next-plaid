@@ -440,6 +440,11 @@ impl IndexBuilder {
     /// - Full rebuild if CLI version changed (clears outdated index)
     pub fn index(&mut self, languages: Option<&[Language]>, force: bool) -> Result<UpdateStats> {
         let _lock = acquire_index_lock(&self.index_dir)?;
+
+        // Clean up any leftover temp/old dirs from previous failed full rebuilds
+        let _ = std::fs::remove_dir_all(self.index_dir.join("index.tmp"));
+        let _ = std::fs::remove_dir_all(self.index_dir.join("index.old"));
+
         let state = IndexState::load(&self.index_dir)?;
         let index_path = get_vector_index_path(&self.index_dir);
         let index_path_str = index_path.to_str().unwrap();
@@ -524,6 +529,10 @@ impl IndexBuilder {
         let Some(_lock) = try_acquire_index_lock(&self.index_dir)? else {
             return Ok(None);
         };
+
+        // Clean up any leftover temp/old dirs from previous failed full rebuilds
+        let _ = std::fs::remove_dir_all(self.index_dir.join("index.tmp"));
+        let _ = std::fs::remove_dir_all(self.index_dir.join("index.old"));
 
         let state = IndexState::load(&self.index_dir)?;
         let index_path = get_vector_index_path(&self.index_dir);
@@ -682,12 +691,6 @@ impl IndexBuilder {
             });
         }
 
-        // Delete old entries for changed files before re-indexing
-        // This prevents duplicates when a file's content has changed
-        for file_path in &files_changed {
-            self.delete_file_from_index(index_path_str, file_path)?;
-        }
-
         // Load or create state
         let mut new_state = state.clone();
         let mut new_units: Vec<CodeUnit> = Vec::new();
@@ -776,6 +779,13 @@ impl IndexBuilder {
 
         // Compute effective pool factor based on batch size
         let effective_pool_factor = self.effective_pool_factor(new_units.len());
+
+        // Delete changed files from index right before writing new data.
+        // Deferred from earlier to minimize the window where data is missing
+        // from the index (for concurrent readers and interrupt safety).
+        for file_path in &files_changed {
+            self.delete_file_from_index(index_path_str, file_path)?;
+        }
 
         // Track encoding time separately to compute accurate ETA (excluding write time)
         let mut encoding_duration = std::time::Duration::ZERO;
@@ -899,10 +909,16 @@ impl IndexBuilder {
 
     /// Full rebuild (used when force=true or no index exists)
     fn full_rebuild(&mut self, languages: Option<&[Language]>) -> Result<UpdateStats> {
-        // Clear existing index data to avoid duplicates
         let index_path = get_vector_index_path(&self.index_dir);
-        if index_path.exists() {
-            std::fs::remove_dir_all(&index_path)?;
+        let temp_path = self.index_dir.join("index.tmp");
+        let old_path = self.index_dir.join("index.old");
+
+        // Clean any leftover temp/old dirs from previous failed attempts
+        if temp_path.exists() {
+            std::fs::remove_dir_all(&temp_path)?;
+        }
+        if old_path.exists() {
+            std::fs::remove_dir_all(&old_path)?;
         }
 
         let (files, skipped) = self.scan_files(languages)?;
@@ -972,15 +988,42 @@ impl IndexBuilder {
         let was_interrupted = if !all_units.is_empty() {
             // Ensure model is created before encoding (lazy initialization)
             self.ensure_model_created(all_units.len())?;
-            self.write_index_with_progress(&all_units)?
+            // Build new index in temp directory to avoid destroying the old one
+            self.write_index_impl(&all_units, true, Some(&temp_path))?
         } else {
             false
         };
 
         if was_interrupted {
-            // Don't save state — the index is partial. Next run will detect the
-            // mismatch (state missing or stale vs. partial index) and rebuild.
+            // Clean up temp dir — the old index is untouched
+            let _ = std::fs::remove_dir_all(&temp_path);
             anyhow::bail!("Indexing interrupted by user");
+        }
+
+        // Atomic swap: replace old index with newly built one
+        if all_units.is_empty() {
+            // No files to index — just remove the old index if it exists
+            if index_path.exists() {
+                std::fs::remove_dir_all(&index_path)?;
+            }
+        } else {
+            if index_path.exists() {
+                std::fs::rename(&index_path, &old_path)
+                    .context("Failed to move old index aside")?;
+            }
+            if let Err(e) = std::fs::rename(&temp_path, &index_path) {
+                // Try to restore old index
+                if old_path.exists() && !index_path.exists() {
+                    let _ = std::fs::rename(&old_path, &index_path);
+                }
+                return Err(anyhow::anyhow!(
+                    "Failed to move new index into place: {}",
+                    e
+                ));
+            }
+            if old_path.exists() {
+                let _ = std::fs::remove_dir_all(&old_path);
+            }
         }
 
         // Save state and project metadata only on successful completion
@@ -1033,11 +1076,8 @@ impl IndexBuilder {
 
         let mut state = old_state.clone();
 
-        // 1. Delete chunks for changed/deleted files by querying file path
-        let files_to_delete: Vec<&PathBuf> =
-            plan.changed.iter().chain(plan.deleted.iter()).collect();
-
-        for file_path in &files_to_delete {
+        // 1. Delete chunks for deleted files (safe — not re-adding these)
+        for file_path in &plan.deleted {
             self.delete_file_from_index(index_path_str, file_path)?;
         }
 
@@ -1176,6 +1216,13 @@ impl IndexBuilder {
 
             // Compute effective pool factor based on batch size
             let effective_pool_factor = self.effective_pool_factor(new_units.len());
+
+            // Delete changed files from index right before writing new data.
+            // Deferred from earlier to minimize the window where data is missing
+            // from the index (for concurrent readers and interrupt safety).
+            for file_path in &plan.changed {
+                self.delete_file_from_index(index_path_str, file_path)?;
+            }
 
             // Track encoding time separately to compute accurate ETA (excluding write time)
             let mut encoding_duration = std::time::Duration::ZERO;
@@ -1568,15 +1615,23 @@ impl IndexBuilder {
 
     #[allow(dead_code)]
     fn write_index(&mut self, units: &[CodeUnit]) -> Result<bool> {
-        self.write_index_impl(units, false)
+        self.write_index_impl(units, false, None)
     }
 
+    #[allow(dead_code)]
     fn write_index_with_progress(&mut self, units: &[CodeUnit]) -> Result<bool> {
-        self.write_index_impl(units, true)
+        self.write_index_impl(units, true, None)
     }
 
-    fn write_index_impl(&mut self, units: &[CodeUnit], show_progress: bool) -> Result<bool> {
-        let index_path = get_vector_index_path(&self.index_dir);
+    fn write_index_impl(
+        &mut self,
+        units: &[CodeUnit],
+        show_progress: bool,
+        target_index_path: Option<&Path>,
+    ) -> Result<bool> {
+        let index_path = target_index_path
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| get_vector_index_path(&self.index_dir));
         let index_path_str = index_path.to_str().unwrap();
         std::fs::create_dir_all(&index_path)?;
 
