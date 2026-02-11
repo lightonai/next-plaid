@@ -140,6 +140,29 @@ jobs:
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
+      # cargo-dist doesn't support per-target features (https://github.com/axodotdev/cargo-dist/issues/772)
+      # so we inject them into [package.metadata.dist] before building
+      - name: Configure per-target features
+        shell: bash
+        run: |
+          TARGET="${{ join(matrix.targets, ' ') }}"
+          case "$TARGET" in
+            *aarch64-apple-darwin*)
+              FEATURES='features = ["coreml", "accelerate"]'
+              ;;
+            *x86_64-apple-darwin*)
+              FEATURES='features = ["accelerate"]'
+              ;;
+            *)
+              FEATURES=""
+              ;;
+          esac
+          if [ -n "$FEATURES" ]; then
+            awk -v feat="$FEATURES" '{if ($0 == "dist = true") {print; print feat; next} print}' colgrep/Cargo.toml > colgrep/Cargo.toml.tmp
+            mv colgrep/Cargo.toml.tmp colgrep/Cargo.toml
+            echo "Injected $FEATURES into colgrep/Cargo.toml"
+            grep -A2 'package.metadata.dist' colgrep/Cargo.toml
+          fi
       - name: Build artifacts
         run: |
           # Actually do builds and make zips and whatnot

@@ -92,12 +92,6 @@ install-updater = false
 aarch64-apple-darwin = "macos-14"
 x86_64-apple-darwin = "macos-15"
 
-# Apple Silicon builds with CoreML for model inference and Accelerate for vector search
-[[workspace.metadata.dist.builds]]
-targets = ["aarch64-apple-darwin"]
-features = ["coreml", "accelerate"]
-
-# Intel Mac builds with Accelerate for vector search
-[[workspace.metadata.dist.builds]]
-targets = ["x86_64-apple-darwin"]
-features = ["accelerate"]
+# Per-target features (coreml, accelerate) are injected in .github/workflows/release.yml
+# because cargo-dist doesn't support per-target features yet:
+# https://github.com/axodotdev/cargo-dist/issues/772
