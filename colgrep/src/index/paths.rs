@@ -209,12 +209,12 @@ pub fn try_acquire_index_lock(index_dir: &Path) -> Result<Option<File>> {
 /// Acquires an exclusive lock on the index directory.
 /// Returns a guard (File handle) that releases the lock when dropped.
 ///
-/// If another process holds the lock, retries for up to 60 seconds before
+/// If another process holds the lock, retries for up to 5 seconds before
 /// returning an error.
 pub fn acquire_index_lock(index_dir: &Path) -> Result<File> {
     use std::time::{Duration, Instant};
 
-    const TIMEOUT: Duration = Duration::from_secs(60);
+    const TIMEOUT: Duration = Duration::from_secs(5);
     const RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
     fs::create_dir_all(index_dir)?;
@@ -231,7 +231,7 @@ pub fn acquire_index_lock(index_dir: &Path) -> Result<File> {
             }
             Err(_) => {
                 return Err(anyhow::anyhow!(
-                    "Timed out waiting for index lock after 60 seconds. \
+                    "Timed out waiting for index lock after 5 seconds. \
                      Another colgrep instance may be updating this index."
                 ));
             }

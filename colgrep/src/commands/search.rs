@@ -951,7 +951,8 @@ fn search_single_path(
     }
 
     // Load searcher (from parent index if applicable)
-    // If loading fails while another process holds the lock, wait for it to finish and retry.
+    // If loading fails while another process holds the lock, retry a few times in case
+    // the failure is due to a transient mid-write state.
     // If loading fails without a concurrent updater, clear and rebuild the index.
     let load_searcher = || -> Result<Searcher> {
         match &parent_info {
@@ -968,19 +969,34 @@ fn search_single_path(
         Ok(s) => s,
         Err(e) if index_locked => {
             // Another process is updating the index — the load failure is likely
-            // due to partially-written files. Wait for the updater to finish and retry.
+            // due to a transient mid-write state. Retry a few times with short delays
+            // rather than blocking on the lock (the updater may run for minutes).
             if !json && !files_only {
-                eprintln!("⏳ Waiting for index update to complete...");
+                eprintln!("⏳ Index load failed during update, retrying...");
             }
-            let target_index_dir = match &parent_info {
-                Some(info) => info.index_dir.clone(),
-                None => index_dir.clone(),
-            };
-            // acquire_index_lock blocks until the updater releases (up to 60s)
-            let _lock = acquire_index_lock(&target_index_dir)?;
-            drop(_lock);
-            load_searcher()
-                .with_context(|| format!("Index load failed after waiting for update: {}", e))?
+            const MAX_RETRIES: u32 = 3;
+            const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+            let mut last_err = e;
+            let mut loaded = None;
+            for _ in 0..MAX_RETRIES {
+                std::thread::sleep(RETRY_DELAY);
+                match load_searcher() {
+                    Ok(s) => {
+                        loaded = Some(s);
+                        break;
+                    }
+                    Err(e) => last_err = e,
+                }
+            }
+            match loaded {
+                Some(s) => s,
+                None => {
+                    return Err(last_err).with_context(|| {
+                        "⏳ Index load failed while another process is updating. \
+                         Rely on grep until the update completes."
+                    });
+                }
+            }
         }
         Err(e)
             if {
