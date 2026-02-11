@@ -192,6 +192,20 @@ pub fn get_lock_path(index_dir: &Path) -> PathBuf {
     index_dir.join(LOCK_FILE)
 }
 
+/// Try to acquire the index lock without waiting.
+/// Returns `Ok(Some(file))` if acquired, `Ok(None)` if another process holds it.
+pub fn try_acquire_index_lock(index_dir: &Path) -> Result<Option<File>> {
+    fs::create_dir_all(index_dir)?;
+    let lock_path = get_lock_path(index_dir);
+    let lock_file = File::create(&lock_path)
+        .with_context(|| format!("Failed to create lock file at {}", lock_path.display()))?;
+
+    match lock_file.try_lock_exclusive() {
+        Ok(()) => Ok(Some(lock_file)),
+        Err(_) => Ok(None),
+    }
+}
+
 /// Acquires an exclusive lock on the index directory.
 /// Returns a guard (File handle) that releases the lock when dropped.
 ///

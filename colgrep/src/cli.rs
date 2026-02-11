@@ -48,6 +48,9 @@ EXAMPLES:
     colgrep set-model lightonai/LateOn-Code-edge
     HF_TOKEN=hf_xxx colgrep set-model myorg/private-model
 
+    # Update to the latest version
+    colgrep update
+
 SUPPORTED LANGUAGES:
     Python, Rust, TypeScript, JavaScript, Go, Java, C, C++, C#, Ruby,
     PHP, Swift, Kotlin, Scala, Lua, Elixir, Haskell, OCaml, R, Zig, Julia,
@@ -446,6 +449,9 @@ pub enum Commands {
         /// HuggingFace model ID (e.g., "lightonai/LateOn-Code-edge")
         model: String,
     },
+
+    /// Update colgrep to the latest version
+    Update,
 
     /// View or set configuration options (default k, n values)
     #[command(name = "settings", after_help = CONFIG_HELP)]

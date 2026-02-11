@@ -17,7 +17,7 @@ use cli::{Cli, Commands};
 use commands::search::{resolve_pool_factor, resolve_top_k};
 use commands::{
     cmd_clear, cmd_config, cmd_reset_stats, cmd_search, cmd_session_hook, cmd_set_model, cmd_stats,
-    cmd_status, cmd_task_hook,
+    cmd_status, cmd_task_hook, cmd_update,
 };
 
 fn main() -> Result<()> {
@@ -198,6 +198,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
         }
+        Some(Commands::Update) => cmd_update(),
         Some(Commands::Status { path }) => cmd_status(&path),
         Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
         Some(Commands::SetModel { model }) => cmd_set_model(&model),

@@ -20,7 +20,8 @@ use crate::parser::{build_call_graph, detect_language, extract_units, CodeUnit, 
 use crate::signal::{is_interrupted, is_interrupted_outside_critical, CriticalSectionGuard};
 
 use paths::{
-    acquire_index_lock, get_index_dir_for_project, get_vector_index_path, ProjectMetadata,
+    acquire_index_lock, get_index_dir_for_project, get_vector_index_path, try_acquire_index_lock,
+    ProjectMetadata,
 };
 use state::{get_mtime, hash_file, FileInfo, IndexState};
 
@@ -340,6 +341,10 @@ impl IndexBuilder {
         filtering_count: usize,
         vector_count: usize,
     ) -> Result<()> {
+        eprintln!(
+            "⚠️  Index/DB desync: SQLite has {} entries, vector index has {} docs",
+            filtering_count, vector_count
+        );
         if filtering_count > vector_count {
             // Filtering DB has orphan entries (docs without embeddings)
             // Get all doc IDs from filtering that exceed the vector index count
@@ -506,6 +511,80 @@ impl IndexBuilder {
         }
 
         self.incremental_update(&state, languages)
+    }
+
+    /// Non-blocking version of `index()` for use during search.
+    /// Returns `Ok(None)` immediately if another process holds the lock,
+    /// allowing the caller to search the existing index without waiting.
+    pub fn try_index(
+        &mut self,
+        languages: Option<&[Language]>,
+        force: bool,
+    ) -> Result<Option<UpdateStats>> {
+        let Some(_lock) = try_acquire_index_lock(&self.index_dir)? else {
+            return Ok(None);
+        };
+
+        let state = IndexState::load(&self.index_dir)?;
+        let index_path = get_vector_index_path(&self.index_dir);
+        let index_path_str = index_path.to_str().unwrap();
+        let index_exists = index_path.join("metadata.json").exists();
+        let filtering_exists = filtering::exists(index_path_str);
+
+        let current_version = env!("CARGO_PKG_VERSION");
+        let version_mismatch =
+            index_exists && !state.cli_version.is_empty() && state.cli_version != current_version;
+
+        if force || !index_exists || !filtering_exists || version_mismatch {
+            return self.full_rebuild(languages).map(Some);
+        }
+
+        if filtering::count(index_path_str).is_err() {
+            eprintln!("⚠️  Filtering database corrupted, rebuilding index...");
+            return self.full_rebuild(languages).map(Some);
+        }
+
+        let state = if state.files.is_empty() {
+            match self.reconstruct_state_from_filtering_db(index_path_str) {
+                Ok(reconstructed) => {
+                    eprintln!(
+                        "📋 Reconstructed state from index ({} files)",
+                        reconstructed.files.len()
+                    );
+                    reconstructed.save(&self.index_dir)?;
+                    reconstructed
+                }
+                Err(_) => {
+                    return self.full_rebuild(languages).map(Some);
+                }
+            }
+        } else {
+            state
+        };
+
+        if let Ok(metadata_count) = filtering::count(index_path_str) {
+            if let Ok(index_metadata) = Metadata::load_from_path(&index_path) {
+                if metadata_count != index_metadata.num_documents {
+                    match self.reconcile_document_counts(
+                        index_path_str,
+                        metadata_count,
+                        index_metadata.num_documents,
+                    ) {
+                        Ok(()) => {
+                            eprintln!(
+                                "🔧 Reconciled index (filtering: {}, vector: {})",
+                                metadata_count, index_metadata.num_documents
+                            );
+                        }
+                        Err(_) => {
+                            return self.full_rebuild(languages).map(Some);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.incremental_update(&state, languages).map(Some)
     }
 
     /// Index only specific files (for filtered search).

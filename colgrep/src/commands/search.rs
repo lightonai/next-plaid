@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 
 use colgrep::{
@@ -846,7 +846,9 @@ fn search_single_path(
     // fall through to filter_by_file_patterns() which queries the index directly.
     let include_files: Option<Vec<String>> = None;
 
-    // Auto-index: always do incremental update (no grep-based selective indexing)
+    // Auto-index: try incremental update without blocking on the lock.
+    // If another process is indexing, skip the update and search the existing index.
+    let mut index_locked = false;
     {
         let mut builder = IndexBuilder::with_options(
             &effective_root,
@@ -859,35 +861,57 @@ fn search_single_path(
         builder.set_auto_confirm(auto_confirm);
         builder.set_model_name(&model);
 
-        // Try incremental update, but if index is corrupted, clear and do full rebuild
-        let stats = match builder.index(None, false) {
-            Ok(s) => s,
+        // Try non-blocking index update
+        match builder.try_index(None, false) {
+            Ok(Some(stats)) => {
+                let changes = stats.added + stats.changed + stats.deleted;
+                if changes > 0 && !json && !files_only {
+                    if let Some(ref info) = parent_info {
+                        eprintln!(
+                            "📂 Using index: {} (subdir: {}): indexed {} files\n",
+                            info.project_path.display(),
+                            info.relative_subdir.display(),
+                            changes
+                        );
+                    } else {
+                        eprintln!(
+                            "📂 Using index: {}: indexed {} files\n",
+                            effective_root.display(),
+                            changes
+                        );
+                    }
+                }
+            }
+            Ok(None) => {
+                // Lock held by another process — search existing index
+                index_locked = true;
+                if !json && !files_only {
+                    eprintln!(
+                        "📂 Index is being updated by another process, searching existing index..."
+                    );
+                }
+            }
             Err(e) => {
                 let err_str = format!("{}", e);
                 let err_debug = format!("{:?}", e);
+                if err_str.contains("Indexing cancelled by user") {
+                    return Err(e);
+                }
                 if err_str.contains("No data to merge")
                     || err_debug.contains("No data to merge")
                     || err_str.contains("Index load failed")
-                    || err_str.contains("Indexing cancelled by user")
                 {
-                    // Check if user cancelled
-                    if err_str.contains("Indexing cancelled by user") {
-                        return Err(e);
-                    }
-
                     // Index is corrupted - clear and rebuild
                     if !json && !files_only {
                         eprintln!("⚠️  Index corrupted, rebuilding...");
                     }
 
-                    // Clear the corrupted index
                     let index_dir = get_index_dir_for_project(&effective_root)?;
                     if index_dir.exists() {
                         let _lock = acquire_index_lock(&index_dir)?;
                         std::fs::remove_dir_all(&index_dir)?;
                     }
 
-                    // Create new builder and do full rebuild
                     let mut new_builder = IndexBuilder::with_options(
                         &effective_root,
                         &model_path,
@@ -898,28 +922,10 @@ fn search_single_path(
                     )?;
                     new_builder.set_auto_confirm(auto_confirm);
                     new_builder.set_model_name(&model);
-                    new_builder.index(None, false)?
+                    new_builder.index(None, false)?;
                 } else {
                     return Err(e);
                 }
-            }
-        };
-
-        let changes = stats.added + stats.changed + stats.deleted;
-        if changes > 0 && !json && !files_only {
-            if let Some(ref info) = parent_info {
-                eprintln!(
-                    "📂 Using index: {} (subdir: {}): indexed {} files\n",
-                    info.project_path.display(),
-                    info.relative_subdir.display(),
-                    changes
-                );
-            } else {
-                eprintln!(
-                    "📂 Using index: {}: indexed {} files\n",
-                    effective_root.display(),
-                    changes
-                );
             }
         }
     }
@@ -928,6 +934,10 @@ fn search_single_path(
     let index_dir = get_index_dir_for_project(&effective_root)?;
     let vector_index_path = get_vector_index_path(&index_dir);
     if !vector_index_path.join("metadata.json").exists() {
+        if index_locked {
+            // Index is being created for the first time by another process — nothing to search yet
+            anyhow::bail!("colgrep index is currently being built, rely on grep for now.");
+        }
         // Check if the path contains an ignored directory pattern
         if let Some(ignored_pattern) = path_contains_ignored_dir(&effective_root) {
             anyhow::bail!(
@@ -941,69 +951,76 @@ fn search_single_path(
     }
 
     // Load searcher (from parent index if applicable)
-    // If loading fails with "No data to merge", clear and rebuild the index
-    let searcher = {
-        let load_result = match &parent_info {
+    // If loading fails while another process holds the lock, wait for it to finish and retry.
+    // If loading fails without a concurrent updater, clear and rebuild the index.
+    let load_searcher = || -> Result<Searcher> {
+        match &parent_info {
             Some(info) => Searcher::load_from_index_dir_with_quantized(
                 &info.index_dir,
                 &model_path,
                 quantized,
             ),
             None => Searcher::load_with_quantized(&effective_root, &model_path, quantized),
-        };
-
-        match load_result {
-            Ok(s) => s,
-            Err(e)
-                if {
-                    let err_debug = format!("{:?}", e);
-                    let err_display = format!("{}", e);
-                    err_debug.contains("No data to merge")
-                        || err_display.contains("No data to merge")
-                        || err_debug.contains("IndexLoad")
-                        || err_display.contains("Index load failed")
-                } =>
-            {
-                // Index is corrupted or empty - clear and rebuild
-                if !json && !files_only {
-                    eprintln!("⚠️  Index corrupted, rebuilding...");
-                }
-
-                // Clear the corrupted index
-                let target_index_dir = match &parent_info {
-                    Some(info) => &info.index_dir,
-                    None => &index_dir,
-                };
-                if target_index_dir.exists() {
-                    let _lock = acquire_index_lock(target_index_dir)?;
-                    std::fs::remove_dir_all(target_index_dir)?;
-                }
-
-                // Rebuild the index
-                let mut builder = IndexBuilder::with_options(
-                    &effective_root,
-                    &model_path,
-                    quantized,
-                    pool_factor,
-                    parallel_sessions,
-                    batch_size,
-                )?;
-                builder.set_auto_confirm(auto_confirm);
-                builder.set_model_name(&model);
-                builder.index(None, false)?;
-
-                // Try loading again
-                match &parent_info {
-                    Some(info) => Searcher::load_from_index_dir_with_quantized(
-                        &info.index_dir,
-                        &model_path,
-                        quantized,
-                    )?,
-                    None => Searcher::load_with_quantized(&effective_root, &model_path, quantized)?,
-                }
-            }
-            Err(e) => return Err(e),
         }
+    };
+
+    let searcher = match load_searcher() {
+        Ok(s) => s,
+        Err(e) if index_locked => {
+            // Another process is updating the index — the load failure is likely
+            // due to partially-written files. Wait for the updater to finish and retry.
+            if !json && !files_only {
+                eprintln!("⏳ Waiting for index update to complete...");
+            }
+            let target_index_dir = match &parent_info {
+                Some(info) => info.index_dir.clone(),
+                None => index_dir.clone(),
+            };
+            // acquire_index_lock blocks until the updater releases (up to 60s)
+            let _lock = acquire_index_lock(&target_index_dir)?;
+            drop(_lock);
+            load_searcher()
+                .with_context(|| format!("Index load failed after waiting for update: {}", e))?
+        }
+        Err(e)
+            if {
+                let err_debug = format!("{:?}", e);
+                let err_display = format!("{}", e);
+                err_debug.contains("No data to merge")
+                    || err_display.contains("No data to merge")
+                    || err_debug.contains("IndexLoad")
+                    || err_display.contains("Index load failed")
+            } =>
+        {
+            // Index is corrupted or empty (no concurrent updater) - clear and rebuild
+            if !json && !files_only {
+                eprintln!("⚠️  Index corrupted, rebuilding...");
+            }
+
+            let target_index_dir = match &parent_info {
+                Some(info) => &info.index_dir,
+                None => &index_dir,
+            };
+            if target_index_dir.exists() {
+                let _lock = acquire_index_lock(target_index_dir)?;
+                std::fs::remove_dir_all(target_index_dir)?;
+            }
+
+            let mut builder = IndexBuilder::with_options(
+                &effective_root,
+                &model_path,
+                quantized,
+                pool_factor,
+                parallel_sessions,
+                batch_size,
+            )?;
+            builder.set_auto_confirm(auto_confirm);
+            builder.set_model_name(&model);
+            builder.index(None, false)?;
+
+            load_searcher()?
+        }
+        Err(e) => return Err(e),
     };
 
     // Build subset combining subdirectory filter, text pattern filter, and include patterns
