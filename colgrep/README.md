@@ -35,13 +35,20 @@ powershell -c "irm https://github.com/lightonai/next-plaid/releases/latest/downl
 >
 > **Linux & Windows** binaries work immediately but run on CPU only. For hardware acceleration, install via Cargo — see [Installation](#installation).
 
+**Build the index:**
+
+```bash
+colgrep init /path/to/project
+colgrep init -y  # auto-confirm for large codebases (>10K code units)
+```
+
 **Search:**
 
 ```bash
 colgrep "database connection pooling"
 ```
 
-The first run builds the index automatically. No setup, no config, no dependencies.
+No setup, no config, no dependencies. `colgrep init` builds the index for the first time. After that, every search detects file changes and updates the index automatically before returning results. Supports `--model` to override the ColBERT model and `--pool-factor` to control embedding compression.
 
 ---
 
@@ -352,11 +359,24 @@ The search pipeline:
 
 ## Index Management
 
-```bash
-# Build or update index
-colgrep init
-colgrep init ~/projects/myapp
+### `colgrep init`
 
+Build or incrementally update the index for a project without running a search. If the index already exists, only changed files are re-encoded.
+
+```bash
+colgrep init                                        # current directory
+colgrep init ~/projects/myapp                       # specific project
+colgrep init -y                                     # auto-confirm for large codebases (>10K code units)
+colgrep init --model lightonai/LateOn-Code          # use a specific model
+colgrep init --pool-factor 1                        # disable embedding pooling (more precise)
+```
+
+This is useful for:
+- **Pre-warming** the index so the first search is instant
+- **CI/dev setup** scripts where you want indexing to happen ahead of time
+- **Updating** the index after pulling new code
+
+```bash
 # Check index status
 colgrep status
 

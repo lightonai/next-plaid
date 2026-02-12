@@ -31,13 +31,19 @@ Install:
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh
 ```
 
+Build the index:
+
+```bash
+colgrep init /path/to/project
+```
+
 Search:
 
 ```bash
 colgrep "database connection pooling"
 ```
 
-That's it. The first run builds the index automatically. No server, no API, no dependencies. ColGREP is a single Rust binary with everything baked in.
+That's it. No server, no API, no dependencies. ColGREP is a single Rust binary with everything baked in. `colgrep init` builds the index for the first time. After that, every search detects file changes and updates the index automatically before returning results.
 
 Regex meets semantics:
 
