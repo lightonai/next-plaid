@@ -257,9 +257,16 @@ Apache-2.0
 
 ```bibtex
 @software{next-plaid,
-  title  = {NextPlaid: Multi-vector search, from database to coding agents.},
+  title  = {NextPlaid, ColGREP: Multi-vector search, from database to coding agents.},
   url    = {https://github.com/lightonai/next-plaid},
   author = {Raphaël Sourty},
   year   = {2026},
+}
+
+@misc{LateOn-Code,
+title={LateOn-Code: a Family of State-Of-The-Art Late Interaction Code Retrieval Models},
+author={Chaffin, Antoine},
+url={https://huggingface.co/collections/lightonai/lateon-code},
+year={2026}
 }
 ```

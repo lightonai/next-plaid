@@ -277,6 +277,22 @@ def main():
 
     for name, readme_path in readmes:
         content = readme_path.read_text(encoding="utf-8")
+
+        # Rewrite relative image/asset paths so they resolve from the flat output dir.
+        # e.g. in colgrep/README.md, src="../docs/x.gif" -> src="docs/x.gif"
+        if readme_path.parent != root:
+            readme_dir = readme_path.parent
+            def rewrite_src(match):
+                prefix, path_val = match.group(1), match.group(2)
+                if path_val.startswith(("http://", "https://", "/")):
+                    return match.group(0)
+                resolved = (readme_dir / path_val).resolve()
+                try:
+                    return f'{prefix}"{resolved.relative_to(root)}"'
+                except ValueError:
+                    return match.group(0)
+            content = re.sub(r'(src=)"([^"]+)"', rewrite_src, content)
+
         html_content = markdown_to_html(content)
         nav = generate_nav(readmes, readme_path, root, output_dir)
 

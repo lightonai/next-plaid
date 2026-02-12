@@ -13,13 +13,11 @@
     &middot;
     <a href="#how-it-works"><b>How It Works</b></a>
     &middot;
+    <a href="#installation"><b>Installation</b></a>
+    &middot;
     <a href="#python-sdk"><b>Python SDK</b></a>
   </p>
 </div>
-
----
-
-> 🥚 Congrats, you found an easter egg! ColGREP hasn't been officially announced yet. If you're reading this, please keep it between us for a few days. We'll bring snacks to the launch party.
 
 ## Quick Start
 
@@ -32,6 +30,10 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/re
 # Windows (PowerShell)
 powershell -c "irm https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.ps1 | iex"
 ```
+
+> **macOS** binaries ship with **Apple Accelerate + CoreML** enabled — full hardware acceleration out of the box.
+>
+> **Linux & Windows** binaries work immediately but run on CPU only. For hardware acceleration, install via Cargo — see [Installation](#installation).
 
 **Search:**
 
@@ -88,26 +90,26 @@ colgrep -e "TODO" "security concerns"
 
 ### Search Options
 
-| Flag | Long | Description |
-| ---- | ---- | ----------- |
-| `-e` | `--pattern` | Regex pre-filter (ERE syntax) |
+| Flag | Long                | Description                              |
+| ---- | ------------------- | ---------------------------------------- |
+| `-e` | `--pattern`         | Regex pre-filter (ERE syntax)            |
 | `-E` | `--extended-regexp` | ERE mode (default, kept for grep compat) |
-| `-F` | `--fixed-strings` | Treat `-e` as literal string |
-| `-w` | `--word-regexp` | Whole-word match for `-e` |
-| `-k` | `--results` | Number of results (default: 15) |
-| `-n` | `--lines` | Context lines to show (default: 6) |
-| `-l` | `--files-only` | List matching files only |
-| `-c` | `--content` | Show full function/class content |
-| `-r` | `--recursive` | Recursive (default, for grep compat) |
-| `-y` | `--yes` | Auto-confirm indexing |
-| | `--json` | JSON output |
-| | `--code-only` | Skip docs/config files |
-| | `--include` | Filter by glob (e.g., `"*.rs"`) |
-| | `--exclude` | Exclude files by glob |
-| | `--exclude-dir` | Exclude directories |
-| | `--model` | Override ColBERT model |
-| | `--no-pool` | Disable embedding pooling |
-| | `--pool-factor` | Set pool factor (default: 2) |
+| `-F` | `--fixed-strings`   | Treat `-e` as literal string             |
+| `-w` | `--word-regexp`     | Whole-word match for `-e`                |
+| `-k` | `--results`         | Number of results (default: 15)          |
+| `-n` | `--lines`           | Context lines to show (default: 6)       |
+| `-l` | `--files-only`      | List matching files only                 |
+| `-c` | `--content`         | Show full function/class content         |
+| `-r` | `--recursive`       | Recursive (default, for grep compat)     |
+| `-y` | `--yes`             | Auto-confirm indexing                    |
+|      | `--json`            | JSON output                              |
+|      | `--code-only`       | Skip docs/config files                   |
+|      | `--include`         | Filter by glob (e.g., `"*.rs"`)          |
+|      | `--exclude`         | Exclude files by glob                    |
+|      | `--exclude-dir`     | Exclude directories                      |
+|      | `--model`           | Override ColBERT model                   |
+|      | `--no-pool`         | Disable embedding pooling                |
+|      | `--pool-factor`     | Set pool factor (default: 2)             |
 
 ### Filtering
 
@@ -133,13 +135,13 @@ colgrep --code-only "authentication logic"
 
 **Glob pattern syntax:**
 
-| Pattern | Matches |
-| ------- | ------- |
-| `*.py` | All Python files |
-| `*.{ts,tsx}` | TypeScript and TSX files |
-| `src/**/*.rs` | Rust files under `src/` |
+| Pattern       | Matches                         |
+| ------------- | ------------------------------- |
+| `*.py`        | All Python files                |
+| `*.{ts,tsx}`  | TypeScript and TSX files        |
+| `src/**/*.rs` | Rust files under `src/`         |
 | `**/tests/**` | Files in any `tests/` directory |
-| `*_test.go` | Go test files |
+| `*_test.go`   | Go test files                   |
 
 ### Output Modes
 
@@ -159,15 +161,15 @@ colgrep --json "auth" | jq '.[] | .unit.file'
 
 ### Subcommands
 
-| Command | Description |
-| ------- | ----------- |
-| `colgrep init` | Build or update the index |
-| `colgrep status` | Show index status for current project |
-| `colgrep clear` | Clear index for current project |
-| `colgrep clear --all` | Clear all indexes |
-| `colgrep set-model <ID>` | Change the default ColBERT model |
-| `colgrep settings` | View or modify configuration |
-| `colgrep --stats` | Show search statistics for all indexes |
+| Command                  | Description                            |
+| ------------------------ | -------------------------------------- |
+| `colgrep init`           | Build or update the index              |
+| `colgrep status`         | Show index status for current project  |
+| `colgrep clear`          | Clear index for current project        |
+| `colgrep clear --all`    | Clear all indexes                      |
+| `colgrep set-model <ID>` | Change the default ColBERT model       |
+| `colgrep settings`       | View or modify configuration           |
+| `colgrep --stats`        | Show search statistics for all indexes |
 
 ---
 
@@ -224,11 +226,11 @@ Config stored at `~/.config/colgrep/config.json`.
 
 ## Agent Integrations
 
-| Agent | Install | Uninstall |
-| ----- | ------- | --------- |
+| Agent       | Install                         | Uninstall                         |
+| ----------- | ------------------------------- | --------------------------------- |
 | Claude Code | `colgrep --install-claude-code` | `colgrep --uninstall-claude-code` |
-| OpenCode | `colgrep --install-opencode` | `colgrep --uninstall-opencode` |
-| Codex | `colgrep --install-codex` | `colgrep --uninstall-codex` |
+| OpenCode    | `colgrep --install-opencode`    | `colgrep --uninstall-opencode`    |
+| Codex       | `colgrep --install-codex`       | `colgrep --uninstall-codex`       |
 
 > Restart your agent after installing.
 
@@ -255,21 +257,31 @@ colgrep --uninstall
 ## How It Works
 
 ```mermaid
-flowchart LR
-    A["Source files"] --> B["Tree-sitter\nParse AST"]
-    B --> C["5-Layer Analysis"]
-    C --> D["Structured Text"]
-    D --> E["ColBERT Encoder\nLateOn-Code-edge\n17M params"]
-    E --> F["PLAID Index\nQuantized\nMemory-mapped"]
-    F --> G["Search"]
+flowchart TD
+    A["Your codebase"] --> B["Tree-sitter"]
+    B --> C["Structured representation"]
+    C --> D["LateOn-Code-edge · 17M"]
+    D --> E["NextPlaid"]
+    E --> F["Search"]
+
+    B -.- B1["Parse functions, methods, classes"]
+    C -.- C1["Signature, params, calls, docstring, code"]
+    D -.- D1["Multi-vector embedding per code unit · runs on CPU"]
+    E -.- E1["Rust index binary · quantized · memory-mapped · incremental"]
+    F -.- F1["grep-compatible flags · SQLite filtering · semantic ranking
+100% local, your code never leaves your machine"]
 
     style A fill:#4a90d9,stroke:#357abd,color:#fff
     style B fill:#50b86c,stroke:#3d9956,color:#fff
     style C fill:#50b86c,stroke:#3d9956,color:#fff
-    style D fill:#50b86c,stroke:#3d9956,color:#fff
+    style D fill:#e8913a,stroke:#d07a2e,color:#fff
     style E fill:#e8913a,stroke:#d07a2e,color:#fff
-    style F fill:#e8913a,stroke:#d07a2e,color:#fff
-    style G fill:#9b59b6,stroke:#8445a0,color:#fff
+    style F fill:#9b59b6,stroke:#8445a0,color:#fff
+    style B1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+    style C1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+    style D1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+    style E1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+    style F1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
 ```
 
 ### 1. Parse
@@ -280,13 +292,13 @@ flowchart LR
 
 Each code unit is enriched with five layers of analysis:
 
-| Layer | Extracts | Example |
-| ----- | -------- | ------- |
-| **AST** | Signature, parameters, return type, docstring, parent class | `def fetch(url: str) -> Response` |
-| **Call Graph** | Outgoing calls + reverse `called_by` | `Calls: range, client.get` |
-| **Control Flow** | Loops, branches, error handling, cyclomatic complexity | `has_error_handling: true` |
-| **Data Flow** | Variable declarations and assignments | `Variables: i, e` |
-| **Dependencies** | Imports used within the function | `Uses: client, RequestError` |
+| Layer            | Extracts                                                    | Example                           |
+| ---------------- | ----------------------------------------------------------- | --------------------------------- |
+| **AST**          | Signature, parameters, return type, docstring, parent class | `def fetch(url: str) -> Response` |
+| **Call Graph**   | Outgoing calls + reverse `called_by`                        | `Calls: range, client.get`        |
+| **Control Flow** | Loops, branches, error handling, cyclomatic complexity      | `has_error_handling: true`        |
+| **Data Flow**    | Variable declarations and assignments                       | `Variables: i, e`                 |
+| **Dependencies** | Imports used within the function                            | `Uses: client, RequestError`      |
 
 ### 3. Build Structured Text
 
@@ -360,13 +372,14 @@ colgrep --stats
 
 Indexes are stored outside the project directory:
 
-| Platform | Location |
-| -------- | -------- |
-| Linux | `~/.local/share/colgrep/indices/` |
-| macOS | `~/Library/Application Support/colgrep/indices/` |
-| Windows | `%APPDATA%\colgrep\indices\` |
+| Platform | Location                                         |
+| -------- | ------------------------------------------------ |
+| Linux    | `~/.local/share/colgrep/indices/`                |
+| macOS    | `~/Library/Application Support/colgrep/indices/` |
+| Windows  | `%APPDATA%\colgrep\indices\`                     |
 
 Each project gets a directory named `{project}-{hash8}`. Inside:
+
 - `index/` &mdash; PLAID vector index + SQLite metadata
 - `state.json` &mdash; File hashes for incremental updates
 - `project.json` &mdash; Canonical project path
@@ -379,68 +392,78 @@ ColGREP automatically detects and repairs index/metadata desync from interrupted
 
 ### Code (25 languages, tree-sitter AST parsing)
 
-| Language | Extensions |
-| -------- | ---------- |
-| Python | `.py` |
-| TypeScript | `.ts`, `.tsx` |
-| JavaScript | `.js`, `.jsx`, `.mjs` |
-| Go | `.go` |
-| Rust | `.rs` |
-| Java | `.java` |
-| C | `.c`, `.h` |
-| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` |
-| C# | `.cs` |
-| Ruby | `.rb` |
-| Kotlin | `.kt`, `.kts` |
-| Swift | `.swift` |
-| Scala | `.scala`, `.sc` |
-| PHP | `.php` |
-| Lua | `.lua` |
-| Elixir | `.ex`, `.exs` |
-| Haskell | `.hs` |
-| OCaml | `.ml`, `.mli` |
-| R | `.r`, `.rmd` |
-| Zig | `.zig` |
-| Julia | `.jl` |
-| SQL | `.sql` |
-| Vue | `.vue` |
-| Svelte | `.svelte` |
-| HTML | `.html`, `.htm` |
+| Language   | Extensions                            |
+| ---------- | ------------------------------------- |
+| Python     | `.py`                                 |
+| TypeScript | `.ts`, `.tsx`                         |
+| JavaScript | `.js`, `.jsx`, `.mjs`                 |
+| Go         | `.go`                                 |
+| Rust       | `.rs`                                 |
+| Java       | `.java`                               |
+| C          | `.c`, `.h`                            |
+| C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` |
+| C#         | `.cs`                                 |
+| Ruby       | `.rb`                                 |
+| Kotlin     | `.kt`, `.kts`                         |
+| Swift      | `.swift`                              |
+| Scala      | `.scala`, `.sc`                       |
+| PHP        | `.php`                                |
+| Lua        | `.lua`                                |
+| Elixir     | `.ex`, `.exs`                         |
+| Haskell    | `.hs`                                 |
+| OCaml      | `.ml`, `.mli`                         |
+| R          | `.r`, `.rmd`                          |
+| Zig        | `.zig`                                |
+| Julia      | `.jl`                                 |
+| SQL        | `.sql`                                |
+| Vue        | `.vue`                                |
+| Svelte     | `.svelte`                             |
+| HTML       | `.html`, `.htm`                       |
 
 ### Text & Config (11 formats, document-level extraction)
 
-| Format | Extensions |
-| ------ | ---------- |
-| Markdown | `.md` |
-| Plain text | `.txt`, `.rst` |
-| AsciiDoc | `.adoc` |
-| Org | `.org` |
-| YAML | `.yaml`, `.yml` |
-| TOML | `.toml` |
-| JSON | `.json` |
-| Dockerfile | `Dockerfile` |
-| Makefile | `Makefile` |
-| Shell | `.sh`, `.bash`, `.zsh` |
-| PowerShell | `.ps1` |
+| Format     | Extensions             |
+| ---------- | ---------------------- |
+| Markdown   | `.md`                  |
+| Plain text | `.txt`, `.rst`         |
+| AsciiDoc   | `.adoc`                |
+| Org        | `.org`                 |
+| YAML       | `.yaml`, `.yml`        |
+| TOML       | `.toml`                |
+| JSON       | `.json`                |
+| Dockerfile | `Dockerfile`           |
+| Makefile   | `Makefile`             |
+| Shell      | `.sh`, `.bash`, `.zsh` |
+| PowerShell | `.ps1`                 |
 
 ---
 
 ## Installation
 
-### Pre-built Binaries (Recommended)
-
-```bash
-# macOS / Linux
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh
-
-# Windows (PowerShell)
-powershell -c "irm https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.ps1 | iex"
-```
+The pre-built binaries from [Quick Start](#quick-start) are the fastest way to get started. For hardware acceleration on Linux/Windows, or to build from source, use Cargo.
 
 ### Cargo
 
+Install from [crates.io](https://crates.io/crates/colgrep):
+
 ```bash
+# CPU-only (all platforms)
 cargo install colgrep
+
+# macOS with full acceleration (same as pre-built binary)
+cargo install colgrep --features "accelerate,coreml"
+
+# Linux with OpenBLAS
+cargo install colgrep --features openblas
+
+# Linux with CUDA
+cargo install colgrep --features cuda
+
+# Linux with CUDA + TensorRT
+cargo install colgrep --features "cuda,tensorrt"
+
+# Windows with DirectML
+cargo install colgrep --features directml
 ```
 
 ### Build from Source
@@ -448,33 +471,19 @@ cargo install colgrep
 ```bash
 git clone https://github.com/lightonai/next-plaid.git
 cd next-plaid
-cargo install --path colgrep
+cargo install --path colgrep --features "accelerate,coreml"  # or your preferred features
 ```
 
-### Build Features
+### Hardware Acceleration Features
 
-| Feature | Platform | Description |
-| ------- | -------- | ----------- |
-| `accelerate` | macOS | Apple Accelerate for vector operations |
-| `coreml` | macOS | CoreML for model inference |
-| `openblas` | Linux | OpenBLAS for vector operations |
-| `cuda` | Linux/Windows | NVIDIA CUDA for model inference |
-| `tensorrt` | Linux | NVIDIA TensorRT for model inference |
-| `directml` | Windows | DirectML for model inference |
-
-```bash
-# macOS with Apple Accelerate + CoreML (recommended for M-series)
-cargo install --path colgrep --features "accelerate,coreml"
-
-# Linux with OpenBLAS
-cargo install --path colgrep --features openblas
-
-# Linux with CUDA
-cargo install --path colgrep --features cuda
-
-# Combine features
-cargo install --path colgrep --features "openblas,cuda"
-```
+| Feature      | Platform      | Description                            |
+| ------------ | ------------- | -------------------------------------- |
+| `accelerate` | macOS         | Apple Accelerate for vector operations |
+| `coreml`     | macOS         | CoreML for model inference             |
+| `openblas`   | Linux         | OpenBLAS for vector operations         |
+| `cuda`       | Linux/Windows | NVIDIA CUDA for model inference        |
+| `tensorrt`   | Linux         | NVIDIA TensorRT for model inference    |
+| `directml`   | Windows       | DirectML for model inference           |
 
 <details>
 <summary><b>OpenBLAS setup (Linux)</b></summary>
@@ -490,7 +499,7 @@ sudo dnf install openblas-devel
 sudo pacman -S openblas
 ```
 
-Then build with `cargo install --path colgrep --features openblas`.
+Then: `cargo install colgrep --features openblas`
 
 </details>
 
@@ -499,6 +508,7 @@ Then build with `cargo install --path colgrep --features openblas`.
 ONNX Runtime is downloaded automatically on first use. No manual installation required.
 
 Lookup order:
+
 1. `ORT_DYLIB_PATH` environment variable
 2. Python environments (pip/conda/venv)
 3. System paths
@@ -535,13 +545,13 @@ for unit in units:
 
 **Key functions:**
 
-| Function | Description |
-| -------- | ----------- |
-| `parse_code(code, filename)` | Parse source, auto-detect language |
-| `parse_code(code, filename, merge=True)` | Merge all units into one (deduped metadata) |
-| `parse_code_with_language(code, filename, lang)` | Parse with explicit language |
-| `detect_language(filename)` | Detect language from filename |
-| `supported_languages()` | List all supported languages |
+| Function                                         | Description                                 |
+| ------------------------------------------------ | ------------------------------------------- |
+| `parse_code(code, filename)`                     | Parse source, auto-detect language          |
+| `parse_code(code, filename, merge=True)`         | Merge all units into one (deduped metadata) |
+| `parse_code_with_language(code, filename, lang)` | Parse with explicit language                |
+| `detect_language(filename)`                      | Detect language from filename               |
+| `supported_languages()`                          | List all supported languages                |
 
 Each `CodeUnit` exposes all 5 analysis layers: `name`, `signature`, `docstring`, `parameters`, `return_type`, `calls`, `called_by`, `variables`, `imports`, `complexity`, `has_loops`, `has_branches`, `has_error_handling`, `code`, and more.
 
@@ -551,15 +561,33 @@ See [python-sdk/README.md](python-sdk/README.md) for the full API reference.
 
 ## Environment Variables
 
-| Variable | Description |
-| -------- | ----------- |
-| `ORT_DYLIB_PATH` | Path to ONNX Runtime library |
-| `XDG_DATA_HOME` | Override data directory |
-| `XDG_CONFIG_HOME` | Override config directory |
-| `HF_TOKEN` | HuggingFace token for private models |
-| `HUGGING_FACE_HUB_TOKEN` | Alternative HF token variable |
+| Variable                 | Description                          |
+| ------------------------ | ------------------------------------ |
+| `ORT_DYLIB_PATH`         | Path to ONNX Runtime library         |
+| `XDG_DATA_HOME`          | Override data directory              |
+| `XDG_CONFIG_HOME`        | Override config directory            |
+| `HF_TOKEN`               | HuggingFace token for private models |
+| `HUGGING_FACE_HUB_TOKEN` | Alternative HF token variable        |
 
 ---
+
+## Citation
+
+```bibtex
+@software{next-plaid,
+  title  = {NextPlaid, ColGREP: Multi-vector search, from database to coding agents.},
+  url    = {https://github.com/lightonai/next-plaid},
+  author = {Raphaël Sourty},
+  year   = {2026},
+}
+
+@misc{LateOn-Code,
+  title  = {LateOn-Code: a Family of State-Of-The-Art Late Interaction Code Retrieval Models},
+  author = {Chaffin, Antoine},
+  url    = {https://huggingface.co/collections/lightonai/lateon-code},
+  year   = {2026},
+}
+```
 
 ## License
 
