@@ -2,7 +2,7 @@
   <h1>ColGREP</h1>
   <p>Semantic code search for your terminal and your coding agents, built on NextPlaid.<br/>
   Combines regex filtering with semantic ranking using ColBERT multi-vector embeddings.<br/>
-  A single Rust binary. No server. No API keys. 100% local — your code never leaves your machine.</p>
+  A single Rust binary. No server. No API. 100% local, your code never leaves your machine.</p>
 
   <img width="680" src="../docs/colgrep-demo.gif" alt="ColGREP demo"/>
 
