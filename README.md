@@ -34,7 +34,8 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/re
 Build the index:
 
 ```bash
-colgrep init /path/to/project
+colgrep init /path/to/project  # specific project
+colgrep init                   # current directory
 ```
 
 Search:
@@ -265,14 +266,14 @@ Apache-2.0
 @software{next-plaid,
   title  = {NextPlaid, ColGREP: Multi-vector search, from database to coding agents.},
   url    = {https://github.com/lightonai/next-plaid},
-  author = {Raphaël Sourty},
+  author = {Sourty, Raphaël},
   year   = {2026},
 }
 
 @misc{LateOn-Code,
-title={LateOn-Code: a Family of State-Of-The-Art Late Interaction Code Retrieval Models},
-author={Chaffin, Antoine},
-url={https://huggingface.co/collections/lightonai/lateon-code},
-year={2026}
+title  = {LateOn-Code: a Family of State-Of-The-Art Late Interaction Code Retrieval Models},
+author = {Chaffin, Antoine},
+url    = {https://huggingface.co/collections/lightonai/lateon-code},
+year   = {2026}
 }
 ```

@@ -38,7 +38,8 @@ powershell -c "irm https://github.com/lightonai/next-plaid/releases/latest/downl
 **Build the index:**
 
 ```bash
-colgrep init /path/to/project
+colgrep init              # current directory
+colgrep init /path/to/project  # or a specific project
 colgrep init -y  # auto-confirm for large codebases (>10K code units)
 ```
 
@@ -372,6 +373,7 @@ colgrep init --pool-factor 1                        # disable embedding pooling 
 ```
 
 This is useful for:
+
 - **Pre-warming** the index so the first search is instant
 - **CI/dev setup** scripts where you want indexing to happen ahead of time
 - **Updating** the index after pulling new code
@@ -554,15 +556,15 @@ Lookup order:
 @software{next-plaid,
   title  = {NextPlaid, ColGREP: Multi-vector search, from database to coding agents.},
   url    = {https://github.com/lightonai/next-plaid},
-  author = {Raphaël Sourty},
+  author = {Sourty, Raphaël},
   year   = {2026},
 }
 
 @misc{LateOn-Code,
-  title  = {LateOn-Code: a Family of State-Of-The-Art Late Interaction Code Retrieval Models},
-  author = {Chaffin, Antoine},
-  url    = {https://huggingface.co/collections/lightonai/lateon-code},
-  year   = {2026},
+title  = {LateOn-Code: a Family of State-Of-The-Art Late Interaction Code Retrieval Models},
+author = {Chaffin, Antoine},
+url    = {https://huggingface.co/collections/lightonai/lateon-code},
+year   = {2026}
 }
 ```
 
