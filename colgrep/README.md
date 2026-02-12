@@ -14,8 +14,6 @@
     <a href="#how-it-works"><b>How It Works</b></a>
     &middot;
     <a href="#installation"><b>Installation</b></a>
-    &middot;
-    <a href="#python-sdk"><b>Python SDK</b></a>
   </p>
 </div>
 
@@ -513,49 +511,6 @@ Lookup order:
 2. Python environments (pip/conda/venv)
 3. System paths
 4. Auto-download to `~/.cache/onnxruntime/`
-
----
-
-## Python SDK
-
-The **colgrep-parser** package exposes the tree-sitter parser and 5-layer analysis as a Python library (built with PyO3/maturin). No ONNX Runtime or index needed -- it's the parsing layer only.
-
-```bash
-pip install git+https://github.com/lightonai/next-plaid.git#subdirectory=colgrep/python-sdk
-```
-
-```python
-from colgrep_parser import parse_code
-
-code = '''
-def fetch_with_retry(url: str, max_retries: int = 3) -> Response:
-    """Fetches data from a URL with retry logic."""
-    for i in range(max_retries):
-        try:
-            return client.get(url)
-        except RequestError as e:
-            if i == max_retries - 1:
-                raise e
-'''
-
-units = parse_code(code, "http_client.py")
-for unit in units:
-    print(unit.description())
-```
-
-**Key functions:**
-
-| Function                                         | Description                                 |
-| ------------------------------------------------ | ------------------------------------------- |
-| `parse_code(code, filename)`                     | Parse source, auto-detect language          |
-| `parse_code(code, filename, merge=True)`         | Merge all units into one (deduped metadata) |
-| `parse_code_with_language(code, filename, lang)` | Parse with explicit language                |
-| `detect_language(filename)`                      | Detect language from filename               |
-| `supported_languages()`                          | List all supported languages                |
-
-Each `CodeUnit` exposes all 5 analysis layers: `name`, `signature`, `docstring`, `parameters`, `return_type`, `calls`, `called_by`, `variables`, `imports`, `complexity`, `has_loops`, `has_branches`, `has_error_handling`, `code`, and more.
-
-See [python-sdk/README.md](python-sdk/README.md) for the full API reference.
 
 ---
 
