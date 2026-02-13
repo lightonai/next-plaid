@@ -1,0 +1,49 @@
+[package]
+name = "colgrep-mcp"
+version.workspace = true
+edition = "2021"
+description = "MCP server for semantic code search powered by colgrep"
+license = "MIT"
+repository = "https://github.com/lightonai/next-plaid"
+homepage = "https://github.com/lightonai/next-plaid"
+
+[[bin]]
+name = "colgrep-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# Core colgrep library
+colgrep = { path = "../colgrep", version = "1.0.7" }
+next-plaid = { path = "../next-plaid", version = "1.0.7" }
+
+# MCP Server SDK
+rmcp = { version = "0.15", features = ["server", "macros"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = "0.8"
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging (to stderr only, not stdout)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# File system operations
+walkdir = "2"
+
+[features]
+default = []
+# Pass through acceleration features from colgrep
+cuda = ["colgrep/cuda"]
+coreml = ["colgrep/coreml"]
+tensorrt = ["colgrep/tensorrt"]
+directml = ["colgrep/directml"]
+accelerate = ["colgrep/accelerate"]
+openblas = ["colgrep/openblas"]

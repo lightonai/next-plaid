@@ -1,5 +1,5 @@
 [workspace]
-members = ["next-plaid", "next-plaid-api", "next-plaid-onnx", "colgrep"]
+members = ["next-plaid", "next-plaid-api", "next-plaid-onnx", "colgrep", "colgrep-mcp"]
 resolver = "2"
 
 [workspace.package]
