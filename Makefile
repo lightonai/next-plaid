@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-scifact-docker benchmark-scifact-docker-cuda benchmark-scifact-docker-keep benchmark-scifact-stress benchmark-fastplaid-compat benchmark-fastplaid-compat-keep benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 benchmark-onnx-vs-pylate ci-api ci-onnx ci-cli test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-cuda docker-up docker-up-cuda docker-down docker-logs kill-api bump-version update-homebrew
+.PHONY: all build test lint fmt check clean example install-hooks compare-reference lint-python fmt-python evaluate-scifact evaluate-scifact-cached compare-scifact compare-scifact-cached benchmark-scifact-update benchmark-scifact-api benchmark-scifact-docker benchmark-scifact-docker-cuda benchmark-scifact-docker-keep benchmark-scifact-stress benchmark-fastplaid-compat benchmark-fastplaid-compat-keep benchmark-api-encoding benchmark-onnx-api benchmark-onnx-api-cuda benchmark-onnx-api-gte benchmark-onnx-api-gte-int8 benchmark-onnx-vs-pylate ci-api ci-onnx ci-cli test-api-integration test-api-rate-limit onnx-setup onnx-export onnx-export-all onnx-benchmark onnx-benchmark-rust onnx-compare onnx-lint onnx-fmt docker-build docker-build-cuda docker-up docker-up-cuda docker-down docker-logs kill-api bump-version
 
 all: fmt lint test
 
@@ -259,14 +259,6 @@ endif
 	@sed -i '' '/^\[project\]/,/^\[/{s/^version = "[^"]*"/version = "$(VERSION)"/;}' colgrep/python-sdk/pyproject.toml
 	@sed -i '' 's/__version__ = "[^"]*"/__version__ = "$(VERSION)"/' colgrep/python-sdk/python/colgrep_parser/__init__.py
 	@echo "  ✓ Updated colgrep/python-sdk versions"
-	@# Update Homebrew formula version (sha256 is updated by CI after release)
-	@if [ -f ../homebrew-colgrep/Formula/colgrep.rb ]; then \
-		sed -i '' 's|/archive/refs/tags/[^"]*\.tar\.gz|/archive/refs/tags/$(VERSION).tar.gz|' ../homebrew-colgrep/Formula/colgrep.rb; \
-		sed -i '' 's/sha256 "[^"]*"/sha256 "PLACEHOLDER — run make update-homebrew after tagging"/' ../homebrew-colgrep/Formula/colgrep.rb; \
-		echo "  ✓ Updated ../homebrew-colgrep/Formula/colgrep.rb (sha256 needs update after release)"; \
-	else \
-		echo "  ⚠ Skipped Homebrew formula (../homebrew-colgrep not found)"; \
-	fi
 	@# Update Docker image tags in READMEs and Cargo.toml
 	@sed -i '' 's/next-plaid:cpu-[0-9]*\.[0-9]*\.[0-9]*/next-plaid:cpu-$(VERSION)/g' README.md next-plaid-api/README.md Cargo.toml
 	@sed -i '' 's/next-plaid:cuda-[0-9]*\.[0-9]*\.[0-9]*/next-plaid:cuda-$(VERSION)/g' README.md next-plaid-api/README.md Cargo.toml
@@ -298,18 +290,6 @@ endif
 	@echo "  - next-plaid-onnx/python/{pyproject.toml,__init__.py,cli.py,test}"
 	@echo "  - README.md, next-plaid-api/README.md, Cargo.toml (Docker tags)"
 	@echo "  - README.md (crate version)"
-	@echo "  - ../homebrew-colgrep/Formula/colgrep.rb (version URL, sha256 placeholder)"
 	@echo "  - Lock files (Cargo.lock, uv.lock)"
 	@echo ""
 	@echo "Don't forget to commit the changes"
-	@echo "After tagging and releasing, run: make update-homebrew"
-
-# Update Homebrew formula with latest release hashes
-# Usage: make update-homebrew              # uses version from Cargo.toml
-#        make update-homebrew VERSION=1.0.7 # explicit version
-update-homebrew:
-ifdef VERSION
-	./scripts/update-homebrew.sh $(VERSION)
-else
-	./scripts/update-homebrew.sh
-endif
