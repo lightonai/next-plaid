@@ -330,6 +330,81 @@ jobs:
       - name: Publish colgrep
         run: cargo publish -p colgrep --no-verify
 
+  # Update Homebrew tap formula with new release
+  update-homebrew:
+    needs:
+      - plan
+      - host
+    if: ${{ always() && needs.host.result == 'success' && needs.plan.outputs.publishing == 'true' }}
+    runs-on: "ubuntu-22.04"
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: lightonai/homebrew-colgrep
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-colgrep
+      - name: Update formula
+        run: |
+          VERSION="${{ needs.plan.outputs.tag }}"
+          REPO="lightonai/next-plaid"
+          SHA256=$(curl -sL "https://github.com/${REPO}/archive/refs/tags/${VERSION}.tar.gz" | sha256sum | awk '{print $1}')
+
+          cat > homebrew-colgrep/Formula/colgrep.rb << 'RUBY'
+          class Colgrep < Formula
+            desc "Semantic code search powered by late-interaction models"
+            homepage "https://github.com/lightonai/next-plaid"
+          RUBY
+
+          cat >> homebrew-colgrep/Formula/colgrep.rb << RUBY
+            url "https://github.com/${REPO}/archive/refs/tags/${VERSION}.tar.gz"
+            sha256 "${SHA256}"
+          RUBY
+
+          cat >> homebrew-colgrep/Formula/colgrep.rb << 'RUBY'
+            license "Apache-2.0"
+            head "https://github.com/lightonai/next-plaid.git", branch: "main"
+
+            livecheck do
+              url :stable
+              strategy :github_latest
+            end
+
+            depends_on "rust" => :build
+
+            def install
+              features = []
+              if OS.mac?
+                features << "accelerate"
+                features << "coreml" if Hardware::CPU.arm?
+              end
+
+              args = std_cargo_args(path: "colgrep")
+              if features.any?
+                system "cargo", "install", "--features", features.join(","), *args
+              else
+                system "cargo", "install", *args
+              end
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/colgrep --version")
+            end
+          end
+          RUBY
+
+          # Fix heredoc indentation
+          sed -i 's/^          //' homebrew-colgrep/Formula/colgrep.rb
+      - name: Commit and push
+        working-directory: homebrew-colgrep
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/colgrep.rb
+          git commit -m "Update colgrep to ${{ needs.plan.outputs.tag }}"
+          git push
+
   announce:
     needs:
       - plan

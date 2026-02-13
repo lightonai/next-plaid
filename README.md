@@ -148,7 +148,7 @@ A local-first multi-vector database with a REST API. It's what powers ColGREP un
 
 ```bash
 # CPU
-docker pull ghcr.io/lightonai/next-plaid:cpu-1.0.4
+docker pull ghcr.io/lightonai/next-plaid:cpu-1.0.6
 docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
   ghcr.io/lightonai/next-plaid:cpu-1.0.4 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
@@ -157,7 +157,7 @@ docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
 
 ```bash
 # GPU
-docker pull ghcr.io/lightonai/next-plaid:cuda-1.0.4
+docker pull ghcr.io/lightonai/next-plaid:cuda-1.0.6
 docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
   ghcr.io/lightonai/next-plaid:cuda-1.0.4 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
