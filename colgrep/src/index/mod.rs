@@ -715,15 +715,29 @@ impl IndexBuilder {
                     continue;
                 }
             };
-            let source = std::fs::read_to_string(&full_path)
-                .with_context(|| format!("Failed to read {}", full_path.display()))?;
+            let source = match std::fs::read_to_string(&full_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    pb.inc(1);
+                    continue;
+                }
+            };
             let units = extract_units(path, &source, lang);
             new_units.extend(units);
 
+            let content_hash = match hash_file(&full_path) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    pb.inc(1);
+                    continue;
+                }
+            };
             new_state.files.insert(
                 path.clone(),
                 FileInfo {
-                    content_hash: hash_file(&full_path)?,
+                    content_hash,
                     mtime: get_mtime(&full_path)?,
                 },
             );
@@ -953,15 +967,29 @@ impl IndexBuilder {
                     continue;
                 }
             };
-            let source = std::fs::read_to_string(&full_path)
-                .with_context(|| format!("Failed to read {}", full_path.display()))?;
+            let source = match std::fs::read_to_string(&full_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    pb.inc(1);
+                    continue;
+                }
+            };
             let units = extract_units(path, &source, lang);
             all_units.extend(units);
 
+            let content_hash = match hash_file(&full_path) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    pb.inc(1);
+                    continue;
+                }
+            };
             state.files.insert(
                 path.clone(),
                 FileInfo {
-                    content_hash: hash_file(&full_path)?,
+                    content_hash,
                     mtime: get_mtime(&full_path)?,
                 },
             );
@@ -1125,6 +1153,7 @@ impl IndexBuilder {
         };
 
         let mut parsing_interrupted = false;
+        let mut skipped_files: Vec<PathBuf> = Vec::new();
         for path in &files_to_index {
             // Check for interrupt during parsing
             if is_interrupted() {
@@ -1142,15 +1171,40 @@ impl IndexBuilder {
                     continue;
                 }
             };
-            let source = std::fs::read_to_string(&full_path)
-                .with_context(|| format!("Failed to read {}", full_path.display()))?;
+            let source = match std::fs::read_to_string(&full_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    // Remove from state so it stays consistent with the index
+                    // (changed files will have their old entries deleted below)
+                    state.files.remove(path);
+                    skipped_files.push(path.clone());
+                    if let Some(ref pb) = pb {
+                        pb.inc(1);
+                    }
+                    continue;
+                }
+            };
             let units = extract_units(path, &source, lang);
             new_units.extend(units);
 
+            let content_hash = match hash_file(&full_path) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    // Remove from state so it stays consistent with the index
+                    state.files.remove(path);
+                    skipped_files.push(path.clone());
+                    if let Some(ref pb) = pb {
+                        pb.inc(1);
+                    }
+                    continue;
+                }
+            };
             state.files.insert(
                 path.clone(),
                 FileInfo {
-                    content_hash: hash_file(&full_path)?,
+                    content_hash,
                     mtime: get_mtime(&full_path)?,
                 },
             );
@@ -1167,6 +1221,14 @@ impl IndexBuilder {
             // deleted from the index but not re-added). Next run will detect the
             // mismatch and re-index properly.
             anyhow::bail!("Indexing interrupted by user");
+        }
+
+        // Delete stale index entries for skipped files that were previously indexed
+        // (e.g., files that became unreadable due to invalid UTF-8)
+        for file_path in &skipped_files {
+            if plan.changed.contains(file_path) {
+                let _ = self.delete_file_from_index(index_path_str, file_path);
+            }
         }
 
         // 3. Add new units to index
@@ -1329,6 +1391,7 @@ impl IndexBuilder {
         let walker = WalkBuilder::new(&self.project_root)
             .hidden(false) // Handle hidden files manually in should_ignore (with .github exception)
             .git_ignore(true)
+            .follow_links(false) // Explicitly prevent symlink traversal outside project
             .filter_entry(|entry| !should_ignore(entry.path()))
             .build();
 
@@ -1355,7 +1418,12 @@ impl IndexBuilder {
 
             if languages.map(|ls| ls.contains(&lang)).unwrap_or(true) {
                 if let Ok(rel_path) = path.strip_prefix(&self.project_root) {
-                    files.push(rel_path.to_path_buf());
+                    // Verify the file is truly within the project root (handles symlink escapes)
+                    if is_within_project_root(&self.project_root, rel_path) {
+                        files.push(rel_path.to_path_buf());
+                    } else {
+                        skipped += 1;
+                    }
                 }
             }
         }
@@ -1544,7 +1612,13 @@ impl IndexBuilder {
 
         for path in &current_files {
             let full_path = self.project_root.join(path);
-            let hash = hash_file(&full_path)?;
+            let hash = match hash_file(&full_path) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    continue;
+                }
+            };
 
             match state.files.get(path) {
                 Some(info) if info.content_hash == hash => plan.unchanged += 1,
