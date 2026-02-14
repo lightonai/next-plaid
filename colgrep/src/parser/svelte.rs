@@ -180,7 +180,10 @@ pub fn extract_svelte_units(path: &Path, source: &str) -> Vec<CodeUnit> {
 
     // 1. Extract and parse all <script> blocks
     for script in extract_script_blocks(source) {
-        let mut script_units = parse_script_content(path, &script.content);
+        let (mut script_units, depth_limit_hit) = parse_script_content(path, &script.content);
+        if depth_limit_hit {
+            return Vec::new();
+        }
 
         // Adjust line numbers to match original file positions
         for unit in &mut script_units {
@@ -199,21 +202,22 @@ pub fn extract_svelte_units(path: &Path, source: &str) -> Vec<CodeUnit> {
 }
 
 /// Parse script content as TypeScript and extract code units.
-fn parse_script_content(path: &Path, script_source: &str) -> Vec<CodeUnit> {
+fn parse_script_content(path: &Path, script_source: &str) -> (Vec<CodeUnit>, bool) {
     // Use TypeScript for parsing (works for both TS and JS in Svelte)
     let lang = Language::TypeScript;
+    let max_depth = super::max_recursion_depth();
 
     let mut parser = Parser::new();
     if parser
         .set_language(&get_tree_sitter_language(lang))
         .is_err()
     {
-        return Vec::new();
+        return (Vec::new(), false);
     }
 
     let tree = match parser.parse(script_source, None) {
         Some(t) => t,
-        None => return Vec::new(),
+        None => return (Vec::new(), false),
     };
 
     let lines: Vec<&str> = script_source.lines().collect();
@@ -221,6 +225,7 @@ fn parse_script_content(path: &Path, script_source: &str) -> Vec<CodeUnit> {
     let file_imports = extract_file_imports(tree.root_node(), bytes, lang);
 
     let mut units = Vec::new();
+    let mut depth_limit_hit = false;
     extract_from_node(
         tree.root_node(),
         path,
@@ -230,14 +235,26 @@ fn parse_script_content(path: &Path, script_source: &str) -> Vec<CodeUnit> {
         &mut units,
         None,
         &file_imports,
+        0,
+        max_depth,
+        &mut depth_limit_hit,
     );
+
+    if depth_limit_hit {
+        eprintln!(
+            "⚠️  Skipping {} (AST nesting exceeded max depth: {})",
+            path.display(),
+            max_depth
+        );
+        return (Vec::new(), true);
+    }
 
     // Mark units with Svelte language for proper identification
     for unit in &mut units {
         unit.language = Language::Svelte;
     }
 
-    units
+    (units, false)
 }
 
 /// Recursively extract code units from AST nodes.
@@ -251,7 +268,18 @@ fn extract_from_node(
     units: &mut Vec<CodeUnit>,
     parent_class: Option<&str>,
     file_imports: &[String],
+    depth: usize,
+    max_depth: usize,
+    depth_limit_hit: &mut bool,
 ) {
+    if *depth_limit_hit {
+        return;
+    }
+    if depth > max_depth {
+        *depth_limit_hit = true;
+        return;
+    }
+
     let kind = node.kind();
 
     if is_function_node(kind, lang) {
@@ -277,6 +305,9 @@ fn extract_from_node(
                         units,
                         Some(&class_name),
                         file_imports,
+                        depth + 1,
+                        max_depth,
+                        depth_limit_hit,
                     );
                 }
             }
@@ -299,6 +330,9 @@ fn extract_from_node(
             units,
             parent_class,
             file_imports,
+            depth + 1,
+            max_depth,
+            depth_limit_hit,
         );
     }
 }

@@ -14,6 +14,8 @@ const CONFIG_FILE: &str = "config.json";
 
 /// Default pool factor for embedding compression: 2 (2x compression)
 pub const DEFAULT_POOL_FACTOR: usize = 2;
+/// Default parser recursion depth guard.
+pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1024;
 
 /// Default batch size per encoding session for CPU
 /// Testing shows batch_size=1 gives best performance with parallel sessions on CPU
@@ -128,6 +130,11 @@ pub struct Config {
     /// When true, shows full content grouped by file with syntax highlighting
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verbose: Option<bool>,
+
+    /// Maximum recursion depth for parser/analysis AST walks (default: 1024)
+    /// Protects against pathological files that would otherwise overflow the stack.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_recursion_depth: Option<usize>,
 }
 
 impl Config {
@@ -291,6 +298,23 @@ impl Config {
     /// Clear the verbose setting (revert to default: false)
     pub fn clear_verbose(&mut self) {
         self.verbose = None;
+    }
+
+    /// Get the max parser recursion depth.
+    /// Returns configured value or default (1024).
+    pub fn get_max_recursion_depth(&self) -> usize {
+        self.max_recursion_depth
+            .unwrap_or(DEFAULT_MAX_RECURSION_DEPTH)
+    }
+
+    /// Set max parser recursion depth (minimum 1).
+    pub fn set_max_recursion_depth(&mut self, depth: usize) {
+        self.max_recursion_depth = Some(depth.max(1));
+    }
+
+    /// Clear max parser recursion depth setting (revert to default).
+    pub fn clear_max_recursion_depth(&mut self) {
+        self.max_recursion_depth = None;
     }
 }
 

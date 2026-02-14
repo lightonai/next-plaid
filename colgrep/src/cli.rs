@@ -199,6 +199,9 @@ EXAMPLES:
     # Set batch size per session (default: 1)
     colgrep settings --batch-size 2
 
+    # Set parser recursion guard depth (default: 1024)
+    colgrep settings --max-recursion-depth 1024
+
     # Set both at once
     colgrep settings --k 25 --n 8
 
@@ -212,7 +215,8 @@ NOTES:
     • Default output is compact (filepath:lines). Use -v or --verbose for full content
     • FP32 (full-precision) is the default
     • Pool factor 2 (default) reduces index size by ~50%. Use 1 to disable pooling
-    • Parallel sessions default to CPU count. Batch-size 1 (default) maximizes throughput";
+    • Parallel sessions default to CPU count. Batch-size 1 (default) maximizes throughput
+    • Parser recursion depth defaults to 1024. Increase only if needed for deep ASTs";
 
 #[derive(Parser)]
 #[command(
@@ -534,6 +538,10 @@ pub enum Commands {
         /// Smaller batches work better with parallel sessions.
         #[arg(long = "batch-size", value_name = "SIZE")]
         batch_size: Option<usize>,
+
+        /// Set parser recursion depth guard (use 0 to reset to default 1024)
+        #[arg(long = "max-recursion-depth", value_name = "DEPTH")]
+        max_recursion_depth: Option<usize>,
 
         /// Enable verbose output by default (show full content with syntax highlighting)
         #[arg(long)]
