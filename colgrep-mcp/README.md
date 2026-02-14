@@ -6,8 +6,10 @@ An MCP (Model Context Protocol) server that provides semantic code search capabi
 
 - **Semantic Search**: Understand natural language queries and find relevant code even when exact keywords don't match
 - **Intelligent Indexing**: Automatically index your codebase for fast semantic search
+- **🆕 Incremental Indexing**: Watch for file changes and update index automatically
 - **Multi-language Support**: Support for 45+ programming languages via tree-sitter
 - **ColBERT-powered**: Uses state-of-the-art multi-vector retrieval for accurate results
+- **JSON-RPC Protocol**: Full MCP protocol implementation over stdio
 
 ## Installation
 
@@ -86,12 +88,21 @@ Get the status of the code index, including statistics and metadata.
 
 **Parameters:** None
 
-#### 4. `update_index`
+#### 4. `enable_auto_index` 🆕
 
-Update the index with recent changes (incremental update).
+Enable automatic incremental indexing when files change.
 
 **Parameters:**
-- `force` (optional): Force full re-index instead of incremental update
+- `enabled` (optional): Whether to enable or disable auto-indexing (default: true)
+
+**Example:**
+```json
+{
+  "enabled": true
+}
+```
+
+**Note:** Once enabled, the file watcher monitors code files for changes and automatically updates the index. This is much faster than full re-indexing
 
 ## How It Works
 
@@ -135,16 +146,30 @@ ColGREP supports 45+ programming languages including:
 
 **Current Version**: 1.0.7
 
-The core functionality (indexing and search) is implemented and working. Full MCP protocol integration with tool definitions and handlers is in progress.
+✅ **Completed Features:**
+- Core indexing and semantic search
+- Full JSON-RPC MCP protocol implementation
+- File watching for automatic incremental indexing
+- Multi-tool support (index, search, status, auto-index)
+- LLM query generation guidance
+- Cloudflare integration architecture
+
+## Recent Enhancements (Latest)
+
+- ✅ **Incremental Indexing**: File watching with automatic index updates
+- ✅ **JSON-RPC Protocol**: Complete MCP implementation over stdio
+- ✅ **Tool Registration**: Proper tool handlers and routing
+- ✅ **LLM Guidance**: Comprehensive query generation rules
+- ✅ **Cloud Integration**: Cloudflare D1/R2/Vectorize architecture
 
 ## Future Enhancements
 
-- [ ] Complete MCP protocol integration with rmcp library
-- [ ] Add incremental update support
+- [ ] Implement file deletion from index
 - [ ] Add regex/hybrid search modes
-- [ ] Add more filtering options (by directory, file type, etc.)
-- [ ] Add progress notifications for long-running operations
-- [ ] Add caching for faster repeated searches
+- [ ] Add progress notifications with streaming
+- [ ] Support multi-project workspaces
+- [ ] Implement query result caching
+- [ ] Add telemetry and analytics
 
 ## Contributing
 

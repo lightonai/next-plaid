@@ -11,6 +11,8 @@ use tracing::{debug, error, info};
 
 use colgrep::{ensure_model, index_exists, Config, IndexBuilder, Searcher, DEFAULT_MODEL};
 
+use crate::file_watcher::FileWatcher;
+
 /// JSON-RPC 2.0 Request
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -221,6 +223,20 @@ impl McpServer {
                         "type": "object",
                         "properties": {}
                     }
+                },
+                {
+                    "name": "enable_auto_index",
+                    "description": "Enable automatic incremental indexing when files change. The server will watch for file changes and update the index automatically.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "enabled": {
+                                "type": "boolean",
+                                "description": "Whether to enable or disable auto-indexing",
+                                "default": true
+                            }
+                        }
+                    }
                 }
             ]
         }))
@@ -242,6 +258,7 @@ impl McpServer {
             "index_codebase" => self.tool_index_codebase(args).await,
             "search" => self.tool_search(args).await,
             "get_status" => self.tool_get_status(args).await,
+            "enable_auto_index" => self.tool_enable_auto_index(args).await,
             _ => Err(format!("Unknown tool: {}", name)),
         }
     }
@@ -418,5 +435,59 @@ impl McpServer {
             }],
             "isError": false
         }))
+    }
+
+    async fn tool_enable_auto_index(&self, args: Value) -> Result<Value, String> {
+        let enabled = args
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        if enabled {
+            // Check if index exists
+            if !index_exists(&self.cwd) {
+                return Err(
+                    "No index found. Please run index_codebase first before enabling auto-indexing."
+                        .to_string(),
+                );
+            }
+
+            // Start file watcher
+            info!("Starting file watcher for auto-indexing");
+
+            let watcher = FileWatcher::new(self.cwd.clone())
+                .map_err(|e| format!("Failed to create file watcher: {}", e))?;
+
+            // Start watching in background
+            let watcher_handle = watcher
+                .start()
+                .await
+                .map_err(|e| format!("Failed to start file watcher: {}", e))?;
+
+            // Start event processor in background
+            tokio::spawn(async move {
+                if let Err(e) = watcher.process_events().await {
+                    error!("File watcher error: {}", e);
+                }
+                // Keep the watcher alive
+                drop(watcher_handle);
+            });
+
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": "Auto-indexing enabled. The index will be automatically updated when files change."
+                }],
+                "isError": false
+            }))
+        } else {
+            Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": "Auto-indexing disabled. Note: File watchers cannot be stopped once started in this session."
+                }],
+                "isError": false
+            }))
+        }
     }
 }

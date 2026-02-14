@@ -37,6 +37,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # File system operations
 walkdir = "2"
+notify = "6.1"
+notify-debouncer-full = "0.3"
 
 [features]
 default = []

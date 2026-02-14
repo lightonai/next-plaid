@@ -4,6 +4,7 @@
 //! capabilities powered by colgrep. This server exposes tools for indexing
 //! and searching code with better results than simple keyword or symbol search.
 
+mod file_watcher;
 mod mcp_server;
 
 use anyhow::{Context, Result};
