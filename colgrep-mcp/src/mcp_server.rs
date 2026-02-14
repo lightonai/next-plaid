@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info};
 
-use colgrep::{ensure_model, index_exists, Config, IndexBuilder, Searcher, DEFAULT_MODEL};
-
+use crate::backend::Backend;
+use crate::config::ServerConfig;
 use crate::file_watcher::FileWatcher;
 
 /// JSON-RPC 2.0 Request
@@ -45,14 +45,16 @@ struct JsonRpcError {
 /// MCP Server State
 pub struct McpServer {
     cwd: PathBuf,
-    config: Config,
+    backend: std::sync::Arc<tokio::sync::Mutex<Box<dyn Backend>>>,
+    config: ServerConfig,
 }
 
 impl McpServer {
-    pub fn new(cwd: PathBuf) -> Result<Self> {
+    pub fn new(cwd: PathBuf, backend: Box<dyn Backend>, config: ServerConfig) -> Result<Self> {
         Ok(Self {
             cwd,
-            config: Config::default(),
+            backend: std::sync::Arc::new(tokio::sync::Mutex::new(backend)),
+            config,
         })
     }
 
@@ -272,42 +274,25 @@ impl McpServer {
 
         let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
 
-        info!("Indexing codebase at: {:?}", path);
+        info!("Indexing codebase at: {:?} (force={})", path, force);
 
-        // Ensure model
-        let model_path = ensure_model(Some(DEFAULT_MODEL), true)
-            .map_err(|e| format!("Failed to ensure model: {}", e))?;
-
-        // Build index
-        let quantized = !self.config.use_fp32();
-        let parallel_sessions = Some(self.config.get_parallel_sessions());
-        let batch_size = Some(self.config.get_batch_size());
-
-        let mut builder = IndexBuilder::with_options(
-            &path,
-            &model_path,
-            quantized,
-            None,
-            parallel_sessions,
-            batch_size,
-        )
-        .map_err(|e| format!("Failed to create index builder: {}", e))?;
-
-        builder.set_auto_confirm(true);
-        builder.set_model_name(DEFAULT_MODEL);
-
-        // Index
-        let stats = builder
-            .index(None, force)
+        // Index using backend
+        let mut backend = self.backend.lock().await;
+        let stats = backend
+            .index_full(&path, force)
+            .await
             .map_err(|e| format!("Indexing failed: {}", e))?;
 
         let text = format!(
             "Indexing completed successfully!\n\
-             - Added: {}\n\
-             - Changed: {}\n\
-             - Deleted: {}\n\
-             - Unchanged: {}",
-            stats.added, stats.changed, stats.deleted, stats.unchanged
+             - Files indexed: {}\n\
+             - Code units: {}\n\
+             - Vectors: {}\n\
+             - Index size: {:.2} MB",
+            stats.file_count,
+            stats.code_unit_count,
+            stats.vector_count,
+            stats.size_bytes as f64 / 1024.0 / 1024.0
         );
 
         Ok(json!({
@@ -350,48 +335,26 @@ impl McpServer {
             })
             .unwrap_or_default();
 
-        info!("Searching for: {}", query);
+        info!("Searching for: {} (max_results={})", query, max_results);
 
-        // Check if index exists
-        if !index_exists(&self.cwd) {
-            return Err("No index found. Please run index_codebase first.".to_string());
-        }
+        // Search using backend
+        let backend = self.backend.lock().await;
 
-        // Ensure model
-        let model_path = ensure_model(Some(DEFAULT_MODEL), true)
-            .map_err(|e| format!("Failed to ensure model: {}", e))?;
+        let include_patterns = if include.is_empty() {
+            None
+        } else {
+            Some(include.as_slice())
+        };
 
-        // Create searcher
-        let quantized = !self.config.use_fp32();
-        let searcher = Searcher::load_with_quantized(&self.cwd, &model_path, quantized)
-            .map_err(|e| format!("Failed to create searcher: {}", e))?;
+        let exclude_patterns = if exclude.is_empty() {
+            None
+        } else {
+            Some(exclude.as_slice())
+        };
 
-        // Apply filters
-        let mut doc_ids: Option<Vec<i64>> = None;
-
-        if !include.is_empty() {
-            let include_ids = searcher
-                .filter_by_file_patterns(&include)
-                .map_err(|e| format!("Invalid include pattern: {}", e))?;
-            doc_ids = Some(include_ids);
-        }
-
-        if !exclude.is_empty() {
-            let exclude_ids = searcher
-                .filter_exclude_by_patterns(&exclude)
-                .map_err(|e| format!("Invalid exclude pattern: {}", e))?;
-            doc_ids = Some(match doc_ids {
-                Some(existing) => existing
-                    .into_iter()
-                    .filter(|id| exclude_ids.contains(id))
-                    .collect(),
-                None => exclude_ids,
-            });
-        }
-
-        // Search
-        let results = searcher
-            .search(query, max_results, doc_ids.as_deref())
+        let results = backend
+            .search(&self.cwd, query, max_results, include_patterns, exclude_patterns)
+            .await
             .map_err(|e| format!("Search failed: {}", e))?;
 
         // Format results
@@ -399,14 +362,13 @@ impl McpServer {
         output.push_str(&format!("Found {} results:\n\n", results.len()));
 
         for (idx, result) in results.iter().enumerate() {
-            let unit = &result.unit;
             output.push_str(&format!(
                 "{}. {}:{} (score: {:.4})\n```\n{}\n```\n\n",
                 idx + 1,
-                unit.file.display(),
-                unit.line,
+                result.file_path,
+                result.line_number,
                 result.score,
-                unit.code
+                result.snippet
             ));
         }
 
@@ -420,10 +382,31 @@ impl McpServer {
     }
 
     async fn tool_get_status(&self, _args: Value) -> Result<Value, String> {
-        let has_index = index_exists(&self.cwd);
+        let backend = self.backend.lock().await;
+
+        let has_index = backend
+            .index_exists(&self.cwd)
+            .await
+            .map_err(|e| format!("Failed to check index status: {}", e))?;
 
         let text = if has_index {
-            "Index exists and is ready for searching.".to_string()
+            // Get detailed statistics
+            match backend.get_stats(&self.cwd).await {
+                Ok(stats) => format!(
+                    "Index exists and is ready for searching.\n\
+                     - Files indexed: {}\n\
+                     - Code units: {}\n\
+                     - Vectors: {}\n\
+                     - Index size: {:.2} MB\n\
+                     - Backend: {:?}",
+                    stats.file_count,
+                    stats.code_unit_count,
+                    stats.vector_count,
+                    stats.size_bytes as f64 / 1024.0 / 1024.0,
+                    self.config.backend
+                ),
+                Err(_) => "Index exists and is ready for searching.".to_string(),
+            }
         } else {
             "No index found. Run index_codebase to create one.".to_string()
         };
@@ -445,17 +428,27 @@ impl McpServer {
 
         if enabled {
             // Check if index exists
-            if !index_exists(&self.cwd) {
+            let backend = self.backend.lock().await;
+            let has_index = backend
+                .index_exists(&self.cwd)
+                .await
+                .map_err(|e| format!("Failed to check index status: {}", e))?;
+
+            if !has_index {
                 return Err(
                     "No index found. Please run index_codebase first before enabling auto-indexing."
                         .to_string(),
                 );
             }
+            drop(backend); // Release lock
 
             // Start file watcher
             info!("Starting file watcher for auto-indexing");
 
-            let watcher = FileWatcher::new(self.cwd.clone())
+            let backend_arc = self.backend.clone();
+            let root = self.cwd.clone();
+
+            let watcher = FileWatcher::new(self.cwd.clone(), backend_arc.clone())
                 .map_err(|e| format!("Failed to create file watcher: {}", e))?;
 
             // Start watching in background
@@ -466,7 +459,7 @@ impl McpServer {
 
             // Start event processor in background
             tokio::spawn(async move {
-                if let Err(e) = watcher.process_events().await {
+                if let Err(e) = watcher.process_events(root).await {
                     error!("File watcher error: {}", e);
                 }
                 // Keep the watcher alive

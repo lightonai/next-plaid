@@ -3,7 +3,6 @@
 //! Watches the codebase for file changes and triggers incremental index updates
 
 use anyhow::{Context, Result};
-use colgrep::{ensure_model, index_exists, Config, IndexBuilder, DEFAULT_MODEL};
 use notify_debouncer_full::{
     new_debouncer,
     notify::{RecursiveMode, Watcher},
@@ -15,6 +14,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
+
+use crate::backend::{Backend, FileChange};
 
 /// File change event
 #[derive(Debug, Clone)]
@@ -31,8 +32,8 @@ pub enum FileChangeEvent {
 pub struct FileWatcher {
     /// Project root directory
     root: PathBuf,
-    /// Configuration
-    config: Config,
+    /// Backend for incremental updates
+    backend: Arc<Mutex<Box<dyn Backend>>>,
     /// Channel to send file change events
     tx: mpsc::UnboundedSender<FileChangeEvent>,
     /// Receiver for file change events
@@ -41,12 +42,12 @@ pub struct FileWatcher {
 
 impl FileWatcher {
     /// Create a new file watcher
-    pub fn new(root: PathBuf) -> Result<Self> {
+    pub fn new(root: PathBuf, backend: Arc<Mutex<Box<dyn Backend>>>) -> Result<Self> {
         let (tx, rx) = mpsc::unbounded_channel();
 
         Ok(Self {
             root,
-            config: Config::default(),
+            backend,
             tx,
             rx: Arc::new(Mutex::new(rx)),
         })
@@ -130,13 +131,13 @@ impl FileWatcher {
     }
 
     /// Process file change events and update index
-    pub async fn process_events(&self) -> Result<()> {
+    pub async fn process_events(&self, root: PathBuf) -> Result<()> {
         info!("Starting event processor");
 
         let mut rx = self.rx.lock().await;
 
         while let Some(event) = rx.recv().await {
-            match self.handle_event(event).await {
+            match self.handle_event(&root, event).await {
                 Ok(()) => {}
                 Err(e) => {
                     error!("Failed to handle file change event: {}", e);
@@ -147,62 +148,28 @@ impl FileWatcher {
         Ok(())
     }
 
-    async fn handle_event(&self, event: FileChangeEvent) -> Result<()> {
-        match event {
+    async fn handle_event(&self, root: &Path, event: FileChangeEvent) -> Result<()> {
+        // Convert FileChangeEvent to Vec<FileChange>
+        let changes: Vec<FileChange> = match event {
             FileChangeEvent::Created(files) => {
                 info!("Files created: {}", files.len());
-                self.index_files(&files, false).await?;
+                files.into_iter().map(FileChange::Created).collect()
             }
             FileChangeEvent::Modified(files) => {
                 info!("Files modified: {}", files.len());
-                self.index_files(&files, true).await?;
+                files.into_iter().map(FileChange::Modified).collect()
             }
             FileChangeEvent::Deleted(files) => {
                 info!("Files deleted: {}", files.len());
-                // TODO: Implement deletion from index
-                warn!("File deletion from index not yet implemented");
+                files.into_iter().map(FileChange::Deleted).collect()
             }
-        }
+        };
 
-        Ok(())
-    }
+        // Update index using backend
+        let mut backend = self.backend.lock().await;
+        backend.update_incremental(root, &changes).await?;
 
-    async fn index_files(&self, files: &[PathBuf], _force: bool) -> Result<()> {
-        // Only index if we have an existing index
-        if !index_exists(&self.root) {
-            debug!("No index exists, skipping incremental update");
-            return Ok(());
-        }
-
-        debug!("Indexing {} files incrementally", files.len());
-
-        // Ensure model
-        let model_path = ensure_model(Some(DEFAULT_MODEL), true)?;
-
-        // Create index builder
-        let quantized = !self.config.use_fp32();
-        let parallel_sessions = Some(self.config.get_parallel_sessions());
-        let batch_size = Some(self.config.get_batch_size());
-
-        let mut builder = IndexBuilder::with_options(
-            &self.root,
-            &model_path,
-            quantized,
-            None,
-            parallel_sessions,
-            batch_size,
-        )?;
-
-        builder.set_auto_confirm(true);
-        builder.set_model_name(DEFAULT_MODEL);
-
-        // Index specific files
-        let stats = builder.index_specific_files(files)?;
-
-        info!(
-            "Incremental indexing completed: added={}, changed={}, deleted={}",
-            stats.added, stats.changed, stats.deleted
-        );
+        info!("Incremental index update completed");
 
         Ok(())
     }

@@ -14,13 +14,13 @@ path = "src/main.rs"
 [dependencies]
 # Core colgrep library
 colgrep = { path = "../colgrep", version = "1.0.7" }
-next-plaid = { path = "../next-plaid", version = "1.0.7" }
 
 # MCP Server SDK
 rmcp = { version = "0.15", features = ["server", "macros"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
 
 # Serialization
 serde = { workspace = true }
@@ -39,9 +39,23 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2"
 notify = "6.1"
 notify-debouncer-full = "0.3"
+regex = "1.10"
+chrono = "0.4"
+
+# Database support (optional)
+tokio-postgres = { version = "0.7", optional = true }
+pgvector = { version = "0.4", features = ["postgres"], optional = true }
+deadpool-postgres = { version = "0.14", optional = true }
+
+# Configuration
+toml = "0.8"
+dirs = "5.0"
 
 [features]
-default = []
+default = ["local-db"]
+# Backend options (mutually exclusive - choose one)
+local-db = ["tokio-postgres", "pgvector", "deadpool-postgres"]
+cloudflare = []
 # Pass through acceleration features from colgrep
 cuda = ["colgrep/cuda"]
 coreml = ["colgrep/coreml"]

@@ -7,6 +7,7 @@ An MCP (Model Context Protocol) server that provides semantic code search capabi
 - **Semantic Search**: Understand natural language queries and find relevant code even when exact keywords don't match
 - **Intelligent Indexing**: Automatically index your codebase for fast semantic search
 - **🆕 Incremental Indexing**: Watch for file changes and update index automatically
+- **🆕 Flexible Backends**: Choose between filesystem, local PostgreSQL + pgvector, or Cloudflare cloud storage
 - **Multi-language Support**: Support for 45+ programming languages via tree-sitter
 - **ColBERT-powered**: Uses state-of-the-art multi-vector retrieval for accurate results
 - **JSON-RPC Protocol**: Full MCP protocol implementation over stdio
@@ -20,6 +21,29 @@ cargo build --release -p colgrep-mcp
 ```
 
 The binary will be available at `target/release/colgrep-mcp`.
+
+### Backend Options
+
+ColGREP MCP supports three storage backends:
+
+1. **Filesystem** (default) - Stores index locally in `.colgrep/` directory
+   ```bash
+   cargo build --release -p colgrep-mcp --no-default-features
+   ```
+
+2. **Local (PostgreSQL + pgvector)** - Self-hosted with vector search acceleration
+   ```bash
+   cargo build --release -p colgrep-mcp  # default feature
+   ```
+   Requires PostgreSQL with pgvector extension. See [CONFIG.md](./CONFIG.md) for setup.
+
+3. **Cloudflare** - Cloud-native using D1, R2, and Vectorize (coming soon)
+   ```bash
+   cargo build --release -p colgrep-mcp --features cloudflare
+   ```
+   See [CLOUDFLARE.md](./CLOUDFLARE.md) for architecture details.
+
+**Configuration**: See [CONFIG.md](./CONFIG.md) for complete configuration guide.
 
 ### Adding to Claude Code
 
@@ -156,19 +180,25 @@ ColGREP supports 45+ programming languages including:
 
 ## Recent Enhancements (Latest)
 
+- ✅ **Backend Abstraction**: Pluggable storage backends (filesystem, PostgreSQL, Cloudflare)
+- ✅ **PostgreSQL + pgvector**: Local self-hosted option with vector search acceleration
+- ✅ **Configuration System**: TOML-based configuration with environment variable overrides
+- ✅ **Database Migrations**: Automatic schema management for PostgreSQL backend
 - ✅ **Incremental Indexing**: File watching with automatic index updates
 - ✅ **JSON-RPC Protocol**: Complete MCP implementation over stdio
 - ✅ **Tool Registration**: Proper tool handlers and routing
 - ✅ **LLM Guidance**: Comprehensive query generation rules
-- ✅ **Cloud Integration**: Cloudflare D1/R2/Vectorize architecture
+- ✅ **Cloud Integration**: Cloudflare D1/R2/Vectorize architecture design
 
 ## Future Enhancements
 
-- [ ] Implement file deletion from index
-- [ ] Add regex/hybrid search modes
+- [ ] Complete Cloudflare backend implementation
 - [ ] Add progress notifications with streaming
 - [ ] Support multi-project workspaces
 - [ ] Implement query result caching
+- [ ] Add context extraction for search results
+- [ ] Multi-user collaboration features (PostgreSQL backend)
+- [ ] Add regex/hybrid search modes
 - [ ] Add telemetry and analytics
 
 ## Contributing
