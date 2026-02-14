@@ -3,8 +3,6 @@
 use super::types::Language;
 use tree_sitter::Node;
 
-const MAX_ANALYSIS_RECURSION_DEPTH: usize = 1024;
-
 /// Iterate over all nodes in a subtree using an explicit stack (no recursion).
 fn walk_tree<'a, F>(root: Node<'a>, mut f: F)
 where
@@ -732,8 +730,9 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         imports: &mut Vec<String>,
         lang: Language,
         depth: usize,
+        max_depth: usize,
     ) {
-        if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+        if depth > max_depth {
             return;
         }
         if import_types.contains(&node.kind()) {
@@ -776,7 +775,15 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                             if text != "require" {
                                 // Not a require call, skip
                                 for child in node.children(&mut node.walk()) {
-                                    visit(child, bytes, import_types, imports, lang, depth + 1);
+                                    visit(
+                                        child,
+                                        bytes,
+                                        import_types,
+                                        imports,
+                                        lang,
+                                        depth + 1,
+                                        max_depth,
+                                    );
                                 }
                                 return;
                             }
@@ -785,8 +792,13 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                 }
                 // Extract the string argument from require("json")
                 if let Some(args) = node.child_by_field_name("arguments") {
-                    fn find_string_content(node: Node, bytes: &[u8], depth: usize) -> Option<String> {
-                        if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+                    fn find_string_content(
+                        node: Node,
+                        bytes: &[u8],
+                        depth: usize,
+                        max_depth: usize,
+                    ) -> Option<String> {
+                        if depth > max_depth {
                             return None;
                         }
                         if node.kind() == "string_content" {
@@ -795,13 +807,15 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                             }
                         }
                         for child in node.children(&mut node.walk()) {
-                            if let Some(content) = find_string_content(child, bytes, depth + 1) {
+                            if let Some(content) =
+                                find_string_content(child, bytes, depth + 1, max_depth)
+                            {
                                 return Some(content);
                             }
                         }
                         None
                     }
-                    if let Some(module) = find_string_content(args, bytes, 0) {
+                    if let Some(module) = find_string_content(args, bytes, 0, max_depth) {
                         if !module.is_empty() {
                             imports.push(module);
                         }
@@ -814,8 +828,13 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
             if lang == Language::Go {
                 // Go import_spec contains interpreted_string_literal
                 // Extract the last path component as the package name
-                fn find_string_content(node: Node, bytes: &[u8], depth: usize) -> Option<String> {
-                    if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+                fn find_string_content(
+                    node: Node,
+                    bytes: &[u8],
+                    depth: usize,
+                    max_depth: usize,
+                ) -> Option<String> {
+                    if depth > max_depth {
                         return None;
                     }
                     if node.kind() == "interpreted_string_literal_content" {
@@ -825,13 +844,14 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                         }
                     }
                     for child in node.children(&mut node.walk()) {
-                        if let Some(content) = find_string_content(child, bytes, depth + 1) {
+                        if let Some(content) = find_string_content(child, bytes, depth + 1, max_depth)
+                        {
                             return Some(content);
                         }
                     }
                     None
                 }
-                if let Some(pkg) = find_string_content(node, bytes, 0) {
+                if let Some(pkg) = find_string_content(node, bytes, 0, max_depth) {
                     if !pkg.is_empty() {
                         imports.push(pkg);
                     }
@@ -841,8 +861,13 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
 
             // For OCaml, extract the module_name from open_module
             if lang == Language::Ocaml {
-                fn find_module_name(node: Node, bytes: &[u8], depth: usize) -> Option<String> {
-                    if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+                fn find_module_name(
+                    node: Node,
+                    bytes: &[u8],
+                    depth: usize,
+                    max_depth: usize,
+                ) -> Option<String> {
+                    if depth > max_depth {
                         return None;
                     }
                     if node.kind() == "module_name" {
@@ -851,13 +876,13 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                         }
                     }
                     for child in node.children(&mut node.walk()) {
-                        if let Some(name) = find_module_name(child, bytes, depth + 1) {
+                        if let Some(name) = find_module_name(child, bytes, depth + 1, max_depth) {
                             return Some(name);
                         }
                     }
                     None
                 }
-                if let Some(module) = find_module_name(node, bytes, 0) {
+                if let Some(module) = find_module_name(node, bytes, 0, max_depth) {
                     if !module.is_empty() {
                         imports.push(module);
                     }
@@ -903,11 +928,28 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
             }
         }
         for child in node.children(&mut node.walk()) {
-            visit(child, bytes, import_types, imports, lang, depth + 1);
+            visit(
+                child,
+                bytes,
+                import_types,
+                imports,
+                lang,
+                depth + 1,
+                max_depth,
+            );
         }
     }
 
-    visit(node, bytes, import_types, &mut imports, lang, 0);
+    let max_depth = super::max_recursion_depth();
+    visit(
+        node,
+        bytes,
+        import_types,
+        &mut imports,
+        lang,
+        0,
+        max_depth,
+    );
     imports.sort();
     imports.dedup();
     imports
@@ -951,8 +993,9 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         modules: &mut Vec<String>,
         lang: Language,
         depth: usize,
+        max_depth: usize,
     ) {
-        if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+        if depth > max_depth {
             return;
         }
         if attr_types.contains(&node.kind()) {
@@ -962,8 +1005,12 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                 // Java: generic_type -> type_identifier
                 // C#: generic_name -> identifier, or just identifier
                 // PHP: name (direct child)
-                fn find_type_identifier<'a>(n: Node<'a>, depth: usize) -> Option<Node<'a>> {
-                    if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+                fn find_type_identifier<'a>(
+                    n: Node<'a>,
+                    depth: usize,
+                    max_depth: usize,
+                ) -> Option<Node<'a>> {
+                    if depth > max_depth {
                         return None;
                     }
                     // Java uses type_identifier, C# uses identifier, PHP uses name
@@ -974,13 +1021,13 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                         return Some(n);
                     }
                     for child in n.children(&mut n.walk()) {
-                        if let Some(found) = find_type_identifier(child, depth + 1) {
+                        if let Some(found) = find_type_identifier(child, depth + 1, max_depth) {
                             return Some(found);
                         }
                     }
                     None
                 }
-                if let Some(type_id) = find_type_identifier(node, 0) {
+                if let Some(type_id) = find_type_identifier(node, 0, max_depth) {
                     if let Ok(text) = type_id.utf8_text(bytes) {
                         let name = text.trim();
                         if !name.is_empty() {
@@ -1006,21 +1053,26 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                     Language::Ruby => node.child_by_field_name("receiver"),
                     Language::Ocaml => {
                         // OCaml value_path has module_path -> module_name
-                        fn find_module_name<'a>(n: Node<'a>, depth: usize) -> Option<Node<'a>> {
-                            if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+                        fn find_module_name<'a>(
+                            n: Node<'a>,
+                            depth: usize,
+                            max_depth: usize,
+                        ) -> Option<Node<'a>> {
+                            if depth > max_depth {
                                 return None;
                             }
                             if n.kind() == "module_name" {
                                 return Some(n);
                             }
                             for child in n.children(&mut n.walk()) {
-                                if let Some(found) = find_module_name(child, depth + 1) {
+                                if let Some(found) = find_module_name(child, depth + 1, max_depth)
+                                {
                                     return Some(found);
                                 }
                             }
                             None
                         }
-                        find_module_name(node, 0)
+                        find_module_name(node, 0, max_depth)
                     }
                     _ => node.child(0),
                 };
@@ -1054,11 +1106,12 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
             }
         }
         for child in node.children(&mut node.walk()) {
-            visit(child, bytes, attr_types, modules, lang, depth + 1);
+            visit(child, bytes, attr_types, modules, lang, depth + 1, max_depth);
         }
     }
 
-    visit(node, bytes, attr_types, &mut modules, lang, 0);
+    let max_depth = super::max_recursion_depth();
+    visit(node, bytes, attr_types, &mut modules, lang, 0, max_depth);
     modules.sort();
     modules.dedup();
     modules

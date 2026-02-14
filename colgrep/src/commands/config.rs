@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use colgrep::{
     ensure_model, ensure_onnx_runtime, get_colgrep_data_dir, Config, DEFAULT_BATCH_SIZE,
-    DEFAULT_MODEL, DEFAULT_POOL_FACTOR,
+    DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MODEL, DEFAULT_POOL_FACTOR,
 };
 
 pub fn cmd_set_model(model: &str) -> Result<()> {
@@ -100,6 +100,7 @@ pub fn cmd_config(
     pool_factor: Option<usize>,
     parallel_sessions: Option<usize>,
     batch_size: Option<usize>,
+    max_recursion_depth: Option<usize>,
     verbose: bool,
     no_verbose: bool,
 ) -> Result<()> {
@@ -113,6 +114,7 @@ pub fn cmd_config(
         && pool_factor.is_none()
         && parallel_sessions.is_none()
         && batch_size.is_none()
+        && max_recursion_depth.is_none()
         && !verbose
         && !no_verbose
     {
@@ -179,12 +181,23 @@ pub fn cmd_config(
             println!("  verbose:     false (default)");
         }
 
+        // max recursion depth
+        let max_depth = config.get_max_recursion_depth();
+        if config.max_recursion_depth.is_some() {
+            println!("  max-depth:   {}", max_depth);
+        } else {
+            println!("  max-depth:   {} (default)", DEFAULT_MAX_RECURSION_DEPTH);
+        }
+
         println!();
         println!("Use --k or --n to set values. Use 0 to reset to default.");
         println!("Use --fp32 or --int8 to change model precision.");
         println!("Use --pool-factor to set embedding compression (1=disabled, 2+=enabled). Use 0 to reset.");
         println!("Use --parallel to set number of parallel ONNX sessions. Use 0 to reset to auto (CPU count).");
         println!("Use --batch-size to set batch size per session. Use 0 to reset to default (1).");
+        println!(
+            "Use --max-recursion-depth to set parser recursion guard. Use 0 to reset to default."
+        );
         println!("Use --verbose or --no-verbose to set default output mode.");
         return Ok(());
     }
@@ -263,6 +276,21 @@ pub fn cmd_config(
         } else {
             config.set_batch_size(bs);
             println!("✅ Set batch size to {}", bs);
+        }
+        changed = true;
+    }
+
+    // Set or clear max recursion depth
+    if let Some(depth) = max_recursion_depth {
+        if depth == 0 {
+            config.clear_max_recursion_depth();
+            println!(
+                "✅ Reset max recursion depth to {} (default)",
+                DEFAULT_MAX_RECURSION_DEPTH
+            );
+        } else {
+            config.set_max_recursion_depth(depth);
+            println!("✅ Set max recursion depth to {}", depth);
         }
         changed = true;
     }

@@ -43,10 +43,31 @@ use extract::{extract_class, extract_constant, extract_function, fill_raw_code_g
 use language::get_tree_sitter_language;
 use text::extract_text_units;
 
+use crate::config::{Config, DEFAULT_MAX_RECURSION_DEPTH};
+
 use std::path::Path;
+use std::sync::OnceLock;
 use tree_sitter::{Node, Parser};
 
-const MAX_AST_RECURSION_DEPTH: usize = 1024;
+/// Maximum parser/analysis recursion depth used across all parser modules.
+///
+/// Reads from `colgrep settings --max-recursion-depth`.
+/// Can be temporarily overridden with `COLGREP_MAX_RECURSION_DEPTH`.
+/// Invalid or non-positive values are ignored.
+pub(crate) fn max_recursion_depth() -> usize {
+    static MAX_DEPTH: OnceLock<usize> = OnceLock::new();
+    *MAX_DEPTH.get_or_init(|| {
+        let from_config = Config::load()
+            .ok()
+            .map(|c| c.get_max_recursion_depth())
+            .unwrap_or(DEFAULT_MAX_RECURSION_DEPTH);
+        std::env::var("COLGREP_MAX_RECURSION_DEPTH")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(from_config)
+    })
+}
 
 /// Extract all code units from a file with 5-layer analysis.
 ///
@@ -102,6 +123,7 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
     let bytes = source.as_bytes();
     let file_imports = extract_file_imports(tree.root_node(), bytes, lang);
 
+    let max_depth = max_recursion_depth();
     let mut units = Vec::new();
     let mut depth_limit_hit = false;
     extract_from_node(
@@ -114,6 +136,7 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         None,
         &file_imports,
         0,
+        max_depth,
         &mut depth_limit_hit,
     );
 
@@ -121,7 +144,7 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         eprintln!(
             "⚠️  Skipping {} (AST nesting exceeded max depth: {})",
             path.display(),
-            MAX_AST_RECURSION_DEPTH
+            max_depth
         );
         return Vec::new();
     }
@@ -149,12 +172,13 @@ fn extract_from_node(
     parent_class: Option<&str>,
     file_imports: &[String],
     depth: usize,
+    max_depth: usize,
     depth_limit_hit: &mut bool,
 ) {
     if *depth_limit_hit {
         return;
     }
-    if depth > MAX_AST_RECURSION_DEPTH {
+    if depth > max_depth {
         *depth_limit_hit = true;
         return;
     }
@@ -201,6 +225,7 @@ fn extract_from_node(
             parent_class,
             file_imports,
             depth + 1,
+            max_depth,
             depth_limit_hit,
         );
     }

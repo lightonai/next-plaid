@@ -14,8 +14,6 @@ use super::types::{CodeUnit, Language, UnitType};
 use std::path::Path;
 use tree_sitter::{Node, Parser};
 
-const MAX_AST_RECURSION_DEPTH: usize = 1024;
-
 /// A block extracted from an HTML file
 struct HtmlBlock {
     content: String,
@@ -200,6 +198,7 @@ pub fn extract_html_units(path: &Path, source: &str) -> Vec<CodeUnit> {
 /// Parse script content as JavaScript and extract code units.
 fn parse_script_content(path: &Path, script_source: &str) -> (Vec<CodeUnit>, bool) {
     let lang = Language::JavaScript;
+    let max_depth = super::max_recursion_depth();
 
     let mut parser = Parser::new();
     if parser
@@ -230,6 +229,7 @@ fn parse_script_content(path: &Path, script_source: &str) -> (Vec<CodeUnit>, boo
         None,
         &file_imports,
         0,
+        max_depth,
         &mut depth_limit_hit,
     );
 
@@ -237,7 +237,7 @@ fn parse_script_content(path: &Path, script_source: &str) -> (Vec<CodeUnit>, boo
         eprintln!(
             "⚠️  Skipping {} (AST nesting exceeded max depth: {})",
             path.display(),
-            MAX_AST_RECURSION_DEPTH
+            max_depth
         );
         return (Vec::new(), true);
     }
@@ -262,12 +262,13 @@ fn extract_from_node(
     parent_class: Option<&str>,
     file_imports: &[String],
     depth: usize,
+    max_depth: usize,
     depth_limit_hit: &mut bool,
 ) {
     if *depth_limit_hit {
         return;
     }
-    if depth > MAX_AST_RECURSION_DEPTH {
+    if depth > max_depth {
         *depth_limit_hit = true;
         return;
     }
@@ -298,6 +299,7 @@ fn extract_from_node(
                         Some(&class_name),
                         file_imports,
                         depth + 1,
+                        max_depth,
                         depth_limit_hit,
                     );
                 }
@@ -322,6 +324,7 @@ fn extract_from_node(
             parent_class,
             file_imports,
             depth + 1,
+            max_depth,
             depth_limit_hit,
         );
     }
