@@ -232,16 +232,26 @@ impl IndexBuilder {
                 .unwrap_or_else(crate::config::get_default_batch_size);
 
             // Suppress stderr during model loading to hide CoreML's harmless
-            // "Context leak detected" warnings on macOS
-            let model = crate::stderr::with_suppressed_stderr(|| {
-                Colbert::builder(&self.model_path)
-                    .with_quantized(self.quantized)
-                    .with_parallel(num_sessions)
-                    .with_batch_size(batch)
-                    .with_execution_provider(execution_provider)
-                    .build()
-            })
-            .context("Failed to load ColBERT model")?;
+            // "Context leak detected" warnings on macOS.
+            // Use catch_unwind so that if ONNX Runtime panics (e.g., wrong dylib),
+            // the error message is still shown to the user after stderr is restored.
+            let model_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::stderr::with_suppressed_stderr(|| {
+                    Colbert::builder(&self.model_path)
+                        .with_quantized(self.quantized)
+                        .with_parallel(num_sessions)
+                        .with_batch_size(batch)
+                        .with_execution_provider(execution_provider)
+                        .build()
+                })
+            }));
+            let model = match model_result {
+                Ok(result) => result.context("Failed to load ColBERT model")?,
+                Err(panic_payload) => {
+                    // Re-panic with the original payload now that stderr is restored
+                    std::panic::resume_unwind(panic_payload);
+                }
+            };
 
             self.model = Some(model);
         }
