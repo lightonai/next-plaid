@@ -46,6 +46,8 @@ use text::extract_text_units;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
 
+const MAX_AST_RECURSION_DEPTH: usize = 1024;
+
 /// Extract all code units from a file with 5-layer analysis.
 ///
 /// This is the main entry point for parsing source files. It:
@@ -101,6 +103,7 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
     let file_imports = extract_file_imports(tree.root_node(), bytes, lang);
 
     let mut units = Vec::new();
+    let mut depth_limit_hit = false;
     extract_from_node(
         tree.root_node(),
         path,
@@ -110,7 +113,18 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         &mut units,
         None,
         &file_imports,
+        0,
+        &mut depth_limit_hit,
     );
+
+    if depth_limit_hit {
+        eprintln!(
+            "⚠️  Skipping {} (AST nesting exceeded max depth: {})",
+            path.display(),
+            MAX_AST_RECURSION_DEPTH
+        );
+        return Vec::new();
+    }
 
     // Fill gaps with raw code units to achieve 100% file coverage
     fill_raw_code_gaps(&mut units, path, &lines, lang, &file_imports);
@@ -134,7 +148,17 @@ fn extract_from_node(
     units: &mut Vec<CodeUnit>,
     parent_class: Option<&str>,
     file_imports: &[String],
+    depth: usize,
+    depth_limit_hit: &mut bool,
 ) {
+    if *depth_limit_hit {
+        return;
+    }
+    if depth > MAX_AST_RECURSION_DEPTH {
+        *depth_limit_hit = true;
+        return;
+    }
+
     let kind = node.kind();
 
     // Check if this is a function/method definition
@@ -176,6 +200,8 @@ fn extract_from_node(
             units,
             parent_class,
             file_imports,
+            depth + 1,
+            depth_limit_hit,
         );
     }
 }

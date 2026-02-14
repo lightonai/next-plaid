@@ -3,6 +3,22 @@
 use super::types::Language;
 use tree_sitter::Node;
 
+const MAX_ANALYSIS_RECURSION_DEPTH: usize = 1024;
+
+/// Iterate over all nodes in a subtree using an explicit stack (no recursion).
+fn walk_tree<'a, F>(root: Node<'a>, mut f: F)
+where
+    F: FnMut(Node<'a>),
+{
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        f(node);
+        for child in node.children(&mut node.walk()) {
+            stack.push(child);
+        }
+    }
+}
+
 /// Find the identifier inside a C/C++ declarator.
 /// Handles: identifier, pointer_declarator, array_declarator, function_declarator,
 /// parenthesized_declarator, reference_declarator (C++ references)
@@ -533,13 +549,13 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
         _ => return calls,
     };
 
-    fn visit(node: Node, bytes: &[u8], call_types: &[&str], calls: &mut Vec<String>) {
-        if call_types.contains(&node.kind()) {
-            if let Some(name_node) = node
+    walk_tree(node, |current| {
+        if call_types.contains(&current.kind()) {
+            if let Some(name_node) = current
                 .child_by_field_name("function")
-                .or_else(|| node.child_by_field_name("name"))
-                .or_else(|| node.child_by_field_name("method"))
-                .or_else(|| node.child(0))
+                .or_else(|| current.child_by_field_name("name"))
+                .or_else(|| current.child_by_field_name("method"))
+                .or_else(|| current.child(0))
             {
                 if let Ok(text) = name_node.utf8_text(bytes) {
                     #[allow(clippy::double_ended_iterator_last)]
@@ -559,12 +575,7 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
                 }
             }
         }
-        for child in node.children(&mut node.walk()) {
-            visit(child, bytes, call_types, calls);
-        }
-    }
-
-    visit(node, bytes, call_types, &mut calls);
+    });
     calls.sort();
     calls.dedup();
     calls
@@ -577,14 +588,8 @@ pub fn extract_control_flow(node: Node, _lang: Language) -> (usize, bool, bool, 
     let mut has_branches = false;
     let mut has_error_handling = false;
 
-    fn visit(
-        node: Node,
-        complexity: &mut usize,
-        loops: &mut bool,
-        branches: &mut bool,
-        errors: &mut bool,
-    ) {
-        match node.kind() {
+    walk_tree(node, |current| {
+        match current.kind() {
             // Branches
             "if_statement"
             | "if_expression"
@@ -597,39 +602,28 @@ pub fn extract_control_flow(node: Node, _lang: Language) -> (usize, bool, bool, 
             | "if"
             | "unless"
             | "when" => {
-                *complexity += 1;
-                *branches = true;
+                complexity += 1;
+                has_branches = true;
             }
             // Loops
             "for_statement" | "for_expression" | "while_statement" | "while_expression"
             | "loop_expression" | "for_in_statement" | "foreach_statement" | "do_statement"
             | "for" | "while" | "until" => {
-                *complexity += 1;
-                *loops = true;
+                complexity += 1;
+                has_loops = true;
             }
             // Error handling
             "try_statement" | "try_expression" | "catch_clause" | "rescue" | "except_clause"
             | "try" => {
-                *errors = true;
+                has_error_handling = true;
             }
             // Rust-specific error handling patterns
             "?" | "try_operator" => {
-                *errors = true;
+                has_error_handling = true;
             }
             _ => {}
         }
-        for child in node.children(&mut node.walk()) {
-            visit(child, complexity, loops, branches, errors);
-        }
-    }
-
-    visit(
-        node,
-        &mut complexity,
-        &mut has_loops,
-        &mut has_branches,
-        &mut has_error_handling,
-    );
+    });
     (complexity, has_loops, has_branches, has_error_handling)
 }
 
@@ -658,27 +652,30 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
         _ => return vars,
     };
 
-    fn visit(node: Node, bytes: &[u8], var_types: &[&str], vars: &mut Vec<String>, lang: Language) {
-        if var_types.contains(&node.kind()) {
+    walk_tree(node, |current| {
+        if var_types.contains(&current.kind()) {
             // For C/C++, get the declarator field which contains the variable name
             let name_node = if matches!(lang, Language::C | Language::Cpp) {
                 // For init_declarator: get declarator field
-                if node.kind() == "init_declarator" {
-                    node.child_by_field_name("declarator")
+                if current.kind() == "init_declarator" {
+                    current
+                        .child_by_field_name("declarator")
                         .and_then(|d| find_identifier_in_declarator(d, bytes))
-                } else if node.kind() == "declaration" {
+                } else if current.kind() == "declaration" {
                     // For declaration without init (e.g., `int x;` or `std::vector<int> result;`)
                     // Get the declarator field directly
-                    node.child_by_field_name("declarator")
+                    current
+                        .child_by_field_name("declarator")
                         .and_then(|d| find_identifier_in_declarator(d, bytes))
                 } else {
                     None
                 }
             } else {
-                node.child_by_field_name("left")
-                    .or_else(|| node.child_by_field_name("name"))
-                    .or_else(|| node.child_by_field_name("pattern"))
-                    .or_else(|| node.child(0))
+                current
+                    .child_by_field_name("left")
+                    .or_else(|| current.child_by_field_name("name"))
+                    .or_else(|| current.child_by_field_name("pattern"))
+                    .or_else(|| current.child(0))
             };
 
             if let Some(name_node) = name_node {
@@ -697,12 +694,7 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
                 }
             }
         }
-        for child in node.children(&mut node.walk()) {
-            visit(child, bytes, var_types, vars, lang);
-        }
-    }
-
-    visit(node, bytes, var_types, &mut vars, lang);
+    });
     vars.sort();
     vars.dedup();
     vars
@@ -739,7 +731,11 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         import_types: &[&str],
         imports: &mut Vec<String>,
         lang: Language,
+        depth: usize,
     ) {
+        if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+            return;
+        }
         if import_types.contains(&node.kind()) {
             // For Ruby, check if it's actually a require call and extract the module name
             if lang == Language::Ruby {
@@ -780,7 +776,7 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                             if text != "require" {
                                 // Not a require call, skip
                                 for child in node.children(&mut node.walk()) {
-                                    visit(child, bytes, import_types, imports, lang);
+                                    visit(child, bytes, import_types, imports, lang, depth + 1);
                                 }
                                 return;
                             }
@@ -789,20 +785,23 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                 }
                 // Extract the string argument from require("json")
                 if let Some(args) = node.child_by_field_name("arguments") {
-                    fn find_string_content(node: Node, bytes: &[u8]) -> Option<String> {
+                    fn find_string_content(node: Node, bytes: &[u8], depth: usize) -> Option<String> {
+                        if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+                            return None;
+                        }
                         if node.kind() == "string_content" {
                             if let Ok(text) = node.utf8_text(bytes) {
                                 return Some(text.to_string());
                             }
                         }
                         for child in node.children(&mut node.walk()) {
-                            if let Some(content) = find_string_content(child, bytes) {
+                            if let Some(content) = find_string_content(child, bytes, depth + 1) {
                                 return Some(content);
                             }
                         }
                         None
                     }
-                    if let Some(module) = find_string_content(args, bytes) {
+                    if let Some(module) = find_string_content(args, bytes, 0) {
                         if !module.is_empty() {
                             imports.push(module);
                         }
@@ -815,7 +814,10 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
             if lang == Language::Go {
                 // Go import_spec contains interpreted_string_literal
                 // Extract the last path component as the package name
-                fn find_string_content(node: Node, bytes: &[u8]) -> Option<String> {
+                fn find_string_content(node: Node, bytes: &[u8], depth: usize) -> Option<String> {
+                    if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+                        return None;
+                    }
                     if node.kind() == "interpreted_string_literal_content" {
                         if let Ok(text) = node.utf8_text(bytes) {
                             // Get the last path component (e.g., "fmt" from "fmt", "http" from "net/http")
@@ -823,13 +825,13 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                         }
                     }
                     for child in node.children(&mut node.walk()) {
-                        if let Some(content) = find_string_content(child, bytes) {
+                        if let Some(content) = find_string_content(child, bytes, depth + 1) {
                             return Some(content);
                         }
                     }
                     None
                 }
-                if let Some(pkg) = find_string_content(node, bytes) {
+                if let Some(pkg) = find_string_content(node, bytes, 0) {
                     if !pkg.is_empty() {
                         imports.push(pkg);
                     }
@@ -839,20 +841,23 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
 
             // For OCaml, extract the module_name from open_module
             if lang == Language::Ocaml {
-                fn find_module_name(node: Node, bytes: &[u8]) -> Option<String> {
+                fn find_module_name(node: Node, bytes: &[u8], depth: usize) -> Option<String> {
+                    if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+                        return None;
+                    }
                     if node.kind() == "module_name" {
                         if let Ok(text) = node.utf8_text(bytes) {
                             return Some(text.to_string());
                         }
                     }
                     for child in node.children(&mut node.walk()) {
-                        if let Some(name) = find_module_name(child, bytes) {
+                        if let Some(name) = find_module_name(child, bytes, depth + 1) {
                             return Some(name);
                         }
                     }
                     None
                 }
-                if let Some(module) = find_module_name(node, bytes) {
+                if let Some(module) = find_module_name(node, bytes, 0) {
                     if !module.is_empty() {
                         imports.push(module);
                     }
@@ -898,11 +903,11 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
             }
         }
         for child in node.children(&mut node.walk()) {
-            visit(child, bytes, import_types, imports, lang);
+            visit(child, bytes, import_types, imports, lang, depth + 1);
         }
     }
 
-    visit(node, bytes, import_types, &mut imports, lang);
+    visit(node, bytes, import_types, &mut imports, lang, 0);
     imports.sort();
     imports.dedup();
     imports
@@ -945,7 +950,11 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         attr_types: &[&str],
         modules: &mut Vec<String>,
         lang: Language,
+        depth: usize,
     ) {
+        if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+            return;
+        }
         if attr_types.contains(&node.kind()) {
             // Special handling for object_creation_expression (new ClassName())
             if node.kind() == "object_creation_expression" {
@@ -953,7 +962,10 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                 // Java: generic_type -> type_identifier
                 // C#: generic_name -> identifier, or just identifier
                 // PHP: name (direct child)
-                fn find_type_identifier<'a>(n: Node<'a>) -> Option<Node<'a>> {
+                fn find_type_identifier<'a>(n: Node<'a>, depth: usize) -> Option<Node<'a>> {
+                    if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+                        return None;
+                    }
                     // Java uses type_identifier, C# uses identifier, PHP uses name
                     if n.kind() == "type_identifier"
                         || n.kind() == "identifier"
@@ -962,13 +974,13 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                         return Some(n);
                     }
                     for child in n.children(&mut n.walk()) {
-                        if let Some(found) = find_type_identifier(child) {
+                        if let Some(found) = find_type_identifier(child, depth + 1) {
                             return Some(found);
                         }
                     }
                     None
                 }
-                if let Some(type_id) = find_type_identifier(node) {
+                if let Some(type_id) = find_type_identifier(node, 0) {
                     if let Ok(text) = type_id.utf8_text(bytes) {
                         let name = text.trim();
                         if !name.is_empty() {
@@ -994,18 +1006,21 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                     Language::Ruby => node.child_by_field_name("receiver"),
                     Language::Ocaml => {
                         // OCaml value_path has module_path -> module_name
-                        fn find_module_name<'a>(n: Node<'a>) -> Option<Node<'a>> {
+                        fn find_module_name<'a>(n: Node<'a>, depth: usize) -> Option<Node<'a>> {
+                            if depth > MAX_ANALYSIS_RECURSION_DEPTH {
+                                return None;
+                            }
                             if n.kind() == "module_name" {
                                 return Some(n);
                             }
                             for child in n.children(&mut n.walk()) {
-                                if let Some(found) = find_module_name(child) {
+                                if let Some(found) = find_module_name(child, depth + 1) {
                                     return Some(found);
                                 }
                             }
                             None
                         }
-                        find_module_name(node)
+                        find_module_name(node, 0)
                     }
                     _ => node.child(0),
                 };
@@ -1039,11 +1054,11 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
             }
         }
         for child in node.children(&mut node.walk()) {
-            visit(child, bytes, attr_types, modules, lang);
+            visit(child, bytes, attr_types, modules, lang, depth + 1);
         }
     }
 
-    visit(node, bytes, attr_types, &mut modules, lang);
+    visit(node, bytes, attr_types, &mut modules, lang, 0);
     modules.sort();
     modules.dedup();
     modules
