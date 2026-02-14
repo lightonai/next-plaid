@@ -12,6 +12,126 @@ Use colgrep when you need to:
 
 **Better than grep/ripgrep because**: ColGREP understands meaning, not just keywords. It uses AI to match your query semantically to relevant code.
 
+## CRITICAL: How to Generate Effective Search Queries
+
+### Understanding Semantic vs Keyword Search
+
+**Traditional search** (grep, symbol search):
+- Requires exact keywords: `getUserById`
+- Matches literal text only
+- Fails when names differ
+
+**Semantic search** (ColGREP):
+- Understands intent: `function that fetches a user`
+- Matches meaning, not just words
+- Finds: `getUserById`, `fetchUser`, `loadUserData`, etc.
+
+### Query Generation Rules for LLMs
+
+#### Rule 1: Be Descriptive, Not Prescriptive
+
+❌ Don't search for function names: `getUserById`
+✅ Describe what it does: `function that retrieves a user by their ID`
+
+❌ Don't use exact variable names: `emailValidator`
+✅ Describe the behavior: `code that validates email addresses using regex`
+
+#### Rule 2: Use the Pattern: [what] that [does] [how/when/why]
+
+✅ **Good query structure**:
+- `function that retries failed HTTP requests with exponential backoff`
+- `middleware that checks if a user is authenticated`
+- `React component that displays paginated user lists`
+- `utility that formats dates for display in local timezone`
+
+#### Rule 3: Include Relevant Context
+
+✅ **Add technology/domain context**:
+- `React hook that manages form state with validation`
+- `API endpoint that creates orders and sends confirmation emails`
+- `database query with JOIN operations for user profiles`
+
+#### Rule 4: Use Natural Language
+
+✅ **Natural and clear**:
+- `code that handles file uploads`
+- `function for calculating shipping costs`
+- `validation logic for user registration`
+
+❌ **Too formal/rigid**:
+- `file upload handler implementation procedure`
+- `shipping cost calculation algorithm specification`
+
+#### Rule 5: Be Specific About Patterns
+
+✅ **Include implementation details when relevant**:
+- `async function that uses try-catch for error handling`
+- `recursive function for tree traversal`
+- `database migration that adds indexes`
+- `component that uses useEffect for data fetching`
+
+### Query Examples by Intent
+
+#### Finding Similar Code
+```
+User intent: "Find code like calculateTotal"
+LLM query: "function that sums values and calculates totals with tax"
+→ Finds: calculateSubtotal, computeGrandTotal, sumWithTax
+```
+
+#### Locating Patterns
+```
+User intent: "error handling code"
+LLM query: "error handling with logging and retry logic"
+→ Finds: All error handlers that both log AND retry
+```
+
+#### Cross-Cutting Concerns
+```
+User intent: "audit logging"
+LLM query: "logging of user actions for audit trail"
+→ Finds: Audit logging across the entire codebase
+```
+
+#### API Usage
+```
+User intent: "how we call the API"
+LLM query: "uses axios to make POST requests with authentication headers"
+→ Finds: API calls using axios with auth
+```
+
+### Query Templates for LLMs to Use
+
+**For Functions:**
+- `function that [action] [object] [optional: with/using method]`
+- `[sync/async] function for [purpose]`
+- `helper that [transforms/validates/processes] [data type]`
+
+**For Components (UI):**
+- `component that [displays/renders] [UI element] with [features]`
+- `[React/Vue/etc] component for [purpose]`
+
+**For Patterns:**
+- `code that uses [pattern/library] for [purpose]`
+- `implementation of [design pattern] in [context]`
+- `[operation] with [error handling/logging/caching]`
+
+**For APIs:**
+- `API endpoint that [HTTP method] [resource] and [side effects]`
+- `route handler for [operation] with [middleware]`
+
+### When Generating Queries, LLMs Should:
+
+1. **Extract intent**: User says "find auth check" → Generate "middleware that checks if user is authenticated"
+
+2. **Expand abbreviations**: User says "db conn pool" → Generate "database connection pool configuration"
+
+3. **Add implied context**: User says "login function" → Generate "authentication function that validates credentials and creates session"
+
+4. **Preserve technical terms**: User says "React hooks" → Keep "React hooks" in the query
+
+5. **Combine related concepts**: User says "API error handling" → Generate "API request error handling with retry logic and logging"
+
 ## Quick Start
 
 ### 1. Index Your Codebase
