@@ -1,0 +1,20 @@
+{
+  "name": "colgrep-mcp",
+  "version": "1.0.7",
+  "description": "Semantic code search MCP server powered by ColBERT",
+  "author": "LightOn AI",
+  "homepage": "https://github.com/lightonai/next-plaid",
+  "license": "MIT",
+  "type": "mcp-server",
+  "mcpServer": {
+    "name": "colgrep",
+    "command": "colgrep-mcp",
+    "description": "Semantic code search that understands natural language queries"
+  },
+  "skills": [
+    {
+      "name": "colgrep",
+      "path": "skills/colgrep"
+    }
+  ]
+}

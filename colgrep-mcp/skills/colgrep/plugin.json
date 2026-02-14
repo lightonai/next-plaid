@@ -1,0 +1,67 @@
+{
+  "name": "colgrep",
+  "version": "1.0.7",
+  "description": "Semantic code search powered by ColBERT. Find code by describing what it does, not just matching keywords.",
+  "author": "LightOn AI",
+  "mcpServer": "colgrep",
+  "commands": [
+    {
+      "name": "index",
+      "description": "Index the codebase for semantic search",
+      "usage": "/colgrep index [--force]",
+      "examples": [
+        "/colgrep index",
+        "/colgrep index --force"
+      ]
+    },
+    {
+      "name": "search",
+      "description": "Search code semantically using natural language",
+      "usage": "/colgrep search <query> [--include=<patterns>] [--exclude=<patterns>] [--max-results=<n>]",
+      "examples": [
+        "/colgrep search \"function that validates emails\"",
+        "/colgrep search \"authentication middleware\" --include=\"*.ts,*.js\"",
+        "/colgrep search \"error handling\" --exclude=\"*test*\" --max-results=10"
+      ]
+    },
+    {
+      "name": "status",
+      "description": "Check if the code index exists and is ready",
+      "usage": "/colgrep status",
+      "examples": [
+        "/colgrep status"
+      ]
+    },
+    {
+      "name": "auto",
+      "description": "Enable automatic incremental indexing on file changes",
+      "usage": "/colgrep auto [--disable]",
+      "examples": [
+        "/colgrep auto",
+        "/colgrep auto --disable"
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "index_codebase",
+      "mcpTool": "index_codebase",
+      "description": "Create a searchable semantic index of the codebase"
+    },
+    {
+      "name": "search",
+      "mcpTool": "search",
+      "description": "Search code using semantic understanding of natural language queries"
+    },
+    {
+      "name": "get_status",
+      "mcpTool": "get_status",
+      "description": "Get the status of the code index"
+    },
+    {
+      "name": "enable_auto_index",
+      "mcpTool": "enable_auto_index",
+      "description": "Enable automatic incremental indexing when files change"
+    }
+  ]
+}
