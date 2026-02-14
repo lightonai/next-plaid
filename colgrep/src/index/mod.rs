@@ -1864,45 +1864,135 @@ pub struct SearchResult {
 /// This allows users to write grep-style patterns like "foo\|bar" which use BRE syntax,
 /// and have them work correctly with Rust's regex crate which uses ERE syntax.
 ///
-/// Conversions:
-/// - `\|` → `|` (alternation)
-/// - `\+` → `+` (one or more)
-/// - `\?` → `?` (zero or one)
-/// - `\(` → `(` (group start)
-/// - `\)` → `)` (group end)
-/// - `\{` → `{` (quantifier start)
-/// - `\}` → `}` (quantifier end)
+/// Conversions (applied only when safe):
+/// - `\|` → `|` (alternation — always converted)
+/// - `\+` → `+`, `\?` → `?` (quantifiers — only after a preceding atom)
+/// - `\(` → `(`, `\)` → `)` (grouping — only when balanced as pairs)
+/// - `\{` → `{`, `\}` → `}` (interval quantifiers — only when balanced and after an atom)
+///
+/// Conversions that would produce invalid ERE (unbalanced groups, leading quantifiers)
+/// are skipped, keeping the original escape intact.
 pub fn bre_to_ere(pattern: &str) -> String {
-    let mut result = String::with_capacity(pattern.len());
-    let mut chars = pattern.chars().peekable();
+    let chars: Vec<char> = pattern.chars().collect();
+    let len = chars.len();
 
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(&next) = chars.peek() {
-                match next {
-                    // BRE escape sequences that become unescaped in ERE
-                    '|' | '+' | '?' | '(' | ')' | '{' | '}' => {
-                        result.push(chars.next().unwrap());
-                    }
-                    // Escaped backslash - keep both
+    // Phase 1: Find balanced \( ... \) and \{ ... \} pairs.
+    // Only balanced pairs are safe to convert; unbalanced ones stay escaped
+    // to avoid producing invalid ERE (e.g. `error\(4` staying `error\(4`
+    // instead of becoming the invalid `error(4`).
+    let mut convert = vec![false; len];
+
+    fn mark_pairs(chars: &[char], convert: &mut [bool], open: char, close: char) {
+        let len = chars.len();
+        let mut stack: Vec<usize> = Vec::new();
+        let mut i = 0;
+        while i < len {
+            if chars[i] == '\\' && i + 1 < len {
+                match chars[i + 1] {
                     '\\' => {
-                        result.push(c);
-                        result.push(chars.next().unwrap());
+                        i += 2;
+                        continue;
                     }
-                    // Other escapes - keep as-is
+                    c if c == open => {
+                        stack.push(i);
+                        i += 2;
+                        continue;
+                    }
+                    c if c == close => {
+                        if let Some(open_pos) = stack.pop() {
+                            convert[open_pos] = true;
+                            convert[i] = true;
+                        }
+                        i += 2;
+                        continue;
+                    }
                     _ => {
-                        result.push(c);
+                        i += 2;
+                        continue;
                     }
                 }
-            } else {
-                // Trailing backslash
-                result.push(c);
             }
-        } else {
-            result.push(c);
+            i += 1;
         }
     }
 
+    mark_pairs(&chars, &mut convert, '(', ')');
+    mark_pairs(&chars, &mut convert, '{', '}');
+
+    // Phase 2: Forward pass producing the ERE output.
+    let mut result = String::with_capacity(pattern.len());
+    let mut i = 0;
+    let mut skip_close_brace = 0usize;
+
+    while i < len {
+        if chars[i] != '\\' || i + 1 >= len {
+            result.push(chars[i]);
+            i += 1;
+            continue;
+        }
+
+        let next = chars[i + 1];
+        match next {
+            // Escaped backslash — keep both
+            '\\' => {
+                result.push('\\');
+                result.push('\\');
+                i += 2;
+            }
+
+            // Alternation — always safe
+            '|' => {
+                result.push('|');
+                i += 2;
+            }
+
+            // Quantifiers — only after a preceding atom
+            '+' | '?' => {
+                if result.is_empty() {
+                    result.push('\\');
+                    result.push(next);
+                } else {
+                    result.push(next);
+                }
+                i += 2;
+            }
+
+            // Balanced grouping delimiters
+            '(' | ')' if convert[i] => {
+                result.push(next);
+                i += 2;
+            }
+
+            // Balanced brace delimiters (interval quantifier)
+            '{' if convert[i] => {
+                if result.is_empty() {
+                    skip_close_brace += 1;
+                    result.push('\\');
+                    result.push('{');
+                } else {
+                    result.push('{');
+                }
+                i += 2;
+            }
+            '}' if convert[i] => {
+                if skip_close_brace > 0 {
+                    skip_close_brace -= 1;
+                    result.push('\\');
+                    result.push('}');
+                } else {
+                    result.push('}');
+                }
+                i += 2;
+            }
+
+            // Everything else — keep escape as-is
+            _ => {
+                result.push('\\');
+                result.push(next);
+                i += 2;
+            }
+        }
+    }
     result
 }
 
@@ -2928,6 +3018,29 @@ mod tests {
     fn test_bre_to_ere_trailing_backslash() {
         // Trailing backslash should be preserved
         assert_eq!(bre_to_ere(r"foo\"), r"foo\");
+    }
+
+    #[test]
+    fn test_bre_to_ere_unbalanced_parens() {
+        // Unbalanced \( or \) must stay escaped to avoid invalid ERE
+        assert_eq!(bre_to_ere(r"error\(4"), r"error\(4");
+        assert_eq!(bre_to_ere(r"foo\)"), r"foo\)");
+        assert_eq!(bre_to_ere(r"a\(b\)c\(d"), "a(b)c\\(d");
+    }
+
+    #[test]
+    fn test_bre_to_ere_leading_quantifiers() {
+        // Leading quantifiers have no preceding atom — keep escaped
+        assert_eq!(bre_to_ere(r"\+foo"), r"\+foo");
+        assert_eq!(bre_to_ere(r"\?foo"), r"\?foo");
+    }
+
+    #[test]
+    fn test_bre_to_ere_unbalanced_braces() {
+        // Unbalanced \{ without \} must stay escaped
+        assert_eq!(bre_to_ere(r"a\{2"), r"a\{2");
+        // Leading \{...\} without preceding atom stays escaped
+        assert_eq!(bre_to_ere(r"\{2\}"), r"\{2\}");
     }
 
     #[test]
