@@ -78,14 +78,13 @@ impl McpServer {
                     break;
                 }
                 Ok(_) => {
-                    // Process request
-                    let response = self.handle_request(&line).await;
-
-                    // Write response to stdout
-                    let json = serde_json::to_string(&response)?;
-                    stdout.write_all(json.as_bytes()).await?;
-                    stdout.write_all(b"\n").await?;
-                    stdout.flush().await?;
+                    // Process request - notifications must NOT receive a response (MCP spec)
+                    if let Some(response) = self.handle_request(&line).await {
+                        let json = serde_json::to_string(&response)?;
+                        stdout.write_all(json.as_bytes()).await?;
+                        stdout.write_all(b"\n").await?;
+                        stdout.flush().await?;
+                    }
                 }
                 Err(e) => {
                     error!("Error reading from stdin: {}", e);
@@ -97,23 +96,30 @@ impl McpServer {
         Ok(())
     }
 
-    async fn handle_request(&self, line: &str) -> JsonRpcResponse {
+    /// Handle a JSON-RPC message. Returns None for notifications (which must not receive a response per MCP spec).
+    async fn handle_request(&self, line: &str) -> Option<JsonRpcResponse> {
         // Parse JSON-RPC request
         let request: JsonRpcRequest = match serde_json::from_str(line) {
             Ok(req) => req,
             Err(e) => {
-                return JsonRpcResponse {
+                return Some(JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
-                    id: None,
+                    id: Some(json!(0)), // Use sentinel - never emit null (breaks some clients like Cursor)
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32700,
                         message: format!("Parse error: {}", e),
                         data: None,
                     }),
-                };
+                });
             }
         };
+
+        // Notifications have no id - must NOT respond (MCP spec: "Notifications do not expect a response")
+        if request.id.is_none() {
+            debug!("Received notification: method={} (no response)", request.method);
+            return None;
+        }
 
         debug!("Received request: method={}", request.method);
 
@@ -126,7 +132,7 @@ impl McpServer {
             _ => Err(format!("Unknown method: {}", request.method)),
         };
 
-        match result {
+        Some(match result {
             Ok(res) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
                 id: request.id,
@@ -143,7 +149,7 @@ impl McpServer {
                     data: None,
                 }),
             },
-        }
+        })
     }
 
     fn handle_initialize(&self, _params: Option<Value>) -> Result<Value, String> {
