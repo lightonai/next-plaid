@@ -1,11 +1,13 @@
 //! Filesystem backend - stores index on local disk
 //!
 //! This is the simplest backend that uses colgrep's built-in filesystem storage.
+//! Index is stored in XDG_DATA_HOME/colgrep/indices/ (platform-specific).
 //! Good for: development, single-user, local-only usage
 
 use super::{Backend, FileChange, IndexStats, SearchResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use colgrep::index::paths::get_index_dir_for_project;
 use std::path::{Path, PathBuf};
 
 pub struct FilesystemBackend {
@@ -15,11 +17,6 @@ pub struct FilesystemBackend {
 impl FilesystemBackend {
     pub fn new() -> Self {
         Self {}
-    }
-
-    /// Get the index path for a given root
-    fn index_path(root: &Path) -> PathBuf {
-        root.join(".colgrep")
     }
 }
 
@@ -31,41 +28,41 @@ impl Backend for FilesystemBackend {
     }
 
     async fn index_exists(&self, root: &Path) -> Result<bool> {
-        let index_path = Self::index_path(root);
-        Ok(colgrep::index_exists(&index_path))
+        Ok(colgrep::index_exists(root))
     }
 
     async fn index_full(&mut self, root: &Path, force: bool) -> Result<IndexStats> {
-        use colgrep::{ensure_model, index_path, Index};
-
-        let index_path = index_path(root);
+        use colgrep::{ensure_model, index_exists, Config, IndexBuilder, DEFAULT_MODEL};
 
         // Skip if index exists and not forcing
-        if !force && colgrep::index_exists(&index_path) {
+        if !force && index_exists(root) {
             return self.get_stats(root).await;
         }
 
         // Ensure model is downloaded
-        ensure_model(None, false)
+        let model_path = ensure_model(Some(DEFAULT_MODEL), false)
             .context("Failed to download ColBERT model")?;
 
-        // Create index
-        let mut index = Index::new(&index_path);
-        let code_units = colgrep::gather_code_units_from_path(root)?;
+        let config = Config::load().unwrap_or_default();
+        let quantized = !config.use_fp32();
+        let parallel_sessions = Some(config.get_parallel_sessions());
+        let batch_size = Some(config.get_batch_size());
 
-        let file_count = code_units.iter()
-            .map(|u| &u.file_path)
-            .collect::<std::collections::HashSet<_>>()
-            .len();
+        let mut builder = IndexBuilder::with_options(
+            root,
+            &model_path,
+            quantized,
+            None,
+            parallel_sessions,
+            batch_size,
+        )?;
+        builder.set_auto_confirm(true); // Non-interactive for MCP
+        builder.set_model_name(DEFAULT_MODEL);
 
-        let code_unit_count = code_units.len();
+        let stats = builder.index(None, force).context("Failed to index codebase")?;
 
-        // Index all code units
-        index.index(&code_units)
-            .context("Failed to index code units")?;
-
-        // Calculate index size
-        let size_bytes = walkdir::WalkDir::new(&index_path)
+        let index_dir = get_index_dir_for_project(root)?;
+        let size_bytes = walkdir::WalkDir::new(&index_dir)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
@@ -74,9 +71,9 @@ impl Backend for FilesystemBackend {
             .sum();
 
         Ok(IndexStats {
-            file_count,
-            code_unit_count,
-            vector_count: code_unit_count, // Each code unit has vectors
+            file_count: stats.added + stats.changed + stats.unchanged,
+            code_unit_count: stats.added + stats.changed + stats.deleted + stats.unchanged,
+            vector_count: stats.added + stats.changed + stats.unchanged,
             size_bytes,
             last_updated: Some(chrono::Utc::now().timestamp()),
         })
@@ -85,47 +82,34 @@ impl Backend for FilesystemBackend {
     async fn update_incremental(
         &mut self,
         root: &Path,
-        changes: &[FileChange],
+        _changes: &[FileChange],
     ) -> Result<()> {
-        use colgrep::{gather_code_units_from_path, index_path, Index};
+        // Colgrep's IndexBuilder.index() does incremental updates automatically
+        // based on file hashes. Re-run index with force=false.
+        use colgrep::{ensure_model, index_exists, Config, IndexBuilder, DEFAULT_MODEL};
 
-        let index_path = index_path(root);
-
-        if !colgrep::index_exists(&index_path) {
+        if !index_exists(root) {
             anyhow::bail!("Index does not exist - run full index first");
         }
 
-        let mut index = Index::load(&index_path)
-            .context("Failed to load index")?;
+        let model_path = ensure_model(Some(DEFAULT_MODEL), true)?;
+        let config = Config::load().unwrap_or_default();
+        let quantized = !config.use_fp32();
+        let parallel_sessions = Some(config.get_parallel_sessions());
+        let batch_size = Some(config.get_batch_size());
 
-        // Group changes by type
-        let mut to_index = Vec::new();
-        let mut to_delete = Vec::new();
+        let mut builder = IndexBuilder::with_options(
+            root,
+            &model_path,
+            quantized,
+            None,
+            parallel_sessions,
+            batch_size,
+        )?;
+        builder.set_auto_confirm(true);
+        builder.set_model_name(DEFAULT_MODEL);
 
-        for change in changes {
-            match change {
-                FileChange::Created(path) | FileChange::Modified(path) => {
-                    if path.exists() {
-                        let units = gather_code_units_from_path(path)?;
-                        to_index.extend(units);
-                    }
-                }
-                FileChange::Deleted(path) => {
-                    to_delete.push(path.clone());
-                }
-            }
-        }
-
-        // Update index
-        if !to_index.is_empty() {
-            index.index(&to_index)
-                .context("Failed to update index")?;
-        }
-
-        // Note: colgrep doesn't have a delete API yet
-        // For now, we just re-index the modified files
-        // TODO: Add delete support to colgrep library
-
+        builder.index(None, false).context("Failed to update index")?;
         Ok(())
     }
 
@@ -137,39 +121,41 @@ impl Backend for FilesystemBackend {
         include_patterns: Option<&[String]>,
         exclude_patterns: Option<&[String]>,
     ) -> Result<Vec<SearchResult>> {
-        use colgrep::{ensure_model, index_path, Searcher, DEFAULT_MODEL};
+        use colgrep::{ensure_model, index_exists, Searcher, DEFAULT_MODEL};
 
-        let index_path = index_path(root);
-
-        if !colgrep::index_exists(&index_path) {
+        if !index_exists(root) {
             anyhow::bail!("Index does not exist - please run indexing first");
         }
 
-        // Ensure model
         let model_path = ensure_model(Some(DEFAULT_MODEL), false)
             .context("Failed to ensure model")?;
 
-        // Load searcher
-        let mut searcher = Searcher::load(&index_path, &model_path)
+        let searcher = Searcher::load(root, &model_path)
             .context("Failed to load index")?;
 
-        // Perform search
-        let results = searcher.search(query, max_results, None)
+        let subset = include_patterns.and_then(|pats| {
+            if pats.is_empty() {
+                None
+            } else {
+                searcher
+                    .filter_by_file_patterns(&pats.to_vec())
+                    .ok()
+            }
+        });
+
+        let results = searcher
+            .search(query, max_results, subset.as_deref())
             .context("Search failed")?;
 
-        // Convert to SearchResult format
         let mut search_results = Vec::new();
-
         for result in results {
             let file_path = result.unit.file.to_string_lossy().to_string();
 
-            // Apply filters if specified
             if let Some(include) = include_patterns {
-                if !include.iter().any(|p| glob_match(p, &file_path)) {
+                if !include.is_empty() && !include.iter().any(|p| glob_match(p, &file_path)) {
                     continue;
                 }
             }
-
             if let Some(exclude) = exclude_patterns {
                 if exclude.iter().any(|p| glob_match(p, &file_path)) {
                     continue;
@@ -181,7 +167,7 @@ impl Backend for FilesystemBackend {
                 line_number: result.unit.line,
                 snippet: result.unit.code.clone(),
                 score: result.score,
-                context: None, // TODO: Add context extraction
+                context: None,
             });
         }
 
@@ -189,14 +175,14 @@ impl Backend for FilesystemBackend {
     }
 
     async fn get_stats(&self, root: &Path) -> Result<IndexStats> {
-        let index_path = Self::index_path(root);
+        use colgrep::index::paths::get_index_dir_for_project;
 
-        if !colgrep::index_exists(&index_path) {
+        if !colgrep::index_exists(root) {
             anyhow::bail!("Index does not exist");
         }
 
-        // Calculate statistics from index directory
-        let size_bytes = walkdir::WalkDir::new(&index_path)
+        let index_dir = get_index_dir_for_project(root)?;
+        let size_bytes = walkdir::WalkDir::new(&index_dir)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
@@ -204,8 +190,6 @@ impl Backend for FilesystemBackend {
             .map(|m| m.len())
             .sum();
 
-        // For filesystem backend, we don't track detailed stats
-        // This would require loading the entire index
         Ok(IndexStats {
             file_count: 0,
             code_unit_count: 0,
@@ -216,13 +200,11 @@ impl Backend for FilesystemBackend {
     }
 
     async fn delete_index(&mut self, root: &Path) -> Result<()> {
-        let index_path = Self::index_path(root);
-
-        if index_path.exists() {
-            std::fs::remove_dir_all(&index_path)
+        let index_dir = get_index_dir_for_project(root)?;
+        if index_dir.exists() {
+            std::fs::remove_dir_all(&index_dir)
                 .context("Failed to delete index directory")?;
         }
-
         Ok(())
     }
 }
