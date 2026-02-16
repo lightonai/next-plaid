@@ -1,6 +1,6 @@
 [package]
 name = "colgrep-mcp"
-version.workspace = true
+version = "1.0.8"
 edition = "2021"
 description = "MCP server for semantic code search powered by colgrep"
 license = "MIT"

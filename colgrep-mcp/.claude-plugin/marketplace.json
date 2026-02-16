@@ -1,7 +1,7 @@
 {
   "id": "colgrep-mcp",
   "name": "ColGREP Semantic Code Search",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Semantic code search powered by ColBERT. Find code by describing what it does, not just matching keywords.",
   "longDescription": "ColGREP uses AI (ColBERT multi-vector embeddings) to understand the meaning of your queries and find relevant code even when exact keywords don't match. It's much more powerful than grep or symbol search, supporting 45+ programming languages with automatic incremental indexing.",
   "author": "LightOn AI",

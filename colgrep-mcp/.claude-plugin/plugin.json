@@ -1,6 +1,6 @@
 {
   "name": "colgrep-mcp",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Semantic code search MCP server powered by ColBERT",
   "author": "LightOn AI",
   "homepage": "https://github.com/lightonai/next-plaid",

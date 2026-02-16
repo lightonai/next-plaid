@@ -190,7 +190,7 @@ Main plugin configuration:
 ```json
 {
   "name": "colgrep-mcp",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "type": "mcp-server",
   "mcpServer": {
     "name": "colgrep",

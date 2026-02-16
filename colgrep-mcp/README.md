@@ -317,7 +317,7 @@ ColGREP supports 45+ programming languages including:
 
 ## Development Status
 
-**Current Version**: 1.0.7
+**Current Version**: 1.0.8
 
 ✅ **Completed Features:**
 - Core indexing and semantic search

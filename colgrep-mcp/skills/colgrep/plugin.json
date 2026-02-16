@@ -1,6 +1,6 @@
 {
   "name": "colgrep",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Semantic code search powered by ColBERT. Find code by describing what it does, not just matching keywords.",
   "author": "LightOn AI",
   "mcpServer": "colgrep",
