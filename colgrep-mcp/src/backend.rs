@@ -50,6 +50,7 @@ pub struct IndexStats {
 
 /// File change event for incremental indexing
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum FileChange {
     Created(PathBuf),
     Modified(PathBuf),
@@ -94,7 +95,11 @@ pub trait Backend: Send + Sync {
 }
 
 /// Create a backend based on configuration
-pub async fn create_backend(config: &crate::config::ServerConfig) -> Result<Box<dyn Backend>> {
+/// `model_id` is the resolved ColBERT model (HuggingFace ID or local path)
+pub async fn create_backend(
+    config: &crate::config::ServerConfig,
+    model_id: &str,
+) -> Result<Box<dyn Backend>> {
     use crate::config::BackendType;
 
     match config.backend {
@@ -112,16 +117,19 @@ pub async fn create_backend(config: &crate::config::ServerConfig) -> Result<Box<
         BackendType::Cloudflare => {
             #[cfg(feature = "cloudflare")]
             {
-                let backend = crate::backend::cloudflare::CloudflareBackend::new(&config.cloudflare)?;
+                let backend =
+                    crate::backend::cloudflare::CloudflareBackend::new(&config.cloudflare)?;
                 Ok(Box::new(backend))
             }
             #[cfg(not(feature = "cloudflare"))]
             {
-                anyhow::bail!("Cloudflare backend not available - rebuild with 'cloudflare' feature")
+                anyhow::bail!(
+                    "Cloudflare backend not available - rebuild with 'cloudflare' feature"
+                )
             }
         }
         BackendType::Filesystem => {
-            let backend = crate::backend::filesystem::FilesystemBackend::new();
+            let backend = crate::backend::filesystem::FilesystemBackend::new(model_id);
             Ok(Box::new(backend))
         }
     }

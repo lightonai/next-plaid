@@ -6,7 +6,9 @@
 use super::{Backend, FileChange, IndexStats, SearchResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use deadpool_postgres::{Config as PoolConfig, Manager, ManagerConfig, Pool, RecyclingMethod, Runtime};
+use deadpool_postgres::{
+    Config as PoolConfig, Manager, ManagerConfig, Pool, RecyclingMethod, Runtime,
+};
 use std::path::{Path, PathBuf};
 use tokio_postgres::NoTls;
 
@@ -20,7 +22,9 @@ impl LocalBackend {
     /// Create a new local backend
     pub async fn new(config: &crate::config::LocalConfig) -> Result<Self> {
         // Parse connection string
-        let pg_config = config.database_url.parse::<tokio_postgres::Config>()
+        let pg_config = config
+            .database_url
+            .parse::<tokio_postgres::Config>()
             .context("Invalid database URL")?;
 
         // Create connection pool
@@ -68,20 +72,14 @@ impl LocalBackend {
     }
 
     /// Store vectors for code units
-    async fn store_vectors(
-        &self,
-        project_id: i64,
-        code_units: &[colgrep::CodeUnit],
-    ) -> Result<()> {
+    async fn store_vectors(&self, project_id: i64, code_units: &[colgrep::CodeUnit]) -> Result<()> {
         use colgrep::{ensure_model, Encoder};
 
         // Ensure model is available
-        ensure_model(None, false)
-            .context("Failed to download ColBERT model")?;
+        ensure_model(None, false).context("Failed to download ColBERT model")?;
 
         // Load encoder
-        let encoder = Encoder::new(None)
-            .context("Failed to load encoder")?;
+        let encoder = Encoder::new(None).context("Failed to load encoder")?;
 
         let client = self.pool.get().await?;
 
@@ -106,13 +104,19 @@ impl LocalBackend {
                     "INSERT INTO code_units (file_id, line_number, code, unit_type)
                      VALUES ($1, $2, $3, $4)
                      RETURNING id",
-                    &[&file_id, &(unit.line_number as i32), &unit.code, &unit.unit_type],
+                    &[
+                        &file_id,
+                        &(unit.line_number as i32),
+                        &unit.code,
+                        &unit.unit_type,
+                    ],
                 )
                 .await?
                 .get(0);
 
             // Encode the code to get embeddings
-            let embeddings = encoder.encode(&[unit.code.clone()])
+            let embeddings = encoder
+                .encode(&[unit.code.clone()])
                 .context("Failed to encode code")?;
 
             // Store each embedding vector
@@ -205,7 +209,8 @@ impl Backend for LocalBackend {
         // Gather code units from the filesystem
         let code_units = colgrep::gather_code_units_from_path(root)?;
 
-        let file_count = code_units.iter()
+        let file_count = code_units
+            .iter()
             .map(|u| &u.file_path)
             .collect::<std::collections::HashSet<_>>()
             .len();
@@ -216,18 +221,17 @@ impl Backend for LocalBackend {
         // Update last indexed timestamp
         let client = self.pool.get().await?;
         client
-            .execute("UPDATE projects SET last_indexed = NOW() WHERE id = $1", &[&project_id])
+            .execute(
+                "UPDATE projects SET last_indexed = NOW() WHERE id = $1",
+                &[&project_id],
+            )
             .await?;
 
         // Get statistics
         self.get_stats(root).await
     }
 
-    async fn update_incremental(
-        &mut self,
-        root: &Path,
-        changes: &[FileChange],
-    ) -> Result<()> {
+    async fn update_incremental(&mut self, root: &Path, changes: &[FileChange]) -> Result<()> {
         let project_id = self.get_or_create_project(root).await?;
 
         // Process each change
@@ -253,7 +257,10 @@ impl Backend for LocalBackend {
         // Update last indexed timestamp
         let client = self.pool.get().await?;
         client
-            .execute("UPDATE projects SET last_indexed = NOW() WHERE id = $1", &[&project_id])
+            .execute(
+                "UPDATE projects SET last_indexed = NOW() WHERE id = $1",
+                &[&project_id],
+            )
             .await?;
 
         Ok(())
@@ -281,10 +288,10 @@ impl Backend for LocalBackend {
         let project_id: i64 = row.get(0);
 
         // Encode query
-        let encoder = Encoder::new(None)
-            .context("Failed to load encoder")?;
+        let encoder = Encoder::new(None).context("Failed to load encoder")?;
 
-        let query_embeddings = encoder.encode(&[query.to_string()])
+        let query_embeddings = encoder
+            .encode(&[query.to_string()])
             .context("Failed to encode query")?;
 
         // For ColBERT, we use the first query vector for simplicity
@@ -368,7 +375,10 @@ impl Backend for LocalBackend {
         );
 
         let rows = client
-            .query(&simple_query, &[&project_id, &query_pgvector, &(max_results as i32)])
+            .query(
+                &simple_query,
+                &[&project_id, &query_pgvector, &(max_results as i32)],
+            )
             .await?;
 
         let mut results = Vec::new();
@@ -383,7 +393,11 @@ impl Backend for LocalBackend {
         }
 
         // Sort by score descending
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok(results)
     }
@@ -415,7 +429,8 @@ impl Backend for LocalBackend {
             code_unit_count: row.get::<_, i64>(1) as usize,
             vector_count: row.get::<_, i64>(2) as usize,
             size_bytes: 0, // Would need to query pg_total_relation_size
-            last_updated: row.get::<_, Option<chrono::DateTime<chrono::Utc>>>(3)
+            last_updated: row
+                .get::<_, Option<chrono::DateTime<chrono::Utc>>>(3)
                 .map(|dt| dt.timestamp()),
         })
     }

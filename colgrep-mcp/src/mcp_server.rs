@@ -117,7 +117,10 @@ impl McpServer {
 
         // Notifications have no id - must NOT respond (MCP spec: "Notifications do not expect a response")
         if request.id.is_none() {
-            debug!("Received notification: method={} (no response)", request.method);
+            debug!(
+                "Received notification: method={} (no response)",
+                request.method
+            );
             return None;
         }
 
@@ -245,6 +248,19 @@ impl McpServer {
                             }
                         }
                     }
+                },
+                {
+                    "name": "clear_index",
+                    "description": "Delete the semantic search index for the given path. Use when you need to rebuild from scratch or free disk space.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Optional path to clear (defaults to current directory)"
+                            }
+                        }
+                    }
                 }
             ]
         }))
@@ -267,6 +283,7 @@ impl McpServer {
             "search" => self.tool_search(args).await,
             "get_status" => self.tool_get_status(args).await,
             "enable_auto_index" => self.tool_enable_auto_index(args).await,
+            "clear_index" => self.tool_clear_index(args).await,
             _ => Err(format!("Unknown tool: {}", name)),
         }
     }
@@ -359,7 +376,13 @@ impl McpServer {
         };
 
         let results = backend
-            .search(&self.cwd, query, max_results, include_patterns, exclude_patterns)
+            .search(
+                &self.cwd,
+                query,
+                max_results,
+                include_patterns,
+                exclude_patterns,
+            )
             .await
             .map_err(|e| format!("Search failed: {}", e))?;
 
@@ -488,5 +511,29 @@ impl McpServer {
                 "isError": false
             }))
         }
+    }
+
+    async fn tool_clear_index(&self, args: Value) -> Result<Value, String> {
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.cwd.clone());
+
+        info!("Clearing index at: {:?}", path);
+
+        let mut backend = self.backend.lock().await;
+        backend
+            .delete_index(&path)
+            .await
+            .map_err(|e| format!("Failed to clear index: {}", e))?;
+
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": format!("Index cleared for {:?}. Run index_codebase to rebuild.", path)
+            }],
+            "isError": false
+        }))
     }
 }

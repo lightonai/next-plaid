@@ -39,7 +39,7 @@ impl Backend for CloudflareBackend {
         // - Create Vectorize index if it doesn't exist
         // - Create D1 database if it doesn't exist
         // - Create R2 bucket if it doesn't exist
-        anyhow::bail!("Cloudflare backend not yet implemented - see CLOUDFLARE.md for architecture details")
+        anyhow::bail!("Cloudflare backend not yet implemented - see docs/CLOUDFLARE.md for architecture details")
     }
 
     async fn index_exists(&self, _root: &Path) -> Result<bool> {
@@ -51,11 +51,7 @@ impl Backend for CloudflareBackend {
         anyhow::bail!("Cloudflare backend not yet implemented")
     }
 
-    async fn update_incremental(
-        &mut self,
-        _root: &Path,
-        _changes: &[FileChange],
-    ) -> Result<()> {
+    async fn update_incremental(&mut self, _root: &Path, _changes: &[FileChange]) -> Result<()> {
         anyhow::bail!("Cloudflare backend not yet implemented")
     }
 

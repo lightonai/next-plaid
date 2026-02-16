@@ -8,15 +8,17 @@ use super::{Backend, FileChange, IndexStats, SearchResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use colgrep::index::paths::get_index_dir_for_project;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub struct FilesystemBackend {
-    // No state needed - colgrep handles everything
+    model_id: String,
 }
 
 impl FilesystemBackend {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(model_id: &str) -> Self {
+        Self {
+            model_id: model_id.to_string(),
+        }
     }
 }
 
@@ -32,7 +34,7 @@ impl Backend for FilesystemBackend {
     }
 
     async fn index_full(&mut self, root: &Path, force: bool) -> Result<IndexStats> {
-        use colgrep::{ensure_model, index_exists, Config, IndexBuilder, DEFAULT_MODEL};
+        use colgrep::{ensure_model, index_exists, Config, IndexBuilder};
 
         // Skip if index exists and not forcing
         if !force && index_exists(root) {
@@ -40,7 +42,7 @@ impl Backend for FilesystemBackend {
         }
 
         // Ensure model is downloaded
-        let model_path = ensure_model(Some(DEFAULT_MODEL), false)
+        let model_path = ensure_model(Some(&self.model_id), false)
             .context("Failed to download ColBERT model")?;
 
         let config = Config::load().unwrap_or_default();
@@ -57,9 +59,11 @@ impl Backend for FilesystemBackend {
             batch_size,
         )?;
         builder.set_auto_confirm(true); // Non-interactive for MCP
-        builder.set_model_name(DEFAULT_MODEL);
+        builder.set_model_name(&self.model_id);
 
-        let stats = builder.index(None, force).context("Failed to index codebase")?;
+        let stats = builder
+            .index(None, force)
+            .context("Failed to index codebase")?;
 
         let index_dir = get_index_dir_for_project(root)?;
         let size_bytes = walkdir::WalkDir::new(&index_dir)
@@ -79,20 +83,16 @@ impl Backend for FilesystemBackend {
         })
     }
 
-    async fn update_incremental(
-        &mut self,
-        root: &Path,
-        _changes: &[FileChange],
-    ) -> Result<()> {
+    async fn update_incremental(&mut self, root: &Path, _changes: &[FileChange]) -> Result<()> {
         // Colgrep's IndexBuilder.index() does incremental updates automatically
         // based on file hashes. Re-run index with force=false.
-        use colgrep::{ensure_model, index_exists, Config, IndexBuilder, DEFAULT_MODEL};
+        use colgrep::{ensure_model, index_exists, Config, IndexBuilder};
 
         if !index_exists(root) {
             anyhow::bail!("Index does not exist - run full index first");
         }
 
-        let model_path = ensure_model(Some(DEFAULT_MODEL), true)?;
+        let model_path = ensure_model(Some(&self.model_id), true)?;
         let config = Config::load().unwrap_or_default();
         let quantized = !config.use_fp32();
         let parallel_sessions = Some(config.get_parallel_sessions());
@@ -107,9 +107,11 @@ impl Backend for FilesystemBackend {
             batch_size,
         )?;
         builder.set_auto_confirm(true);
-        builder.set_model_name(DEFAULT_MODEL);
+        builder.set_model_name(&self.model_id);
 
-        builder.index(None, false).context("Failed to update index")?;
+        builder
+            .index(None, false)
+            .context("Failed to update index")?;
         Ok(())
     }
 
@@ -121,25 +123,22 @@ impl Backend for FilesystemBackend {
         include_patterns: Option<&[String]>,
         exclude_patterns: Option<&[String]>,
     ) -> Result<Vec<SearchResult>> {
-        use colgrep::{ensure_model, index_exists, Searcher, DEFAULT_MODEL};
+        use colgrep::{ensure_model, index_exists, Searcher};
 
         if !index_exists(root) {
             anyhow::bail!("Index does not exist - please run indexing first");
         }
 
-        let model_path = ensure_model(Some(DEFAULT_MODEL), false)
-            .context("Failed to ensure model")?;
+        let model_path =
+            ensure_model(Some(&self.model_id), false).context("Failed to ensure model")?;
 
-        let searcher = Searcher::load(root, &model_path)
-            .context("Failed to load index")?;
+        let searcher = Searcher::load(root, &model_path).context("Failed to load index")?;
 
         let subset = include_patterns.and_then(|pats| {
             if pats.is_empty() {
                 None
             } else {
-                searcher
-                    .filter_by_file_patterns(&pats.to_vec())
-                    .ok()
+                searcher.filter_by_file_patterns(pats).ok()
             }
         });
 
@@ -202,8 +201,7 @@ impl Backend for FilesystemBackend {
     async fn delete_index(&mut self, root: &Path) -> Result<()> {
         let index_dir = get_index_dir_for_project(root)?;
         if index_dir.exists() {
-            std::fs::remove_dir_all(&index_dir)
-                .context("Failed to delete index directory")?;
+            std::fs::remove_dir_all(&index_dir).context("Failed to delete index directory")?;
         }
         Ok(())
     }

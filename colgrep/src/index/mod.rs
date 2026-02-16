@@ -2270,6 +2270,7 @@ impl Searcher {
 
         // Suppress stderr during model loading to hide CoreML's harmless
         // "Context leak detected" warnings on macOS
+        let model_load_start = std::time::Instant::now();
         let model = crate::stderr::with_suppressed_stderr(|| {
             Colbert::builder(model_path)
                 .with_quantized(quantized)
@@ -2278,9 +2279,19 @@ impl Searcher {
                 .build()
         })
         .context("Failed to load ColBERT model")?;
+        let model_load_ms = model_load_start.elapsed().as_secs_f64() * 1000.0;
 
         // Load index
+        let index_load_start = std::time::Instant::now();
         let index = MmapIndex::load(&index_path_str).context("Failed to load index")?;
+        let index_load_ms = index_load_start.elapsed().as_secs_f64() * 1000.0;
+
+        if std::env::var("COLGREP_TIMING").is_ok() {
+            eprintln!(
+                "[colgrep timing] model_load={:.0}ms index_load={:.0}ms",
+                model_load_ms, index_load_ms
+            );
+        }
 
         Ok(Self {
             model,
@@ -2327,6 +2338,7 @@ impl Searcher {
 
         // Suppress stderr during model loading to hide CoreML's harmless
         // "Context leak detected" warnings on macOS
+        let model_load_start = std::time::Instant::now();
         let model = crate::stderr::with_suppressed_stderr(|| {
             Colbert::builder(model_path)
                 .with_quantized(quantized)
@@ -2335,8 +2347,18 @@ impl Searcher {
                 .build()
         })
         .context("Failed to load ColBERT model")?;
+        let model_load_ms = model_load_start.elapsed().as_secs_f64() * 1000.0;
 
+        let index_load_start = std::time::Instant::now();
         let index = MmapIndex::load(&index_path_str).context("Failed to load index")?;
+        let index_load_ms = index_load_start.elapsed().as_secs_f64() * 1000.0;
+
+        if std::env::var("COLGREP_TIMING").is_ok() {
+            eprintln!(
+                "[colgrep timing] model_load={:.0}ms index_load={:.0}ms",
+                model_load_ms, index_load_ms
+            );
+        }
 
         Ok(Self {
             model,
@@ -2588,12 +2610,15 @@ impl Searcher {
         subset: Option<&[i64]>,
     ) -> Result<Vec<SearchResult>> {
         // Encode query (suppress stderr to hide CoreML's harmless warnings)
+        let encode_start = std::time::Instant::now();
         let query_embeddings =
             crate::stderr::with_suppressed_stderr(|| self.model.encode_queries(&[query]))
                 .context("Failed to encode query")?;
         let query_emb = &query_embeddings[0];
+        let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
 
         // Search
+        let search_start = std::time::Instant::now();
         let params = SearchParameters {
             top_k,
             ..Default::default()
@@ -2602,11 +2627,21 @@ impl Searcher {
             .index
             .search(query_emb, &params, subset)
             .context("Search failed")?;
+        let search_ms = search_start.elapsed().as_secs_f64() * 1000.0;
 
         // Retrieve metadata for the result document IDs
+        let metadata_start = std::time::Instant::now();
         let doc_ids: Vec<i64> = results.passage_ids.to_vec();
         let metadata = filtering::get(&self.index_path, None, &[], Some(&doc_ids))
             .context("Failed to retrieve metadata")?;
+        let metadata_ms = metadata_start.elapsed().as_secs_f64() * 1000.0;
+
+        if std::env::var("COLGREP_TIMING").is_ok() {
+            eprintln!(
+                "[colgrep timing] query_encode={:.0}ms index_search={:.0}ms metadata={:.0}ms",
+                encode_ms, search_ms, metadata_ms
+            );
+        }
 
         // Map to SearchResult (fixing SQLite type conversions)
         let search_results: Vec<SearchResult> = metadata

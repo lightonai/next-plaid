@@ -21,7 +21,6 @@ colgrep-mcp/
 │   └── file_watcher.rs        # File watching for auto-indexing
 │
 ├── claude-mcp.json             # MCP server configuration example
-├── skill.md                    # Skill docs (legacy, use skills/colgrep/SKILL.md)
 └── README.md                   # Project documentation
 ```
 
@@ -124,7 +123,6 @@ JSON-RPC Response → Client
 
 ### Location
 **Primary**: `skills/colgrep/SKILL.md`
-**Legacy**: `skill.md` (deprecated, use skills/ version)
 
 ### Format
 

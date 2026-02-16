@@ -60,6 +60,7 @@ max_connections = 10
 vector_dimensions = 128  # ColBERT default
 
 [general]
+model = "lightonai/LateOn-Code-edge"  # ColBERT model (optional, overrides colgrep default)
 auto_index = false
 max_results = 15
 context_lines = 6
@@ -152,6 +153,9 @@ r2_bucket = "colgrep-code"
 
 ```toml
 [general]
+# ColBERT model (HuggingFace ID or local path). Overrides colgrep default.
+model = "lightonai/LateOn-Code-edge"
+
 # Enable automatic incremental indexing on file changes
 auto_index = false
 
@@ -162,13 +166,37 @@ max_results = 15
 context_lines = 6
 ```
 
-## Generate Example Config
+### Model Selection
 
-To generate an example configuration file:
+Use `--list-models` to see available ColBERT models and which is default:
 
 ```bash
-colgrep-mcp --generate-config > colgrep-mcp.toml
+colgrep-mcp --list-models
 ```
+
+Select a model via CLI:
+
+```bash
+colgrep-mcp --model lightonai/LateOn-Code
+colgrep-mcp --http --model lightonai/LateOn-Code-edge
+```
+
+Or config file:
+
+```toml
+[general]
+model = "lightonai/LateOn-Code-edge"
+```
+
+Precedence: `--model` CLI > `[general].model` in config > colgrep config > built-in default.
+
+## Generate Example Config
+
+```bash
+colgrep-mcp --generate-config
+```
+
+Prints an example config to stdout. Redirect to a file for editing.
 
 ## Backend Comparison
 

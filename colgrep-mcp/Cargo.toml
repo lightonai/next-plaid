@@ -16,7 +16,7 @@ path = "src/main.rs"
 colgrep = { path = "../colgrep", version = "1.0.7" }
 
 # MCP Server SDK
-rmcp = { version = "0.15", features = ["server", "macros"] }
+rmcp = { version = "0.15", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -25,7 +25,7 @@ async-trait = "0.1"
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
-schemars = "0.8"
+schemars = { version = "1.0", features = ["chrono04"] }
 
 # Error handling
 anyhow = { workspace = true }
@@ -51,8 +51,16 @@ deadpool-postgres = { version = "0.14", optional = true }
 toml = "0.8"
 dirs = "5.0"
 
+# CLI parsing (--list-models, --model, --http, etc.)
+clap = { version = "4", features = ["derive"] }
+
+# HTTP server (for --http mode)
+axum = { version = "0.8", optional = true }
+tokio-util = { version = "0.7", optional = true }
+
 [features]
 default = ["local-db"]
+http = ["dep:axum", "dep:tokio-util"]
 # Backend options (mutually exclusive - choose one)
 local-db = ["tokio-postgres", "pgvector", "deadpool-postgres"]
 cloudflare = []

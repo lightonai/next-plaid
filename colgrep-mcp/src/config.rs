@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Backend storage type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,6 +139,10 @@ impl Default for CloudflareConfig {
 /// General server settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneralConfig {
+    /// ColBERT model ID (HuggingFace or local path). Overrides colgrep default.
+    #[serde(default)]
+    pub model: Option<String>,
+
     /// Enable auto-indexing by default
     #[serde(default)]
     pub auto_index: bool,
@@ -163,6 +167,7 @@ fn default_context_lines() -> usize {
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
+            model: None,
             auto_index: false,
             max_results: default_max_results(),
             context_lines: default_context_lines(),
@@ -187,8 +192,8 @@ impl ServerConfig {
         let content = std::fs::read_to_string(path.as_ref())
             .with_context(|| format!("Failed to read config file: {:?}", path.as_ref()))?;
 
-        let config: ServerConfig = toml::from_str(&content)
-            .context("Failed to parse config file")?;
+        let config: ServerConfig =
+            toml::from_str(&content).context("Failed to parse config file")?;
 
         Ok(config)
     }
@@ -221,9 +226,9 @@ impl ServerConfig {
     }
 
     /// Save configuration to file
+    #[allow(dead_code)]
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let content = toml::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+        let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
 
         std::fs::write(path.as_ref(), content)
             .with_context(|| format!("Failed to write config file: {:?}", path.as_ref()))?;
@@ -248,6 +253,7 @@ impl ServerConfig {
                 api_token: Some("your-api-token".to_string()),
             },
             general: GeneralConfig {
+                model: Some("lightonai/LateOn-Code-edge".to_string()),
                 auto_index: false,
                 max_results: 15,
                 context_lines: 6,

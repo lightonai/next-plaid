@@ -16,8 +16,14 @@ An MCP (Model Context Protocol) server that provides semantic code search capabi
 
 ### Building from Source
 
+**Stdio mode** (default - for Cursor/IDE integration):
 ```bash
-cargo build --release -p colgrep-mcp
+cargo build --release -p colgrep-mcp --no-default-features
+```
+
+**HTTP mode** (long-running server - model stays loaded for fast reindex/search):
+```bash
+cargo build --release -p colgrep-mcp --no-default-features --features "http"
 ```
 
 The binary will be available at `target/release/colgrep-mcp`.
@@ -35,15 +41,15 @@ ColGREP MCP supports three storage backends:
    ```bash
    cargo build --release -p colgrep-mcp  # default feature
    ```
-   Requires PostgreSQL with pgvector extension. See [CONFIG.md](./CONFIG.md) for setup.
+   Requires PostgreSQL with pgvector extension. See [CONFIG.md](./docs/CONFIG.md) for setup.
 
 3. **Cloudflare** - Cloud-native using D1, R2, and Vectorize (coming soon)
    ```bash
    cargo build --release -p colgrep-mcp --features cloudflare
    ```
-   See [CLOUDFLARE.md](./CLOUDFLARE.md) for architecture details.
+   See [CLOUDFLARE.md](./docs/CLOUDFLARE.md) for architecture details.
 
-**Configuration**: See [CONFIG.md](./CONFIG.md) for complete configuration guide.
+**Configuration**: See [CONFIG.md](./docs/CONFIG.md) for complete configuration guide.
 
 ### Adding to Claude Code
 
@@ -128,6 +134,66 @@ Enable automatic incremental indexing when files change.
 
 **Note:** Once enabled, the file watcher monitors code files for changes and automatically updates the index. This is much faster than full re-indexing
 
+## Run Modes
+
+### Stdio (default)
+Spawns a new process per Cursor/IDE session. **Cold start**: First query in each session is slow (~30–90s) while the model loads. **Warm**: Subsequent queries in the same session are fast (<5s).
+
+### HTTP (--http) — Recommended for frequent search
+Long-running server keeps the model and index in memory. **All requests are fast** (~1.4–1.6s) with no cold start per session.
+
+#### Latency comparison
+
+| Mode | First request (cold) | Subsequent requests (warm) |
+|------|----------------------|----------------------------|
+| **stdio** | ~30–90s (model + index load) | <5s |
+| **HTTP** | ~15–25s (server startup, one-time) | **~1.4–1.6s** |
+
+HTTP mode avoids the cold start on every new Cursor session. Once the server is running, every search is consistently fast.
+
+#### Latency breakdown (per search)
+
+Set `COLGREP_TIMING=1` to log timing to stderr. Typical breakdown on next-plaid (~189 code units):
+
+| Phase | Time | Description |
+|-------|------|-------------|
+| **Model load** | ~350–880ms | Load ColBERT ONNX model (first request higher) |
+| **Index load** | ~18–20ms | Memory-map PLAID index from disk |
+| **Query encode** | ~1–5ms | Model inference: encode query to token embeddings |
+| **Index search** | ~800–1800ms | MaxSim vector lookup over code chunks |
+| **Metadata** | ~1–2ms | SQLite lookup for code unit details |
+
+Index search dominates. Query encoding is fast (~2ms). Model load is one-time per process; the filesystem backend currently creates a new Searcher per request, so model reload happens on each HTTP request.
+
+#### Quick start (HTTP mode)
+
+1. **Build** (from repo root):
+   ```bash
+   cargo build --release -p colgrep-mcp --no-default-features --features "http"
+   ```
+
+2. **Start the server** (from the directory you want to search):
+   ```bash
+   ./target/release/colgrep-mcp --http
+   ```
+   Or install globally: `cargo install --path colgrep-mcp --no-default-features --features "http"` then run `colgrep-mcp --http` from anywhere.
+
+3. **Configure Cursor** — add to `.cursor/mcp.json`:
+   ```json
+   "colgrep-http": {
+     "url": "http://127.0.0.1:3847/mcp",
+     "description": "ColBERT semantic search (HTTP mode)"
+   }
+   ```
+   Use the `colgrep-http` server in Cursor for fast semantic search.
+
+4. **Test without LLM** — open http://127.0.0.1:3847/test in a browser to run searches and see scores.
+
+#### Options
+
+- `--port 3847` — Port to bind (default: 3847). If the port is in use, the server tries 3848, 3849, … up to 3900.
+- `--model <id>` — ColBERT model to use (e.g. `lightonai/LateOn-Code-edge`). Use `--list-models` to see options.
+
 ## How It Works
 
 1. **Indexing**: ColGREP parses your codebase using tree-sitter, extracts code units (functions, classes, etc.), and creates vector embeddings using a ColBERT model
@@ -151,7 +217,14 @@ Enable automatic incremental indexing when files change.
 
 ## Model
 
-By default, ColGREP uses the `lightonai/LateOn-Code-edge` model, which is:
+By default, ColGREP uses the `lightonai/LateOn-Code-edge` model. List available models and select one:
+
+```bash
+colgrep-mcp --list-models
+colgrep-mcp --model lightonai/LateOn-Code
+```
+
+The default model is:
 - **Lightweight**: CPU-friendly and fast
 - **Accurate**: Trained specifically for code search
 - **Automatic**: Downloads automatically on first use

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info};
 
 use crate::backend::{Backend, FileChange};
 
@@ -94,19 +94,16 @@ impl FileWatcher {
 
                         // Send events
                         if !created.is_empty() {
-                            let _ = tx.send(FileChangeEvent::Created(
-                                created.into_iter().collect(),
-                            ));
+                            let _ =
+                                tx.send(FileChangeEvent::Created(created.into_iter().collect()));
                         }
                         if !modified.is_empty() {
-                            let _ = tx.send(FileChangeEvent::Modified(
-                                modified.into_iter().collect(),
-                            ));
+                            let _ =
+                                tx.send(FileChangeEvent::Modified(modified.into_iter().collect()));
                         }
                         if !removed.is_empty() {
-                            let _ = tx.send(FileChangeEvent::Deleted(
-                                removed.into_iter().collect(),
-                            ));
+                            let _ =
+                                tx.send(FileChangeEvent::Deleted(removed.into_iter().collect()));
                         }
                     }
                     Err(errors) => {
