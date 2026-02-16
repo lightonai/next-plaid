@@ -4,18 +4,13 @@
 
 use colgrep::DEFAULT_MODEL;
 
-/// Known ColBERT models that work with colgrep (ONNX format)
+/// Ready-to-use models from the next-plaid README (served with NextPlaid, used with ColGREP)
 pub const KNOWN_MODELS: &[(&str, &str)] = &[
-    (
-        "lightonai/LateOn-Code-edge",
-        "Default - 17M params, optimized for code search",
-    ),
-    ("lightonai/LateOn-Code", "Larger model, higher accuracy"),
-    ("lightonai/LateOn-Code-pretrain", "Pretrained base"),
-    (
-        "lightonai/LateOn-Code-edge-pretrain",
-        "Edge pretrained variant",
-    ),
+    ("lightonai/LateOn-Code-edge", "Code search, lightweight"),
+    ("lightonai/LateOn-Code", "Code search, accurate"),
+    ("lightonai/mxbai-edge-colbert-v0-32m-onnx", "Text retrieval, lightweight"),
+    ("lightonai/answerai-colbert-small-v1-onnx", "Text retrieval, lightweight"),
+    ("lightonai/GTE-ModernColBERT-v1", "Text retrieval, accurate"),
 ];
 
 /// Get the default model ID (colgrep's default)
