@@ -51,12 +51,21 @@ ColGREP MCP supports three storage backends:
 
 **Configuration**: See [CONFIG.md](./docs/CONFIG.md) for complete configuration guide.
 
-### Adding to Claude Code
+### Claude Code Integration
 
-To use this MCP server with Claude Code, add it to your Claude Code configuration:
+**Global config** — To use colgrep in all projects:
 
-1. Copy the `claude-mcp.json` configuration to your Claude Code MCP servers directory
-2. Or manually add to your `~/.claude/mcp_servers.json`:
+```bash
+# Stdio mode (use absolute path)
+claude mcp add --scope user --transport stdio colgrep -- /path/to/colgrep-mcp
+
+# HTTP mode (run colgrep-mcp --http first)
+claude mcp add --scope user --transport http colgrep-http http://127.0.0.1:3847/mcp
+```
+
+Use an **absolute path** for the stdio server (e.g. `~/Code/next-plaid/target/release/colgrep-mcp` or `~/.cargo/bin/colgrep-mcp` after `cargo install`).
+
+**Project config** — Or add to your project's `.claude/mcp_servers.json`:
 
 ```json
 {
@@ -64,12 +73,79 @@ To use this MCP server with Claude Code, add it to your Claude Code configuratio
     "colgrep": {
       "command": "/path/to/colgrep-mcp",
       "args": [],
-      "env": {},
       "description": "Semantic code search powered by ColBERT"
     }
   }
 }
 ```
+
+### Cursor Integration
+
+**Global config** — To use colgrep in all projects, add to `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "colgrep": {
+      "command": "/path/to/colgrep-mcp",
+      "args": [],
+      "description": "Semantic code search powered by ColBERT"
+    },
+    "colgrep-http": {
+      "url": "http://127.0.0.1:3847/mcp",
+      "description": "ColBERT semantic search (HTTP mode - run colgrep-mcp --http first)"
+    }
+  }
+}
+```
+
+Use an **absolute path** for the stdio server (e.g. `~/Code/next-plaid/target/release/colgrep-mcp` or `~/.cargo/bin/colgrep-mcp` after `cargo install`). Project-relative paths like `target/release/colgrep-mcp` only work in project config.
+
+**Project config** — To maximize ColGREP usage for the right queries, add both MCP config and a Cursor rule:
+
+**1. MCP config** (`.cursor/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "colgrep": {
+      "command": "target/release/colgrep-mcp",
+      "args": [],
+      "description": "Semantic code search powered by ColBERT"
+    }
+  }
+}
+```
+
+**2. Cursor rule** — Copy `.cursor/rules/colgrep.mdc` from this package into your project's `.cursor/rules/`:
+
+```bash
+mkdir -p .cursor/rules
+cp colgrep-mcp/.cursor/rules/colgrep.mdc .cursor/rules/
+```
+
+This rule tells the agent to **prefer colgrep search** when the user describes what they want (e.g. "where do we handle auth?") and **use grep** only for exact string/regex matches. Without the rule, the agent may default to grep; with it, semantic queries go to ColGREP.
+
+### Antigravity Integration
+
+**Global config** — Add to `~/.gemini/antigravity/mcp_config.json` (macOS/Linux). Example: `antigravity-mcp.json`
+
+```json
+{
+  "mcpServers": {
+    "colgrep": {
+      "command": "/path/to/colgrep-mcp",
+      "args": []
+    },
+    "colgrep-http": {
+      "serverUrl": "http://127.0.0.1:3847/mcp"
+    }
+  }
+}
+```
+
+Use an **absolute path** for the stdio server. For HTTP mode, start the server first with `colgrep-mcp --http`.
+
+To edit the config: open the MCP Store via the "..." dropdown at the top of the editor's agent panel → Manage MCP Servers → View raw config.
 
 ## Usage
 
