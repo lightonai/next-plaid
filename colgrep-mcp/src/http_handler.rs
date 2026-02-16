@@ -173,7 +173,7 @@ impl ColgrepHandler {
     }
 
     #[tool(
-        description = "Search the codebase using semantic search. Understands natural language queries and finds relevant code even if exact keywords don't match."
+        description = "Search code by meaning, not keywords. Use for natural language queries (e.g. 'where do we handle auth?', 'function that retries errors'). Prefer over grep when the user describes behavior or intent. Use grep only for exact string/regex matches."
     )]
     async fn search(
         &self,
@@ -365,9 +365,11 @@ impl rmcp::ServerHandler for ColgrepHandler {
             },
             instructions: Some(
                 "ColGREP MCP Server - Semantic code search powered by ColBERT.\n\n\
-                 This server provides tools for indexing and searching code with semantic understanding.\n\
-                 It's much more powerful than simple keyword or symbol search.\n\n\
-                 Available tools: index_codebase, search, get_status, enable_auto_index, clear_index"
+                 WHEN TO USE colgrep search vs grep:\n\
+                 - Use colgrep search when the user describes what they want (e.g. \"where do we handle auth?\", \"function that retries errors\", \"code that validates email\"). ColGREP understands meaning and finds semantically similar code.\n\
+                 - Use grep only when the user provides an exact string or regex pattern to match.\n\n\
+                 PREFER colgrep search for: natural language queries, finding code by behavior/intent, discovering implementations without knowing names, cross-cutting concerns (error handling, logging).\n\n\
+                 Tools: index_codebase, search, get_status, enable_auto_index, clear_index"
                     .to_string(),
             ),
         }

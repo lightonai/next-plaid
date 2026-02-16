@@ -166,14 +166,11 @@ impl McpServer {
                 "tools": {}
             },
             "instructions": "ColGREP MCP Server - Semantic code search powered by ColBERT.\n\n\
-                This server provides tools for indexing and searching code with semantic understanding.\n\
-                It's much more powerful than simple keyword or symbol search, understanding the meaning\n\
-                of your queries and finding relevant code even when exact keywords don't match.\n\n\
-                Available tools:\n\
-                - index_codebase: Create a searchable index of your code\n\
-                - search: Search code semantically with natural language queries\n\
-                - get_status: Check index status and statistics\n\
-                - update_index: Update the index with recent changes"
+                WHEN TO USE colgrep search vs grep:\n\
+                - Use colgrep search when the user describes what they want (e.g. \"where do we handle auth?\", \"function that retries errors\", \"code that validates email\"). ColGREP understands meaning and finds semantically similar code.\n\
+                - Use grep only when the user provides an exact string or regex pattern to match.\n\n\
+                PREFER colgrep search for: natural language queries, finding code by behavior/intent, discovering implementations without knowing names, cross-cutting concerns (error handling, logging).\n\n\
+                Tools: index_codebase, search, get_status, enable_auto_index, clear_index"
         }))
     }
 
@@ -200,7 +197,7 @@ impl McpServer {
                 },
                 {
                     "name": "search",
-                    "description": "Search the codebase using semantic search. Understands natural language queries and finds relevant code even if exact keywords don't match.",
+                    "description": "Search code by meaning, not keywords. Use for natural language queries (e.g. 'where do we handle auth?', 'function that retries errors'). Prefer over grep when the user describes behavior or intent. Use grep only for exact string/regex matches.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
