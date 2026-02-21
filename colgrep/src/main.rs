@@ -217,6 +217,7 @@ fn main() -> Result<()> {
             pool_factor,
             parallel_sessions,
             batch_size,
+            max_recursion_depth,
             verbose,
             no_verbose,
         }) => cmd_config(
@@ -227,6 +228,7 @@ fn main() -> Result<()> {
             pool_factor,
             parallel_sessions,
             batch_size,
+            max_recursion_depth,
             verbose,
             no_verbose,
         ),

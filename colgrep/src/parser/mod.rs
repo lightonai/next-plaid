@@ -43,8 +43,31 @@ use extract::{extract_class, extract_constant, extract_function, fill_raw_code_g
 use language::get_tree_sitter_language;
 use text::extract_text_units;
 
+use crate::config::{Config, DEFAULT_MAX_RECURSION_DEPTH};
+
 use std::path::Path;
+use std::sync::OnceLock;
 use tree_sitter::{Node, Parser};
+
+/// Maximum parser/analysis recursion depth used across all parser modules.
+///
+/// Reads from `colgrep settings --max-recursion-depth`.
+/// Can be temporarily overridden with `COLGREP_MAX_RECURSION_DEPTH`.
+/// Invalid or non-positive values are ignored.
+pub(crate) fn max_recursion_depth() -> usize {
+    static MAX_DEPTH: OnceLock<usize> = OnceLock::new();
+    *MAX_DEPTH.get_or_init(|| {
+        let from_config = Config::load()
+            .ok()
+            .map(|c| c.get_max_recursion_depth())
+            .unwrap_or(DEFAULT_MAX_RECURSION_DEPTH);
+        std::env::var("COLGREP_MAX_RECURSION_DEPTH")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(from_config)
+    })
+}
 
 /// Extract all code units from a file with 5-layer analysis.
 ///
@@ -100,7 +123,9 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
     let bytes = source.as_bytes();
     let file_imports = extract_file_imports(tree.root_node(), bytes, lang);
 
+    let max_depth = max_recursion_depth();
     let mut units = Vec::new();
+    let mut depth_limit_hit = false;
     extract_from_node(
         tree.root_node(),
         path,
@@ -110,7 +135,19 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         &mut units,
         None,
         &file_imports,
+        0,
+        max_depth,
+        &mut depth_limit_hit,
     );
+
+    if depth_limit_hit {
+        eprintln!(
+            "⚠️  Skipping {} (AST nesting exceeded max depth: {})",
+            path.display(),
+            max_depth
+        );
+        return Vec::new();
+    }
 
     // Fill gaps with raw code units to achieve 100% file coverage
     fill_raw_code_gaps(&mut units, path, &lines, lang, &file_imports);
@@ -134,7 +171,18 @@ fn extract_from_node(
     units: &mut Vec<CodeUnit>,
     parent_class: Option<&str>,
     file_imports: &[String],
+    depth: usize,
+    max_depth: usize,
+    depth_limit_hit: &mut bool,
 ) {
+    if *depth_limit_hit {
+        return;
+    }
+    if depth > max_depth {
+        *depth_limit_hit = true;
+        return;
+    }
+
     let kind = node.kind();
 
     // Check if this is a function/method definition
@@ -176,6 +224,9 @@ fn extract_from_node(
             units,
             parent_class,
             file_imports,
+            depth + 1,
+            max_depth,
+            depth_limit_hit,
         );
     }
 }

@@ -208,6 +208,9 @@ colgrep settings --parallel 8
 # Set batch size per session (default: 1 for CPU, 64 for CUDA)
 colgrep settings --batch-size 2
 
+# Set parser recursion depth guard (default: 1024)
+colgrep settings --max-recursion-depth 1024
+
 # Enable verbose output by default
 colgrep settings --verbose
 
