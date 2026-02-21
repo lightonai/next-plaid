@@ -653,7 +653,9 @@ impl IndexBuilder {
             }
 
             // Skip files in ignored directories (same filtering as scan_files)
-            if should_ignore(&full_path) {
+            // Use the relative path so hidden-directory filtering doesn't reject
+            // ancestor components of the project root itself.
+            if should_ignore(path) {
                 continue;
             }
 
@@ -1398,11 +1400,21 @@ impl IndexBuilder {
     }
 
     fn scan_files(&self, languages: Option<&[Language]>) -> Result<(Vec<PathBuf>, usize)> {
+        let project_root = self.project_root.clone();
         let walker = WalkBuilder::new(&self.project_root)
             .hidden(false) // Handle hidden files manually in should_ignore (with .github exception)
             .git_ignore(true)
             .follow_links(false) // Explicitly prevent symlink traversal outside project
-            .filter_entry(|entry| !should_ignore(entry.path()))
+            .filter_entry(move |entry| {
+                // Only apply ignore rules to path components relative to the project root.
+                // The project root itself is always trusted (the user explicitly chose it),
+                // so hidden-directory filtering must not reject ancestor path components.
+                match entry.path().strip_prefix(&project_root) {
+                    Ok(rel) if rel.as_os_str().is_empty() => true, // root entry itself
+                    Ok(rel) => !should_ignore(rel),
+                    Err(_) => !should_ignore(entry.path()), // fallback (shouldn't happen)
+                }
+            })
             .build();
 
         let mut files = Vec::new();
@@ -3229,5 +3241,37 @@ mod tests {
         assert!(re.is_match(".claude/plugins/file.json"));
         assert!(re.is_match("foo/.claude/bar/test.txt"));
         assert!(!re.is_match(".claude/file.json")); // .claude is not a parent dir
+    }
+
+    #[test]
+    fn test_should_ignore_relative_hidden_subdir() {
+        // Hidden subdirectories inside the project should be ignored
+        assert!(should_ignore(Path::new(".hidden/foo.rs")));
+        assert!(should_ignore(Path::new("src/.secret/bar.rs")));
+        // But allowed hidden dirs are fine
+        assert!(!should_ignore(Path::new(".github/workflows/ci.yml")));
+    }
+
+    #[test]
+    fn test_should_ignore_does_not_reject_dotprefixed_root_when_relative() {
+        // When called with a *relative* path (no ancestors of project root),
+        // files at the top level of the project are not rejected.
+        // This is the key fix: scan_files now strips the project root before
+        // calling should_ignore, so a project root like ~/.pi/agent/extensions/
+        // no longer causes the hidden-dir filter to reject everything.
+        assert!(!should_ignore(Path::new("index.ts")));
+        assert!(!should_ignore(Path::new("src/lib.rs")));
+        assert!(!should_ignore(Path::new("package.json")));
+    }
+
+    #[test]
+    fn test_should_ignore_absolute_dotprefixed_ancestors() {
+        // Demonstrate the old bug: should_ignore on a full absolute path
+        // with hidden ancestors would incorrectly reject the file.
+        // After the fix, scan_files no longer passes absolute paths.
+        let path = Path::new("/home/user/.pi/agent/extensions/index.ts");
+        // This WOULD be rejected (the .pi component is hidden) — which is
+        // exactly why scan_files must strip the project root first.
+        assert!(should_ignore(path));
     }
 }
