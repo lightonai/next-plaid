@@ -1032,6 +1032,10 @@ pub struct ChunkManifestEntry {
 pub struct MergeManifest {
     /// Chunk information
     pub chunks: HashMap<String, ChunkManifestEntry>,
+    /// Filename of the merged array currently in use.
+    /// When replacing a mapped file fails on Windows, a versioned filename is used.
+    #[serde(default)]
+    pub merged_filename: Option<String>,
     /// Number of padding rows used in the merge
     #[serde(default)]
     pub padding_rows: usize,
@@ -1064,6 +1068,7 @@ fn load_merge_manifest(manifest_path: &Path) -> Option<MergeManifest> {
                     // Convert legacy format - missing padding info means we need to regenerate
                     return Some(MergeManifest {
                         chunks,
+                        merged_filename: None,
                         padding_rows: 0,
                         total_rows: 0,
                         ncols: 0,
@@ -1101,6 +1106,34 @@ fn save_merge_manifest(manifest_path: &Path, manifest: &MergeManifest) -> Result
         .map_err(|e| Error::IndexLoad(format!("Failed to rename manifest: {}", e)))?;
 
     Ok(())
+}
+
+fn is_file_in_use_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        // Windows: sharing violation / lock violation / mapped section open
+        Some(32) | Some(33) | Some(1224)
+        // Unix-like: EBUSY
+        | Some(16)
+    )
+}
+
+fn is_already_exists_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        // Windows ERROR_ALREADY_EXISTS
+        Some(183)
+        // Unix EEXIST
+        | Some(17)
+    )
+}
+
+fn unique_merge_filename(prefix: &str) -> String {
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}.{}.{}.npy", prefix, std::process::id(), now_nanos)
 }
 
 /// Get file modification time as f64 seconds since epoch
@@ -1212,7 +1245,7 @@ pub fn merge_codes_chunks(
 ) -> Result<std::path::PathBuf> {
     use ndarray_npy::ReadNpyExt;
 
-    let merged_path = index_path.join("merged_codes.npy");
+    let default_merged_path = index_path.join("merged_codes.npy");
     let manifest_path = index_path.join("merged_codes.manifest.json");
     let temp_path = index_path.join("merged_codes.npy.tmp");
     let lock_path = index_path.join("merged_codes.lock");
@@ -1226,6 +1259,11 @@ pub fn merge_codes_chunks(
 
     // Load previous manifest (re-read after acquiring lock)
     let old_manifest = load_merge_manifest(&manifest_path);
+    let merged_path = old_manifest
+        .as_ref()
+        .and_then(|m| m.merged_filename.as_deref())
+        .map(|name| index_path.join(name))
+        .unwrap_or_else(|| default_merged_path.clone());
 
     // Scan chunks and detect changes
     let mut chunks: Vec<ChunkInfo> = Vec::new();
@@ -1294,7 +1332,7 @@ pub fn merge_codes_chunks(
     let needs_full_rewrite =
         !merged_path.exists() || chain_broken || padding_changed || total_rows_mismatch;
 
-    if needs_full_rewrite {
+    let final_merged_path = if needs_full_rewrite {
         // Write to temp file first (atomic write pattern)
         let file = File::create(&temp_path)
             .map_err(|e| Error::IndexLoad(format!("Failed to create temp merged file: {}", e)))?;
@@ -1345,9 +1383,30 @@ pub fn merge_codes_chunks(
             )));
         }
 
-        // Atomic rename (overwrites existing file)
-        fs::rename(&temp_path, &merged_path)
-            .map_err(|e| Error::IndexLoad(format!("Failed to rename merged file: {}", e)))?;
+        // Atomic rename. If replacing an in-use mapped file fails (Windows),
+        // fall back to a unique versioned merged filename.
+        match fs::rename(&temp_path, &merged_path) {
+            Ok(()) => merged_path.clone(),
+            Err(rename_err)
+                if is_file_in_use_error(&rename_err) || is_already_exists_error(&rename_err) =>
+            {
+                let fallback_name = unique_merge_filename("merged_codes");
+                let fallback_path = index_path.join(&fallback_name);
+                fs::rename(&temp_path, &fallback_path).map_err(|fallback_err| {
+                    Error::IndexLoad(format!(
+                        "Failed to replace merged codes file and fallback failed: {}, {}",
+                        rename_err, fallback_err
+                    ))
+                })?;
+                fallback_path
+            }
+            Err(e) => {
+                return Err(Error::IndexLoad(format!(
+                    "Failed to rename merged file: {}",
+                    e
+                )));
+            }
+        }
     } else {
         // Validate existing merged file before using it
         if merged_path.exists() {
@@ -1368,7 +1427,8 @@ pub fn merge_codes_chunks(
                 return merge_codes_chunks(index_path, num_chunks, padding_rows);
             }
         }
-    }
+        merged_path.clone()
+    };
 
     // Build and save manifest with full metadata
     let mut chunk_map = HashMap::new();
@@ -1383,13 +1443,16 @@ pub fn merge_codes_chunks(
     }
     let new_manifest = MergeManifest {
         chunks: chunk_map,
+        merged_filename: final_merged_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string()),
         padding_rows,
         total_rows: final_rows,
         ncols: 0, // Not used for 1D codes array
     };
     save_merge_manifest(&manifest_path, &new_manifest)?;
 
-    Ok(merged_path)
+    Ok(final_merged_path)
 }
 
 /// Merge chunked residuals NPY files into a single merged file.
@@ -1403,7 +1466,7 @@ pub fn merge_residuals_chunks(
 ) -> Result<std::path::PathBuf> {
     use ndarray_npy::ReadNpyExt;
 
-    let merged_path = index_path.join("merged_residuals.npy");
+    let default_merged_path = index_path.join("merged_residuals.npy");
     let manifest_path = index_path.join("merged_residuals.manifest.json");
     let temp_path = index_path.join("merged_residuals.npy.tmp");
     let lock_path = index_path.join("merged_residuals.lock");
@@ -1417,6 +1480,11 @@ pub fn merge_residuals_chunks(
 
     // Load previous manifest (re-read after acquiring lock)
     let old_manifest = load_merge_manifest(&manifest_path);
+    let merged_path = old_manifest
+        .as_ref()
+        .and_then(|m| m.merged_filename.as_deref())
+        .map(|name| index_path.join(name))
+        .unwrap_or_else(|| default_merged_path.clone());
 
     // Scan chunks and detect changes
     let mut chunks: Vec<ChunkInfo> = Vec::new();
@@ -1493,7 +1561,7 @@ pub fn merge_residuals_chunks(
         || total_rows_mismatch
         || ncols_mismatch;
 
-    if needs_full_rewrite {
+    let final_merged_path = if needs_full_rewrite {
         // Write to temp file first (atomic write pattern)
         let file = File::create(&temp_path)
             .map_err(|e| Error::IndexLoad(format!("Failed to create temp merged file: {}", e)))?;
@@ -1546,9 +1614,30 @@ pub fn merge_residuals_chunks(
             )));
         }
 
-        // Atomic rename
-        fs::rename(&temp_path, &merged_path)
-            .map_err(|e| Error::IndexLoad(format!("Failed to rename merged residuals: {}", e)))?;
+        // Atomic rename. If replacement is blocked by a live mapping, fall back
+        // to a unique versioned merged filename.
+        match fs::rename(&temp_path, &merged_path) {
+            Ok(()) => merged_path.clone(),
+            Err(rename_err)
+                if is_file_in_use_error(&rename_err) || is_already_exists_error(&rename_err) =>
+            {
+                let fallback_name = unique_merge_filename("merged_residuals");
+                let fallback_path = index_path.join(&fallback_name);
+                fs::rename(&temp_path, &fallback_path).map_err(|fallback_err| {
+                    Error::IndexLoad(format!(
+                        "Failed to replace merged residuals file and fallback failed: {}, {}",
+                        rename_err, fallback_err
+                    ))
+                })?;
+                fallback_path
+            }
+            Err(e) => {
+                return Err(Error::IndexLoad(format!(
+                    "Failed to rename merged residuals: {}",
+                    e
+                )));
+            }
+        }
     } else {
         // Validate existing merged file before using it
         if merged_path.exists() {
@@ -1569,7 +1658,8 @@ pub fn merge_residuals_chunks(
                 return merge_residuals_chunks(index_path, num_chunks, padding_rows);
             }
         }
-    }
+        merged_path.clone()
+    };
 
     // Build and save manifest with full metadata
     let mut chunk_map = HashMap::new();
@@ -1584,13 +1674,16 @@ pub fn merge_residuals_chunks(
     }
     let new_manifest = MergeManifest {
         chunks: chunk_map,
+        merged_filename: final_merged_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string()),
         padding_rows,
         total_rows: final_rows,
         ncols,
     };
     save_merge_manifest(&manifest_path, &new_manifest)?;
 
-    Ok(merged_path)
+    Ok(final_merged_path)
 }
 
 /// Clear merged files and manifests to force regeneration on next load.
@@ -1610,22 +1703,47 @@ pub fn clear_merged_files(index_path: &Path) -> Result<()> {
     let _codes_lock = FileLockGuard::acquire(&codes_lock_path)?;
     let _residuals_lock = FileLockGuard::acquire(&residuals_lock_path)?;
 
-    let files_to_remove = [
-        "merged_codes.npy",
-        "merged_codes.npy.tmp",
-        "merged_codes.manifest.json",
-        "merged_codes.manifest.json.tmp",
-        "merged_residuals.npy",
-        "merged_residuals.npy.tmp",
-        "merged_residuals.manifest.json",
-        "merged_residuals.manifest.json.tmp",
+    let codes_manifest_path = index_path.join("merged_codes.manifest.json");
+    let residuals_manifest_path = index_path.join("merged_residuals.manifest.json");
+    let codes_manifest = load_merge_manifest(&codes_manifest_path);
+    let residuals_manifest = load_merge_manifest(&residuals_manifest_path);
+
+    let mut paths_to_remove = vec![
+        index_path.join("merged_codes.npy"),
+        index_path.join("merged_codes.npy.tmp"),
+        codes_manifest_path.clone(),
+        index_path.join("merged_codes.manifest.json.tmp"),
+        index_path.join("merged_residuals.npy"),
+        index_path.join("merged_residuals.npy.tmp"),
+        residuals_manifest_path.clone(),
+        index_path.join("merged_residuals.manifest.json.tmp"),
     ];
 
-    for filename in files_to_remove {
-        let path = index_path.join(filename);
-        if path.exists() {
-            fs::remove_file(&path)
-                .map_err(|e| Error::IndexLoad(format!("Failed to remove {}: {}", filename, e)))?;
+    if let Some(name) = codes_manifest.and_then(|m| m.merged_filename) {
+        paths_to_remove.push(index_path.join(name));
+    }
+    if let Some(name) = residuals_manifest.and_then(|m| m.merged_filename) {
+        paths_to_remove.push(index_path.join(name));
+    }
+
+    for path in paths_to_remove {
+        if !path.exists() {
+            continue;
+        }
+        if let Err(err) = fs::remove_file(&path) {
+            if is_file_in_use_error(&err) {
+                eprintln!(
+                    "⚠️  Skipping removal of in-use merged file {}: {}",
+                    path.display(),
+                    err
+                );
+                continue;
+            }
+            return Err(Error::IndexLoad(format!(
+                "Failed to remove {}: {}",
+                path.display(),
+                err
+            )));
         }
     }
 

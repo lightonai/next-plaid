@@ -81,6 +81,16 @@ fn default_max_points_per_centroid() -> usize {
     256
 }
 
+fn is_file_in_use_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        // Windows: sharing violation / lock violation / mapped section open
+        Some(32) | Some(33) | Some(1224)
+        // Unix-like: EBUSY
+        | Some(16)
+    )
+}
+
 impl Default for IndexConfig {
     fn default() -> Self {
         Self {
@@ -957,6 +967,177 @@ impl MmapIndex {
         Self::load(index_path)
     }
 
+    /// Update index files on disk without pre-loading memory-mapped arrays.
+    ///
+    /// On Windows, updating files that are currently memory-mapped by the same process
+    /// can fail with `os error 1224` ("user-mapped section open"). This path avoids
+    /// opening mmap handles before mutating index files.
+    fn update_index_files_on_disk(
+        index_path_str: &str,
+        metadata: &mut Metadata,
+        embeddings: &[Array2<f32>],
+        config: &crate::update::UpdateConfig,
+    ) -> Result<Vec<i64>> {
+        use crate::codec::ResidualCodec;
+        use crate::update::{
+            clear_buffer, clear_embeddings_npy, embeddings_npy_exists, load_buffer,
+            load_buffer_info, load_cluster_threshold, load_embeddings_npy, save_buffer,
+            update_centroids, update_index,
+        };
+
+        let index_path = std::path::Path::new(index_path_str);
+        let num_new_docs = embeddings.len();
+
+        // ==================================================================
+        // Start-from-scratch mode (fast-plaid update.py:312-346)
+        // ==================================================================
+        if metadata.num_documents <= config.start_from_scratch {
+            // Load existing embeddings if available
+            let existing_embeddings = load_embeddings_npy(index_path)?;
+
+            // Check if embeddings.npy is in sync with the index.
+            // If not (e.g., after delete when index was above threshold), we can't do
+            // start-from-scratch mode because we don't have all the old embeddings.
+            // Fall through to buffer mode instead.
+            if existing_embeddings.len() == metadata.num_documents {
+                // New documents start after existing documents
+                let start_doc_id = existing_embeddings.len() as i64;
+
+                // Combine existing + new embeddings
+                let combined_embeddings: Vec<Array2<f32>> = existing_embeddings
+                    .into_iter()
+                    .chain(embeddings.iter().cloned())
+                    .collect();
+
+                // Build IndexConfig from UpdateConfig for create_with_kmeans
+                let index_config = IndexConfig {
+                    nbits: metadata.nbits,
+                    batch_size: config.batch_size,
+                    seed: Some(config.seed),
+                    kmeans_niters: config.kmeans_niters,
+                    max_points_per_centroid: config.max_points_per_centroid,
+                    n_samples_kmeans: config.n_samples_kmeans,
+                    start_from_scratch: config.start_from_scratch,
+                    force_cpu: config.force_cpu,
+                };
+
+                // Rebuild index from scratch with fresh K-means, without loading mmap.
+                // If files are currently mapped (e.g. another live MmapIndex on Windows),
+                // fall back to buffer mode below instead of failing hard.
+                match create_index_with_kmeans_files(&combined_embeddings, index_path_str, &index_config)
+                {
+                    Ok(_) => {}
+                    Err(Error::Io(io_err)) if is_file_in_use_error(&io_err) => {
+                        eprintln!(
+                            "⚠️  Start-from-scratch rebuild skipped because index files are in use: {}. Falling back to incremental update mode.",
+                            io_err
+                        );
+                    }
+                    Err(e) => return Err(e),
+                }
+
+                if let Ok(updated_metadata) = Metadata::load_from_path(index_path) {
+                    if updated_metadata.num_documents == combined_embeddings.len() {
+                        // Rebuild succeeded.
+                        if combined_embeddings.len() > config.start_from_scratch
+                            && embeddings_npy_exists(index_path)
+                        {
+                            clear_embeddings_npy(index_path)?;
+                        }
+                        *metadata = updated_metadata;
+                        return Ok((start_doc_id..start_doc_id + num_new_docs as i64).collect());
+                    }
+                }
+            }
+            // else: embeddings.npy is out of sync, fall through to buffer mode
+        }
+
+        // Load buffer
+        let buffer = load_buffer(index_path)?;
+        let buffer_len = buffer.len();
+        let total_new = embeddings.len() + buffer_len;
+
+        // Track the starting document ID for the new embeddings
+        let start_doc_id: i64;
+
+        // Load codec for update operations
+        let mut codec = ResidualCodec::load_from_dir(index_path)?;
+
+        // Check buffer threshold
+        if total_new >= config.buffer_size {
+            // Centroid expansion path (matches fast-plaid update.py:376-422)
+
+            // 1. Get number of buffered docs that were previously indexed
+            let num_buffered = load_buffer_info(index_path)?;
+
+            // 2. Delete buffered docs from index (they were indexed without centroid expansion)
+            if num_buffered > 0 && metadata.num_documents >= num_buffered {
+                let start_del_idx = metadata.num_documents - num_buffered;
+                let docs_to_delete: Vec<i64> = (start_del_idx..metadata.num_documents)
+                    .map(|i| i as i64)
+                    .collect();
+                crate::delete::delete_from_index_keep_buffer(&docs_to_delete, index_path_str)?;
+                // Reload metadata after delete
+                *metadata = Metadata::load_from_path(index_path)?;
+            }
+
+            // New embeddings start after buffer is re-indexed
+            start_doc_id = (metadata.num_documents + buffer_len) as i64;
+
+            // 3. Combine buffer + new embeddings
+            let combined: Vec<Array2<f32>> = buffer
+                .into_iter()
+                .chain(embeddings.iter().cloned())
+                .collect();
+
+            // 4. Expand centroids with outliers from combined embeddings
+            if let Ok(cluster_threshold) = load_cluster_threshold(index_path) {
+                let new_centroids = update_centroids(index_path, &combined, cluster_threshold, config)?;
+                if new_centroids > 0 {
+                    // Reload codec with new centroids
+                    codec = ResidualCodec::load_from_dir(index_path)?;
+                }
+            }
+
+            // 5. Clear buffer
+            clear_buffer(index_path)?;
+
+            // 6. Update index with ALL combined embeddings (buffer + new)
+            update_index(
+                &combined,
+                index_path_str,
+                &codec,
+                Some(config.batch_size),
+                true,
+                config.force_cpu,
+            )?;
+        } else {
+            // Small update: add to buffer and index without centroid expansion
+            // New documents start at current num_documents
+            start_doc_id = metadata.num_documents as i64;
+
+            // Accumulate buffer: combine existing buffer with new embeddings
+            let combined_buffer: Vec<Array2<f32>> = buffer
+                .into_iter()
+                .chain(embeddings.iter().cloned())
+                .collect();
+            save_buffer(index_path, &combined_buffer)?;
+
+            // Update index without threshold update
+            update_index(
+                embeddings,
+                index_path_str,
+                &codec,
+                Some(config.batch_size),
+                false,
+                config.force_cpu,
+            )?;
+        }
+
+        *metadata = Metadata::load_from_path(index_path)?;
+        Ok((start_doc_id..start_doc_id + num_new_docs as i64).collect())
+    }
+
     /// Update the index with new documents, matching fast-plaid behavior.
     ///
     /// This method adds new documents to an existing index with three possible paths:
@@ -989,154 +1170,16 @@ impl MmapIndex {
         embeddings: &[Array2<f32>],
         config: &crate::update::UpdateConfig,
     ) -> Result<Vec<i64>> {
-        use crate::codec::ResidualCodec;
-        use crate::update::{
-            clear_buffer, clear_embeddings_npy, embeddings_npy_exists, load_buffer,
-            load_buffer_info, load_cluster_threshold, load_embeddings_npy, save_buffer,
-            update_centroids, update_index,
-        };
-
         let path_str = self.path.clone();
-        let index_path = std::path::Path::new(&path_str);
-        let num_new_docs = embeddings.len();
+        let index_dir = std::path::Path::new(&path_str);
+        let mut metadata = Metadata::load_from_path(index_dir)?;
+        let doc_ids =
+            Self::update_index_files_on_disk(&path_str, &mut metadata, embeddings, config)?;
 
-        // ==================================================================
-        // Start-from-scratch mode (fast-plaid update.py:312-346)
-        // ==================================================================
-        if self.metadata.num_documents <= config.start_from_scratch {
-            // Load existing embeddings if available
-            let existing_embeddings = load_embeddings_npy(index_path)?;
-
-            // Check if embeddings.npy is in sync with the index.
-            // If not (e.g., after delete when index was above threshold), we can't do
-            // start-from-scratch mode because we don't have all the old embeddings.
-            // Fall through to buffer mode instead.
-            if existing_embeddings.len() == self.metadata.num_documents {
-                // New documents start after existing documents
-                let start_doc_id = existing_embeddings.len() as i64;
-
-                // Combine existing + new embeddings
-                let combined_embeddings: Vec<Array2<f32>> = existing_embeddings
-                    .into_iter()
-                    .chain(embeddings.iter().cloned())
-                    .collect();
-
-                // Build IndexConfig from UpdateConfig for create_with_kmeans
-                let index_config = IndexConfig {
-                    nbits: self.metadata.nbits,
-                    batch_size: config.batch_size,
-                    seed: Some(config.seed),
-                    kmeans_niters: config.kmeans_niters,
-                    max_points_per_centroid: config.max_points_per_centroid,
-                    n_samples_kmeans: config.n_samples_kmeans,
-                    start_from_scratch: config.start_from_scratch,
-                    force_cpu: config.force_cpu,
-                };
-
-                // Rebuild index from scratch with fresh K-means
-                *self = Self::create_with_kmeans(&combined_embeddings, &path_str, &index_config)?;
-
-                // If we've crossed the threshold, clear embeddings.npy
-                if combined_embeddings.len() > config.start_from_scratch
-                    && embeddings_npy_exists(index_path)
-                {
-                    clear_embeddings_npy(index_path)?;
-                }
-
-                // Return the document IDs assigned to the new embeddings
-                return Ok((start_doc_id..start_doc_id + num_new_docs as i64).collect());
-            }
-            // else: embeddings.npy is out of sync, fall through to buffer mode
-        }
-
-        // Load buffer
-        let buffer = load_buffer(index_path)?;
-        let buffer_len = buffer.len();
-        let total_new = embeddings.len() + buffer_len;
-
-        // Track the starting document ID for the new embeddings
-        let start_doc_id: i64;
-
-        // Load codec for update operations
-        let mut codec = ResidualCodec::load_from_dir(index_path)?;
-
-        // Check buffer threshold
-        if total_new >= config.buffer_size {
-            // Centroid expansion path (matches fast-plaid update.py:376-422)
-
-            // 1. Get number of buffered docs that were previously indexed
-            let num_buffered = load_buffer_info(index_path)?;
-
-            // 2. Delete buffered docs from index (they were indexed without centroid expansion)
-            if num_buffered > 0 && self.metadata.num_documents >= num_buffered {
-                let start_del_idx = self.metadata.num_documents - num_buffered;
-                let docs_to_delete: Vec<i64> = (start_del_idx..self.metadata.num_documents)
-                    .map(|i| i as i64)
-                    .collect();
-                crate::delete::delete_from_index_keep_buffer(&docs_to_delete, &path_str)?;
-                // Reload metadata after delete
-                self.metadata = Metadata::load_from_path(index_path)?;
-            }
-
-            // New embeddings start after buffer is re-indexed
-            start_doc_id = (self.metadata.num_documents + buffer_len) as i64;
-
-            // 3. Combine buffer + new embeddings
-            let combined: Vec<Array2<f32>> = buffer
-                .into_iter()
-                .chain(embeddings.iter().cloned())
-                .collect();
-
-            // 4. Expand centroids with outliers from combined embeddings
-            if let Ok(cluster_threshold) = load_cluster_threshold(index_path) {
-                let new_centroids =
-                    update_centroids(index_path, &combined, cluster_threshold, config)?;
-                if new_centroids > 0 {
-                    // Reload codec with new centroids
-                    codec = ResidualCodec::load_from_dir(index_path)?;
-                }
-            }
-
-            // 5. Clear buffer
-            clear_buffer(index_path)?;
-
-            // 6. Update index with ALL combined embeddings (buffer + new)
-            update_index(
-                &combined,
-                &path_str,
-                &codec,
-                Some(config.batch_size),
-                true,
-                config.force_cpu,
-            )?;
-        } else {
-            // Small update: add to buffer and index without centroid expansion
-            // New documents start at current num_documents
-            start_doc_id = self.metadata.num_documents as i64;
-
-            // Accumulate buffer: combine existing buffer with new embeddings
-            let combined_buffer: Vec<Array2<f32>> = buffer
-                .into_iter()
-                .chain(embeddings.iter().cloned())
-                .collect();
-            save_buffer(index_path, &combined_buffer)?;
-
-            // Update index without threshold update
-            update_index(
-                embeddings,
-                &path_str,
-                &codec,
-                Some(config.batch_size),
-                false,
-                config.force_cpu,
-            )?;
-        }
-
-        // Reload self as mmap
+        // Reload self as mmap after on-disk update.
         *self = Self::load(&path_str)?;
 
-        // Return the document IDs assigned to the new embeddings
-        Ok((start_doc_id..start_doc_id + num_new_docs as i64).collect())
+        Ok(doc_ids)
     }
 
     /// Update the index with new documents and optional metadata.
@@ -1200,9 +1243,12 @@ impl MmapIndex {
         let metadata_path = index_dir.join("metadata.json");
 
         if metadata_path.exists() {
-            // Index exists, load and update
-            let mut index = Self::load(index_path)?;
-            let doc_ids = index.update(embeddings, update_config)?;
+            // Index exists: update files without pre-loading mmap handles,
+            // then load a fresh mmap index.
+            let mut metadata = Metadata::load_from_path(index_dir)?;
+            let doc_ids =
+                Self::update_index_files_on_disk(index_path, &mut metadata, embeddings, update_config)?;
+            let index = Self::load(index_path)?;
             Ok((index, doc_ids))
         } else {
             // Index doesn't exist, create new
