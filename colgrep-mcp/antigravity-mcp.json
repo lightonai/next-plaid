@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "colgrep": {
+      "command": "/path/to/colgrep-mcp",
+      "args": []
+    },
+    "colgrep-http": {
+      "serverUrl": "http://127.0.0.1:3847/mcp"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "colgrep": {
+      "command": "target/release/colgrep-mcp",
+      "args": [],
+      "env": {},
+      "description": "Semantic code search powered by ColBERT (stdio mode - spawns per session)"
+    },
+    "colgrep-http": {
+      "url": "http://127.0.0.1:3847/mcp",
+      "description": "ColBERT semantic search (HTTP mode - run 'colgrep-mcp --http' first; model stays loaded for fast reindex/search)"
+    }
+  }
+}

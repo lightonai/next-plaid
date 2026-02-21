@@ -547,6 +547,8 @@ Lookup order:
 | `XDG_CONFIG_HOME`        | Override config directory            |
 | `HF_TOKEN`               | HuggingFace token for private models |
 | `HUGGING_FACE_HUB_TOKEN` | Alternative HF token variable        |
+| `COLGREP_INDEX_DIR`      | Store index in project (e.g. `./.colgrep`) |
+| `COLGREP_TIMING`         | Log latency breakdown to stderr (any value) |
 
 ---
 
