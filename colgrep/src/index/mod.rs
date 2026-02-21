@@ -630,6 +630,7 @@ impl IndexBuilder {
         let mut files_added = Vec::new();
         let mut files_changed = Vec::new();
         let mut unchanged = 0;
+        let mut unreadable_skips = 0usize;
 
         for path in files {
             // Security: skip files outside the project root (path traversal protection)
@@ -659,7 +660,14 @@ impl IndexBuilder {
                 }
             }
 
-            let hash = hash_file(&full_path)?;
+            let hash = match hash_file(&full_path) {
+                Ok(h) => h,
+                Err(e) => {
+                    log_skipped_file(&full_path, "hash", e);
+                    unreadable_skips += 1;
+                    continue;
+                }
+            };
             match state.files.get(path) {
                 Some(info) if info.content_hash == hash => {
                     unchanged += 1;
@@ -687,7 +695,7 @@ impl IndexBuilder {
                 changed: 0,
                 deleted: 0,
                 unchanged,
-                skipped: 0,
+                skipped: unreadable_skips,
             });
         }
 
@@ -718,27 +726,37 @@ impl IndexBuilder {
             let source = match std::fs::read_to_string(&full_path) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    log_skipped_file(&full_path, "read", e);
+                    unreadable_skips += 1;
+                    pb.inc(1);
+                    continue;
+                }
+            };
+            let content_hash = match hash_file(&full_path) {
+                Ok(h) => h,
+                Err(e) => {
+                    log_skipped_file(&full_path, "hash", e);
+                    unreadable_skips += 1;
+                    pb.inc(1);
+                    continue;
+                }
+            };
+            let mtime = match get_mtime(&full_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    log_skipped_file(&full_path, "mtime", e);
+                    unreadable_skips += 1;
                     pb.inc(1);
                     continue;
                 }
             };
             let units = extract_units(path, &source, lang);
             new_units.extend(units);
-
-            let content_hash = match hash_file(&full_path) {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
-                    pb.inc(1);
-                    continue;
-                }
-            };
             new_state.files.insert(
                 path.clone(),
                 FileInfo {
                     content_hash,
-                    mtime: get_mtime(&full_path)?,
+                    mtime,
                 },
             );
             pb.inc(1);
@@ -751,7 +769,7 @@ impl IndexBuilder {
                 changed: 0,
                 deleted: 0,
                 unchanged,
-                skipped: 0,
+                skipped: unreadable_skips,
             });
         }
 
@@ -862,7 +880,13 @@ impl IndexBuilder {
                     index_path_str,
                     &config,
                     &update_config,
-                )?;
+                )
+                .with_context(|| {
+                    format!(
+                        "Failed to update vector index for {}",
+                        chunk_file_summary(unit_chunk, 3)
+                    )
+                })?;
 
                 // STEP 2: Update filtering DB with the actual doc_ids
                 let metadata: Vec<serde_json::Value> = unit_chunk
@@ -900,7 +924,7 @@ impl IndexBuilder {
             changed: files_changed.len(),
             deleted: 0,
             unchanged,
-            skipped: 0,
+            skipped: unreadable_skips,
         })
     }
 
@@ -924,8 +948,18 @@ impl IndexBuilder {
     /// Full rebuild (used when force=true or no index exists)
     fn full_rebuild(&mut self, languages: Option<&[Language]>) -> Result<UpdateStats> {
         let index_path = get_vector_index_path(&self.index_dir);
+        let index_path_str = index_path.to_str().unwrap();
         let temp_path = self.index_dir.join("index.tmp");
         let old_path = self.index_dir.join("index.old");
+        let has_existing_index =
+            index_path.join("metadata.json").exists() || filtering::exists(index_path_str);
+        // If there is no existing usable index, write directly to index_path so interrupted
+        // builds can resume from partial progress on the next run.
+        let write_target = if has_existing_index {
+            temp_path.as_path()
+        } else {
+            index_path.as_path()
+        };
 
         // Clean any leftover temp/old dirs from previous failed attempts
         if temp_path.exists() {
@@ -936,6 +970,7 @@ impl IndexBuilder {
         }
 
         let (files, skipped) = self.scan_files(languages)?;
+        let mut unreadable_skips = 0usize;
         let mut state = IndexState::default();
         let mut all_units: Vec<CodeUnit> = Vec::new();
 
@@ -970,27 +1005,37 @@ impl IndexBuilder {
             let source = match std::fs::read_to_string(&full_path) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    log_skipped_file(&full_path, "read", e);
+                    unreadable_skips += 1;
+                    pb.inc(1);
+                    continue;
+                }
+            };
+            let content_hash = match hash_file(&full_path) {
+                Ok(h) => h,
+                Err(e) => {
+                    log_skipped_file(&full_path, "hash", e);
+                    unreadable_skips += 1;
+                    pb.inc(1);
+                    continue;
+                }
+            };
+            let mtime = match get_mtime(&full_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    log_skipped_file(&full_path, "mtime", e);
+                    unreadable_skips += 1;
                     pb.inc(1);
                     continue;
                 }
             };
             let units = extract_units(path, &source, lang);
             all_units.extend(units);
-
-            let content_hash = match hash_file(&full_path) {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
-                    pb.inc(1);
-                    continue;
-                }
-            };
             state.files.insert(
                 path.clone(),
                 FileInfo {
                     content_hash,
-                    mtime: get_mtime(&full_path)?,
+                    mtime,
                 },
             );
             pb.inc(1);
@@ -1016,25 +1061,31 @@ impl IndexBuilder {
         let was_interrupted = if !all_units.is_empty() {
             // Ensure model is created before encoding (lazy initialization)
             self.ensure_model_created(all_units.len())?;
-            // Build new index in temp directory to avoid destroying the old one
-            self.write_index_impl(&all_units, true, Some(&temp_path))?
+            self.write_index_impl(&all_units, true, Some(write_target))?
         } else {
             false
         };
 
         if was_interrupted {
-            // Clean up temp dir — the old index is untouched
-            let _ = std::fs::remove_dir_all(&temp_path);
+            if has_existing_index {
+                // Clean up temp dir — the old index is untouched
+                let _ = std::fs::remove_dir_all(&temp_path);
+            } else {
+                eprintln!(
+                    "⚠️  Indexing interrupted. Partial index was kept and will resume on next run."
+                );
+            }
             anyhow::bail!("Indexing interrupted by user");
         }
 
-        // Atomic swap: replace old index with newly built one
+        // If we rebuilt in-place, we're done. If we rebuilt into temp (because there was an
+        // existing index to protect), atomically swap temp into place.
         if all_units.is_empty() {
             // No files to index — just remove the old index if it exists
             if index_path.exists() {
                 std::fs::remove_dir_all(&index_path)?;
             }
-        } else {
+        } else if has_existing_index {
             if index_path.exists() {
                 std::fs::rename(&index_path, &old_path)
                     .context("Failed to move old index aside")?;
@@ -1063,7 +1114,7 @@ impl IndexBuilder {
             changed: 0,
             deleted: 0,
             unchanged: 0,
-            skipped,
+            skipped: skipped + unreadable_skips,
         })
     }
 
@@ -1153,7 +1204,7 @@ impl IndexBuilder {
         };
 
         let mut parsing_interrupted = false;
-        let mut skipped_files: Vec<PathBuf> = Vec::new();
+        let mut skipped_files: HashSet<PathBuf> = HashSet::new();
         for path in &files_to_index {
             // Check for interrupt during parsing
             if is_interrupted() {
@@ -1174,11 +1225,36 @@ impl IndexBuilder {
             let source = match std::fs::read_to_string(&full_path) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    log_skipped_file(&full_path, "read", e);
                     // Remove from state so it stays consistent with the index
                     // (changed files will have their old entries deleted below)
                     state.files.remove(path);
-                    skipped_files.push(path.clone());
+                    skipped_files.insert(path.clone());
+                    if let Some(ref pb) = pb {
+                        pb.inc(1);
+                    }
+                    continue;
+                }
+            };
+            let content_hash = match hash_file(&full_path) {
+                Ok(h) => h,
+                Err(e) => {
+                    log_skipped_file(&full_path, "hash", e);
+                    // Remove from state so it stays consistent with the index
+                    state.files.remove(path);
+                    skipped_files.insert(path.clone());
+                    if let Some(ref pb) = pb {
+                        pb.inc(1);
+                    }
+                    continue;
+                }
+            };
+            let mtime = match get_mtime(&full_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    log_skipped_file(&full_path, "mtime", e);
+                    state.files.remove(path);
+                    skipped_files.insert(path.clone());
                     if let Some(ref pb) = pb {
                         pb.inc(1);
                     }
@@ -1187,25 +1263,11 @@ impl IndexBuilder {
             };
             let units = extract_units(path, &source, lang);
             new_units.extend(units);
-
-            let content_hash = match hash_file(&full_path) {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
-                    // Remove from state so it stays consistent with the index
-                    state.files.remove(path);
-                    skipped_files.push(path.clone());
-                    if let Some(ref pb) = pb {
-                        pb.inc(1);
-                    }
-                    continue;
-                }
-            };
             state.files.insert(
                 path.clone(),
                 FileInfo {
                     content_hash,
-                    mtime: get_mtime(&full_path)?,
+                    mtime,
                 },
             );
             if let Some(ref pb) = pb {
@@ -1349,7 +1411,13 @@ impl IndexBuilder {
                         index_path_str,
                         &config,
                         &update_config,
-                    )?;
+                    )
+                    .with_context(|| {
+                        format!(
+                            "Failed to update vector index for {}",
+                            chunk_file_summary(unit_chunk, 3)
+                        )
+                    })?;
 
                     // STEP 2: Update filtering DB with the actual doc_ids
                     let metadata: Vec<serde_json::Value> = unit_chunk
@@ -1383,7 +1451,7 @@ impl IndexBuilder {
             changed: plan.changed.len(),
             deleted: plan.deleted.len(),
             unchanged: plan.unchanged,
-            skipped: 0,
+            skipped: skipped_files.len(),
         })
     }
 
@@ -1567,6 +1635,37 @@ pub fn path_contains_ignored_dir(path: &Path) -> Option<&'static str> {
         }
     }
     None
+}
+
+fn log_skipped_file<E: std::fmt::Display>(path: &Path, operation: &str, err: E) {
+    eprintln!(
+        "⚠️  Skipping {} ({}: {})",
+        path.display(),
+        operation,
+        err
+    );
+}
+
+fn chunk_file_summary(units: &[CodeUnit], max_files: usize) -> String {
+    let mut seen = HashSet::new();
+    let mut files = Vec::new();
+
+    for unit in units {
+        if seen.insert(unit.file.clone()) {
+            files.push(unit.file.display().to_string());
+        }
+    }
+
+    if files.is_empty() {
+        return "unknown files".to_string();
+    }
+
+    if files.len() <= max_files {
+        return files.join(", ");
+    }
+
+    let shown = files[..max_files].join(", ");
+    format!("{} (+{} more)", shown, files.len() - max_files)
 }
 
 /// Check if a path should be ignored
@@ -1813,7 +1912,13 @@ impl IndexBuilder {
                     index_path_str,
                     &config,
                     &update_config,
-                )?;
+                )
+                .with_context(|| {
+                    format!(
+                        "Failed to update vector index for {}",
+                        chunk_file_summary(unit_chunk, 3)
+                    )
+                })?;
 
                 // STEP 2: Update filtering DB with the actual doc_ids
                 let metadata: Vec<serde_json::Value> = unit_chunk
