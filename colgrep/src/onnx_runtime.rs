@@ -365,13 +365,16 @@ fn find_onnx_runtime() -> Option<PathBuf> {
             return Some(lib_path);
         }
 
-        // Versioned library (e.g., libonnxruntime.1.20.1.dylib)
+        // Versioned library (e.g., libonnxruntime.so.1.23.0 on Linux, libonnxruntime.1.20.1.dylib on macOS)
+        // Match "libonnxruntime.so*" or "libonnxruntime.*dylib" only — NOT companion libraries
+        // like libonnxruntime_providers_shared.so which lack OrtGetApiBase.
         if let Ok(entries) = fs::read_dir(&base_path) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
-                if name_str.starts_with("libonnxruntime")
-                    && (name_str.ends_with(".dylib") || name_str.ends_with(".so"))
+                if name_str.starts_with("libonnxruntime.so")
+                    || name_str.starts_with("libonnxruntime.dylib")
+                    || (name_str.starts_with("libonnxruntime.") && name_str.ends_with(".dylib"))
                 {
                     return Some(entry.path());
                 }
