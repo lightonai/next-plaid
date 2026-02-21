@@ -37,7 +37,12 @@ impl IndexState {
         }
     }
 
-    /// Save state to the given index directory
+    /// Save state to the given index directory.
+    ///
+    /// Uses atomic write (write to temp file + rename) to prevent corruption
+    /// when multiple colgrep processes access the same index concurrently.
+    /// Without this, `fs::write` truncates the file before writing, so a
+    /// concurrent reader can see an empty file and fail with a parse error.
     pub fn save(&self, index_dir: &Path) -> Result<()> {
         fs::create_dir_all(index_dir)?;
 
@@ -47,7 +52,16 @@ impl IndexState {
 
         let state_path = get_state_path(index_dir);
         let content = serde_json::to_string_pretty(&state)?;
-        fs::write(&state_path, content)?;
+
+        // Atomic write: write to a temp file in the same directory, then rename.
+        // rename(2) on the same filesystem is atomic on POSIX systems.
+        // Use PID + thread ID to avoid collisions between concurrent writers.
+        let tid = format!("{:?}", std::thread::current().id())
+            .replace(|c: char| !c.is_ascii_digit(), "");
+        let tmp_name = format!("state.{}.{}.json.tmp", std::process::id(), tid);
+        let tmp_path = index_dir.join(tmp_name);
+        fs::write(&tmp_path, content)?;
+        fs::rename(&tmp_path, &state_path)?;
         Ok(())
     }
 
@@ -256,5 +270,67 @@ mod tests {
         loaded.save(temp_dir.path()).unwrap();
         let reloaded = IndexState::load(temp_dir.path()).unwrap();
         assert_eq!(reloaded.search_count, 0);
+    }
+
+    #[test]
+    fn test_concurrent_save_and_load() {
+        // Verify that concurrent save + load never sees a truncated/empty file.
+        // Before the atomic-write fix, fs::write would truncate state.json
+        // before writing, so a concurrent load could read 0 bytes → parse error.
+        use std::sync::{Arc, Barrier};
+
+        let temp_dir = TempDir::new().unwrap();
+        let index_dir = temp_dir.path().to_path_buf();
+
+        // Seed initial state so load always has something to read
+        let mut init = IndexState::default();
+        init.files.insert(
+            PathBuf::from("seed.rs"),
+            FileInfo {
+                content_hash: 1,
+                mtime: 1700000000,
+            },
+        );
+        init.save(&index_dir).unwrap();
+
+        let n_threads = 8;
+        let iterations = 50;
+        let barrier = Arc::new(Barrier::new(n_threads));
+        let mut handles = vec![];
+
+        for t in 0..n_threads {
+            let dir = index_dir.clone();
+            let bar = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                bar.wait(); // all threads start at once
+                for i in 0..iterations {
+                    if t % 2 == 0 {
+                        // Writer: save with incrementing search_count
+                        let mut state = IndexState::default();
+                        state.search_count = (t * iterations + i) as u64;
+                        state.files.insert(
+                            PathBuf::from(format!("file_{t}_{i}.rs")),
+                            FileInfo {
+                                content_hash: (t * iterations + i) as u64,
+                                mtime: 1700000000,
+                            },
+                        );
+                        state.save(&dir).unwrap();
+                    } else {
+                        // Reader: load must never fail with a parse error
+                        let result = IndexState::load(&dir);
+                        assert!(
+                            result.is_ok(),
+                            "Concurrent load failed on thread {t} iteration {i}: {:?}",
+                            result.err()
+                        );
+                    }
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
     }
 }
