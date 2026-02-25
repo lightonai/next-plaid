@@ -844,7 +844,8 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                         }
                     }
                     for child in node.children(&mut node.walk()) {
-                        if let Some(content) = find_string_content(child, bytes, depth + 1, max_depth)
+                        if let Some(content) =
+                            find_string_content(child, bytes, depth + 1, max_depth)
                         {
                             return Some(content);
                         }
@@ -941,15 +942,7 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
     }
 
     let max_depth = super::max_recursion_depth();
-    visit(
-        node,
-        bytes,
-        import_types,
-        &mut imports,
-        lang,
-        0,
-        max_depth,
-    );
+    visit(node, bytes, import_types, &mut imports, lang, 0, max_depth);
     imports.sort();
     imports.dedup();
     imports
@@ -1065,8 +1058,7 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                                 return Some(n);
                             }
                             for child in n.children(&mut n.walk()) {
-                                if let Some(found) = find_module_name(child, depth + 1, max_depth)
-                                {
+                                if let Some(found) = find_module_name(child, depth + 1, max_depth) {
                                     return Some(found);
                                 }
                             }
@@ -1106,7 +1098,15 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
             }
         }
         for child in node.children(&mut node.walk()) {
-            visit(child, bytes, attr_types, modules, lang, depth + 1, max_depth);
+            visit(
+                child,
+                bytes,
+                attr_types,
+                modules,
+                lang,
+                depth + 1,
+                max_depth,
+            );
         }
     }
 
