@@ -56,8 +56,8 @@ impl IndexState {
         // Atomic write: write to a temp file in the same directory, then rename.
         // rename(2) on the same filesystem is atomic on POSIX systems.
         // Use PID + thread ID to avoid collisions between concurrent writers.
-        let tid = format!("{:?}", std::thread::current().id())
-            .replace(|c: char| !c.is_ascii_digit(), "");
+        let tid =
+            format!("{:?}", std::thread::current().id()).replace(|c: char| !c.is_ascii_digit(), "");
         let tmp_name = format!("state.{}.{}.json.tmp", std::process::id(), tid);
         let tmp_path = index_dir.join(tmp_name);
         fs::write(&tmp_path, content)?;
@@ -306,8 +306,10 @@ mod tests {
                 for i in 0..iterations {
                     if t % 2 == 0 {
                         // Writer: save with incrementing search_count
-                        let mut state = IndexState::default();
-                        state.search_count = (t * iterations + i) as u64;
+                        let mut state = IndexState {
+                            search_count: (t * iterations + i) as u64,
+                            ..Default::default()
+                        };
                         state.files.insert(
                             PathBuf::from(format!("file_{t}_{i}.rs")),
                             FileInfo {
