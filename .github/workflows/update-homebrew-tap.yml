@@ -157,9 +157,12 @@ jobs:
           sed -i 's/^          //' Formula/colgrep.rb
 
       - name: Commit and push
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/lightonai/homebrew-tap.git"
           git add Formula/colgrep.rb
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "Update colgrep to ${{ steps.tag.outputs.version }}"
