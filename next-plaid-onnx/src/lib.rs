@@ -84,7 +84,13 @@ static ORT_INIT: Once = Once::new();
 /// Initialize ONNX Runtime by finding and loading the dynamic library.
 fn init_ort_runtime() {
     ORT_INIT.call_once(|| {
-        // If ORT_DYLIB_PATH is already set, ort will use it
+        #[cfg(target_os = "linux")]
+        if let Ok(path) = std::env::var("ORT_DYLIB_PATH") {
+            let _ = ort::init_from(path).map(|builder| builder.commit());
+            return;
+        }
+
+        #[cfg(not(target_os = "linux"))]
         if std::env::var("ORT_DYLIB_PATH").is_ok() {
             return;
         }
@@ -92,6 +98,8 @@ fn init_ort_runtime() {
         // Try to find ONNX Runtime in common locations
         if let Some(lib_path) = find_onnxruntime_library() {
             std::env::set_var("ORT_DYLIB_PATH", &lib_path);
+            #[cfg(target_os = "linux")]
+            let _ = ort::init_from(lib_path).map(|builder| builder.commit());
         }
     });
 }
@@ -125,10 +133,6 @@ fn find_onnxruntime_library() -> Option<String> {
         // Conda environments
         format!("{}/anaconda3/lib/libonnxruntime.so*", home),
         format!("{}/miniconda3/lib/libonnxruntime.so*", home),
-        // System locations
-        "/usr/local/lib/libonnxruntime.so*".to_string(),
-        "/usr/lib/libonnxruntime.so*".to_string(),
-        "/usr/lib/x86_64-linux-gnu/libonnxruntime.so*".to_string(),
     ];
 
     for pattern in search_patterns {

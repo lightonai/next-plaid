@@ -132,15 +132,7 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
     if let Ok(path) = env::var("ORT_DYLIB_PATH") {
         let path = PathBuf::from(&path);
         if path.exists() {
-            // For CUDA on Linux, also ensure LD_LIBRARY_PATH includes the directory and check cuDNN
-            #[cfg(all(target_os = "linux", feature = "cuda"))]
-            {
-                if let Some(parent) = path.parent() {
-                    prepend_ld_library_path(parent);
-                }
-                // Check for cuDNN availability (result is stored in CUDNN_AVAILABLE)
-                let _ = check_cudnn_available();
-            }
+            pin_runtime_library(&path);
             return Ok(path);
         }
     }
@@ -148,23 +140,29 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
     // 2. Search common locations (skip for CUDA - we want our managed GPU version)
     #[cfg(not(feature = "cuda"))]
     if let Some(path) = find_onnx_runtime() {
-        env::set_var("ORT_DYLIB_PATH", &path);
+        pin_runtime_library(&path);
         return Ok(path);
     }
 
     // 3. Download and cache
     let path = download_onnx_runtime()?;
-    env::set_var("ORT_DYLIB_PATH", &path);
+    pin_runtime_library(&path);
+    Ok(path)
+}
 
-    // For CUDA on Linux, set LD_LIBRARY_PATH so provider libraries can be found
-    #[cfg(all(target_os = "linux", feature = "cuda"))]
+fn pin_runtime_library(path: &Path) {
+    env::set_var("ORT_DYLIB_PATH", path);
+
+    #[cfg(target_os = "linux")]
     if let Some(parent) = path.parent() {
         prepend_ld_library_path(parent);
+    }
+
+    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    {
         // Check for cuDNN availability (result is stored in CUDNN_AVAILABLE)
         let _ = check_cudnn_available();
     }
-
-    Ok(path)
 }
 
 /// Find the cuDNN library directory (without setting any global state)
@@ -200,7 +198,7 @@ fn find_cudnn_directory() -> Option<PathBuf> {
 }
 
 /// Prepend a directory to LD_LIBRARY_PATH
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(target_os = "linux")]
 fn prepend_ld_library_path(dir: &Path) {
     let dir_str = dir.to_string_lossy();
     let current = env::var("LD_LIBRARY_PATH").unwrap_or_default();
@@ -462,9 +460,9 @@ fn get_search_paths() -> Vec<PathBuf> {
         // System paths (Linux)
         #[cfg(target_os = "linux")]
         {
-            paths.push(PathBuf::from("/usr/lib"));
-            paths.push(PathBuf::from("/usr/local/lib"));
-            paths.push(PathBuf::from("/usr/lib/x86_64-linux-gnu"));
+            // Intentionally do not probe system-wide libonnxruntime locations on Linux.
+            // A stale /usr/local/lib copy can be ABI-incompatible with the `ort` version
+            // used by this binary, which caused startup panics.
         }
     }
 
