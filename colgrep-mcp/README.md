@@ -1,0 +1,371 @@
+# ColGREP MCP Server
+
+An MCP (Model Context Protocol) server that provides semantic code search capabilities powered by colgrep. This server exposes tools for indexing and searching code with better results than simple keyword or symbol search.
+
+## Features
+
+- **Semantic Search**: Understand natural language queries and find relevant code even when exact keywords don't match
+- **Intelligent Indexing**: Automatically index your codebase for fast semantic search
+- **🆕 Incremental Indexing**: Watch for file changes and update index automatically
+- **🆕 Flexible Backends**: Choose between filesystem, local PostgreSQL + pgvector, or Cloudflare cloud storage
+- **Multi-language Support**: Support for 45+ programming languages via tree-sitter
+- **ColBERT-powered**: Uses state-of-the-art multi-vector retrieval for accurate results
+- **JSON-RPC Protocol**: Full MCP protocol implementation over stdio
+
+## Installation
+
+### Building from Source
+
+**Stdio mode** (default - for Cursor/IDE integration):
+```bash
+cargo build --release -p colgrep-mcp --no-default-features
+```
+
+**HTTP mode** (long-running server - model stays loaded for fast reindex/search):
+```bash
+cargo build --release -p colgrep-mcp --no-default-features --features "http"
+```
+
+The binary will be available at `target/release/colgrep-mcp`.
+
+### Backend Options
+
+ColGREP MCP supports three storage backends:
+
+1. **Filesystem** (default) - Stores index locally in `.colgrep/` directory
+   ```bash
+   cargo build --release -p colgrep-mcp --no-default-features
+   ```
+
+2. **Local (PostgreSQL + pgvector)** - Self-hosted with vector search acceleration
+   ```bash
+   cargo build --release -p colgrep-mcp  # default feature
+   ```
+   Requires PostgreSQL with pgvector extension. See [CONFIG.md](./docs/CONFIG.md) for setup.
+
+3. **Cloudflare** - Cloud-native using D1, R2, and Vectorize (coming soon)
+   ```bash
+   cargo build --release -p colgrep-mcp --features cloudflare
+   ```
+   See [CLOUDFLARE.md](./docs/CLOUDFLARE.md) for architecture details.
+
+**Configuration**: See [CONFIG.md](./docs/CONFIG.md) for complete configuration guide.
+
+### Claude Code Integration
+
+**Global config** — To use colgrep in all projects:
+
+```bash
+# Stdio mode (use absolute path)
+claude mcp add --scope user --transport stdio colgrep -- /path/to/colgrep-mcp
+
+# HTTP mode (run colgrep-mcp --http first)
+claude mcp add --scope user --transport http colgrep-http http://127.0.0.1:3847/mcp
+```
+
+Use an **absolute path** for the stdio server (e.g. `~/Code/next-plaid/target/release/colgrep-mcp` or `~/.cargo/bin/colgrep-mcp` after `cargo install`).
+
+**Project config** — Or add to your project's `.claude/mcp_servers.json`:
+
+```json
+{
+  "mcpServers": {
+    "colgrep": {
+      "command": "/path/to/colgrep-mcp",
+      "args": [],
+      "description": "Semantic code search powered by ColBERT"
+    }
+  }
+}
+```
+
+### Cursor Integration
+
+**Global config** — To use colgrep in all projects, add to `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "colgrep": {
+      "command": "/path/to/colgrep-mcp",
+      "args": [],
+      "description": "Semantic code search powered by ColBERT"
+    },
+    "colgrep-http": {
+      "url": "http://127.0.0.1:3847/mcp",
+      "description": "ColBERT semantic search (HTTP mode - run colgrep-mcp --http first)"
+    }
+  }
+}
+```
+
+Use an **absolute path** for the stdio server (e.g. `~/Code/next-plaid/target/release/colgrep-mcp` or `~/.cargo/bin/colgrep-mcp` after `cargo install`). Project-relative paths like `target/release/colgrep-mcp` only work in project config.
+
+**Project config** — To maximize ColGREP usage for the right queries, add both MCP config and a Cursor rule:
+
+**1. MCP config** (`.cursor/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "colgrep": {
+      "command": "target/release/colgrep-mcp",
+      "args": [],
+      "description": "Semantic code search powered by ColBERT"
+    }
+  }
+}
+```
+
+**2. Cursor rule** — Copy `.cursor/rules/colgrep.mdc` from this package into your project's `.cursor/rules/`:
+
+```bash
+mkdir -p .cursor/rules
+cp colgrep-mcp/.cursor/rules/colgrep.mdc .cursor/rules/
+```
+
+This rule tells the agent to **prefer colgrep search** when the user describes what they want (e.g. "where do we handle auth?") and **use grep** only for exact string/regex matches. Without the rule, the agent may default to grep; with it, semantic queries go to ColGREP.
+
+### Antigravity Integration
+
+**Global config** — Add to `~/.gemini/antigravity/mcp_config.json` (macOS/Linux). Example: `antigravity-mcp.json`
+
+```json
+{
+  "mcpServers": {
+    "colgrep": {
+      "command": "/path/to/colgrep-mcp",
+      "args": []
+    },
+    "colgrep-http": {
+      "serverUrl": "http://127.0.0.1:3847/mcp"
+    }
+  }
+}
+```
+
+Use an **absolute path** for the stdio server. For HTTP mode, start the server first with `colgrep-mcp --http`.
+
+To edit the config: open the MCP Store via the "..." dropdown at the top of the editor's agent panel → Manage MCP Servers → View raw config.
+
+## Usage
+
+### Tools Available
+
+The ColGREP MCP server provides the following tools:
+
+#### 1. `index_codebase`
+
+Create a searchable index of your code repository.
+
+**Parameters:**
+- `path` (optional): Custom path to index (defaults to current directory)
+- `force` (optional): Force re-indexing even if index exists
+
+**Example:**
+```json
+{
+  "path": "/path/to/project",
+  "force": false
+}
+```
+
+#### 2. `search`
+
+Search the codebase using semantic search.
+
+**Parameters:**
+- `query` (required): The search query (natural language or pattern)
+- `max_results` (optional): Maximum number of results to return (default: 15)
+- `include` (optional): File patterns to include (e.g., ["*.rs", "*.py"])
+- `exclude` (optional): File patterns to exclude
+
+**Example:**
+```json
+{
+  "query": "function that handles HTTP requests",
+  "max_results": 10,
+  "include": ["*.rs"]
+}
+```
+
+#### 3. `get_status`
+
+Get the status of the code index, including statistics and metadata.
+
+**Parameters:** None
+
+#### 4. `enable_auto_index` 🆕
+
+Enable automatic incremental indexing when files change.
+
+**Parameters:**
+- `enabled` (optional): Whether to enable or disable auto-indexing (default: true)
+
+**Example:**
+```json
+{
+  "enabled": true
+}
+```
+
+**Note:** Once enabled, the file watcher monitors code files for changes and automatically updates the index. This is much faster than full re-indexing
+
+## Run Modes
+
+### Stdio (default)
+Spawns a new process per Cursor/IDE session. **Cold start**: First query in each session is slow (~30–90s) while the model loads. **Warm**: Subsequent queries in the same session are fast (<5s).
+
+### HTTP (--http) — Recommended for frequent search
+Long-running server keeps the model and index in memory. **All requests are fast** (~1.4–1.6s) with no cold start per session.
+
+#### Latency comparison
+
+| Mode | First request (cold) | Subsequent requests (warm) |
+|------|----------------------|----------------------------|
+| **stdio** | ~30–90s (model + index load) | <5s |
+| **HTTP** | ~15–25s (server startup, one-time) | **~1.4–1.6s** |
+
+HTTP mode avoids the cold start on every new Cursor session. Once the server is running, every search is consistently fast.
+
+#### Latency breakdown (per search)
+
+Set `COLGREP_TIMING=1` to log timing to stderr. Typical breakdown on next-plaid (~189 code units):
+
+| Phase | Time | Description |
+|-------|------|-------------|
+| **Model load** | ~350–880ms | Load ColBERT ONNX model (first request higher) |
+| **Index load** | ~18–20ms | Memory-map PLAID index from disk |
+| **Query encode** | ~1–5ms | Model inference: encode query to token embeddings |
+| **Index search** | ~800–1800ms | MaxSim vector lookup over code chunks |
+| **Metadata** | ~1–2ms | SQLite lookup for code unit details |
+
+Index search dominates. Query encoding is fast (~2ms). Model load is one-time per process; the filesystem backend currently creates a new Searcher per request, so model reload happens on each HTTP request.
+
+#### Quick start (HTTP mode)
+
+1. **Build** (from repo root):
+   ```bash
+   cargo build --release -p colgrep-mcp --no-default-features --features "http"
+   ```
+
+2. **Start the server** (from the directory you want to search):
+   ```bash
+   ./target/release/colgrep-mcp --http
+   ```
+   Or install globally: `cargo install --path colgrep-mcp --no-default-features --features "http"` then run `colgrep-mcp --http` from anywhere.
+
+3. **Configure Cursor** — add to `.cursor/mcp.json`:
+   ```json
+   "colgrep-http": {
+     "url": "http://127.0.0.1:3847/mcp",
+     "description": "ColBERT semantic search (HTTP mode)"
+   }
+   ```
+   Use the `colgrep-http` server in Cursor for fast semantic search.
+
+4. **Test without LLM** — open http://127.0.0.1:3847/test in a browser to run searches and see scores.
+
+#### Options
+
+- `--port 3847` — Port to bind (default: 3847). If the port is in use, the server tries 3848, 3849, … up to 3900.
+- `--model <id>` — ColBERT model to use (e.g. `lightonai/LateOn-Code-edge`). Use `--list-models` to see options.
+
+## How It Works
+
+1. **Indexing**: ColGREP parses your codebase using tree-sitter, extracts code units (functions, classes, etc.), and creates vector embeddings using a ColBERT model
+
+2. **Search**: When you search, your query is encoded into embeddings and compared against the indexed code using MaxSim scoring, returning the most semantically relevant results
+
+3. **Results**: Search results include the file path, line number, relevance score, and code snippet
+
+## Advantages Over Traditional Search
+
+- **Semantic Understanding**: Finds code based on meaning, not just keywords
+- **Natural Language Queries**: Search using descriptions like "error handling for database connections"
+- **Better Ranking**: Results are ranked by semantic relevance, not just keyword matches
+- **Multi-vector Retrieval**: Uses ColBERT's multi-vector approach for more accurate matching
+
+## Performance
+
+- **CPU-Optimized**: Fast even without GPU
+- **Memory Efficient**: Uses product quantization for smaller index sizes
+- **Incremental Updates**: No need to re-index the entire codebase for changes
+
+## Model
+
+By default, ColGREP uses the `lightonai/LateOn-Code-edge` model. List available models and select one:
+
+```bash
+colgrep-mcp --list-models
+colgrep-mcp --model lightonai/LateOn-Code
+```
+
+The default model is:
+- **Lightweight**: CPU-friendly and fast
+- **Accurate**: Trained specifically for code search
+- **Automatic**: Downloads automatically on first use
+
+## Supported Languages
+
+ColGREP supports 45+ programming languages including:
+- Python, TypeScript, JavaScript
+- Rust, Go, Java, C/C++
+- Ruby, C#, Kotlin, Swift
+- Scala, PHP, Lua, Elixir
+- Haskell, OCaml, R, Zig, Julia
+- And many more...
+
+## Development Status
+
+**Current Version**: 1.0.8
+
+✅ **Completed Features:**
+- Core indexing and semantic search
+- Full JSON-RPC MCP protocol implementation
+- File watching for automatic incremental indexing
+- Multi-tool support (index, search, status, auto-index)
+- LLM query generation guidance
+- Cloudflare integration architecture
+
+## Recent Enhancements (Latest)
+
+- ✅ **Backend Abstraction**: Pluggable storage backends (filesystem, PostgreSQL, Cloudflare)
+- ✅ **PostgreSQL + pgvector**: Local self-hosted option with vector search acceleration
+- ✅ **Configuration System**: TOML-based configuration with environment variable overrides
+- ✅ **Database Migrations**: Automatic schema management for PostgreSQL backend
+- ✅ **Incremental Indexing**: File watching with automatic index updates
+- ✅ **JSON-RPC Protocol**: Complete MCP implementation over stdio
+- ✅ **Tool Registration**: Proper tool handlers and routing
+- ✅ **LLM Guidance**: Comprehensive query generation rules
+- ✅ **Cloud Integration**: Cloudflare D1/R2/Vectorize architecture design
+
+## Future Enhancements
+
+- [ ] Complete Cloudflare backend implementation
+- [ ] Add progress notifications with streaming
+- [ ] Support multi-project workspaces
+- [ ] Implement query result caching
+- [ ] Add context extraction for search results
+- [ ] Multi-user collaboration features (PostgreSQL backend)
+- [ ] Add regex/hybrid search modes
+- [ ] Add telemetry and analytics
+
+## Contributing
+
+Contributions are welcome! Please see the main [next-plaid repository](https://github.com/lightonai/next-plaid) for contribution guidelines.
+
+## License
+
+Licensed under the MIT License. See the main repository for details.
+
+## Related Projects
+
+- [colgrep](../colgrep) - CLI tool for semantic code search
+- [next-plaid](../next-plaid) - Multi-vector search engine
+- [next-plaid-api](../next-plaid-api) - REST API server
+
+## References
+
+- [Model Context Protocol](https://modelcontextprotocol.io/)
+- [ColBERT: Efficient and Effective Passage Search](https://github.com/stanford-futuredata/ColBERT)
+- [LightOn AI](https://www.lighton.ai/)

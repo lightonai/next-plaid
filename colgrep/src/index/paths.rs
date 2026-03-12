@@ -89,12 +89,50 @@ fn compute_index_dir_name(project_path: &Path) -> String {
     format!("{}-{}", sanitized_name, hash_prefix)
 }
 
+/// Environment variable to store the index inside the project folder.
+/// When set to an absolute path (e.g. /path/to/project/.colgrep), the index
+/// is stored there instead of XDG_DATA_HOME. Useful for per-repo indices.
+pub const COLGREP_INDEX_DIR_ENV: &str = "COLGREP_INDEX_DIR";
+
+/// Check if a path contains a valid index (has index/metadata.json)
+fn index_dir_has_valid_index(index_dir: &Path) -> bool {
+    index_dir.join(INDEX_SUBDIR).join("metadata.json").exists()
+}
+
 /// Get the index directory for a project path
 /// Creates the directory structure if it doesn't exist
+///
+/// Resolution order:
+/// 1. COLGREP_INDEX_DIR env var (if set to absolute path)
+/// 2. Index in default XDG location (server/global cache)
+/// 3. Index in project/.colgrep (per-repo)
+/// 4. project/.colgrep for new indexes (when none exist)
 pub fn get_index_dir_for_project(project_path: &Path) -> Result<PathBuf> {
+    // 1. Env override
+    if let Ok(override_path) = std::env::var(COLGREP_INDEX_DIR_ENV) {
+        let path = PathBuf::from(&override_path);
+        if path.is_absolute() {
+            return Ok(path);
+        }
+    }
+
     let base_dir = get_colgrep_data_dir()?;
     let dir_name = compute_index_dir_name(project_path);
-    Ok(base_dir.join(dir_name))
+    let xdg_path = base_dir.join(&dir_name);
+    let local_path = project_path.join(".colgrep");
+
+    // 2. Index already in XDG (server/global)
+    if index_dir_has_valid_index(&xdg_path) {
+        return Ok(xdg_path);
+    }
+
+    // 3. Index in project/.colgrep
+    if index_dir_has_valid_index(&local_path) {
+        return Ok(local_path);
+    }
+
+    // 4. No index exists - use project/.colgrep for new index
+    Ok(local_path)
 }
 
 /// Find an existing index for a project path

@@ -1,0 +1,22 @@
+---
+description: Use ColGREP semantic search when finding code by behavior, intent, or natural language
+globs: ["**/*.rs", "**/*.ts", "**/*.py", "**/*.js", "**/*.go", "**/*.java"]
+alwaysApply: false
+---
+
+# ColGREP Semantic Search
+
+When the user asks to **find code by describing what it does** (e.g. "where do we handle authentication?", "function that retries failed requests", "code that validates email addresses"), use the **colgrep search** MCP tool instead of grep.
+
+**Use colgrep search for:**
+- Natural language queries ("where do we...", "how do we...", "function that...")
+- Finding code by behavior or intent
+- Discovering implementations without knowing exact names
+- Cross-cutting concerns (error handling, logging, validation)
+
+**Use grep for:**
+- Exact string matches
+- Regex patterns the user provides literally
+- When the user says "search for the text X" with an exact quote
+
+ColGREP understands meaning and finds semantically similar code. Grep only matches text.

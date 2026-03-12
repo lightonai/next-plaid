@@ -1,0 +1,73 @@
+[package]
+name = "colgrep-mcp"
+version = "1.0.8"
+edition = "2021"
+description = "MCP server for semantic code search powered by colgrep"
+license = "MIT"
+repository = "https://github.com/lightonai/next-plaid"
+homepage = "https://github.com/lightonai/next-plaid"
+
+[[bin]]
+name = "colgrep-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# Core colgrep library
+colgrep = { path = "../colgrep", version = "1.0.7" }
+
+# MCP Server SDK
+rmcp = { version = "0.15", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { version = "1.0", features = ["chrono04"] }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging (to stderr only, not stdout)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# File system operations
+walkdir = "2"
+notify = "6.1"
+notify-debouncer-full = "0.3"
+regex = "1.10"
+chrono = "0.4"
+
+# Database support (optional)
+tokio-postgres = { version = "0.7", optional = true }
+pgvector = { version = "0.4", features = ["postgres"], optional = true }
+deadpool-postgres = { version = "0.14", optional = true }
+
+# Configuration
+toml = "0.8"
+dirs = "5.0"
+
+# CLI parsing (--list-models, --model, --http, etc.)
+clap = { version = "4", features = ["derive"] }
+
+# HTTP server (for --http mode)
+axum = { version = "0.8", optional = true }
+tokio-util = { version = "0.7", optional = true }
+
+[features]
+default = ["local-db"]
+http = ["dep:axum", "dep:tokio-util"]
+# Backend options (mutually exclusive - choose one)
+local-db = ["tokio-postgres", "pgvector", "deadpool-postgres"]
+cloudflare = []
+# Pass through acceleration features from colgrep
+cuda = ["colgrep/cuda"]
+coreml = ["colgrep/coreml"]
+tensorrt = ["colgrep/tensorrt"]
+directml = ["colgrep/directml"]
+accelerate = ["colgrep/accelerate"]
+openblas = ["colgrep/openblas"]

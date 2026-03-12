@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "colgrep": {
+      "command": "colgrep-mcp",
+      "args": [],
+      "env": {},
+      "description": "Semantic code search powered by ColBERT. Provides intelligent code search that understands natural language queries and finds relevant code even when exact keywords don't match."
+    }
+  }
+}

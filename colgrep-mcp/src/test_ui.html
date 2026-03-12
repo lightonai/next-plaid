@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ColGREP MCP Test</title>
+  <style>
+    :root {
+      --bg: #0f0f12;
+      --surface: #1a1a20;
+      --border: #2a2a32;
+      --text: #e4e4e7;
+      --muted: #71717a;
+      --accent: #22c55e;
+      --accent-dim: #16a34a;
+      --error: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 1.5rem;
+      line-height: 1.5;
+    }
+    h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin: 0 0 1rem;
+      color: var(--accent);
+    }
+    .form {
+      display: grid;
+      gap: 1rem;
+      max-width: 42rem;
+      margin-bottom: 1.5rem;
+    }
+    label {
+      display: block;
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-bottom: 0.25rem;
+    }
+    input, textarea {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.875rem;
+    }
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    textarea {
+      min-height: 2.5rem;
+      resize: vertical;
+    }
+    button {
+      padding: 0.5rem 1rem;
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      border-radius: 6px;
+      font-family: inherit;
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-dim); }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 8rem;
+      gap: 1rem;
+    }
+    .results {
+      margin-top: 1rem;
+    }
+    .result {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 0.75rem;
+      overflow: hidden;
+    }
+    .result-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 1rem;
+      margin-bottom: 0.5rem;
+    }
+    .result-file {
+      font-size: 0.8rem;
+      color: var(--accent);
+      word-break: break-all;
+    }
+    .result-score {
+      font-size: 0.8rem;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .result-score strong {
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .result-snippet {
+      font-size: 0.8rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text);
+      max-height: 12rem;
+      overflow-y: auto;
+    }
+    .error {
+      color: var(--error);
+      padding: 1rem;
+      background: rgba(239, 68, 68, 0.1);
+      border-radius: 6px;
+      margin-top: 1rem;
+    }
+    .loading { opacity: 0.7; }
+  </style>
+</head>
+<body>
+  <h1>ColGREP MCP Test</h1>
+  <p style="color: var(--muted); font-size: 0.8rem; margin: 0 0 1rem;">
+    Test the MCP server without LLMs. Run <code>colgrep-mcp --http</code> first.
+  </p>
+  <form class="form" id="form">
+    <div>
+      <label for="path">Directory (absolute path)</label>
+      <input type="text" id="path" name="path" placeholder="Leave empty for server cwd (start dir)">
+    </div>
+    <div>
+      <label for="query">Search query</label>
+      <textarea id="query" name="query" placeholder="function that handles HTTP requests" rows="1">index path resolution</textarea>
+    </div>
+    <div class="row">
+      <div>
+        <label for="max_results">Max results</label>
+        <input type="number" id="max_results" name="max_results" min="1" max="100" value="15">
+      </div>
+      <div style="align-self: end;">
+        <button type="submit" id="submit">Search</button>
+      </div>
+    </div>
+  </form>
+  <div id="output"></div>
+
+  <script>
+    const form = document.getElementById('form');
+    const output = document.getElementById('output');
+    const submitBtn = document.getElementById('submit');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const path = document.getElementById('path').value.trim();
+      const query = document.getElementById('query').value.trim();
+      const maxResults = parseInt(document.getElementById('max_results').value, 10) || 15;
+
+      if (!query) {
+        output.innerHTML = '<div class="error">Enter a search query.</div>';
+        return;
+      }
+
+      submitBtn.disabled = true;
+      output.innerHTML = '<div class="loading">Searching…</div>';
+
+      const params = new URLSearchParams({ query, max_results: maxResults });
+      if (path) params.set('path', path);
+
+      try {
+        const res = await fetch(`/test/search?${params}`);
+        const data = await res.json();
+
+        if (data.error) {
+          output.innerHTML = `<div class="error">${escapeHtml(data.error)}</div>`;
+          return;
+        }
+
+        const results = data.results || [];
+        if (results.length === 0) {
+          output.innerHTML = '<div class="results"><p style="color: var(--muted);">No results.</p></div>';
+          return;
+        }
+
+        output.innerHTML = `
+          <div class="results">
+            ${results.map((r, i) => `
+              <div class="result">
+                <div class="result-header">
+                  <span class="result-file">${escapeHtml(r.file_path)}:${r.line_number}</span>
+                  <span class="result-score">Score: <strong>${r.score.toFixed(4)}</strong></span>
+                </div>
+                <pre class="result-snippet">${escapeHtml(r.snippet)}</pre>
+              </div>
+            `).join('')}
+          </div>
+        `;
+      } catch (err) {
+        output.innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+{
+  "id": "colgrep-mcp",
+  "name": "ColGREP Semantic Code Search",
+  "version": "1.0.8",
+  "description": "Semantic code search powered by ColBERT. Find code by describing what it does, not just matching keywords.",
+  "longDescription": "ColGREP uses AI (ColBERT multi-vector embeddings) to understand the meaning of your queries and find relevant code even when exact keywords don't match. It's much more powerful than grep or symbol search, supporting 45+ programming languages with automatic incremental indexing.",
+  "author": "LightOn AI",
+  "email": "raphael.sourty@lighton.ai",
+  "homepage": "https://github.com/lightonai/next-plaid",
+  "repository": "https://github.com/lightonai/next-plaid",
+  "license": "MIT",
+  "keywords": [
+    "code-search",
+    "semantic-search",
+    "colbert",
+    "embeddings",
+    "ai",
+    "mcp",
+    "indexing",
+    "refactoring"
+  ],
+  "category": "Development Tools",
+  "mcpServer": true,
+  "features": [
+    "Semantic code search with natural language queries",
+    "Automatic incremental indexing with file watching",
+    "Support for 45+ programming languages",
+    "ColBERT multi-vector embeddings for accuracy",
+    "CPU-optimized (no GPU required)",
+    "File filtering by patterns",
+    "Cross-cutting concern discovery"
+  ],
+  "requirements": {
+    "platform": ["linux", "macos", "windows"],
+    "minClaudeVersion": "1.0.0"
+  },
+  "installation": {
+    "type": "binary",
+    "command": "cargo build --release -p colgrep-mcp"
+  }
+}
