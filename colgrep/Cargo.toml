@@ -106,6 +106,7 @@ cuda = ["next-plaid-onnx/cuda", "next-plaid/cuda"]
 coreml = ["next-plaid-onnx/coreml"]
 tensorrt = ["next-plaid-onnx/tensorrt"]
 directml = ["next-plaid-onnx/directml"]
+migraphx = ["next-plaid-onnx/migraphx"]
 # Vector search acceleration (BLAS backends)
 accelerate = ["next-plaid/accelerate"]
 openblas = ["next-plaid/openblas"]

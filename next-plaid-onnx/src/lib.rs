@@ -72,6 +72,8 @@ use ort::execution_providers::CoreMLExecutionProvider;
 use ort::execution_providers::DirectMLExecutionProvider;
 #[cfg(feature = "tensorrt")]
 use ort::execution_providers::TensorRTExecutionProvider;
+#[cfg(feature = "migraphx")]
+use ort::execution_providers::MIGraphXExecutionProvider;
 
 use ort::session::builder::SessionBuilder;
 
@@ -168,6 +170,8 @@ pub enum ExecutionProvider {
     CoreML,
     /// DirectML execution (Windows GPUs, requires `directml` feature)
     DirectML,
+    /// MIGraphX execution (AMD GPUs, requires `migraphx` feature)
+    MIGraphX,
 }
 
 fn configure_execution_provider(
@@ -181,6 +185,7 @@ fn configure_execution_provider(
         ExecutionProvider::TensorRT => configure_tensorrt(builder),
         ExecutionProvider::CoreML => configure_coreml(builder),
         ExecutionProvider::DirectML => configure_directml(builder),
+        ExecutionProvider::MIGraphX => configure_migraphx(builder),
     }
 }
 
@@ -250,7 +255,7 @@ pub fn is_cuda_available() -> bool {
 
 fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
     // Skip GPU providers entirely if CPU-only mode is forced
-    #[cfg(any(feature = "cuda", feature = "tensorrt", feature = "coreml"))]
+    #[cfg(any(feature = "cuda", feature = "tensorrt", feature = "coreml", feature = "migraphx"))]
     let force_cpu = is_force_cpu();
 
     #[cfg(feature = "cuda")]
@@ -292,6 +297,16 @@ fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
         if let Ok(b) = builder
             .clone()
             .with_execution_providers([DirectMLExecutionProvider::default().build()])
+        {
+            return Ok(b);
+        }
+    }
+
+    #[cfg(feature = "migraphx")]
+    if !force_cpu {
+        if let Ok(b) = builder
+            .clone()
+            .with_execution_providers([MIGraphXExecutionProvider::default().build()])
         {
             return Ok(b);
         }
@@ -357,6 +372,21 @@ fn configure_directml(builder: SessionBuilder) -> Result<SessionBuilder> {
 #[cfg(not(feature = "directml"))]
 fn configure_directml(_builder: SessionBuilder) -> Result<SessionBuilder> {
     anyhow::bail!("DirectML support not compiled. Enable the 'directml' feature.")
+}
+
+#[cfg(feature = "migraphx")]
+fn configure_migraphx(builder: SessionBuilder) -> Result<SessionBuilder> {
+    if is_force_cpu() {
+        return Ok(builder);
+    }
+    builder
+        .with_execution_providers([MIGraphXExecutionProvider::default().build()])
+        .context("Failed to configure MIGraphX execution provider. Ensure ROCm and MIGraphX are installed.")
+}
+
+#[cfg(not(feature = "migraphx"))]
+fn configure_migraphx(_builder: SessionBuilder) -> Result<SessionBuilder> {
+    anyhow::bail!("MIGraphX support not compiled. Enable the 'migraphx' feature.")
 }
 
 // =============================================================================
