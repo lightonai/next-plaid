@@ -15,7 +15,10 @@
 //! ```
 
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
-use cudarc::driver::{CudaDevice, CudaSlice, LaunchAsync, LaunchConfig};
+use cudarc::driver::{
+    CudaContext as CudarcContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig,
+    PushKernelArg,
+};
 use ndarray::{Array1, ArrayView2};
 use std::sync::{Arc, OnceLock};
 
@@ -29,8 +32,12 @@ static GLOBAL_CUDA_CONTEXT: OnceLock<Option<CudaContext>> = OnceLock::new();
 
 /// CUDA context holding device and cuBLAS handle.
 pub struct CudaContext {
-    pub device: Arc<CudaDevice>,
+    pub device: Arc<CudarcContext>,
+    pub stream: Arc<CudaStream>,
     pub blas: CudaBlas,
+    argmax_func: CudaFunction,
+    gather_subtract_func: CudaFunction,
+    maxsim_func: CudaFunction,
 }
 
 impl CudaContext {
@@ -41,16 +48,24 @@ impl CudaContext {
     /// initialization when persistence mode is disabled. Enable it with:
     /// `sudo nvidia-smi -pm 1`
     pub fn new(device_id: usize) -> Result<Self> {
-        let device = CudaDevice::new(device_id)
-            .map_err(|e| Error::Codec(format!("Failed to initialize CUDA device: {}", e)))?;
+        let device = CudarcContext::new(device_id)
+            .map_err(|e| Error::Codec(format!("Failed to initialize CUDA device: {:?}", e)))?;
+        let stream = device.default_stream();
 
-        let blas = CudaBlas::new(device.clone())
-            .map_err(|e| Error::Codec(format!("Failed to initialize cuBLAS: {}", e)))?;
+        let blas = CudaBlas::new(stream.clone())
+            .map_err(|e| Error::Codec(format!("Failed to initialize cuBLAS: {:?}", e)))?;
 
         // Preload PTX kernels during context creation
-        load_kernels(&device)?;
+        let (argmax_func, gather_subtract_func, maxsim_func) = load_kernels(&device)?;
 
-        Ok(Self { device, blas })
+        Ok(Self {
+            device,
+            stream,
+            blas,
+            argmax_func,
+            gather_subtract_func,
+            maxsim_func,
+        })
     }
 }
 
@@ -221,24 +236,29 @@ END:
 "#;
 
 /// Load PTX kernels into the device.
-fn load_kernels(device: &Arc<CudaDevice>) -> Result<()> {
-    device
-        .load_ptx(
-            cudarc::nvrtc::Ptx::from_src(ARGMAX_KERNEL),
-            "argmax",
-            &["argmax_kernel"],
-        )
-        .map_err(|e| Error::Codec(format!("Failed to load argmax kernel: {}", e)))?;
+fn load_kernels(device: &Arc<CudarcContext>) -> Result<(CudaFunction, CudaFunction, CudaFunction)> {
+    let argmax_module = device
+        .load_module(cudarc::nvrtc::Ptx::from_src(ARGMAX_KERNEL))
+        .map_err(|e| Error::Codec(format!("Failed to load argmax kernel: {:?}", e)))?;
+    let argmax_func = argmax_module
+        .load_function("argmax_kernel")
+        .map_err(|e| Error::Codec(format!("Failed to load argmax function: {:?}", e)))?;
 
-    device
-        .load_ptx(
-            cudarc::nvrtc::Ptx::from_src(GATHER_SUBTRACT_KERNEL),
-            "gather_subtract",
-            &["gather_subtract_kernel"],
-        )
-        .map_err(|e| Error::Codec(format!("Failed to load gather_subtract kernel: {}", e)))?;
+    let gather_module = device
+        .load_module(cudarc::nvrtc::Ptx::from_src(GATHER_SUBTRACT_KERNEL))
+        .map_err(|e| Error::Codec(format!("Failed to load gather_subtract kernel: {:?}", e)))?;
+    let gather_func = gather_module
+        .load_function("gather_subtract_kernel")
+        .map_err(|e| Error::Codec(format!("Failed to load gather_subtract function: {:?}", e)))?;
 
-    Ok(())
+    let maxsim_module = device
+        .load_module(cudarc::nvrtc::Ptx::from_src(MAXSIM_KERNEL))
+        .map_err(|e| Error::Codec(format!("Failed to load maxsim kernel: {:?}", e)))?;
+    let maxsim_func = maxsim_module
+        .load_function("maxsim_kernel")
+        .map_err(|e| Error::Codec(format!("Failed to load maxsim function: {:?}", e)))?;
+
+    Ok((argmax_func, gather_func, maxsim_func))
 }
 
 /// Compute optimal batch size to stay within GPU memory budget.
@@ -278,9 +298,9 @@ pub fn compress_into_codes_cuda_batched(
 
     // Upload centroids once (reused across batches)
     let centroids_gpu = ctx
-        .device
-        .htod_sync_copy(centroids_cont.as_slice().unwrap())
-        .map_err(|e| Error::Codec(format!("Failed to copy centroids to GPU: {}", e)))?;
+        .stream
+        .clone_htod(centroids_cont.as_slice().unwrap())
+        .map_err(|e| Error::Codec(format!("Failed to copy centroids to GPU: {:?}", e)))?;
 
     // Kernels are preloaded in CudaContext::new()
 
@@ -298,14 +318,14 @@ pub fn compress_into_codes_cuda_batched(
         };
 
         let batch_gpu = ctx
-            .device
-            .htod_sync_copy(batch_cont.as_slice().unwrap())
-            .map_err(|e| Error::Codec(format!("Failed to copy batch to GPU: {}", e)))?;
+            .stream
+            .clone_htod(batch_cont.as_slice().unwrap())
+            .map_err(|e| Error::Codec(format!("Failed to copy batch to GPU: {:?}", e)))?;
 
         let mut scores_gpu: CudaSlice<f32> = ctx
-            .device
+            .stream
             .alloc_zeros(batch_n * k)
-            .map_err(|e| Error::Codec(format!("Failed to allocate scores: {}", e)))?;
+            .map_err(|e| Error::Codec(format!("Failed to allocate scores: {:?}", e)))?;
 
         // GEMM: scores = batch @ centroids.T
         let cfg = GemmConfig {
@@ -324,38 +344,38 @@ pub fn compress_into_codes_cuda_batched(
         unsafe {
             ctx.blas
                 .gemm(cfg, &centroids_gpu, &batch_gpu, &mut scores_gpu)
-                .map_err(|e| Error::Codec(format!("cuBLAS GEMM failed: {}", e)))?;
+                .map_err(|e| Error::Codec(format!("cuBLAS GEMM failed: {:?}", e)))?;
         }
 
         let mut codes_gpu: CudaSlice<u32> = ctx
-            .device
+            .stream
             .alloc_zeros(batch_n)
-            .map_err(|e| Error::Codec(format!("Failed to allocate codes: {}", e)))?;
-
-        let func = ctx
-            .device
-            .get_func("argmax", "argmax_kernel")
-            .ok_or_else(|| Error::Codec("Failed to get argmax function".into()))?;
+            .map_err(|e| Error::Codec(format!("Failed to allocate codes: {:?}", e)))?;
 
         let block_size = 256;
         let grid_size = batch_n.div_ceil(block_size);
+        let batch_n_u32 = batch_n as u32;
+        let k_u32 = k as u32;
 
         unsafe {
-            func.launch(
-                LaunchConfig {
+            ctx.stream
+                .launch_builder(&ctx.argmax_func)
+                .arg(&scores_gpu)
+                .arg(&mut codes_gpu)
+                .arg(&batch_n_u32)
+                .arg(&k_u32)
+                .launch(LaunchConfig {
                     block_dim: (block_size as u32, 1, 1),
                     grid_dim: (grid_size as u32, 1, 1),
                     shared_mem_bytes: 0,
-                },
-                (&scores_gpu, &mut codes_gpu, batch_n as u32, k as u32),
-            )
-            .map_err(|e| Error::Codec(format!("Argmax kernel failed: {}", e)))?;
+                })
+            .map_err(|e| Error::Codec(format!("Argmax kernel failed: {:?}", e)))?;
         }
 
         let codes_host = ctx
-            .device
-            .dtoh_sync_copy(&codes_gpu)
-            .map_err(|e| Error::Codec(format!("Failed to copy codes: {}", e)))?;
+            .stream
+            .clone_dtoh(&codes_gpu)
+            .map_err(|e| Error::Codec(format!("Failed to copy codes: {:?}", e)))?;
 
         all_codes.extend(codes_host.into_iter().map(|x| x as usize));
     }
@@ -420,9 +440,9 @@ pub fn compress_and_residuals_cuda_batched(
 
     // Upload centroids once (reused across batches)
     let centroids_gpu = ctx
-        .device
-        .htod_sync_copy(centroids_cont.as_slice().unwrap())
-        .map_err(|e| Error::Codec(format!("Failed to copy centroids to GPU: {}", e)))?;
+        .stream
+        .clone_htod(centroids_cont.as_slice().unwrap())
+        .map_err(|e| Error::Codec(format!("Failed to copy centroids to GPU: {:?}", e)))?;
 
     // Kernels are preloaded in CudaContext::new()
 
@@ -441,15 +461,15 @@ pub fn compress_and_residuals_cuda_batched(
         };
 
         let batch_gpu = ctx
-            .device
-            .htod_sync_copy(batch_cont.as_slice().unwrap())
-            .map_err(|e| Error::Codec(format!("Failed to copy batch to GPU: {}", e)))?;
+            .stream
+            .clone_htod(batch_cont.as_slice().unwrap())
+            .map_err(|e| Error::Codec(format!("Failed to copy batch to GPU: {:?}", e)))?;
 
         // Allocate GPU memory for scores and codes
         let mut scores_gpu: CudaSlice<f32> = ctx
-            .device
+            .stream
             .alloc_zeros(batch_n * k)
-            .map_err(|e| Error::Codec(format!("Failed to allocate scores: {}", e)))?;
+            .map_err(|e| Error::Codec(format!("Failed to allocate scores: {:?}", e)))?;
 
         // GEMM: scores = batch @ centroids.T
         let cfg = GemmConfig {
@@ -468,34 +488,33 @@ pub fn compress_and_residuals_cuda_batched(
         unsafe {
             ctx.blas
                 .gemm(cfg, &centroids_gpu, &batch_gpu, &mut scores_gpu)
-                .map_err(|e| Error::Codec(format!("cuBLAS GEMM failed: {}", e)))?;
+                .map_err(|e| Error::Codec(format!("cuBLAS GEMM failed: {:?}", e)))?;
         }
 
         // Argmax to get codes
         let mut codes_gpu: CudaSlice<u32> = ctx
-            .device
+            .stream
             .alloc_zeros(batch_n)
-            .map_err(|e| Error::Codec(format!("Failed to allocate codes: {}", e)))?;
-
-        let argmax_func = ctx
-            .device
-            .get_func("argmax", "argmax_kernel")
-            .ok_or_else(|| Error::Codec("Failed to get argmax function".into()))?;
+            .map_err(|e| Error::Codec(format!("Failed to allocate codes: {:?}", e)))?;
 
         let block_size = 256;
         let grid_size = batch_n.div_ceil(block_size);
+        let batch_n_u32 = batch_n as u32;
+        let k_u32 = k as u32;
 
         unsafe {
-            argmax_func
-                .launch(
-                    LaunchConfig {
-                        block_dim: (block_size as u32, 1, 1),
-                        grid_dim: (grid_size as u32, 1, 1),
-                        shared_mem_bytes: 0,
-                    },
-                    (&scores_gpu, &mut codes_gpu, batch_n as u32, k as u32),
-                )
-                .map_err(|e| Error::Codec(format!("Argmax kernel failed: {}", e)))?;
+            ctx.stream
+                .launch_builder(&ctx.argmax_func)
+                .arg(&scores_gpu)
+                .arg(&mut codes_gpu)
+                .arg(&batch_n_u32)
+                .arg(&k_u32)
+                .launch(LaunchConfig {
+                    block_dim: (block_size as u32, 1, 1),
+                    grid_dim: (grid_size as u32, 1, 1),
+                    shared_mem_bytes: 0,
+                })
+                .map_err(|e| Error::Codec(format!("Argmax kernel failed: {:?}", e)))?;
         }
 
         // Free scores memory - no longer needed
@@ -503,47 +522,40 @@ pub fn compress_and_residuals_cuda_batched(
 
         // Compute residuals: residuals = embeddings - centroids[codes]
         let mut residuals_gpu: CudaSlice<f32> = ctx
-            .device
+            .stream
             .alloc_zeros(batch_n * dim)
-            .map_err(|e| Error::Codec(format!("Failed to allocate residuals: {}", e)))?;
-
-        let gather_func = ctx
-            .device
-            .get_func("gather_subtract", "gather_subtract_kernel")
-            .ok_or_else(|| Error::Codec("Failed to get gather_subtract function".into()))?;
+            .map_err(|e| Error::Codec(format!("Failed to allocate residuals: {:?}", e)))?;
 
         // For gather_subtract: one block per row, threads parallelize over dimensions
         let threads_per_row = dim.min(256);
+        let dim_u32 = dim as u32;
         unsafe {
-            gather_func
-                .launch(
-                    LaunchConfig {
-                        block_dim: (threads_per_row as u32, 1, 1),
-                        grid_dim: (batch_n as u32, 1, 1),
-                        shared_mem_bytes: 0,
-                    },
-                    (
-                        &batch_gpu,
-                        &centroids_gpu,
-                        &codes_gpu,
-                        &mut residuals_gpu,
-                        batch_n as u32,
-                        dim as u32,
-                    ),
-                )
-                .map_err(|e| Error::Codec(format!("Gather-subtract kernel failed: {}", e)))?;
+            ctx.stream
+                .launch_builder(&ctx.gather_subtract_func)
+                .arg(&batch_gpu)
+                .arg(&centroids_gpu)
+                .arg(&codes_gpu)
+                .arg(&mut residuals_gpu)
+                .arg(&batch_n_u32)
+                .arg(&dim_u32)
+                .launch(LaunchConfig {
+                    block_dim: (threads_per_row as u32, 1, 1),
+                    grid_dim: (batch_n as u32, 1, 1),
+                    shared_mem_bytes: 0,
+                })
+                .map_err(|e| Error::Codec(format!("Gather-subtract kernel failed: {:?}", e)))?;
         }
 
         // Copy results back to host
         let codes_host = ctx
-            .device
-            .dtoh_sync_copy(&codes_gpu)
-            .map_err(|e| Error::Codec(format!("Failed to copy codes: {}", e)))?;
+            .stream
+            .clone_dtoh(&codes_gpu)
+            .map_err(|e| Error::Codec(format!("Failed to copy codes: {:?}", e)))?;
 
         let residuals_host = ctx
-            .device
-            .dtoh_sync_copy(&residuals_gpu)
-            .map_err(|e| Error::Codec(format!("Failed to copy residuals: {}", e)))?;
+            .stream
+            .clone_dtoh(&residuals_gpu)
+            .map_err(|e| Error::Codec(format!("Failed to copy residuals: {:?}", e)))?;
 
         all_codes.extend(codes_host.into_iter().map(|x| x as usize));
 
@@ -558,6 +570,101 @@ pub fn compress_and_residuals_cuda_batched(
     Ok((Array1::from_vec(all_codes), all_residuals))
 }
 
+/// CUDA-accelerated ColBERT MaxSim scoring.
+/// Used internally by colbert_score when cuda feature is enabled and matrices are large.
+pub fn colbert_score_cuda(
+    ctx: &CudaContext,
+    query: &ArrayView2<f32>,
+    doc: &ArrayView2<f32>,
+) -> Result<f32> {
+    let num_query_tokens = query.nrows();
+    let num_doc_tokens = doc.nrows();
+    let dim = query.ncols();
+
+    if num_query_tokens == 0 || num_doc_tokens == 0 {
+        return Ok(0.0);
+    }
+
+    let query_cont = if query.is_standard_layout() {
+        query.to_owned()
+    } else {
+        query.as_standard_layout().to_owned()
+    };
+    let doc_cont = if doc.is_standard_layout() {
+        doc.to_owned()
+    } else {
+        doc.as_standard_layout().to_owned()
+    };
+
+    let query_gpu = ctx
+        .stream
+        .clone_htod(query_cont.as_slice().unwrap())
+        .map_err(|e| Error::Codec(format!("Failed to copy query to GPU: {:?}", e)))?;
+
+    let doc_gpu = ctx
+        .stream
+        .clone_htod(doc_cont.as_slice().unwrap())
+        .map_err(|e| Error::Codec(format!("Failed to copy doc to GPU: {:?}", e)))?;
+
+    let mut scores_gpu: CudaSlice<f32> = ctx
+        .stream
+        .alloc_zeros(num_query_tokens * num_doc_tokens)
+        .map_err(|e| Error::Codec(format!("Failed to allocate scores: {:?}", e)))?;
+
+    // GEMM: scores = query @ doc.T
+    let cfg = GemmConfig {
+        transa: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
+        transb: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
+        m: num_doc_tokens as i32,
+        n: num_query_tokens as i32,
+        k: dim as i32,
+        alpha: 1.0f32,
+        lda: dim as i32,
+        ldb: dim as i32,
+        beta: 0.0f32,
+        ldc: num_doc_tokens as i32,
+    };
+
+    unsafe {
+        ctx.blas
+            .gemm(cfg, &doc_gpu, &query_gpu, &mut scores_gpu)
+            .map_err(|e| Error::Codec(format!("cuBLAS GEMM failed: {:?}", e)))?;
+    }
+
+    // Kernels are preloaded in CudaContext::new()
+
+    let mut max_scores_gpu: CudaSlice<f32> = ctx
+        .stream
+        .alloc_zeros(num_query_tokens)
+        .map_err(|e| Error::Codec(format!("Failed to allocate max_scores: {:?}", e)))?;
+
+    let block_size = 256;
+    let grid_size = num_query_tokens.div_ceil(block_size);
+    let num_query_tokens_u32 = num_query_tokens as u32;
+    let num_doc_tokens_u32 = num_doc_tokens as u32;
+
+    unsafe {
+        ctx.stream
+            .launch_builder(&ctx.maxsim_func)
+            .arg(&scores_gpu)
+            .arg(&mut max_scores_gpu)
+            .arg(&num_query_tokens_u32)
+            .arg(&num_doc_tokens_u32)
+            .launch(LaunchConfig {
+                block_dim: (block_size as u32, 1, 1),
+                grid_dim: (grid_size as u32, 1, 1),
+                shared_mem_bytes: 0,
+            })
+        .map_err(|e| Error::Codec(format!("MaxSim kernel failed: {:?}", e)))?;
+    }
+
+    let max_scores_host = ctx
+        .stream
+        .clone_dtoh(&max_scores_gpu)
+        .map_err(|e| Error::Codec(format!("Failed to copy max_scores: {:?}", e)))?;
+
+    Ok(max_scores_host.iter().sum())
+}
 #[cfg(test)]
 mod tests {
     use super::*;

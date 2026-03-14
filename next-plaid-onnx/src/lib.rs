@@ -338,9 +338,13 @@ fn configure_cuda(builder: SessionBuilder) -> Result<SessionBuilder> {
             CUDAExecutionProvider::default()
                 .with_device_id(device_id)
                 .with_tf32(true)
-                .build()
+                .build(),
         ])
-        .context("Failed to configure CUDA execution provider. Ensure CUDA toolkit and cuDNN are installed.")
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Failed to configure CUDA execution provider. Ensure CUDA toolkit and cuDNN are installed."
+            )
+        })
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -352,7 +356,7 @@ fn configure_cuda(_builder: SessionBuilder) -> Result<SessionBuilder> {
 fn configure_tensorrt(builder: SessionBuilder) -> Result<SessionBuilder> {
     builder
         .with_execution_providers([TensorRTExecutionProvider::default().build()])
-        .context("Failed to configure TensorRT execution provider")
+        .map_err(|_| anyhow::anyhow!("Failed to configure TensorRT execution provider"))
 }
 
 #[cfg(not(feature = "tensorrt"))]
@@ -364,7 +368,7 @@ fn configure_tensorrt(_builder: SessionBuilder) -> Result<SessionBuilder> {
 fn configure_coreml(builder: SessionBuilder) -> Result<SessionBuilder> {
     builder
         .with_execution_providers([CoreMLExecutionProvider::default().build()])
-        .context("Failed to configure CoreML execution provider")
+        .map_err(|_| anyhow::anyhow!("Failed to configure CoreML execution provider"))
 }
 
 #[cfg(not(feature = "coreml"))]
@@ -376,7 +380,7 @@ fn configure_coreml(_builder: SessionBuilder) -> Result<SessionBuilder> {
 fn configure_directml(builder: SessionBuilder) -> Result<SessionBuilder> {
     builder
         .with_execution_providers([DirectMLExecutionProvider::default().build()])
-        .context("Failed to configure DirectML execution provider")
+        .map_err(|_| anyhow::anyhow!("Failed to configure DirectML execution provider"))
 }
 
 #[cfg(not(feature = "directml"))]
@@ -729,15 +733,21 @@ impl ColbertBuilder {
         // Create sessions
         let mut sessions = Vec::with_capacity(self.num_sessions);
         for _i in 0..self.num_sessions {
-            let builder = Session::builder()?
-                .with_optimization_level(GraphOptimizationLevel::Level3)?
-                .with_intra_threads(self.threads_per_session)?
-                .with_inter_threads(if self.num_sessions > 1 { 1 } else { 2 })?
-                // Disable memory pattern optimization for ~7% speedup on CPU
-                // (based on benchmarking - helps with variable-length sequences)
-                .with_memory_pattern(false)?;
+            let builder = Session::builder()
+                .map_err(|_| anyhow::anyhow!("Failed to create ONNX session builder"))?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|_| anyhow::anyhow!("Failed to set ONNX optimization level"))?
+                .with_intra_threads(self.threads_per_session)
+                .map_err(|_| anyhow::anyhow!("Failed to set ONNX intra-op threads"))?
+                .with_inter_threads(if self.num_sessions > 1 { 1 } else { 2 })
+                .map_err(|_| anyhow::anyhow!("Failed to set ONNX inter-op threads"))?;
+            // Disable memory pattern optimization for ~7% speedup on CPU
+            // (based on benchmarking - helps with variable-length sequences)
+            let builder = builder
+                .with_memory_pattern(false)
+                .map_err(|_| anyhow::anyhow!("Failed to configure ONNX memory pattern"))?;
 
-            let builder = configure_execution_provider(builder, self.execution_provider)?;
+            let mut builder = configure_execution_provider(builder, self.execution_provider)?;
 
             let session = builder
                 .commit_from_file(&onnx_path)
