@@ -797,6 +797,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cudarc"
+version = "0.19.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6468cb7fa330840f3ebcd8df51edc0e7bf5c18df524792ce6004c6821851cdf3"
+dependencies = [
+ "libloading 0.9.0",
+]
+
+[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1092,12 +1101,11 @@ checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 [[package]]
 name = "fastkmeans-rs"
 version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3c659c753618a3c3f023ba1b8e7f84a8596524858cd049c785ed5457d51bf2a"
+source = "git+https://github.com/lightonai/fastkmeans-rs.git#cb4795d92c3441573e170b86170a88ec4508c4d3"
 dependencies = [
  "accelerate-src",
  "blas-src 0.10.0",
- "cudarc",
+ "cudarc 0.12.1",
  "ndarray 0.16.1",
  "ndarray-rand",
  "num-traits",
@@ -2239,7 +2247,7 @@ dependencies = [
  "blas-src 0.14.0",
  "byteorder",
  "criterion",
- "cudarc",
+ "cudarc 0.19.3",
  "fastkmeans-rs",
  "fs2",
  "half",

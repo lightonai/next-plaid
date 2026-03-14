@@ -13,14 +13,16 @@ use std::path::{Path, PathBuf};
 static CUDNN_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// Check if cuDNN is available at runtime.
-/// Returns true if:
-/// - CUDA feature is not enabled (not applicable), OR
-/// - CUDA feature is enabled AND cuDNN was found
-///
 /// This should be called AFTER ensure_onnx_runtime() to get accurate results.
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", target_os = "linux"))]
 pub fn is_cudnn_available() -> bool {
     *CUDNN_AVAILABLE.get().unwrap_or(&false)
+}
+
+/// On Windows, ONNX Runtime handles cuDNN loading itself.
+#[cfg(all(feature = "cuda", not(target_os = "linux")))]
+pub fn is_cudnn_available() -> bool {
+    true
 }
 
 #[cfg(not(feature = "cuda"))]
