@@ -15,6 +15,7 @@ use next_plaid::{
 use next_plaid_onnx::{Colbert, ExecutionProvider};
 use serde::{Deserialize, Serialize};
 
+use crate::acceleration::{apply_acceleration_mode, env_acceleration_mode_lossy, AccelerationMode};
 use crate::embed::build_embedding_text;
 use crate::parser::{build_call_graph, detect_language, extract_units, CodeUnit, Language};
 use crate::signal::{is_interrupted, is_interrupted_outside_critical, CriticalSectionGuard};
@@ -141,30 +142,82 @@ impl IndexBuilder {
     ///   available, as GPU initialization overhead outweighs the benefits for small workloads.
     fn ensure_model_created(&mut self, num_units: usize) -> Result<()> {
         if self.model.is_none() {
-            // CUDA builds should use CUDA or fail immediately.
+            let acceleration_mode = env_acceleration_mode_lossy();
+
             #[cfg(feature = "cuda")]
             let (num_sessions, execution_provider) = {
-                let _ = num_units;
-                std::env::remove_var("COLGREP_FORCE_CPU");
-                std::env::remove_var("NEXT_PLAID_FORCE_CPU");
+                match acceleration_mode {
+                    AccelerationMode::ForceCpu => {
+                        apply_acceleration_mode(AccelerationMode::ForceCpu);
+                        crate::onnx_runtime::ensure_onnx_runtime()
+                            .context("Failed to initialize ONNX Runtime")?;
 
-                // Initialize ONNX Runtime
-                crate::onnx_runtime::ensure_onnx_runtime()
-                    .context("Failed to initialize ONNX Runtime")?;
+                        (
+                            self.parallel_sessions.unwrap_or_else(|| {
+                                let cpu_count = std::thread::available_parallelism()
+                                    .map(|p| p.get())
+                                    .unwrap_or(8);
+                                cpu_count.min(crate::config::MAX_PARALLEL_SESSIONS_CPU)
+                            }),
+                            ExecutionProvider::Cpu,
+                        )
+                    }
+                    AccelerationMode::ForceGpu => {
+                        apply_acceleration_mode(AccelerationMode::ForceGpu);
+                        crate::onnx_runtime::ensure_onnx_runtime()
+                            .context("Failed to initialize ONNX Runtime")?;
 
-                if !crate::onnx_runtime::is_cudnn_available() {
-                    anyhow::bail!("CUDA build requires cuDNN, but cuDNN was not initialized");
+                        if !crate::onnx_runtime::is_cudnn_available() {
+                            anyhow::bail!("FORCE_GPU is set, but cuDNN was not initialized");
+                        }
+
+                        if !next_plaid_onnx::is_cuda_available() {
+                            anyhow::bail!(
+                                "FORCE_GPU is set, but the CUDA execution provider was not initialized"
+                            );
+                        }
+
+                        (
+                            self.parallel_sessions
+                                .unwrap_or(crate::config::DEFAULT_PARALLEL_SESSIONS_GPU),
+                            ExecutionProvider::Cuda,
+                        )
+                    }
+                    AccelerationMode::Auto => {
+                        let force_cpu = num_units < SMALL_BATCH_CPU_THRESHOLD;
+                        if force_cpu {
+                            apply_acceleration_mode(AccelerationMode::ForceCpu);
+                        } else {
+                            apply_acceleration_mode(AccelerationMode::Auto);
+                        }
+
+                        crate::onnx_runtime::ensure_onnx_runtime()
+                            .context("Failed to initialize ONNX Runtime")?;
+
+                        let use_cuda = !force_cpu && {
+                            crate::onnx_runtime::is_cudnn_available()
+                                && next_plaid_onnx::is_cuda_available()
+                        };
+
+                        if use_cuda {
+                            (
+                                self.parallel_sessions
+                                    .unwrap_or(crate::config::DEFAULT_PARALLEL_SESSIONS_GPU),
+                                ExecutionProvider::Cuda,
+                            )
+                        } else {
+                            (
+                                self.parallel_sessions.unwrap_or_else(|| {
+                                    let cpu_count = std::thread::available_parallelism()
+                                        .map(|p| p.get())
+                                        .unwrap_or(8);
+                                    cpu_count.min(crate::config::MAX_PARALLEL_SESSIONS_CPU)
+                                }),
+                                ExecutionProvider::Cpu,
+                            )
+                        }
+                    }
                 }
-
-                if !next_plaid_onnx::is_cuda_available() {
-                    anyhow::bail!("CUDA build requires CUDA execution provider, but CUDA was not initialized");
-                }
-
-                (
-                    self.parallel_sessions
-                        .unwrap_or(crate::config::DEFAULT_PARALLEL_SESSIONS_GPU),
-                    ExecutionProvider::Cuda,
-                )
             };
             #[cfg(not(feature = "cuda"))]
             let (num_sessions, execution_provider) = {
@@ -2389,21 +2442,40 @@ impl Searcher {
         let index_path = get_vector_index_path(&index_dir);
         let index_path_str = index_path.to_str().unwrap().to_string();
 
-        // Load model for search - use CPU or CoreML (not CUDA)
-        // CUDA has too much overhead for single query encoding, CPU/CoreML is faster
-        // Priority: CoreML (if enabled) > CPU
-        let execution_provider = if cfg!(feature = "coreml") {
-            ExecutionProvider::CoreML
-        } else {
-            ExecutionProvider::Cpu
+        let acceleration_mode = env_acceleration_mode_lossy();
+        let execution_provider = match acceleration_mode {
+            AccelerationMode::ForceGpu => ExecutionProvider::Cuda,
+            AccelerationMode::ForceCpu => ExecutionProvider::Cpu,
+            AccelerationMode::Auto => {
+                if cfg!(feature = "coreml") {
+                    ExecutionProvider::CoreML
+                } else {
+                    ExecutionProvider::Cpu
+                }
+            }
         };
 
-        // For search (always small batch - single query), force CPU to avoid
-        // CUDA initialization overhead. The GPU ONNX Runtime will fall back to CPU.
         #[cfg(feature = "cuda")]
-        std::env::set_var("COLGREP_FORCE_CPU", "1");
+        match acceleration_mode {
+            AccelerationMode::ForceGpu => apply_acceleration_mode(AccelerationMode::ForceGpu),
+            AccelerationMode::ForceCpu | AccelerationMode::Auto => {
+                apply_acceleration_mode(AccelerationMode::ForceCpu)
+            }
+        }
 
         crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")?;
+
+        #[cfg(feature = "cuda")]
+        if matches!(acceleration_mode, AccelerationMode::ForceGpu) {
+            if !crate::onnx_runtime::is_cudnn_available() {
+                anyhow::bail!("FORCE_GPU is set, but cuDNN was not initialized");
+            }
+            if !next_plaid_onnx::is_cuda_available() {
+                anyhow::bail!(
+                    "FORCE_GPU is set, but the CUDA execution provider was not initialized"
+                );
+            }
+        }
 
         // Cap intra-op threads to avoid overhead on high-core-count systems
         let num_threads = std::thread::available_parallelism()
@@ -2446,21 +2518,40 @@ impl Searcher {
         let index_path = get_vector_index_path(index_dir);
         let index_path_str = index_path.to_str().unwrap().to_string();
 
-        // Load model for search - use CPU or CoreML (not CUDA)
-        // CUDA has too much overhead for single query encoding, CPU/CoreML is faster
-        // Priority: CoreML (if enabled) > CPU
-        let execution_provider = if cfg!(feature = "coreml") {
-            ExecutionProvider::CoreML
-        } else {
-            ExecutionProvider::Cpu
+        let acceleration_mode = env_acceleration_mode_lossy();
+        let execution_provider = match acceleration_mode {
+            AccelerationMode::ForceGpu => ExecutionProvider::Cuda,
+            AccelerationMode::ForceCpu => ExecutionProvider::Cpu,
+            AccelerationMode::Auto => {
+                if cfg!(feature = "coreml") {
+                    ExecutionProvider::CoreML
+                } else {
+                    ExecutionProvider::Cpu
+                }
+            }
         };
 
-        // For search (always small batch - single query), force CPU to avoid
-        // CUDA initialization overhead. The GPU ONNX Runtime will fall back to CPU.
         #[cfg(feature = "cuda")]
-        std::env::set_var("COLGREP_FORCE_CPU", "1");
+        match acceleration_mode {
+            AccelerationMode::ForceGpu => apply_acceleration_mode(AccelerationMode::ForceGpu),
+            AccelerationMode::ForceCpu | AccelerationMode::Auto => {
+                apply_acceleration_mode(AccelerationMode::ForceCpu)
+            }
+        }
 
         crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")?;
+
+        #[cfg(feature = "cuda")]
+        if matches!(acceleration_mode, AccelerationMode::ForceGpu) {
+            if !crate::onnx_runtime::is_cudnn_available() {
+                anyhow::bail!("FORCE_GPU is set, but cuDNN was not initialized");
+            }
+            if !next_plaid_onnx::is_cuda_available() {
+                anyhow::bail!(
+                    "FORCE_GPU is set, but the CUDA execution provider was not initialized"
+                );
+            }
+        }
 
         // Cap intra-op threads to avoid overhead on high-core-count systems
         let num_threads = std::thread::available_parallelism()

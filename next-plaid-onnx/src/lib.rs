@@ -197,9 +197,25 @@ fn get_cuda_device_id() -> i32 {
 /// Set `NEXT_PLAID_FORCE_CPU=1` to completely disable CUDA and avoid
 /// any CUDA library loading overhead.
 pub fn is_force_cpu() -> bool {
-    std::env::var("NEXT_PLAID_FORCE_CPU")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    !is_force_gpu()
+        && ["FORCE_CPU", "COLGREP_FORCE_CPU", "NEXT_PLAID_FORCE_CPU"]
+            .iter()
+            .any(|name| {
+                std::env::var(name)
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false)
+            })
+}
+
+/// Check if GPU-only mode is forced via environment variable.
+pub fn is_force_gpu() -> bool {
+    ["FORCE_GPU", "COLGREP_FORCE_GPU", "NEXT_PLAID_FORCE_GPU"]
+        .iter()
+        .any(|name| {
+            std::env::var(name)
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+        })
 }
 
 /// Check if CUDA execution provider is available AND a GPU is visible.
@@ -249,6 +265,10 @@ pub fn is_cuda_available() -> bool {
 }
 
 fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
+    if is_force_gpu() {
+        return configure_cuda(builder);
+    }
+
     // Skip GPU providers entirely if CPU-only mode is forced
     #[cfg(any(feature = "cuda", feature = "tensorrt", feature = "coreml"))]
     let force_cpu = is_force_cpu();
@@ -707,7 +727,7 @@ impl ColbertBuilder {
                 .with_memory_pattern(false)
                 .map_err(|_| anyhow::anyhow!("Failed to configure ONNX memory pattern"))?;
 
-            let mut builder = configure_execution_provider(builder, self.execution_provider)?;
+            let builder = configure_execution_provider(builder, self.execution_provider)?;
 
             let session = builder
                 .commit_from_file(&onnx_path)

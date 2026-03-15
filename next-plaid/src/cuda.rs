@@ -16,8 +16,7 @@
 
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
 use cudarc::driver::{
-    CudaContext as CudarcContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig,
-    PushKernelArg,
+    CudaContext as CudarcContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
 };
 use ndarray::{Array1, ArrayView2};
 use std::sync::{Arc, OnceLock};
@@ -430,7 +429,7 @@ pub fn compress_into_codes_cuda_batched(
                     grid_dim: (grid_size as u32, 1, 1),
                     shared_mem_bytes: 0,
                 })
-            .map_err(|e| Error::Codec(format!("Argmax kernel failed: {:?}", e)))?;
+                .map_err(|e| Error::Codec(format!("Argmax kernel failed: {:?}", e)))?;
         }
 
         let codes_host = ctx
@@ -716,7 +715,7 @@ pub fn colbert_score_cuda(
                 grid_dim: (grid_size as u32, 1, 1),
                 shared_mem_bytes: 0,
             })
-        .map_err(|e| Error::Codec(format!("MaxSim kernel failed: {:?}", e)))?;
+            .map_err(|e| Error::Codec(format!("MaxSim kernel failed: {:?}", e)))?;
     }
 
     let max_scores_host = ctx

@@ -94,15 +94,21 @@ fn colbert_score(query: &ArrayView2<f32>, doc: &ArrayView2<f32>) -> f32 {
     // Try CUDA for large matrices
     #[cfg(feature = "cuda")]
     {
+        let force_gpu = crate::is_force_gpu();
         let matrix_size = query.nrows() * doc.nrows();
-        if matrix_size >= CUDA_COLBERT_MIN_SIZE {
+        if force_gpu || matrix_size >= CUDA_COLBERT_MIN_SIZE {
             if let Some(ctx) = crate::cuda::get_global_context() {
                 match crate::cuda::colbert_score_cuda(ctx, query, doc) {
                     Ok(score) => return score,
                     Err(_) => {
-                        // Silent fallback to CPU for scoring (happens frequently)
+                        assert!(
+                            !force_gpu,
+                            "FORCE_GPU is set but CUDA ColBERT scoring failed"
+                        );
                     }
                 }
+            } else if force_gpu {
+                panic!("FORCE_GPU is set but CUDA context is unavailable");
             }
         }
     }
