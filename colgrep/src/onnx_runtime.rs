@@ -9,18 +9,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Global flag indicating whether cuDNN is available (only relevant when cuda feature is enabled)
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", target_os = "linux"))]
 static CUDNN_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// Check if cuDNN is available at runtime.
-/// Returns true if:
-/// - CUDA feature is not enabled (not applicable), OR
-/// - CUDA feature is enabled AND cuDNN was found
-///
 /// This should be called AFTER ensure_onnx_runtime() to get accurate results.
-#[cfg(feature = "cuda")]
+#[cfg(all(feature = "cuda", target_os = "linux"))]
 pub fn is_cudnn_available() -> bool {
     *CUDNN_AVAILABLE.get().unwrap_or(&false)
+}
+
+/// On Windows, ONNX Runtime handles cuDNN loading itself.
+#[cfg(all(feature = "cuda", not(target_os = "linux")))]
+pub fn is_cudnn_available() -> bool {
+    true
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -67,9 +69,8 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
     // This is only needed on Linux because it caches LD_LIBRARY_PATH at process startup
     // Skip CUDA setup if COLGREP_FORCE_CPU is set (CPU-only mode)
     #[cfg(all(target_os = "linux", feature = "cuda"))]
-    if std::env::var("COLGREP_FORCE_CPU")
-        .map(|v| v.is_empty())
-        .unwrap_or(true)
+    if crate::acceleration::env_acceleration_mode_lossy()
+        != crate::acceleration::AccelerationMode::ForceCpu
     {
         // Check if we already have the marker indicating we've set up LD_LIBRARY_PATH
         if env::var("_COLGREP_CUDA_SETUP").is_err() {
@@ -484,12 +485,20 @@ fn download_onnx_runtime() -> Result<PathBuf> {
     let lib_path = cache_dir.join(ORT_LIB_NAME);
 
     // Already cached - check if all required files exist
-    #[cfg(feature = "cuda")]
+    #[cfg(all(feature = "cuda", target_os = "linux"))]
     let already_cached = lib_path.exists()
         && cache_dir
             .join("libonnxruntime_providers_shared.so")
             .exists()
         && cache_dir.join("libonnxruntime_providers_cuda.so").exists();
+
+    #[cfg(all(feature = "cuda", target_os = "windows"))]
+    let already_cached = lib_path.exists()
+        && cache_dir.join("onnxruntime_providers_shared.dll").exists()
+        && cache_dir.join("onnxruntime_providers_cuda.dll").exists();
+
+    #[cfg(all(feature = "cuda", target_os = "macos"))]
+    let already_cached = lib_path.exists();
 
     #[cfg(not(feature = "cuda"))]
     let already_cached = lib_path.exists();

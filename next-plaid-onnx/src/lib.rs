@@ -197,9 +197,25 @@ fn get_cuda_device_id() -> i32 {
 /// Set `NEXT_PLAID_FORCE_CPU=1` to completely disable CUDA and avoid
 /// any CUDA library loading overhead.
 pub fn is_force_cpu() -> bool {
-    std::env::var("NEXT_PLAID_FORCE_CPU")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    !is_force_gpu()
+        && ["FORCE_CPU", "COLGREP_FORCE_CPU", "NEXT_PLAID_FORCE_CPU"]
+            .iter()
+            .any(|name| {
+                std::env::var(name)
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false)
+            })
+}
+
+/// Check if GPU-only mode is forced via environment variable.
+pub fn is_force_gpu() -> bool {
+    ["FORCE_GPU", "COLGREP_FORCE_GPU", "NEXT_PLAID_FORCE_GPU"]
+        .iter()
+        .any(|name| {
+            std::env::var(name)
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+        })
 }
 
 /// Check if CUDA execution provider is available AND a GPU is visible.
@@ -249,6 +265,10 @@ pub fn is_cuda_available() -> bool {
 }
 
 fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
+    if is_force_gpu() {
+        return configure_cuda(builder);
+    }
+
     // Skip GPU providers entirely if CPU-only mode is forced
     #[cfg(any(feature = "cuda", feature = "tensorrt", feature = "coreml"))]
     let force_cpu = is_force_cpu();
@@ -313,9 +333,13 @@ fn configure_cuda(builder: SessionBuilder) -> Result<SessionBuilder> {
             CUDAExecutionProvider::default()
                 .with_device_id(device_id)
                 .with_tf32(true)
-                .build()
+                .build(),
         ])
-        .context("Failed to configure CUDA execution provider. Ensure CUDA toolkit and cuDNN are installed.")
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Failed to configure CUDA execution provider. Ensure CUDA toolkit and cuDNN are installed."
+            )
+        })
 }
 
 #[cfg(not(feature = "cuda"))]
@@ -327,7 +351,7 @@ fn configure_cuda(_builder: SessionBuilder) -> Result<SessionBuilder> {
 fn configure_tensorrt(builder: SessionBuilder) -> Result<SessionBuilder> {
     builder
         .with_execution_providers([TensorRTExecutionProvider::default().build()])
-        .context("Failed to configure TensorRT execution provider")
+        .map_err(|_| anyhow::anyhow!("Failed to configure TensorRT execution provider"))
 }
 
 #[cfg(not(feature = "tensorrt"))]
@@ -339,7 +363,7 @@ fn configure_tensorrt(_builder: SessionBuilder) -> Result<SessionBuilder> {
 fn configure_coreml(builder: SessionBuilder) -> Result<SessionBuilder> {
     builder
         .with_execution_providers([CoreMLExecutionProvider::default().build()])
-        .context("Failed to configure CoreML execution provider")
+        .map_err(|_| anyhow::anyhow!("Failed to configure CoreML execution provider"))
 }
 
 #[cfg(not(feature = "coreml"))]
@@ -351,7 +375,7 @@ fn configure_coreml(_builder: SessionBuilder) -> Result<SessionBuilder> {
 fn configure_directml(builder: SessionBuilder) -> Result<SessionBuilder> {
     builder
         .with_execution_providers([DirectMLExecutionProvider::default().build()])
-        .context("Failed to configure DirectML execution provider")
+        .map_err(|_| anyhow::anyhow!("Failed to configure DirectML execution provider"))
 }
 
 #[cfg(not(feature = "directml"))]
@@ -689,13 +713,19 @@ impl ColbertBuilder {
         // Create sessions
         let mut sessions = Vec::with_capacity(self.num_sessions);
         for _i in 0..self.num_sessions {
-            let builder = Session::builder()?
-                .with_optimization_level(GraphOptimizationLevel::Level3)?
-                .with_intra_threads(self.threads_per_session)?
-                .with_inter_threads(if self.num_sessions > 1 { 1 } else { 2 })?
-                // Disable memory pattern optimization for ~7% speedup on CPU
-                // (based on benchmarking - helps with variable-length sequences)
-                .with_memory_pattern(false)?;
+            let builder = Session::builder()
+                .map_err(|_| anyhow::anyhow!("Failed to create ONNX session builder"))?
+                .with_optimization_level(GraphOptimizationLevel::Level3)
+                .map_err(|_| anyhow::anyhow!("Failed to set ONNX optimization level"))?
+                .with_intra_threads(self.threads_per_session)
+                .map_err(|_| anyhow::anyhow!("Failed to set ONNX intra-op threads"))?
+                .with_inter_threads(if self.num_sessions > 1 { 1 } else { 2 })
+                .map_err(|_| anyhow::anyhow!("Failed to set ONNX inter-op threads"))?;
+            // Disable memory pattern optimization for ~7% speedup on CPU
+            // (based on benchmarking - helps with variable-length sequences)
+            let builder = builder
+                .with_memory_pattern(false)
+                .map_err(|_| anyhow::anyhow!("Failed to configure ONNX memory pattern"))?;
 
             let builder = configure_execution_provider(builder, self.execution_provider)?;
 

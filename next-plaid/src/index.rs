@@ -358,6 +358,7 @@ pub fn create_index_files(
         let (batch_codes, batch_residuals) = {
             #[cfg(feature = "cuda")]
             {
+                let force_gpu = crate::is_force_gpu();
                 if !config.force_cpu {
                     if let Some(ctx) = crate::cuda::get_global_context() {
                         match crate::cuda::compress_and_residuals_cuda_batched(
@@ -368,6 +369,9 @@ pub fn create_index_files(
                         ) {
                             Ok(result) => result,
                             Err(e) => {
+                                if force_gpu {
+                                    panic!("FORCE_GPU is set but CUDA compress_and_residuals failed: {}", e);
+                                }
                                 eprintln!(
                                     "[next-plaid] CUDA compress_and_residuals failed: {}, falling back to CPU",
                                     e
@@ -375,6 +379,8 @@ pub fn create_index_files(
                                 compress_and_residuals_cpu(&batch_embeddings, &codec)
                             }
                         }
+                    } else if force_gpu {
+                        panic!("FORCE_GPU is set but CUDA context is unavailable");
                     } else {
                         compress_and_residuals_cpu(&batch_embeddings, &codec)
                     }
@@ -517,7 +523,12 @@ pub fn create_index_with_kmeans_files(
     // Skip if force_cpu is set to avoid unnecessary initialization overhead
     #[cfg(feature = "cuda")]
     if !config.force_cpu {
-        let _ = crate::cuda::get_global_context();
+        if crate::is_force_gpu() {
+            crate::cuda::get_global_context()
+                .expect("FORCE_GPU is set but CUDA context failed to initialize");
+        } else {
+            let _ = crate::cuda::get_global_context();
+        }
     }
 
     // Build K-means configuration from IndexConfig

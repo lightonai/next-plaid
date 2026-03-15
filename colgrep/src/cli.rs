@@ -385,6 +385,14 @@ pub struct Cli {
     /// Automatically confirm indexing without prompting (for large codebases > 10K code units)
     #[arg(short = 'y', long = "yes")]
     pub auto_confirm: bool,
+
+    /// Force CPU execution for all runtime paths
+    #[arg(long = "force-cpu", global = true, conflicts_with = "force_gpu")]
+    pub force_cpu: bool,
+
+    /// Force GPU execution for all runtime paths and fail if unavailable
+    #[arg(long = "force-gpu", global = true, conflicts_with = "force_cpu")]
+    pub force_gpu: bool,
 }
 
 #[derive(Subcommand)]
