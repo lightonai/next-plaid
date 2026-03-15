@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::acceleration::{env_acceleration_mode_lossy, AccelerationMode};
 use crate::index::paths::get_colgrep_data_dir;
 
 const CONFIG_FILE: &str = "config.json";
@@ -36,10 +37,16 @@ pub const DEFAULT_BATCH_SIZE: usize = DEFAULT_BATCH_SIZE_CPU;
 /// When CUDA feature is enabled but cuDNN is not available, returns CPU default.
 #[cfg(feature = "cuda")]
 pub fn get_default_batch_size() -> usize {
-    if crate::onnx_runtime::is_cudnn_available() {
-        DEFAULT_BATCH_SIZE_GPU
-    } else {
-        DEFAULT_BATCH_SIZE_CPU
+    match env_acceleration_mode_lossy() {
+        AccelerationMode::ForceCpu => DEFAULT_BATCH_SIZE_CPU,
+        AccelerationMode::ForceGpu => DEFAULT_BATCH_SIZE_GPU,
+        AccelerationMode::Auto => {
+            if crate::onnx_runtime::is_cudnn_available() {
+                DEFAULT_BATCH_SIZE_GPU
+            } else {
+                DEFAULT_BATCH_SIZE_CPU
+            }
+        }
     }
 }
 
@@ -52,13 +59,24 @@ pub fn get_default_batch_size() -> usize {
 /// When CUDA feature is enabled but cuDNN is not available, returns CPU default.
 #[cfg(feature = "cuda")]
 pub fn get_default_parallel_sessions() -> usize {
-    if crate::onnx_runtime::is_cudnn_available() {
-        DEFAULT_PARALLEL_SESSIONS_GPU
-    } else {
-        let cpu_count = std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(16);
-        cpu_count.min(MAX_PARALLEL_SESSIONS_CPU)
+    match env_acceleration_mode_lossy() {
+        AccelerationMode::ForceCpu => {
+            let cpu_count = std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(16);
+            cpu_count.min(MAX_PARALLEL_SESSIONS_CPU)
+        }
+        AccelerationMode::ForceGpu => DEFAULT_PARALLEL_SESSIONS_GPU,
+        AccelerationMode::Auto => {
+            if crate::onnx_runtime::is_cudnn_available() {
+                DEFAULT_PARALLEL_SESSIONS_GPU
+            } else {
+                let cpu_count = std::thread::available_parallelism()
+                    .map(|p| p.get())
+                    .unwrap_or(16);
+                cpu_count.min(MAX_PARALLEL_SESSIONS_CPU)
+            }
+        }
     }
 }
 

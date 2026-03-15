@@ -39,3 +39,24 @@ pub use update::UpdateConfig;
 
 #[cfg(feature = "cuda")]
 pub use cuda::CudaContext;
+
+pub fn is_force_gpu() -> bool {
+    ["FORCE_GPU", "COLGREP_FORCE_GPU", "NEXT_PLAID_FORCE_GPU"]
+        .iter()
+        .any(|name| {
+            std::env::var(name)
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+        })
+}
+
+pub fn is_force_cpu() -> bool {
+    !is_force_gpu()
+        && ["FORCE_CPU", "COLGREP_FORCE_CPU", "NEXT_PLAID_FORCE_CPU"]
+            .iter()
+            .any(|name| {
+                std::env::var(name)
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false)
+            })
+}

@@ -79,13 +79,47 @@ pub struct QueryResult {
     pub scores: Vec<f32>,
 }
 
+/// Minimum matrix size (query_tokens * doc_tokens) to use CUDA.
+/// Below this threshold, CPU is faster due to GPU transfer overhead.
+/// Based on benchmarks: 128 * 1024 = 131072
+#[cfg(feature = "cuda")]
+const CUDA_COLBERT_MIN_SIZE: usize = 128 * 1024;
+
 /// ColBERT-style MaxSim scoring: for each query token, find the max similarity
 /// with any document token, then sum across query tokens.
 ///
-/// Always uses the CPU implementation (BLAS GEMM + SIMD max reduction), which
-/// benchmarks show is faster than CUDA for per-document scoring due to GPU
-/// transfer overhead dominating at typical query/document sizes.
+/// When the `cuda` feature is enabled and matrices are large enough,
+/// this function automatically uses CUDA acceleration.
 fn colbert_score(query: &ArrayView2<f32>, doc: &ArrayView2<f32>) -> f32 {
+    // Try CUDA for large matrices
+    #[cfg(feature = "cuda")]
+    {
+        let force_gpu = crate::is_force_gpu();
+        let matrix_size = query.nrows() * doc.nrows();
+        if force_gpu || matrix_size >= CUDA_COLBERT_MIN_SIZE {
+            if let Some(ctx) = crate::cuda::get_global_context() {
+                match crate::cuda::colbert_score_cuda(ctx, query, doc) {
+                    Ok(score) => return score,
+                    Err(_) => {
+                        assert!(
+                            !force_gpu,
+                            "FORCE_GPU is set but CUDA ColBERT scoring failed"
+                        );
+                    }
+                }
+            } else if force_gpu {
+                panic!("FORCE_GPU is set but CUDA context is unavailable");
+            }
+        }
+    }
+
+    // CPU implementation
+    colbert_score_cpu(query, doc)
+}
+
+/// CPU implementation of ColBERT MaxSim scoring.
+/// Uses SIMD-accelerated max reduction and BLAS for matrix multiplication.
+fn colbert_score_cpu(query: &ArrayView2<f32>, doc: &ArrayView2<f32>) -> f32 {
     maxsim::maxsim_score(query, doc)
 }
 

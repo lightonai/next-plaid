@@ -241,6 +241,7 @@ impl ResidualCodec {
         // Try CUDA acceleration if available
         #[cfg(feature = "cuda")]
         {
+            let force_gpu = crate::is_force_gpu();
             if let Some(ctx) = crate::cuda::get_global_context() {
                 let centroids = self.centroids_view();
                 match crate::cuda::compress_into_codes_cuda_batched(
@@ -251,12 +252,20 @@ impl ResidualCodec {
                 ) {
                     Ok(codes) => return codes,
                     Err(e) => {
+                        if force_gpu {
+                            panic!(
+                                "FORCE_GPU is set but CUDA compress_into_codes failed: {}",
+                                e
+                            );
+                        }
                         eprintln!(
                             "[next-plaid] CUDA compress_into_codes failed: {}, falling back to CPU",
                             e
                         );
                     }
                 }
+            } else if force_gpu {
+                panic!("FORCE_GPU is set but CUDA context is unavailable");
             }
         }
 
