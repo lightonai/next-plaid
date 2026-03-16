@@ -23,14 +23,18 @@
 
 **Install:**
 
+Homebrew (macOS / Linux)
 ```bash
-# Homebrew (macOS / Linux)
 brew install lightonai/tap/colgrep
+```
 
-# Shell installer (macOS / Linux)
+Shell installer (macOS / Linux)
+```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh
+```
 
-# Windows (PowerShell)
+Windows (PowerShell)
+```bash
 powershell -c "irm https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.ps1 | iex"
 ```
 
