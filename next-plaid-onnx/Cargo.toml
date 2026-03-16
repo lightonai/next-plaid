@@ -23,6 +23,7 @@ cuda = ["ort/cuda"]
 tensorrt = ["ort/tensorrt"]
 coreml = ["ort/coreml"]
 directml = ["ort/directml"]
+migraphx = ["ort/migraphx"]
 python = ["pyo3", "numpy"]
 
 [dependencies]
