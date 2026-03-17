@@ -1,6 +1,10 @@
 name: CLI E2E Tests
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -16,11 +20,14 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            features: ""
+            features: "--features openblas"
+            setup: "sudo apt-get update && sudo apt-get install -y libopenblas-dev"
           - os: macos-latest
-            features: ""
+            features: "--features accelerate,coreml"
+            setup: ""
           - os: windows-latest
-            features: ""
+            features: "--features directml"
+            setup: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -31,9 +38,14 @@ jobs:
         with:
           workspaces: ". -> target"
 
+      - name: Install platform dependencies
+        if: matrix.setup != ''
+        shell: bash
+        run: ${{ matrix.setup }}
+
       - name: Build CLI
         working-directory: colgrep
-        run: cargo build --release
+        run: cargo build --release ${{ matrix.features }}
 
       - name: Create test project
         shell: bash

@@ -259,6 +259,7 @@ fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
         feature = "cuda",
         feature = "tensorrt",
         feature = "coreml",
+        feature = "directml",
         feature = "migraphx"
     ))]
     let force_cpu = is_force_cpu();
