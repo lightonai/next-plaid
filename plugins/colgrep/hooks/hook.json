@@ -25,11 +25,11 @@
         ]
       },
       {
-        "matcher": "Task",
+        "matcher": "Task|Agent",
         "hooks": [
           {
             "type": "command",
-            "command": "cat <<'EOF'\n{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"IMPORTANT: Include colgrep instructions in your agent prompt. Add this to your prompt: Use colgrep (via Bash) for ALL code searches instead of Grep/Glob tools. Examples: colgrep query ./src, colgrep -e pattern, colgrep -l --include=*.rs query . Do NOT use Grep or Glob tools.\"}}\nEOF",
+            "command": "cat <<'EOF'\n{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"IMPORTANT: Include colgrep instructions in your agent prompt!\\n\\nAdd this to your agent's prompt:\\n---\\nThis project has `colgrep` installed - a semantic code search tool.\\nUse `colgrep` (via Bash) as your PRIMARY search tool instead of Grep/Glob.\\n\\nCOLGREP COMMANDS:\\n- Semantic search: `colgrep \\\"error handling\\\" -k 10`\\n- Regex + semantic: `colgrep -e \\\"fn.*test\\\" \\\"unit tests\\\"`\\n- Pattern only: `colgrep -e \\\"async fn\\\"`\\n- Search in path: `colgrep \\\"query\\\" ./src/api`\\n- Filter by type: `colgrep --include=\\\"*.rs\\\" \\\"query\\\"`\\n- Multiple types: `colgrep --include=\\\"*.{ts,tsx}\\\" \\\"query\\\"`\\n- List files only: `colgrep -l \\\"query\\\"`\\n- Exclude tests: `colgrep --exclude=\\\"*_test.go\\\" \\\"query\\\"`\\n- Whole word: `colgrep -e \\\"test\\\" -w \\\"testing\\\"`\\n\\nIMPORTANT - COLGREP BEHAVIOR:\\n- First query may take 30-90 seconds (model loading + index building)\\n- Subsequent queries are fast (<5 seconds)\\n- NEVER run colgrep in background mode - wait for the result\\n- NEVER fall back to grep/rg while colgrep is running\\n- If colgrep returns no results, try broader semantic terms or regex-only mode\\n\\nDO NOT use Grep or Glob tools - use colgrep via Bash instead.\\n---\\n\\nAgents MUST use colgrep for all code searches to get semantic results.\"}}\nEOF",
             "timeout": 5
           }
         ]

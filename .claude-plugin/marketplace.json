@@ -1,18 +1,19 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "ColGrep",
-  "description": "Local multi-vector code search tool powered by Next-Plaid, LightOn.",
+  "name": "LightOn Tools",
+  "description": "Semantic code search and multi-vector search tools by LightOn AI.",
   "owner": {
-    "name": "LightOn",
-    "email": "raphael.sourty@lighton.ai"
+    "name": "LightOn AI",
+    "email": "contact@lighton.ai"
   },
   "plugins": [
     {
       "name": "colgrep",
       "source": "./plugins/colgrep",
       "version": "1.1.1",
+      "description": "Semantic code search powered by ColBERT. Drop-in replacement for grep with natural language understanding.",
       "author": {
-        "name": "Raphael Sourty"
+        "name": "LightOn AI"
       }
     }
   ]
