@@ -1,9 +1,14 @@
 {
   "name": "colgrep",
-  "description": "Search code and text files efficiently using semantic and lexical search.",
+  "description": "Semantic code search powered by ColBERT. Replaces grep/ripgrep with natural language understanding for smarter code navigation.",
   "version": "1.1.1",
   "author": {
-    "name": "Raphael Sourty"
+    "name": "LightOn AI",
+    "email": "contact@lighton.ai"
   },
+  "repository": "https://github.com/lightonai/next-plaid",
+  "homepage": "https://github.com/lightonai/next-plaid/tree/main/colgrep",
+  "license": "MIT",
+  "keywords": ["code-search", "semantic-search", "colbert", "grep", "productivity"],
   "hooks": "./hooks/hook.json"
 }
