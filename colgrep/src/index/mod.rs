@@ -695,6 +695,7 @@ impl IndexBuilder {
         let files_to_index: Vec<PathBuf> = files_added
             .iter()
             .chain(files_changed.iter())
+            .filter(|p| !state.ignored_files.contains(*p))
             .cloned()
             .collect();
 
@@ -736,6 +737,7 @@ impl IndexBuilder {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    new_state.ignored_files.insert(path.clone());
                     pb.inc(1);
                     continue;
                 }
@@ -747,6 +749,7 @@ impl IndexBuilder {
                 Ok(h) => h,
                 Err(e) => {
                     eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    new_state.ignored_files.insert(path.clone());
                     pb.inc(1);
                     continue;
                 }
@@ -988,6 +991,7 @@ impl IndexBuilder {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    state.ignored_files.insert(path.clone());
                     pb.inc(1);
                     continue;
                 }
@@ -999,6 +1003,7 @@ impl IndexBuilder {
                 Ok(h) => h,
                 Err(e) => {
                     eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
+                    state.ignored_files.insert(path.clone());
                     pb.inc(1);
                     continue;
                 }
@@ -1143,11 +1148,12 @@ impl IndexBuilder {
             state.files.remove(&path);
         }
 
-        // 2. Index new/changed files
+        // 2. Index new/changed files (skip previously ignored files)
         let files_to_index: Vec<PathBuf> = plan
             .added
             .iter()
             .chain(plan.changed.iter())
+            .filter(|p| !state.ignored_files.contains(*p))
             .cloned()
             .collect();
 
@@ -1192,9 +1198,8 @@ impl IndexBuilder {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
-                    // Remove from state so it stays consistent with the index
-                    // (changed files will have their old entries deleted below)
                     state.files.remove(path);
+                    state.ignored_files.insert(path.clone());
                     skipped_files.push(path.clone());
                     if let Some(ref pb) = pb {
                         pb.inc(1);
@@ -1209,8 +1214,8 @@ impl IndexBuilder {
                 Ok(h) => h,
                 Err(e) => {
                     eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
-                    // Remove from state so it stays consistent with the index
                     state.files.remove(path);
+                    state.ignored_files.insert(path.clone());
                     skipped_files.push(path.clone());
                     if let Some(ref pb) = pb {
                         pb.inc(1);
@@ -1686,6 +1691,10 @@ impl IndexBuilder {
         let mut plan = UpdatePlan::default();
 
         for path in &current_files {
+            // Skip files that previously failed to parse (e.g. invalid UTF-8)
+            if state.ignored_files.contains(path) {
+                continue;
+            }
             let full_path = self.project_root.join(path);
             let hash = match hash_file(&full_path) {
                 Ok(h) => h,

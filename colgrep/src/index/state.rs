@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -14,6 +14,9 @@ pub struct IndexState {
     #[serde(default)]
     pub cli_version: String,
     pub files: HashMap<PathBuf, FileInfo>,
+    /// Files that failed to parse (e.g. invalid UTF-8) — skipped on future runs
+    #[serde(default)]
+    pub ignored_files: HashSet<PathBuf>,
     /// Number of searches performed against this index
     #[serde(default)]
     pub search_count: u64,
@@ -134,6 +137,7 @@ mod tests {
         let state = IndexState {
             cli_version: "1.0.0".to_string(),
             files,
+            ignored_files: HashSet::new(),
             search_count: 0,
         };
 
