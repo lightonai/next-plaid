@@ -30,7 +30,7 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ndarray-npy = "0.9.1"
-fastkmeans-rs = "1.0.0"
+fastkmeans-rs = "1.0.1"
 memmap2 = "0.9"
 fs2 = "0.4"
 half = "2.4"
