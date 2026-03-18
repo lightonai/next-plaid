@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "cuda")]
 use crate::acceleration::{env_acceleration_mode_lossy, AccelerationMode};
 use crate::index::paths::get_colgrep_data_dir;
 

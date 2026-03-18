@@ -670,9 +670,23 @@ impl ColbertBuilder {
     /// When enabled, uses 1 thread per session (optimal for parallel execution).
     ///
     /// Recommended: 25 for large models, 8 for small models.
+    /// This code is called with `num_sessions` set to 1 when intention
+    /// is clearly to run one session with many parallel threads.
     pub fn with_parallel(mut self, num_sessions: usize) -> Self {
-        self.num_sessions = num_sessions.max(1);
-        self.threads_per_session = 1; // Optimal for parallel sessions
+        match num_sessions {
+            1 => {
+                // Single session with auto-detected threads (default)
+                self.threads_per_session = std::thread::available_parallelism()
+                    .map(|p| p.get())
+                    .unwrap_or(4);
+                self.num_sessions = 1;
+            }
+            _ => {
+                // Parallel sessions with 1 thread each
+                self.num_sessions = num_sessions;
+                self.threads_per_session = 1; // Optimal for parallel sessions
+            }
+        };
         self
     }
 

@@ -15,7 +15,9 @@ use next_plaid::{
 use next_plaid_onnx::{Colbert, ExecutionProvider};
 use serde::{Deserialize, Serialize};
 
-use crate::acceleration::{apply_acceleration_mode, env_acceleration_mode_lossy, AccelerationMode};
+#[cfg(feature = "cuda")]
+use crate::acceleration::apply_acceleration_mode;
+use crate::acceleration::{env_acceleration_mode_lossy, AccelerationMode};
 use crate::embed::build_embedding_text;
 use crate::parser::{build_call_graph, detect_language, extract_units, CodeUnit, Language};
 use crate::signal::{is_interrupted, is_interrupted_outside_critical, CriticalSectionGuard};
@@ -35,7 +37,7 @@ const MAX_FILE_SIZE: u64 = 512 * 1024;
 
 /// Number of documents to process before writing to the index.
 /// Larger values reduce I/O overhead but use more memory.
-const INDEX_CHUNK_SIZE: usize = 1000;
+const INDEX_CHUNK_SIZE: usize = 1024;
 
 /// Threshold for switching to higher pool factor (fewer embeddings per doc).
 /// When encoding more than this many units, use LARGE_BATCH_POOL_FACTOR.
@@ -70,6 +72,15 @@ pub struct UpdatePlan {
 /// Threshold for prompting user confirmation before indexing.
 /// When encoding more than this many units, prompt the user unless auto_confirm is set.
 pub const CONFIRMATION_THRESHOLD: usize = 30_000;
+
+fn sorted_units_for_encoding(units: &[CodeUnit]) -> Vec<(&CodeUnit, String)> {
+    let mut items: Vec<(&CodeUnit, String)> = units
+        .iter()
+        .map(|unit| (unit, build_embedding_text(unit)))
+        .collect();
+    items.sort_unstable_by_key(|(_, text)| std::cmp::Reverse(text.len()));
+    items
+}
 
 pub struct IndexBuilder {
     /// The model is lazily created only when needed for encoding
@@ -142,6 +153,7 @@ impl IndexBuilder {
     ///   available, as GPU initialization overhead outweighs the benefits for small workloads.
     fn ensure_model_created(&mut self, num_units: usize) -> Result<()> {
         if self.model.is_none() {
+            #[cfg(feature = "cuda")]
             let acceleration_mode = env_acceleration_mode_lossy();
 
             #[cfg(feature = "cuda")]
@@ -282,10 +294,6 @@ impl IndexBuilder {
         self.model
             .as_ref()
             .expect("Model not created. Call ensure_model_created() first.")
-    }
-
-    fn release_model(&mut self) {
-        self.model = None;
     }
 
     /// Get the path to the index directory
@@ -813,11 +821,7 @@ impl IndexBuilder {
         // Create or update index
         std::fs::create_dir_all(&index_path)?;
 
-        // CUDA builds should use CUDA or fail immediately.
-        #[cfg(feature = "cuda")]
-        let force_cpu = false;
-        #[cfg(not(feature = "cuda"))]
-        let force_cpu = false;
+        let force_cpu = next_plaid::is_force_cpu();
 
         let config = IndexConfig {
             force_cpu,
@@ -845,10 +849,10 @@ impl IndexBuilder {
         let mut processed = 0usize;
         let mut was_interrupted = false;
 
-        for (chunk_idx, unit_chunk) in new_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
+        let sorted_units = sorted_units_for_encoding(&new_units);
+        for (chunk_idx, unit_chunk) in sorted_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
             self.ensure_model_created(new_units.len())?;
-            let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
-            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+            let text_refs: Vec<&str> = unit_chunk.iter().map(|(_, text)| text.as_str()).collect();
 
             let mut chunk_embeddings = Vec::new();
             for batch in text_refs.chunks(encode_batch_size) {
@@ -896,8 +900,6 @@ impl IndexBuilder {
             {
                 let _guard = CriticalSectionGuard::new();
 
-                self.release_model();
-
                 // STEP 1: Update vector index first
                 let (_, doc_ids) = MmapIndex::update_or_create(
                     &chunk_embeddings,
@@ -909,7 +911,7 @@ impl IndexBuilder {
                 // STEP 2: Update filtering DB with the actual doc_ids
                 let metadata: Vec<serde_json::Value> = unit_chunk
                     .iter()
-                    .map(|u| serde_json::to_value(u).unwrap())
+                    .map(|(unit, _)| serde_json::to_value(unit).unwrap())
                     .collect();
 
                 let db_result = if filtering::exists(index_path_str) {
@@ -1301,11 +1303,7 @@ impl IndexBuilder {
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb.set_message("Encoding...");
 
-            // CUDA builds should use CUDA or fail immediately.
-            #[cfg(feature = "cuda")]
-            let force_cpu = false;
-            #[cfg(not(feature = "cuda"))]
-            let force_cpu = false;
+            let force_cpu = next_plaid::is_force_cpu();
 
             let config = IndexConfig {
                 force_cpu,
@@ -1332,10 +1330,11 @@ impl IndexBuilder {
             let mut encoding_duration = std::time::Duration::ZERO;
             let mut processed = 0usize;
 
-            for (chunk_idx, unit_chunk) in new_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
+            let sorted_units = sorted_units_for_encoding(&new_units);
+            for (chunk_idx, unit_chunk) in sorted_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
                 self.ensure_model_created(new_units.len())?;
-                let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
-                let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                let text_refs: Vec<&str> =
+                    unit_chunk.iter().map(|(_, text)| text.as_str()).collect();
 
                 let mut chunk_embeddings = Vec::new();
                 for batch in text_refs.chunks(encode_batch_size) {
@@ -1386,8 +1385,6 @@ impl IndexBuilder {
                 {
                     let _guard = CriticalSectionGuard::new();
 
-                    self.release_model();
-
                     // STEP 1: Update vector index first
                     let (_, doc_ids) = MmapIndex::update_or_create(
                         &chunk_embeddings,
@@ -1399,7 +1396,7 @@ impl IndexBuilder {
                     // STEP 2: Update filtering DB with the actual doc_ids
                     let metadata: Vec<serde_json::Value> = unit_chunk
                         .iter()
-                        .map(|u| serde_json::to_value(u).unwrap())
+                        .map(|(unit, _)| serde_json::to_value(unit).unwrap())
                         .collect();
 
                     if let Err(e) = filtering::update(index_path_str, &metadata, &doc_ids) {
@@ -1828,11 +1825,7 @@ impl IndexBuilder {
             None
         };
 
-        // CUDA builds should use CUDA or fail immediately.
-        #[cfg(feature = "cuda")]
-        let force_cpu = false;
-        #[cfg(not(feature = "cuda"))]
-        let force_cpu = false;
+        let force_cpu = next_plaid::is_force_cpu();
 
         let config = IndexConfig {
             force_cpu,
@@ -1853,11 +1846,10 @@ impl IndexBuilder {
         let mut processed = 0usize;
         let mut was_interrupted = false;
 
-        for (chunk_idx, unit_chunk) in units.chunks(INDEX_CHUNK_SIZE).enumerate() {
+        let sorted_units = sorted_units_for_encoding(units);
+        for (chunk_idx, unit_chunk) in sorted_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
             self.ensure_model_created(units.len())?;
-            // Build embedding text for this chunk
-            let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
-            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+            let text_refs: Vec<&str> = unit_chunk.iter().map(|(_, text)| text.as_str()).collect();
 
             // Encode in smaller batches within the chunk
             let mut chunk_embeddings = Vec::new();
@@ -1911,8 +1903,6 @@ impl IndexBuilder {
             {
                 let _guard = CriticalSectionGuard::new();
 
-                self.release_model();
-
                 // STEP 1: Update vector index first
                 let (_, doc_ids) = MmapIndex::update_or_create(
                     &chunk_embeddings,
@@ -1924,7 +1914,7 @@ impl IndexBuilder {
                 // STEP 2: Update filtering DB with the actual doc_ids
                 let metadata: Vec<serde_json::Value> = unit_chunk
                     .iter()
-                    .map(|u| serde_json::to_value(u).unwrap())
+                    .map(|(unit, _)| serde_json::to_value(unit).unwrap())
                     .collect();
 
                 let db_result = if filtering::exists(index_path_str) {
