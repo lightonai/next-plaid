@@ -244,10 +244,17 @@ pub fn is_cuda_available() -> bool {
     }
     // If CUDA_VISIBLE_DEVICES is not set, GPUs are visible by default
 
-    // Only now check if CUDA EP is compiled in (may trigger CUDA driver init)
-    CUDAExecutionProvider::default()
-        .is_available()
-        .unwrap_or(false)
+    // Try to check if CUDA EP is available, catching any panics from CUDA driver loading
+    // This can panic if CUDA libraries are present but corrupted/incomplete (stub libraries)
+    std::panic::catch_unwind(|| {
+        CUDAExecutionProvider::default()
+            .is_available()
+            .unwrap_or(false)
+    })
+    .unwrap_or_else(|_| {
+        eprintln!("[next-plaid-onnx] CUDA driver check failed (invalid/stub library?), using CPU");
+        false
+    })
 }
 
 /// Check if CUDA execution provider is available.
@@ -270,15 +277,22 @@ fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
 
     #[cfg(feature = "cuda")]
     if !force_cpu {
-        let device_id = get_cuda_device_id();
-        if let Ok(b) = builder
-            .clone()
-            .with_execution_providers([CUDAExecutionProvider::default()
-                .with_device_id(device_id)
-                .with_tf32(true)
-                .build()])
-        {
-            return Ok(b);
+        // Wrap CUDA initialization in catch_unwind to handle panics from stub libraries
+        let cuda_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let device_id = get_cuda_device_id();
+            builder
+                .clone()
+                .with_execution_providers([CUDAExecutionProvider::default()
+                    .with_device_id(device_id)
+                    .with_tf32(true)
+                    .build()])
+        }));
+        match cuda_result {
+            Ok(Ok(b)) => return Ok(b),
+            Ok(Err(_)) => { /* CUDA failed normally, try next provider */ }
+            Err(_) => {
+                eprintln!("[next-plaid-onnx] CUDA init panicked (invalid/stub library?), falling back to CPU");
+            }
         }
     }
 
@@ -332,15 +346,26 @@ fn configure_cuda(builder: SessionBuilder) -> Result<SessionBuilder> {
         return Ok(builder);
     }
 
-    let device_id = get_cuda_device_id();
-    builder
-        .with_execution_providers([
-            CUDAExecutionProvider::default()
-                .with_device_id(device_id)
-                .with_tf32(true)
-                .build()
-        ])
-        .context("Failed to configure CUDA execution provider. Ensure CUDA toolkit and cuDNN are installed.")
+    // Wrap CUDA initialization in catch_unwind to handle panics from stub/invalid libraries
+    let cuda_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let device_id = get_cuda_device_id();
+        builder
+            .clone()
+            .with_execution_providers([
+                CUDAExecutionProvider::default()
+                    .with_device_id(device_id)
+                    .with_tf32(true)
+                    .build()
+            ])
+    }));
+
+    match cuda_result {
+        Ok(result) => result.context("Failed to configure CUDA execution provider. Ensure CUDA toolkit and cuDNN are installed."),
+        Err(_) => {
+            eprintln!("[next-plaid-onnx] CUDA init panicked (invalid/stub library?), falling back to CPU");
+            Ok(builder)
+        }
+    }
 }
 
 #[cfg(not(feature = "cuda"))]

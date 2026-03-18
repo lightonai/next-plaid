@@ -14,23 +14,37 @@
 //! sudo nvidia-smi -pm 1
 //! ```
 
+use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
-use cudarc::driver::{CudaDevice, CudaSlice, LaunchAsync, LaunchConfig};
+use cudarc::driver::{
+    CudaContext as CudarcContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
+};
+use cudarc::nvrtc::compile_ptx;
 use ndarray::{Array1, ArrayView2};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::error::{Error, Result};
 
 /// Default maximum GPU memory to use (4GB)
 const DEFAULT_MAX_GPU_MEMORY: usize = 4 * 1024 * 1024 * 1024;
 
-/// Global CUDA context, lazily initialized on first use.
-static GLOBAL_CUDA_CONTEXT: OnceLock<Option<CudaContext>> = OnceLock::new();
+/// Global flag to track if CUDA has been determined to be broken/unavailable.
+/// Can be cleared with `clear_cuda_broken()` to retry initialization after
+/// the user has repaired their CUDA environment.
+static CUDA_BROKEN: AtomicBool = AtomicBool::new(false);
 
-/// CUDA context holding device and cuBLAS handle.
+/// Global CUDA context, lazily initialized on first use.
+/// Protected by a Mutex so it can be reset when `clear_cuda_broken()` is called.
+static GLOBAL_CUDA_CONTEXT: OnceLock<Mutex<Option<Arc<CudaContext>>>> = OnceLock::new();
+
+/// CUDA context holding device, stream, cuBLAS handle, and kernel functions.
 pub struct CudaContext {
-    pub device: Arc<CudaDevice>,
+    pub device: Arc<CudarcContext>,
+    pub stream: Arc<CudaStream>,
     pub blas: CudaBlas,
+    argmax_func: CudaFunction,
+    gather_subtract_func: CudaFunction,
 }
 
 impl CudaContext {
@@ -41,204 +55,179 @@ impl CudaContext {
     /// initialization when persistence mode is disabled. Enable it with:
     /// `sudo nvidia-smi -pm 1`
     pub fn new(device_id: usize) -> Result<Self> {
-        let device = CudaDevice::new(device_id)
-            .map_err(|e| Error::Codec(format!("Failed to initialize CUDA device: {}", e)))?;
+        let device = CudarcContext::new(device_id)
+            .map_err(|e| Error::Codec(format!("Failed to initialize CUDA device: {:?}", e)))?;
 
-        let blas = CudaBlas::new(device.clone())
-            .map_err(|e| Error::Codec(format!("Failed to initialize cuBLAS: {}", e)))?;
+        let stream = device.default_stream();
+
+        let blas = CudaBlas::new(stream.clone())
+            .map_err(|e| Error::Codec(format!("Failed to initialize cuBLAS: {:?}", e)))?;
 
         // Preload PTX kernels during context creation
-        load_kernels(&device)?;
+        let (argmax_func, gather_subtract_func) = load_kernels(&device)?;
 
-        Ok(Self { device, blas })
+        Ok(Self {
+            device,
+            stream,
+            blas,
+            argmax_func,
+            gather_subtract_func,
+        })
     }
 }
 
 /// Get the global CUDA context, initializing it if necessary.
 /// Returns `None` if CUDA initialization fails (allows graceful fallback to CPU).
-pub fn get_global_context() -> Option<&'static CudaContext> {
-    GLOBAL_CUDA_CONTEXT
-        .get_or_init(|| match CudaContext::new(0) {
-            Ok(ctx) => Some(ctx),
-            Err(e) => {
-                eprintln!("[next-plaid] CUDA init failed: {}, using CPU", e);
-                None
-            }
-        })
-        .as_ref()
+///
+/// If CUDA was previously marked as broken, returns `None` immediately.
+/// Call `clear_cuda_broken()` to reset the flag and allow re-initialization
+/// (e.g., after the user has repaired their CUDA environment).
+pub fn get_global_context() -> Option<Arc<CudaContext>> {
+    // Fast path: if CUDA has been determined to be broken, skip entirely
+    if CUDA_BROKEN.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let mutex = GLOBAL_CUDA_CONTEXT.get_or_init(|| Mutex::new(None));
+    let mut guard = mutex.lock().unwrap();
+
+    // If already initialized, return a clone of the Arc
+    if let Some(ref ctx) = *guard {
+        return Some(Arc::clone(ctx));
+    }
+
+    // Try to initialize CUDA
+    // Wrap in catch_unwind to handle panics from invalid/stub CUDA libraries
+    match std::panic::catch_unwind(|| CudaContext::new(0)) {
+        Ok(Ok(ctx)) => {
+            let ctx = Arc::new(ctx);
+            *guard = Some(Arc::clone(&ctx));
+            Some(ctx)
+        }
+        Ok(Err(e)) => {
+            CUDA_BROKEN.store(true, Ordering::Relaxed);
+            eprintln!("[next-plaid] CUDA init failed: {}, using CPU", e);
+            None
+        }
+        Err(_) => {
+            CUDA_BROKEN.store(true, Ordering::Relaxed);
+            eprintln!("[next-plaid] CUDA init panicked (invalid/stub library?), using CPU");
+            None
+        }
+    }
 }
 
 /// Check if CUDA context is already initialized (non-blocking).
 pub fn is_initialized() -> bool {
-    GLOBAL_CUDA_CONTEXT.get().is_some()
+    GLOBAL_CUDA_CONTEXT
+        .get()
+        .and_then(|m| m.lock().ok())
+        .map_or(false, |guard| guard.is_some())
 }
 
-/// Argmax kernel - finds index of maximum value per row.
-const ARGMAX_KERNEL: &str = r#"
-.version 7.0
-.target sm_70
-.address_size 64
-
-.visible .entry argmax_kernel(
-    .param .u64 scores_ptr,
-    .param .u64 codes_ptr,
-    .param .u32 num_rows,
-    .param .u32 num_cols
-)
-{
-    .reg .u32 %r<20>;
-    .reg .u64 %rd<10>;
-    .reg .f32 %f<5>;
-    .reg .pred %p<3>;
-
-    mov.u32 %r0, %ctaid.x;
-    mov.u32 %r1, %ntid.x;
-    mov.u32 %r2, %tid.x;
-    mad.lo.u32 %r3, %r0, %r1, %r2;
-
-    ld.param.u64 %rd0, [scores_ptr];
-    ld.param.u64 %rd1, [codes_ptr];
-    ld.param.u32 %r4, [num_rows];
-    ld.param.u32 %r5, [num_cols];
-
-    setp.ge.u32 %p0, %r3, %r4;
-    @%p0 bra END;
-
-    mul.wide.u32 %rd2, %r3, %r5;
-    shl.b64 %rd2, %rd2, 2;
-    add.u64 %rd3, %rd0, %rd2;
-
-    ld.global.f32 %f0, [%rd3];
-    mov.u32 %r6, 0;
-    mov.u32 %r7, 1;
-
-LOOP:
-    setp.ge.u32 %p1, %r7, %r5;
-    @%p1 bra STORE;
-
-    mul.wide.u32 %rd4, %r7, 4;
-    add.u64 %rd5, %rd3, %rd4;
-    ld.global.f32 %f1, [%rd5];
-
-    setp.gt.f32 %p2, %f1, %f0;
-    @%p2 mov.f32 %f0, %f1;
-    @%p2 mov.u32 %r6, %r7;
-
-    add.u32 %r7, %r7, 1;
-    bra LOOP;
-
-STORE:
-    mul.wide.u32 %rd6, %r3, 4;
-    add.u64 %rd7, %rd1, %rd6;
-    st.global.u32 [%rd7], %r6;
-
-END:
-    ret;
+/// Check if CUDA has been determined to be broken/unavailable.
+/// Once CUDA initialization fails (panic or error), this returns true
+/// and all subsequent CUDA operations should fall back to CPU.
+/// Call `clear_cuda_broken()` to reset and allow retrying.
+pub fn is_cuda_broken() -> bool {
+    CUDA_BROKEN.load(Ordering::Relaxed)
 }
-"#;
 
-/// Gather-subtract kernel - computes residuals = embeddings - centroids[codes].
-/// 2D parallelization: blockIdx.x = row, threadIdx.x = dimension offset.
-/// Each thread handles multiple dimensions with stride.
-const GATHER_SUBTRACT_KERNEL: &str = r#"
-.version 7.0
-.target sm_70
-.address_size 64
+/// Mark CUDA as broken. This should be called when CUDA initialization
+/// panics or fails in any part of the codebase to prevent subsequent
+/// calls from retrying.
+pub fn mark_cuda_broken() {
+    CUDA_BROKEN.store(true, Ordering::Relaxed);
+}
 
-.visible .entry gather_subtract_kernel(
-    .param .u64 embeddings_ptr,
-    .param .u64 centroids_ptr,
-    .param .u64 codes_ptr,
-    .param .u64 residuals_ptr,
-    .param .u32 num_rows,
-    .param .u32 dim
-)
-{
-    .reg .u32 %r<20>;
-    .reg .u64 %rd<20>;
-    .reg .f32 %f<5>;
-    .reg .pred %p<3>;
+/// Clear the CUDA broken flag and reset the cached context, allowing
+/// re-initialization on the next call to `get_global_context()`.
+///
+/// Call this after the user has repaired their CUDA environment
+/// (e.g., installed proper drivers) to retry GPU acceleration.
+pub fn clear_cuda_broken() {
+    CUDA_BROKEN.store(false, Ordering::Relaxed);
+    // Clear the cached context so the next call re-attempts initialization
+    if let Some(mutex) = GLOBAL_CUDA_CONTEXT.get() {
+        if let Ok(mut guard) = mutex.lock() {
+            *guard = None;
+        }
+    }
+}
 
-    // row = blockIdx.x (one block per row)
-    mov.u32 %r0, %ctaid.x;
-    // d_start = threadIdx.x (starting dimension for this thread)
-    mov.u32 %r1, %tid.x;
-    // stride = blockDim.x
-    mov.u32 %r2, %ntid.x;
+/// CUDA kernels for next-plaid operations
+const CUDA_KERNELS: &str = r#"
+// Argmax kernel - finds index of maximum value per row.
+extern "C" __global__ void argmax_kernel(
+    const float* scores,
+    unsigned int* codes,
+    int num_rows,
+    int num_cols
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= num_rows) return;
 
-    // Load parameters
-    ld.param.u64 %rd0, [embeddings_ptr];
-    ld.param.u64 %rd1, [centroids_ptr];
-    ld.param.u64 %rd2, [codes_ptr];
-    ld.param.u64 %rd3, [residuals_ptr];
-    ld.param.u32 %r4, [num_rows];
-    ld.param.u32 %r5, [dim];
+    const float* row = scores + (long long)idx * num_cols;
+    float best_val = row[0];
+    unsigned int best_idx = 0;
 
-    // Bounds check on row
-    setp.ge.u32 %p0, %r0, %r4;
-    @%p0 bra END;
+    for (int j = 1; j < num_cols; j++) {
+        float val = row[j];
+        if (val > best_val) {
+            best_val = val;
+            best_idx = j;
+        }
+    }
 
-    // Load code for this row: code = codes[row]
-    mul.wide.u32 %rd4, %r0, 4;
-    add.u64 %rd5, %rd2, %rd4;
-    ld.global.u32 %r6, [%rd5];
+    codes[idx] = best_idx;
+}
 
-    // Calculate base pointers for this row
-    mul.wide.u32 %rd6, %r0, %r5;     // row * dim
-    shl.b64 %rd6, %rd6, 2;           // * 4 bytes
-    add.u64 %rd7, %rd0, %rd6;        // emb_base = embeddings + row * dim * 4
+// Gather-subtract kernel - computes residuals = embeddings - centroids[codes].
+// 2D parallelization: blockIdx.x = row, threadIdx.x = dimension offset.
+// Each thread handles multiple dimensions with stride.
+extern "C" __global__ void gather_subtract_kernel(
+    const float* embeddings,
+    const float* centroids,
+    const unsigned int* codes,
+    float* residuals,
+    int num_rows,
+    int dim
+) {
+    int row = blockIdx.x;
+    int d_start = threadIdx.x;
+    int stride = blockDim.x;
 
-    mul.wide.u32 %rd8, %r6, %r5;     // code * dim
-    shl.b64 %rd8, %rd8, 2;
-    add.u64 %rd9, %rd1, %rd8;        // cent_base = centroids + code * dim * 4
+    if (row >= num_rows) return;
 
-    add.u64 %rd10, %rd3, %rd6;       // res_base = residuals + row * dim * 4
+    unsigned int code = codes[row];
+    const float* emb_row = embeddings + (long long)row * dim;
+    const float* cent_row = centroids + (long long)code * dim;
+    float* res_row = residuals + (long long)row * dim;
 
-    // Loop: d = threadIdx.x, d += blockDim.x while d < dim
-    mov.u32 %r7, %r1;                // d = d_start
-
-DIM_LOOP:
-    setp.ge.u32 %p1, %r7, %r5;
-    @%p1 bra END;
-
-    // Compute addresses for dimension d
-    mul.wide.u32 %rd11, %r7, 4;
-    add.u64 %rd12, %rd7, %rd11;      // &emb[d]
-    add.u64 %rd13, %rd9, %rd11;      // &cent[d]
-    add.u64 %rd14, %rd10, %rd11;     // &res[d]
-
-    ld.global.f32 %f0, [%rd12];
-    ld.global.f32 %f1, [%rd13];
-    sub.f32 %f2, %f0, %f1;
-    st.global.f32 [%rd14], %f2;
-
-    add.u32 %r7, %r7, %r2;           // d += stride
-    bra DIM_LOOP;
-
-END:
-    ret;
+    for (int d = d_start; d < dim; d += stride) {
+        res_row[d] = emb_row[d] - cent_row[d];
+    }
 }
 "#;
 
-/// Load PTX kernels into the device.
-fn load_kernels(device: &Arc<CudaDevice>) -> Result<()> {
-    device
-        .load_ptx(
-            cudarc::nvrtc::Ptx::from_src(ARGMAX_KERNEL),
-            "argmax",
-            &["argmax_kernel"],
-        )
-        .map_err(|e| Error::Codec(format!("Failed to load argmax kernel: {}", e)))?;
+/// Compile and load CUDA kernels, returning the kernel functions.
+fn load_kernels(device: &Arc<CudarcContext>) -> Result<(CudaFunction, CudaFunction)> {
+    let ptx = compile_ptx(CUDA_KERNELS)
+        .map_err(|e| Error::Codec(format!("Failed to compile CUDA kernels: {:?}", e)))?;
 
-    device
-        .load_ptx(
-            cudarc::nvrtc::Ptx::from_src(GATHER_SUBTRACT_KERNEL),
-            "gather_subtract",
-            &["gather_subtract_kernel"],
-        )
-        .map_err(|e| Error::Codec(format!("Failed to load gather_subtract kernel: {}", e)))?;
+    let module = device
+        .load_module(ptx)
+        .map_err(|e| Error::Codec(format!("Failed to load CUDA module: {:?}", e)))?;
 
-    Ok(())
+    let argmax_func = module
+        .load_function("argmax_kernel")
+        .map_err(|e| Error::Codec(format!("Failed to load argmax_kernel: {:?}", e)))?;
+
+    let gather_subtract_func = module
+        .load_function("gather_subtract_kernel")
+        .map_err(|e| Error::Codec(format!("Failed to load gather_subtract_kernel: {:?}", e)))?;
+
+    Ok((argmax_func, gather_subtract_func))
 }
 
 /// Compute optimal batch size to stay within GPU memory budget.
@@ -277,10 +266,10 @@ pub fn compress_into_codes_cuda_batched(
     };
 
     // Upload centroids once (reused across batches)
-    let centroids_gpu = ctx
-        .device
-        .htod_sync_copy(centroids_cont.as_slice().unwrap())
-        .map_err(|e| Error::Codec(format!("Failed to copy centroids to GPU: {}", e)))?;
+    let centroids_gpu: CudaSlice<f32> = ctx
+        .stream
+        .clone_htod(centroids_cont.as_slice().unwrap())
+        .map_err(|e| Error::Codec(format!("Failed to copy centroids to GPU: {:?}", e)))?;
 
     // Kernels are preloaded in CudaContext::new()
 
@@ -297,20 +286,20 @@ pub fn compress_into_codes_cuda_batched(
             batch.as_standard_layout().to_owned()
         };
 
-        let batch_gpu = ctx
-            .device
-            .htod_sync_copy(batch_cont.as_slice().unwrap())
-            .map_err(|e| Error::Codec(format!("Failed to copy batch to GPU: {}", e)))?;
+        let batch_gpu: CudaSlice<f32> = ctx
+            .stream
+            .clone_htod(batch_cont.as_slice().unwrap())
+            .map_err(|e| Error::Codec(format!("Failed to copy batch to GPU: {:?}", e)))?;
 
         let mut scores_gpu: CudaSlice<f32> = ctx
-            .device
+            .stream
             .alloc_zeros(batch_n * k)
-            .map_err(|e| Error::Codec(format!("Failed to allocate scores: {}", e)))?;
+            .map_err(|e| Error::Codec(format!("Failed to allocate scores: {:?}", e)))?;
 
         // GEMM: scores = batch @ centroids.T
         let cfg = GemmConfig {
-            transa: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
-            transb: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
+            transa: cublasOperation_t::CUBLAS_OP_T,
+            transb: cublasOperation_t::CUBLAS_OP_N,
             m: k as i32,
             n: batch_n as i32,
             k: dim as i32,
@@ -324,38 +313,39 @@ pub fn compress_into_codes_cuda_batched(
         unsafe {
             ctx.blas
                 .gemm(cfg, &centroids_gpu, &batch_gpu, &mut scores_gpu)
-                .map_err(|e| Error::Codec(format!("cuBLAS GEMM failed: {}", e)))?;
+                .map_err(|e| Error::Codec(format!("cuBLAS GEMM failed: {:?}", e)))?;
         }
 
         let mut codes_gpu: CudaSlice<u32> = ctx
-            .device
+            .stream
             .alloc_zeros(batch_n)
-            .map_err(|e| Error::Codec(format!("Failed to allocate codes: {}", e)))?;
-
-        let func = ctx
-            .device
-            .get_func("argmax", "argmax_kernel")
-            .ok_or_else(|| Error::Codec("Failed to get argmax function".into()))?;
+            .map_err(|e| Error::Codec(format!("Failed to allocate codes: {:?}", e)))?;
 
         let block_size = 256;
         let grid_size = batch_n.div_ceil(block_size);
+        let launch_cfg = LaunchConfig {
+            block_dim: (block_size as u32, 1, 1),
+            grid_dim: (grid_size as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let batch_n_i32 = batch_n as i32;
+        let k_i32 = k as i32;
 
         unsafe {
-            func.launch(
-                LaunchConfig {
-                    block_dim: (block_size as u32, 1, 1),
-                    grid_dim: (grid_size as u32, 1, 1),
-                    shared_mem_bytes: 0,
-                },
-                (&scores_gpu, &mut codes_gpu, batch_n as u32, k as u32),
-            )
-            .map_err(|e| Error::Codec(format!("Argmax kernel failed: {}", e)))?;
+            ctx.stream
+                .launch_builder(&ctx.argmax_func)
+                .arg(&scores_gpu)
+                .arg(&mut codes_gpu)
+                .arg(&batch_n_i32)
+                .arg(&k_i32)
+                .launch(launch_cfg)
+                .map_err(|e| Error::Codec(format!("Argmax kernel failed: {:?}", e)))?;
         }
 
-        let codes_host = ctx
-            .device
-            .dtoh_sync_copy(&codes_gpu)
-            .map_err(|e| Error::Codec(format!("Failed to copy codes: {}", e)))?;
+        let codes_host: Vec<u32> = ctx
+            .stream
+            .clone_dtoh(&codes_gpu)
+            .map_err(|e| Error::Codec(format!("Failed to copy codes: {:?}", e)))?;
 
         all_codes.extend(codes_host.into_iter().map(|x| x as usize));
     }
@@ -419,10 +409,10 @@ pub fn compress_and_residuals_cuda_batched(
     };
 
     // Upload centroids once (reused across batches)
-    let centroids_gpu = ctx
-        .device
-        .htod_sync_copy(centroids_cont.as_slice().unwrap())
-        .map_err(|e| Error::Codec(format!("Failed to copy centroids to GPU: {}", e)))?;
+    let centroids_gpu: CudaSlice<f32> = ctx
+        .stream
+        .clone_htod(centroids_cont.as_slice().unwrap())
+        .map_err(|e| Error::Codec(format!("Failed to copy centroids to GPU: {:?}", e)))?;
 
     // Kernels are preloaded in CudaContext::new()
 
@@ -440,21 +430,21 @@ pub fn compress_and_residuals_cuda_batched(
             batch.as_standard_layout().to_owned()
         };
 
-        let batch_gpu = ctx
-            .device
-            .htod_sync_copy(batch_cont.as_slice().unwrap())
-            .map_err(|e| Error::Codec(format!("Failed to copy batch to GPU: {}", e)))?;
+        let batch_gpu: CudaSlice<f32> = ctx
+            .stream
+            .clone_htod(batch_cont.as_slice().unwrap())
+            .map_err(|e| Error::Codec(format!("Failed to copy batch to GPU: {:?}", e)))?;
 
         // Allocate GPU memory for scores and codes
         let mut scores_gpu: CudaSlice<f32> = ctx
-            .device
+            .stream
             .alloc_zeros(batch_n * k)
-            .map_err(|e| Error::Codec(format!("Failed to allocate scores: {}", e)))?;
+            .map_err(|e| Error::Codec(format!("Failed to allocate scores: {:?}", e)))?;
 
         // GEMM: scores = batch @ centroids.T
         let cfg = GemmConfig {
-            transa: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
-            transb: cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_N,
+            transa: cublasOperation_t::CUBLAS_OP_T,
+            transb: cublasOperation_t::CUBLAS_OP_N,
             m: k as i32,
             n: batch_n as i32,
             k: dim as i32,
@@ -468,34 +458,34 @@ pub fn compress_and_residuals_cuda_batched(
         unsafe {
             ctx.blas
                 .gemm(cfg, &centroids_gpu, &batch_gpu, &mut scores_gpu)
-                .map_err(|e| Error::Codec(format!("cuBLAS GEMM failed: {}", e)))?;
+                .map_err(|e| Error::Codec(format!("cuBLAS GEMM failed: {:?}", e)))?;
         }
 
         // Argmax to get codes
         let mut codes_gpu: CudaSlice<u32> = ctx
-            .device
+            .stream
             .alloc_zeros(batch_n)
-            .map_err(|e| Error::Codec(format!("Failed to allocate codes: {}", e)))?;
-
-        let argmax_func = ctx
-            .device
-            .get_func("argmax", "argmax_kernel")
-            .ok_or_else(|| Error::Codec("Failed to get argmax function".into()))?;
+            .map_err(|e| Error::Codec(format!("Failed to allocate codes: {:?}", e)))?;
 
         let block_size = 256;
         let grid_size = batch_n.div_ceil(block_size);
+        let argmax_cfg = LaunchConfig {
+            block_dim: (block_size as u32, 1, 1),
+            grid_dim: (grid_size as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let batch_n_i32 = batch_n as i32;
+        let k_i32 = k as i32;
 
         unsafe {
-            argmax_func
-                .launch(
-                    LaunchConfig {
-                        block_dim: (block_size as u32, 1, 1),
-                        grid_dim: (grid_size as u32, 1, 1),
-                        shared_mem_bytes: 0,
-                    },
-                    (&scores_gpu, &mut codes_gpu, batch_n as u32, k as u32),
-                )
-                .map_err(|e| Error::Codec(format!("Argmax kernel failed: {}", e)))?;
+            ctx.stream
+                .launch_builder(&ctx.argmax_func)
+                .arg(&scores_gpu)
+                .arg(&mut codes_gpu)
+                .arg(&batch_n_i32)
+                .arg(&k_i32)
+                .launch(argmax_cfg)
+                .map_err(|e| Error::Codec(format!("Argmax kernel failed: {:?}", e)))?;
         }
 
         // Free scores memory - no longer needed
@@ -503,47 +493,42 @@ pub fn compress_and_residuals_cuda_batched(
 
         // Compute residuals: residuals = embeddings - centroids[codes]
         let mut residuals_gpu: CudaSlice<f32> = ctx
-            .device
+            .stream
             .alloc_zeros(batch_n * dim)
-            .map_err(|e| Error::Codec(format!("Failed to allocate residuals: {}", e)))?;
-
-        let gather_func = ctx
-            .device
-            .get_func("gather_subtract", "gather_subtract_kernel")
-            .ok_or_else(|| Error::Codec("Failed to get gather_subtract function".into()))?;
+            .map_err(|e| Error::Codec(format!("Failed to allocate residuals: {:?}", e)))?;
 
         // For gather_subtract: one block per row, threads parallelize over dimensions
         let threads_per_row = dim.min(256);
+        let gather_cfg = LaunchConfig {
+            block_dim: (threads_per_row as u32, 1, 1),
+            grid_dim: (batch_n as u32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let dim_i32 = dim as i32;
+
         unsafe {
-            gather_func
-                .launch(
-                    LaunchConfig {
-                        block_dim: (threads_per_row as u32, 1, 1),
-                        grid_dim: (batch_n as u32, 1, 1),
-                        shared_mem_bytes: 0,
-                    },
-                    (
-                        &batch_gpu,
-                        &centroids_gpu,
-                        &codes_gpu,
-                        &mut residuals_gpu,
-                        batch_n as u32,
-                        dim as u32,
-                    ),
-                )
-                .map_err(|e| Error::Codec(format!("Gather-subtract kernel failed: {}", e)))?;
+            ctx.stream
+                .launch_builder(&ctx.gather_subtract_func)
+                .arg(&batch_gpu)
+                .arg(&centroids_gpu)
+                .arg(&codes_gpu)
+                .arg(&mut residuals_gpu)
+                .arg(&batch_n_i32)
+                .arg(&dim_i32)
+                .launch(gather_cfg)
+                .map_err(|e| Error::Codec(format!("Gather-subtract kernel failed: {:?}", e)))?;
         }
 
         // Copy results back to host
-        let codes_host = ctx
-            .device
-            .dtoh_sync_copy(&codes_gpu)
-            .map_err(|e| Error::Codec(format!("Failed to copy codes: {}", e)))?;
+        let codes_host: Vec<u32> = ctx
+            .stream
+            .clone_dtoh(&codes_gpu)
+            .map_err(|e| Error::Codec(format!("Failed to copy codes: {:?}", e)))?;
 
-        let residuals_host = ctx
-            .device
-            .dtoh_sync_copy(&residuals_gpu)
-            .map_err(|e| Error::Codec(format!("Failed to copy residuals: {}", e)))?;
+        let residuals_host: Vec<f32> = ctx
+            .stream
+            .clone_dtoh(&residuals_gpu)
+            .map_err(|e| Error::Codec(format!("Failed to copy residuals: {:?}", e)))?;
 
         all_codes.extend(codes_host.into_iter().map(|x| x as usize));
 

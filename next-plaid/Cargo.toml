@@ -37,10 +37,11 @@ half = "2.4"
 byteorder = "1.5"
 rusqlite = { version = "0.38", features = ["bundled", "functions"] }
 regex = "1.11"
-cudarc = { version = "0.12", features = [
+cudarc = { version = "0.19.3", default-features = false, features = [
     "cuda-version-from-build-system",
     "cublas",
-    "dynamic-linking",
+    "dynamic-loading",
+    "nvrtc",
 ], optional = true }
 
 [dev-dependencies]

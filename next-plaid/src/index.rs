@@ -361,7 +361,7 @@ pub fn create_index_files(
                 if !config.force_cpu {
                     if let Some(ctx) = crate::cuda::get_global_context() {
                         match crate::cuda::compress_and_residuals_cuda_batched(
-                            ctx,
+                            &ctx,
                             &batch_embeddings.view(),
                             &codec.centroids_view(),
                             None,

@@ -244,7 +244,7 @@ impl ResidualCodec {
             if let Some(ctx) = crate::cuda::get_global_context() {
                 let centroids = self.centroids_view();
                 match crate::cuda::compress_into_codes_cuda_batched(
-                    ctx,
+                    &ctx,
                     &embeddings.view(),
                     &centroids,
                     None,

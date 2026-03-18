@@ -38,4 +38,4 @@ pub use search::{QueryResult, SearchParameters};
 pub use update::UpdateConfig;
 
 #[cfg(feature = "cuda")]
-pub use cuda::CudaContext;
+pub use cuda::{clear_cuda_broken, is_cuda_broken, mark_cuda_broken, CudaContext};

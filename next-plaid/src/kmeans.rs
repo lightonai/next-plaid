@@ -14,7 +14,7 @@ use rand_chacha::ChaCha8Rng;
 use crate::error::{Error, Result};
 use crate::maxsim;
 
-pub use fastkmeans_rs::{FastKMeans, KMeansConfig, KMeansError};
+pub use fastkmeans_rs::{kmeans_double_chunked, FastKMeans, KMeansConfig, KMeansError};
 
 #[cfg(feature = "cuda")]
 pub use fastkmeans_rs::FastKMeansCuda;
@@ -71,20 +71,15 @@ pub fn default_config(num_centroids: usize) -> KMeansConfig {
 }
 
 /// Compute centroids from a set of embeddings (CPU implementation).
+/// Uses kmeans_double_chunked directly to avoid FastKMeans::train() which
+/// tries CUDA when the cuda feature is enabled.
 fn compute_centroids_cpu(
     embeddings: &ArrayView2<f32>,
     config: KMeansConfig,
 ) -> Result<Array2<f32>> {
-    let mut kmeans = FastKMeans::with_config(config);
-
-    kmeans
-        .train(embeddings)
+    let result = kmeans_double_chunked(embeddings, &config)
         .map_err(|e| Error::IndexCreation(format!("K-means training failed: {}", e)))?;
-
-    kmeans
-        .centroids()
-        .ok_or_else(|| Error::IndexCreation("K-means did not produce centroids".into()))
-        .map(|c| c.to_owned())
+    Ok(result.centroids)
 }
 
 /// Compute centroids from a set of embeddings.
@@ -110,7 +105,7 @@ pub fn compute_centroids(
     compute_centroids_cpu(embeddings, config)
 }
 
-/// Compute centroids from a set of embeddings using CUDA (or CPU if force_cpu is true).
+/// Compute centroids from a set of embeddings using CUDA (or CPU if force_cpu is true or CUDA fails).
 #[cfg(feature = "cuda")]
 pub fn compute_centroids(
     embeddings: &ArrayView2<f32>,
@@ -120,21 +115,42 @@ pub fn compute_centroids(
 ) -> Result<Array2<f32>> {
     let config = config.unwrap_or_else(|| default_config(num_centroids));
 
-    if force_cpu {
-        return compute_centroids_cpu(embeddings, config);
+    // Skip CUDA if force_cpu is set or CUDA has been determined to be broken
+    if force_cpu || crate::cuda::is_cuda_broken() {
+        return compute_centroids_cpu(embeddings, config.clone());
     }
 
-    let mut kmeans = FastKMeansCuda::with_config(config)
-        .map_err(|e| Error::IndexCreation(format!("CUDA K-means initialization failed: {}", e)))?;
+    // Try CUDA first, catching panics from invalid/stub CUDA libraries
+    let cuda_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        match FastKMeansCuda::with_config(config.clone()) {
+            Ok(mut kmeans) => {
+                match kmeans.train(embeddings) {
+                    Ok(()) => {
+                        kmeans
+                            .centroids()
+                            .map(|c| c.to_owned())
+                            .ok_or_else(|| "CUDA K-means did not produce centroids".to_string())
+                    }
+                    Err(e) => Err(format!("CUDA K-means training failed: {}", e)),
+                }
+            }
+            Err(e) => Err(format!("CUDA K-means init failed: {}", e)),
+        }
+    }));
 
-    kmeans
-        .train(embeddings)
-        .map_err(|e| Error::IndexCreation(format!("CUDA K-means training failed: {}", e)))?;
-
-    kmeans
-        .centroids()
-        .ok_or_else(|| Error::IndexCreation("CUDA K-means did not produce centroids".into()))
-        .map(|c| c.to_owned())
+    match cuda_result {
+        Ok(Ok(centroids)) => Ok(centroids),
+        Ok(Err(e)) => {
+            crate::cuda::mark_cuda_broken();
+            eprintln!("[next-plaid] {}, falling back to CPU", e);
+            compute_centroids_cpu(embeddings, config)
+        }
+        Err(_) => {
+            crate::cuda::mark_cuda_broken();
+            eprintln!("[next-plaid] CUDA K-means panicked (invalid/stub library?), falling back to CPU");
+            compute_centroids_cpu(embeddings, config)
+        }
+    }
 }
 
 /// Compute centroids from a set of embeddings using Metal GPU (or CPU if force_cpu is true).
@@ -323,30 +339,47 @@ pub fn compute_kmeans(
             .to_owned()
     };
 
-    // Run k-means (CUDA with CPU fallback when force_cpu is true)
+    // Run k-means (CUDA with automatic CPU fallback, catching panics)
     #[cfg(feature = "cuda")]
-    let centroids = if config.force_cpu {
-        let mut kmeans = FastKMeans::with_config(kmeans_config);
-        kmeans
-            .train(&samples_tensor.view())
+    let centroids = if config.force_cpu || crate::cuda::is_cuda_broken() {
+        // Use CPU if force_cpu is set or CUDA has been determined to be broken
+        // Use kmeans_double_chunked directly to avoid FastKMeans::train() which
+        // tries CUDA when the cuda feature is enabled
+        let result = kmeans_double_chunked(&samples_tensor.view(), &kmeans_config)
             .map_err(|e| Error::IndexCreation(format!("K-means training failed: {}", e)))?;
-
-        kmeans
-            .centroids()
-            .ok_or_else(|| Error::IndexCreation("K-means did not produce centroids".into()))?
-            .to_owned()
+        result.centroids
     } else {
-        let mut kmeans = FastKMeansCuda::with_config(kmeans_config).map_err(|e| {
-            Error::IndexCreation(format!("CUDA K-means initialization failed: {}", e))
-        })?;
-        kmeans
-            .train(&samples_tensor.view())
-            .map_err(|e| Error::IndexCreation(format!("CUDA K-means training failed: {}", e)))?;
+        // Try CUDA, catching panics from invalid/stub CUDA libraries
+        let samples_view = samples_tensor.view();
+        let cuda_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match FastKMeansCuda::with_config(kmeans_config.clone()) {
+                Ok(mut kmeans) => {
+                    match kmeans.train(&samples_view) {
+                        Ok(()) => kmeans.centroids().map(|c| c.to_owned()),
+                        Err(_) => None,
+                    }
+                }
+                Err(_) => None,
+            }
+        }));
 
-        kmeans
-            .centroids()
-            .ok_or_else(|| Error::IndexCreation("CUDA K-means did not produce centroids".into()))?
-            .to_owned()
+        match cuda_result {
+            Ok(Some(c)) => c,
+            Ok(None) | Err(_) => {
+                // Mark CUDA as broken to prevent subsequent attempts
+                crate::cuda::mark_cuda_broken();
+                if cuda_result.is_err() {
+                    eprintln!("[next-plaid] CUDA K-means panicked (invalid/stub library?), falling back to CPU");
+                } else {
+                    eprintln!("[next-plaid] CUDA K-means failed, falling back to CPU");
+                }
+                // Use kmeans_double_chunked directly to avoid FastKMeans::train() which
+                // tries CUDA when the cuda feature is enabled
+                let result = kmeans_double_chunked(&samples_tensor.view(), &kmeans_config)
+                    .map_err(|e| Error::IndexCreation(format!("K-means training failed: {}", e)))?;
+                result.centroids
+            }
+        }
     };
 
     // Run k-means (Metal GPU with CPU fallback when force_cpu is true)
