@@ -234,6 +234,67 @@ END:
 }
 "#;
 
+/// MaxSim kernel - computes max similarity per query token.
+const MAXSIM_KERNEL: &str = r#"
+.version 7.0
+.target sm_70
+.address_size 64
+
+.visible .entry maxsim_kernel(
+    .param .u64 scores_ptr,
+    .param .u64 max_scores_ptr,
+    .param .u32 num_query_tokens,
+    .param .u32 num_doc_tokens
+)
+{
+    .reg .u32 %r<20>;
+    .reg .u64 %rd<10>;
+    .reg .f32 %f<5>;
+    .reg .pred %p<3>;
+
+    mov.u32 %r0, %ctaid.x;
+    mov.u32 %r1, %ntid.x;
+    mov.u32 %r2, %tid.x;
+    mad.lo.u32 %r3, %r0, %r1, %r2;
+
+    ld.param.u64 %rd0, [scores_ptr];
+    ld.param.u64 %rd1, [max_scores_ptr];
+    ld.param.u32 %r4, [num_query_tokens];
+    ld.param.u32 %r5, [num_doc_tokens];
+
+    setp.ge.u32 %p0, %r3, %r4;
+    @%p0 bra END;
+
+    mul.wide.u32 %rd2, %r3, %r5;
+    shl.b64 %rd2, %rd2, 2;
+    add.u64 %rd3, %rd0, %rd2;
+
+    ld.global.f32 %f0, [%rd3];
+    mov.u32 %r7, 1;
+
+LOOP:
+    setp.ge.u32 %p1, %r7, %r5;
+    @%p1 bra STORE;
+
+    mul.wide.u32 %rd4, %r7, 4;
+    add.u64 %rd5, %rd3, %rd4;
+    ld.global.f32 %f1, [%rd5];
+
+    max.f32 %f0, %f0, %f1;
+
+    add.u32 %r7, %r7, 1;
+    bra LOOP;
+
+STORE:
+    mul.wide.u32 %rd6, %r3, 4;
+    add.u64 %rd7, %rd1, %rd6;
+    st.global.f32 [%rd7], %f0;
+
+END:
+    ret;
+}
+"#;
+
 /// Load PTX kernels into the device.
 fn load_kernels(device: &Arc<CudarcContext>) -> Result<(CudaFunction, CudaFunction, CudaFunction)> {
     let argmax_module = device
