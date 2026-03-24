@@ -226,11 +226,6 @@ impl IndexBuilder {
             }
             eprintln!("📂 Building index...");
 
-            #[cfg(feature = "cuda")]
-            if !crate::onnx_runtime::is_cudnn_available() {
-                eprintln!("📂 cuDNN not found, encoding will use CPU.");
-            }
-
             // Use runtime default for batch size (respects cuDNN availability)
             let batch = self
                 .batch_size
@@ -948,6 +943,11 @@ impl IndexBuilder {
 
     /// Full rebuild (used when force=true or no index exists)
     fn full_rebuild(&mut self, languages: Option<&[Language]>) -> Result<UpdateStats> {
+        #[cfg(feature = "cuda")]
+        if !crate::onnx_runtime::is_cudnn_available() {
+            eprintln!("📂 cuDNN not found, encoding will use CPU.");
+        }
+
         let index_path = get_vector_index_path(&self.index_dir);
         let temp_path = self.index_dir.join("index.tmp");
         let old_path = self.index_dir.join("index.old");
