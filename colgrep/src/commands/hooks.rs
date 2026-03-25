@@ -1,13 +1,48 @@
 use std::path::Path;
 
 use anyhow::Result;
+use ignore::WalkBuilder;
 
 use colgrep::{find_parent_index, index_exists};
 
-/// Check if colgrep context should be injected
-/// Returns false if no index exists for this project or any parent project
+/// Maximum number of files for a "small project" where we enable colgrep
+/// even without a pre-existing index, so the first search auto-creates one quickly.
+const SMALL_PROJECT_FILE_LIMIT: usize = 50;
+
+/// Check if colgrep context should be injected.
+/// Returns true if:
+/// - An index already exists for this project or a parent project, OR
+/// - The project is small enough that auto-indexing on first search is fast
 fn should_inject_colgrep_context(project_root: &Path) -> bool {
-    index_exists(project_root) || matches!(find_parent_index(project_root), Ok(Some(_)))
+    index_exists(project_root)
+        || matches!(find_parent_index(project_root), Ok(Some(_)))
+        || is_small_project(project_root)
+}
+
+/// Quick check whether the project has few enough files that colgrep can
+/// index it on-the-fly without noticeable delay. Walks respecting .gitignore
+/// and stops counting as soon as we exceed the threshold.
+fn is_small_project(root: &Path) -> bool {
+    let walker = WalkBuilder::new(root)
+        .hidden(true) // skip hidden files/dirs
+        .git_ignore(true) // respect .gitignore
+        .git_global(true)
+        .git_exclude(true)
+        .max_depth(Some(10))
+        .build();
+
+    let mut count = 0usize;
+    for entry in walker {
+        let Ok(entry) = entry else { continue };
+        // Only count files, not directories
+        if entry.file_type().is_some_and(|ft| ft.is_file()) {
+            count += 1;
+            if count > SMALL_PROJECT_FILE_LIMIT {
+                return false;
+            }
+        }
+    }
+    count > 0
 }
 
 /// Claude Code session hook - outputs JSON reminder for semantic search
