@@ -207,13 +207,15 @@ fn configure_execution_provider(
     }
 }
 
-/// Get CUDA device ID from environment or default to 0
+/// Get the CUDA logical device ID to use within this process.
+///
+/// CUDA_VISIBLE_DEVICES controls which GPUs are visible and remaps them to
+/// logical ordinals starting at 0. Since this library uses a single GPU per
+/// process, the correct default is always logical device 0 among the visible
+/// devices.
 #[cfg(feature = "cuda")]
 fn get_cuda_device_id() -> i32 {
-    std::env::var("CUDA_VISIBLE_DEVICES")
-        .ok()
-        .and_then(|s| s.split(',').next().and_then(|id| id.parse::<i32>().ok()))
-        .unwrap_or(0)
+    0
 }
 
 /// Check if CPU-only mode is forced via environment variable.
