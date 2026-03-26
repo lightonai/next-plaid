@@ -25,6 +25,79 @@ use paths::{
 };
 use state::{get_mtime, hash_file, FileInfo, IndexState};
 
+/// Estimates ETA using exponentially weighted moving average over recent batches.
+/// Gives more weight to the last ~25 iterations so the estimate adapts quickly
+/// when encoding speed changes (e.g., due to varying input lengths).
+struct EtaEstimator {
+    /// Cumulative time from all batches (for global average fallback)
+    total_duration: std::time::Duration,
+    /// Total items processed
+    total_processed: usize,
+    /// Ring buffer of (batch_size, batch_duration) for recent batches
+    recent: std::collections::VecDeque<(usize, std::time::Duration)>,
+    /// Sum of items in the recent window
+    recent_items: usize,
+    /// Sum of durations in the recent window
+    recent_duration: std::time::Duration,
+    /// Target number of recent items to keep
+    window_size: usize,
+}
+
+impl EtaEstimator {
+    fn new(window_size: usize) -> Self {
+        Self {
+            total_duration: std::time::Duration::ZERO,
+            total_processed: 0,
+            recent: std::collections::VecDeque::new(),
+            recent_items: 0,
+            recent_duration: std::time::Duration::ZERO,
+            window_size,
+        }
+    }
+
+    fn record_batch(&mut self, count: usize, duration: std::time::Duration) {
+        self.total_duration += duration;
+        self.total_processed += count;
+        self.recent.push_back((count, duration));
+        self.recent_items += count;
+        self.recent_duration += duration;
+
+        // Evict oldest entries until we're within the window
+        while self.recent_items > self.window_size && self.recent.len() > 1 {
+            if let Some((old_count, old_dur)) = self.recent.pop_front() {
+                self.recent_items -= old_count;
+                self.recent_duration -= old_dur;
+            }
+        }
+    }
+
+    /// Returns ETA string like "Encoding... (2m 15s)" for the given remaining count.
+    fn eta_message(&self, remaining: usize) -> String {
+        if self.total_processed == 0 {
+            return "Encoding...".to_string();
+        }
+
+        // Blend recent rate (weight=0.7) with global rate (weight=0.3)
+        // so the estimate is responsive but not too jumpy
+        let global_rate = self.total_duration.as_secs_f64() / self.total_processed as f64;
+        let time_per_doc = if self.recent_items > 0 {
+            let recent_rate = self.recent_duration.as_secs_f64() / self.recent_items as f64;
+            0.7 * recent_rate + 0.3 * global_rate
+        } else {
+            global_rate
+        };
+
+        let eta_secs = (time_per_doc * remaining as f64) as u64;
+        let eta_mins = eta_secs / 60;
+        let eta_secs_rem = eta_secs % 60;
+        if eta_mins > 0 {
+            format!("Encoding... ({}m {}s)", eta_mins, eta_secs_rem)
+        } else {
+            format!("Encoding... ({}s)", eta_secs)
+        }
+    }
+}
+
 /// Maximum file size to index (512 KB)
 /// Files larger than this are skipped to avoid:
 /// - Slow parsing of generated/minified code
@@ -821,10 +894,12 @@ impl IndexBuilder {
             self.delete_file_from_index(index_path_str, file_path)?;
         }
 
-        // Track encoding time separately to compute accurate ETA (excluding write time)
-        let mut encoding_duration = std::time::Duration::ZERO;
-        let mut processed = 0usize;
+        // Track encoding time with recency-weighted ETA (excluding write time)
+        let mut eta = EtaEstimator::new(25);
         let mut was_interrupted = false;
+
+        // Sort units by embedding text length (shortest first) to minimize padding waste
+        sort_units_by_length(&mut new_units);
 
         for (chunk_idx, unit_chunk) in new_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
             let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
@@ -843,27 +918,15 @@ impl IndexBuilder {
                     .model()
                     .encode_documents(batch, effective_pool_factor)
                     .context("Failed to encode documents")?;
-                encoding_duration += batch_start.elapsed();
                 let batch_len = batch_embeddings.len();
+                eta.record_batch(batch_len, batch_start.elapsed());
                 chunk_embeddings.extend(batch_embeddings);
-                processed += batch_len;
 
                 let progress = chunk_idx * INDEX_CHUNK_SIZE + chunk_embeddings.len();
                 pb.set_position(progress.min(new_units.len()) as u64);
 
-                // Compute manual ETA based on encoding time only (excludes write time)
-                if processed > 0 {
-                    let time_per_doc = encoding_duration.as_secs_f64() / processed as f64;
-                    let remaining = new_units.len().saturating_sub(processed);
-                    let eta_secs = (time_per_doc * remaining as f64) as u64;
-                    let eta_mins = eta_secs / 60;
-                    let eta_secs_rem = eta_secs % 60;
-                    if eta_mins > 0 {
-                        pb.set_message(format!("Encoding... ({}m {}s)", eta_mins, eta_secs_rem));
-                    } else {
-                        pb.set_message(format!("Encoding... ({}s)", eta_secs));
-                    }
-                }
+                let remaining = new_units.len().saturating_sub(eta.total_processed);
+                pb.set_message(eta.eta_message(remaining));
             }
 
             // If interrupted during encoding, break out of chunk loop
@@ -1327,9 +1390,11 @@ impl IndexBuilder {
                 self.delete_file_from_index(index_path_str, file_path)?;
             }
 
-            // Track encoding time separately to compute accurate ETA (excluding write time)
-            let mut encoding_duration = std::time::Duration::ZERO;
-            let mut processed = 0usize;
+            // Track encoding time with recency-weighted ETA (excluding write time)
+            let mut eta = EtaEstimator::new(25);
+
+            // Sort units by embedding text length (shortest first) to minimize padding waste
+            sort_units_by_length(&mut new_units);
 
             for (chunk_idx, unit_chunk) in new_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
                 let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
@@ -1348,30 +1413,15 @@ impl IndexBuilder {
                         .model()
                         .encode_documents(batch, effective_pool_factor)
                         .context("Failed to encode documents")?;
-                    encoding_duration += batch_start.elapsed();
                     let batch_len = batch_embeddings.len();
+                    eta.record_batch(batch_len, batch_start.elapsed());
                     chunk_embeddings.extend(batch_embeddings);
-                    processed += batch_len;
 
                     let progress = chunk_idx * INDEX_CHUNK_SIZE + chunk_embeddings.len();
                     pb.set_position(progress.min(new_units.len()) as u64);
 
-                    // Compute manual ETA based on encoding time only (excludes write time)
-                    if processed > 0 {
-                        let time_per_doc = encoding_duration.as_secs_f64() / processed as f64;
-                        let remaining = new_units.len().saturating_sub(processed);
-                        let eta_secs = (time_per_doc * remaining as f64) as u64;
-                        let eta_mins = eta_secs / 60;
-                        let eta_secs_rem = eta_secs % 60;
-                        if eta_mins > 0 {
-                            pb.set_message(format!(
-                                "Encoding... ({}m {}s)",
-                                eta_mins, eta_secs_rem
-                            ));
-                        } else {
-                            pb.set_message(format!("Encoding... ({}s)", eta_secs));
-                        }
-                    }
+                    let remaining = new_units.len().saturating_sub(eta.total_processed);
+                    pb.set_message(eta.eta_message(remaining));
                 }
 
                 // If interrupted during encoding, break out of chunk loop
@@ -1635,6 +1685,14 @@ pub fn path_contains_ignored_dir(path: &Path) -> Option<&'static str> {
     None
 }
 
+/// Sort code units by embedding text length (shortest first) to minimize padding waste
+/// within encoding batches. Units with similar lengths end up in the same batch,
+/// reducing the amount of padding needed. Shortest-first ordering lets users see
+/// progress on smaller units first, with larger units processed at the end.
+fn sort_units_by_length(units: &mut [CodeUnit]) {
+    units.sort_by_cached_key(|u| build_embedding_text(u).len());
+}
+
 /// Check if a path should be ignored, considering user-configured overrides.
 ///
 /// `extra_ignore` - additional patterns to ignore (on top of IGNORED_DIRS)
@@ -1858,12 +1916,15 @@ impl IndexBuilder {
         // Compute effective pool factor based on batch size
         let effective_pool_factor = self.effective_pool_factor(units.len());
 
-        // Track encoding time separately to compute accurate ETA (excluding write time)
-        let mut encoding_duration = std::time::Duration::ZERO;
-        let mut processed = 0usize;
+        // Track encoding time with recency-weighted ETA (excluding write time)
+        let mut eta = EtaEstimator::new(25);
         let mut was_interrupted = false;
 
-        for (chunk_idx, unit_chunk) in units.chunks(INDEX_CHUNK_SIZE).enumerate() {
+        // Sort units by embedding text length (shortest first) to minimize padding waste
+        let mut sorted_units: Vec<CodeUnit> = units.to_vec();
+        sort_units_by_length(&mut sorted_units);
+
+        for (chunk_idx, unit_chunk) in sorted_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
             // Build embedding text for this chunk
             let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
@@ -1882,31 +1943,16 @@ impl IndexBuilder {
                     .model()
                     .encode_documents(batch, effective_pool_factor)
                     .context("Failed to encode documents")?;
-                encoding_duration += batch_start.elapsed();
                 let batch_len = batch_embeddings.len();
+                eta.record_batch(batch_len, batch_start.elapsed());
                 chunk_embeddings.extend(batch_embeddings);
-                processed += batch_len;
 
                 if let Some(ref pb) = pb {
                     let progress = chunk_idx * INDEX_CHUNK_SIZE + chunk_embeddings.len();
-                    pb.set_position(progress.min(units.len()) as u64);
+                    pb.set_position(progress.min(sorted_units.len()) as u64);
 
-                    // Compute manual ETA based on encoding time only (excludes write time)
-                    if processed > 0 {
-                        let time_per_doc = encoding_duration.as_secs_f64() / processed as f64;
-                        let remaining = units.len().saturating_sub(processed);
-                        let eta_secs = (time_per_doc * remaining as f64) as u64;
-                        let eta_mins = eta_secs / 60;
-                        let eta_secs_rem = eta_secs % 60;
-                        if eta_mins > 0 {
-                            pb.set_message(format!(
-                                "Encoding... ({}m {}s)",
-                                eta_mins, eta_secs_rem
-                            ));
-                        } else {
-                            pb.set_message(format!("Encoding... ({}s)", eta_secs));
-                        }
-                    }
+                    let remaining = sorted_units.len().saturating_sub(eta.total_processed);
+                    pb.set_message(eta.eta_message(remaining));
                 }
             }
 

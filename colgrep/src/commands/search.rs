@@ -306,12 +306,12 @@ pub fn resolve_context_lines(cli_n: Option<usize>, default: usize) -> usize {
     default
 }
 
-/// Resolve relative_paths: saved config > default (false = absolute paths)
+/// Resolve relative_paths: saved config > default (true = relative paths)
 pub fn resolve_relative_paths() -> bool {
     if let Ok(config) = Config::load() {
         return config.use_relative_paths();
     }
-    false
+    true
 }
 
 /// Format a path for display, using relative or absolute based on config.
@@ -481,16 +481,12 @@ pub fn cmd_search(
         };
 
         if !verbose {
-            // Non-verbose (compact) mode: show filepath:lines (score: X.XX) ordered by score
+            // Non-verbose (compact) mode: show filepath:lines ordered by score
             for result in &results {
                 let file_path = display_path(&result.unit.file, use_relative);
                 let start_line = result.unit.line;
                 let end_line = result.unit.end_line;
-                let score = result.score;
-                println!(
-                    "{}:{}-{} (score: {:.2})",
-                    file_path, start_line, end_line, score
-                );
+                println!("{}:{}-{}", file_path, start_line, end_line);
             }
         } else {
             // Verbose mode: full content grouped by file with syntax highlighting

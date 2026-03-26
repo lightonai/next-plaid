@@ -226,11 +226,11 @@ EXAMPLES:
     # Clear all force-include patterns
     colgrep settings --clear-force-include
 
-    # Show relative paths in search output (saves tokens for LLM usage)
-    colgrep settings --relative-paths
-
-    # Show absolute paths in search output (default)
+    # Show absolute paths in search output
     colgrep settings --no-relative-paths
+
+    # Show relative paths in search output (default, saves tokens for LLM usage)
+    colgrep settings --relative-paths
 
 NOTES:
     • Values are stored in ~/.config/colgrep/config.json

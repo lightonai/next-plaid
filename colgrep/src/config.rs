@@ -155,7 +155,7 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_recursion_depth: Option<usize>,
 
-    /// Show relative paths in search output (default: false = absolute paths)
+    /// Show relative paths in search output (default: true = relative paths)
     /// When true, file paths are displayed relative to the current working directory
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relative_paths: Option<bool>,
@@ -345,9 +345,9 @@ impl Config {
     }
 
     /// Check if relative paths should be used in search output
-    /// Defaults to false (absolute paths)
+    /// Defaults to true (relative paths)
     pub fn use_relative_paths(&self) -> bool {
-        self.relative_paths.unwrap_or(false)
+        self.relative_paths.unwrap_or(true)
     }
 
     /// Set relative paths mode
@@ -767,19 +767,19 @@ mod tests {
     }
 
     #[test]
-    fn test_relative_paths_default_false() {
+    fn test_relative_paths_default_true() {
         let config = Config::default();
-        assert!(!config.use_relative_paths());
+        assert!(config.use_relative_paths());
     }
 
     #[test]
     fn test_relative_paths_set_clear() {
         let mut config = Config::default();
-        config.set_relative_paths(true);
-        assert!(config.use_relative_paths());
+        config.set_relative_paths(false);
+        assert!(!config.use_relative_paths());
 
         config.clear_relative_paths();
-        assert!(!config.use_relative_paths());
+        assert!(config.use_relative_paths());
     }
 
     #[test]
