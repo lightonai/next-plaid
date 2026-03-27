@@ -77,9 +77,10 @@ impl EtaEstimator {
 /// - Indexing non-source files (binaries, data files)
 const MAX_FILE_SIZE: u64 = 512 * 1024;
 
-/// Number of documents per pipeline chunk for pipelined encode/update.
-/// Kept small so encoding can overlap with index writes on a background thread.
-const PIPELINE_CHUNK_SIZE: usize = 100;
+/// Number of documents to process before writing to the index.
+/// After encoding a chunk, the index write is offloaded to a background thread
+/// so encoding of the next chunk can proceed in parallel.
+const PIPELINE_CHUNK_SIZE: usize = 1000;
 
 /// Threshold for switching to higher pool factor (fewer embeddings per doc).
 /// When encoding more than this many units, use LARGE_BATCH_POOL_FACTOR.
