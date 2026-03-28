@@ -27,7 +27,7 @@ use state::{get_mtime, hash_file, FileInfo, IndexState};
 
 /// Estimates ETA based on character throughput rather than item count.
 /// Since encoding time scales with text length, tracking time-per-character
-/// gives accurate estimates even when items are sorted by length.
+/// gives more accurate estimates than counting items.
 struct EtaEstimator {
     /// Total characters processed so far
     total_chars: usize,
@@ -924,10 +924,7 @@ impl IndexBuilder {
             self.delete_file_from_index(index_path_str, file_path)?;
         }
 
-        // Sort units by embedding text length (shortest first) to minimize padding waste
-        sort_units_by_length(&mut new_units);
-
-        // Track ETA based on character throughput (accurate even with length-sorted units)
+        // Track ETA based on character throughput
         let total_chars: usize = new_units
             .iter()
             .map(|u| build_embedding_text(u).len())
@@ -1414,10 +1411,7 @@ impl IndexBuilder {
                 self.delete_file_from_index(index_path_str, file_path)?;
             }
 
-            // Sort units by embedding text length (shortest first) to minimize padding waste
-            sort_units_by_length(&mut new_units);
-
-            // Track ETA based on character throughput (accurate even with length-sorted units)
+            // Track ETA based on character throughput
             let total_chars: usize = new_units
                 .iter()
                 .map(|u| build_embedding_text(u).len())
@@ -1698,14 +1692,6 @@ pub fn path_contains_ignored_dir(path: &Path) -> Option<&'static str> {
     None
 }
 
-/// Sort code units by embedding text length (shortest first) to minimize padding waste
-/// within encoding batches. Units with similar lengths end up in the same batch,
-/// reducing the amount of padding needed. Shortest-first ordering lets users see
-/// progress on smaller units first, with larger units processed at the end.
-fn sort_units_by_length(units: &mut [CodeUnit]) {
-    units.sort_by_cached_key(|u| build_embedding_text(u).len());
-}
-
 /// Check if a path should be ignored, considering user-configured overrides.
 ///
 /// `extra_ignore` - additional patterns to ignore (on top of IGNORED_DIRS)
@@ -1940,21 +1926,14 @@ impl IndexBuilder {
         // Compute effective pool factor based on batch size
         let effective_pool_factor = self.effective_pool_factor(units.len());
 
-        // Sort units by embedding text length (shortest first) to minimize padding waste
-        let mut sorted_units: Vec<CodeUnit> = units.to_vec();
-        sort_units_by_length(&mut sorted_units);
-
-        // Track ETA based on character throughput (accurate even with length-sorted units)
-        let total_chars: usize = sorted_units
-            .iter()
-            .map(|u| build_embedding_text(u).len())
-            .sum();
+        // Track ETA based on character throughput
+        let total_chars: usize = units.iter().map(|u| build_embedding_text(u).len()).sum();
         let mut eta = EtaEstimator::new(total_chars);
         let mut was_interrupted = false;
 
         let mut pending_update: Option<std::thread::JoinHandle<Result<()>>> = None;
 
-        for (chunk_idx, unit_chunk) in sorted_units.chunks(PIPELINE_CHUNK_SIZE).enumerate() {
+        for (chunk_idx, unit_chunk) in units.chunks(PIPELINE_CHUNK_SIZE).enumerate() {
             // Build embedding text for this chunk
             let texts: Vec<String> = unit_chunk.iter().map(build_embedding_text).collect();
             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
@@ -1979,7 +1958,7 @@ impl IndexBuilder {
 
                 if let Some(ref pb) = pb {
                     let progress = chunk_idx * PIPELINE_CHUNK_SIZE + chunk_embeddings.len();
-                    pb.set_position(progress.min(sorted_units.len()) as u64);
+                    pb.set_position(progress.min(units.len()) as u64);
                     pb.set_message(eta.eta_message());
                 }
             }
