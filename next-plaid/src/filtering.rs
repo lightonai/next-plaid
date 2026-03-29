@@ -661,13 +661,46 @@ fn insert_fixed_metadata_rows(
     Ok(metadata.len())
 }
 
+fn try_fixed_schema_from_first_row(
+    metadata: &[Value],
+) -> Result<Option<Vec<(&str, &'static str)>>> {
+    let Some(Value::Object(first_obj)) = metadata.first() else {
+        return Ok(None);
+    };
+
+    let mut columns = Vec::with_capacity(first_obj.len());
+    let mut seen = HashSet::with_capacity(first_obj.len());
+    for (key, value) in first_obj {
+        if !is_valid_column_name(key) {
+            return Err(Error::Filtering(format!(
+                "Invalid column name '{}'. Column names must start with a letter or \
+                 underscore, followed by letters, digits, or underscores.",
+                key
+            )));
+        }
+        seen.insert(key.as_str());
+        columns.push((key.as_str(), infer_sql_type(value)));
+    }
+
+    for item in &metadata[1..] {
+        if let Value::Object(obj) = item {
+            for key in obj.keys() {
+                if !seen.contains(key.as_str()) {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    Ok(Some(columns))
+}
+
 /// Check if a metadata database exists for the given index.
 pub fn exists(index_path: &str) -> bool {
     get_db_path(index_path).exists()
 }
 
-/// Create a metadata database using a caller-provided fixed schema.
-pub fn create_fixed(
+fn create_with_fixed_columns(
     index_path: &str,
     columns: &[(&str, &str)],
     metadata: &[Value],
@@ -702,8 +735,7 @@ pub fn create_fixed(
     insert_fixed_metadata_rows(&mut conn, columns, metadata, doc_ids)
 }
 
-/// Append rows to an existing fixed-schema metadata database.
-pub fn update_fixed(
+fn update_with_fixed_columns(
     index_path: &str,
     columns: &[(&str, &str)],
     metadata: &[Value],
@@ -792,6 +824,10 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
 
     if metadata.is_empty() {
         return Ok(0);
+    }
+
+    if let Some(columns) = try_fixed_schema_from_first_row(metadata)? {
+        return create_with_fixed_columns(index_path, &columns, metadata, doc_ids);
     }
 
     // Collect all unique column names and infer types
@@ -930,6 +966,24 @@ pub fn update(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
                 existing_columns.push(col);
             }
         }
+    }
+
+    let existing_column_set: HashSet<&str> = existing_columns
+        .iter()
+        .map(|column| column.as_str())
+        .collect();
+    let has_new_columns = metadata.iter().any(|item| {
+        item.as_object().is_some_and(|obj| {
+            obj.keys()
+                .any(|key| !existing_column_set.contains(key.as_str()))
+        })
+    });
+    if !has_new_columns {
+        let fixed_columns: Vec<(&str, &str)> = existing_columns
+            .iter()
+            .map(|column| (column.as_str(), "TEXT"))
+            .collect();
+        return update_with_fixed_columns(index_path, &fixed_columns, metadata, doc_ids);
     }
 
     // Find new columns and add them

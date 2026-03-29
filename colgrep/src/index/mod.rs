@@ -60,31 +60,6 @@ const DEFAULT_ENCODE_BATCH_SIZE: usize = 64;
 const SMALL_BATCH_CPU_THRESHOLD: usize = 300;
 const POOLED_EMBEDDING_QUEUE_CAPACITY: usize = 4;
 const METADATA_QUEUE_CAPACITY: usize = 8;
-const CODEUNIT_METADATA_COLUMNS: [(&str, &str); 22] = [
-    ("name", "TEXT"),
-    ("qualified_name", "TEXT"),
-    ("file", "TEXT"),
-    ("line", "INTEGER"),
-    ("end_line", "INTEGER"),
-    ("language", "TEXT"),
-    ("unit_type", "TEXT"),
-    ("signature", "TEXT"),
-    ("docstring", "TEXT"),
-    ("parameters", "TEXT"),
-    ("return_type", "TEXT"),
-    ("extends", "TEXT"),
-    ("parent_class", "TEXT"),
-    ("calls", "TEXT"),
-    ("called_by", "TEXT"),
-    ("complexity", "INTEGER"),
-    ("has_loops", "INTEGER"),
-    ("has_branches", "INTEGER"),
-    ("has_error_handling", "INTEGER"),
-    ("variables", "TEXT"),
-    ("imports", "TEXT"),
-    ("code", "TEXT"),
-];
-
 struct ParsedFileResult {
     path: PathBuf,
     units: Vec<CodeUnit>,
@@ -427,19 +402,9 @@ fn run_metadata_stage(
             .map(|unit| serde_json::to_value(unit.as_ref()).unwrap())
             .collect();
         let db_result = if filtering_exists {
-            filtering::update_fixed(
-                &index_path,
-                &CODEUNIT_METADATA_COLUMNS,
-                &metadata,
-                &chunk.doc_ids,
-            )
+            filtering::update(&index_path, &metadata, &chunk.doc_ids)
         } else {
-            filtering::create_fixed(
-                &index_path,
-                &CODEUNIT_METADATA_COLUMNS,
-                &metadata,
-                &chunk.doc_ids,
-            )
+            filtering::create(&index_path, &metadata, &chunk.doc_ids)
         };
 
         if let Err(e) = db_result {
