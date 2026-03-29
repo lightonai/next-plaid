@@ -74,6 +74,7 @@ impl UpdateConfig {
             seed: self.seed,
             n_samples_kmeans: self.n_samples_kmeans,
             num_partitions: None,
+            sample_prefix_docs: None,
             force_cpu: self.force_cpu,
         }
     }
@@ -359,7 +360,24 @@ pub fn update_cluster_threshold(
 ///
 /// Uses batch matrix multiplication for efficiency:
 /// ||a - b||² = ||a||² + ||b||² - 2*a·b
-fn find_outliers(
+#[allow(dead_code)]
+fn select_outlier_gemm_batch_size(max_batch_by_memory: usize, nrows: usize) -> usize {
+    // Keep GEMM shapes on a small fixed ladder of power-of-two-ish sizes.
+    // This avoids arbitrary batch sizes from the raw memory formula and makes
+    // profiling/benchmarking more stable while staying within the same memory cap.
+    const BATCH_SIZES: &[usize] = &[4096, 2048, 1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1];
+
+    let capped = max_batch_by_memory.clamp(1, 4096).min(nrows.max(1));
+    BATCH_SIZES
+        .iter()
+        .copied()
+        .find(|&size| size <= capped)
+        .unwrap_or(1)
+}
+
+#[allow(dead_code)]
+#[cfg(test)]
+fn find_outliers_gemm(
     flat_embeddings: &Array2<f32>,
     centroids: &Array2<f32>,
     threshold_sq: f32,
@@ -387,7 +405,8 @@ fn find_outliers(
     // Batch matrix multiplication: [n, d] @ [d, k] -> [n, k]
     // This computes dot products: similarities[i, j] = embeddings[i] · centroids[j]
     // Process in batches to limit memory usage
-    let batch_size = (2 * 1024 * 1024 * 1024 / (k * std::mem::size_of::<f32>())).clamp(1, 4096);
+    let max_batch_by_memory = 2 * 1024 * 1024 * 1024 / (k * std::mem::size_of::<f32>());
+    let batch_size = select_outlier_gemm_batch_size(max_batch_by_memory, n);
 
     let mut outlier_indices = Vec::new();
 
@@ -418,6 +437,200 @@ fn find_outliers(
     }
 
     outlier_indices
+}
+
+const OUTLIER_CENTROID_TILE: usize = 8;
+const OUTLIER_EMBEDDING_TILE: usize = 64;
+const OUTLIER_BLOCKS_MIN_LEN: usize = 4;
+const OUTLIER_THRESHOLD_RECHECK_REL_EPS: f32 = 1e-5;
+
+#[inline]
+fn squared_norm(row: &[f32]) -> f32 {
+    let mut sum0 = 0.0f32;
+    let mut sum1 = 0.0f32;
+    let mut sum2 = 0.0f32;
+    let mut sum3 = 0.0f32;
+
+    let mut i = 0;
+    while i + 4 <= row.len() {
+        sum0 += row[i] * row[i];
+        sum1 += row[i + 1] * row[i + 1];
+        sum2 += row[i + 2] * row[i + 2];
+        sum3 += row[i + 3] * row[i + 3];
+        i += 4;
+    }
+
+    let mut total = sum0 + sum1 + sum2 + sum3;
+    while i < row.len() {
+        total += row[i] * row[i];
+        i += 1;
+    }
+
+    total
+}
+
+#[inline]
+fn min_distance_sq_precise(row: &[f32], centroids_flat: &[f32], dim: usize) -> f32 {
+    let mut min_dist_sq = f32::INFINITY;
+
+    for centroid in centroids_flat.chunks_exact(dim) {
+        let mut dist_sq = 0.0f64;
+        let mut d = 0;
+        while d < dim {
+            let diff = row[d] as f64 - centroid[d] as f64;
+            dist_sq += diff * diff;
+            d += 1;
+        }
+
+        min_dist_sq = min_dist_sq.min(dist_sq as f32);
+    }
+
+    min_dist_sq
+}
+
+/// Find outliers with a blocked raw-slice kernel over centroid tiles.
+///
+/// This avoids materializing the intermediate [batch, num_centroids] scores matrix,
+/// removes iterator overhead from the hot loop, and parallelizes across embedding blocks.
+fn find_outliers_blocked(
+    flat_embeddings: &Array2<f32>,
+    centroids: &Array2<f32>,
+    threshold_sq: f32,
+) -> Vec<usize> {
+    let n = flat_embeddings.nrows();
+    let k = centroids.nrows();
+    let dim = flat_embeddings.ncols();
+
+    if n == 0 || k == 0 {
+        return Vec::new();
+    }
+
+    let embeddings_owned;
+    let embeddings_flat = if let Some(slice) = flat_embeddings.as_slice_memory_order() {
+        slice
+    } else {
+        embeddings_owned = flat_embeddings.as_standard_layout().to_owned();
+        embeddings_owned
+            .as_slice_memory_order()
+            .expect("standard-layout embeddings should be contiguous")
+    };
+    let centroids_owned;
+    let centroids_flat = if let Some(slice) = centroids.as_slice_memory_order() {
+        slice
+    } else {
+        centroids_owned = centroids.as_standard_layout().to_owned();
+        centroids_owned
+            .as_slice_memory_order()
+            .expect("standard-layout centroids should be contiguous")
+    };
+
+    let centroid_norms_sq: Vec<f32> = centroids_flat
+        .par_chunks_exact(dim)
+        .map(squared_norm)
+        .collect();
+
+    let row_stride = dim * OUTLIER_EMBEDDING_TILE;
+    embeddings_flat
+        .par_chunks(row_stride)
+        .with_min_len(OUTLIER_BLOCKS_MIN_LEN)
+        .enumerate()
+        .flat_map_iter(|(block_idx, rows_block)| {
+            let row_count = rows_block.len() / dim;
+            let row_offset = block_idx * OUTLIER_EMBEDDING_TILE;
+
+            let mut min_dists = vec![f32::INFINITY; row_count];
+            let emb_norms: Vec<f32> = rows_block.chunks_exact(dim).map(squared_norm).collect();
+
+            let mut centroid_idx = 0;
+            while centroid_idx + OUTLIER_CENTROID_TILE <= k {
+                let centroid_bases: [usize; OUTLIER_CENTROID_TILE] =
+                    std::array::from_fn(|j| (centroid_idx + j) * dim);
+
+                let mut dots = [[0.0f32; OUTLIER_CENTROID_TILE]; OUTLIER_EMBEDDING_TILE];
+
+                let mut d = 0;
+                while d < dim {
+                    let centroid_vals: [f32; OUTLIER_CENTROID_TILE] =
+                        std::array::from_fn(|j| centroids_flat[centroid_bases[j] + d]);
+
+                    for row_idx in 0..row_count {
+                        let x = rows_block[row_idx * dim + d];
+                        for j in 0..OUTLIER_CENTROID_TILE {
+                            dots[row_idx][j] += x * centroid_vals[j];
+                        }
+                    }
+
+                    d += 1;
+                }
+
+                for row_idx in 0..row_count {
+                    let emb_norm_sq = emb_norms[row_idx];
+                    for j in 0..OUTLIER_CENTROID_TILE {
+                        let dist_sq = emb_norm_sq + centroid_norms_sq[centroid_idx + j]
+                            - 2.0 * dots[row_idx][j];
+                        min_dists[row_idx] = min_dists[row_idx].min(dist_sq);
+                    }
+                }
+
+                centroid_idx += OUTLIER_CENTROID_TILE;
+            }
+
+            while centroid_idx < k {
+                let centroid = &centroids_flat[centroid_idx * dim..(centroid_idx + 1) * dim];
+                for row_idx in 0..row_count {
+                    let row = &rows_block[row_idx * dim..(row_idx + 1) * dim];
+                    let mut dot = 0.0f32;
+                    let mut d = 0;
+                    while d < dim {
+                        dot += row[d] * centroid[d];
+                        d += 1;
+                    }
+
+                    let dist_sq = emb_norms[row_idx] + centroid_norms_sq[centroid_idx] - 2.0 * dot;
+                    min_dists[row_idx] = min_dists[row_idx].min(dist_sq);
+                }
+
+                centroid_idx += 1;
+            }
+
+            min_dists
+                .into_iter()
+                .enumerate()
+                .filter_map(move |(row_idx, min_dist_sq)| {
+                    let final_min_dist_sq = if (min_dist_sq - threshold_sq).abs()
+                        <= threshold_sq.abs().max(1.0) * OUTLIER_THRESHOLD_RECHECK_REL_EPS
+                    {
+                        let row = &rows_block[row_idx * dim..(row_idx + 1) * dim];
+                        min_distance_sq_precise(row, centroids_flat, dim)
+                    } else {
+                        min_dist_sq
+                    };
+
+                    (final_min_dist_sq > threshold_sq).then_some(row_offset + row_idx)
+                })
+        })
+        .collect()
+}
+
+fn find_outliers(
+    flat_embeddings: &Array2<f32>,
+    centroids: &Array2<f32>,
+    threshold_sq: f32,
+) -> Vec<usize> {
+    let blocked_started = std::time::Instant::now();
+    let blocked_result = find_outliers_blocked(flat_embeddings, centroids, threshold_sq);
+    let blocked_elapsed = blocked_started.elapsed();
+
+    eprintln!(
+        "[next-plaid] find_outliers: blocked {} (n={}, k={}, dim={}, outliers={})",
+        blocked_elapsed.as_secs_f64(),
+        flat_embeddings.nrows(),
+        centroids.nrows(),
+        flat_embeddings.ncols(),
+        blocked_result.len(),
+    );
+
+    blocked_result
 }
 
 /// Expand centroids by clustering embeddings far from existing centroids.
@@ -494,6 +707,7 @@ pub fn update_centroids(
         seed: config.seed,
         n_samples_kmeans: config.n_samples_kmeans,
         num_partitions: Some(k_update),
+        sample_prefix_docs: None,
         force_cpu: config.force_cpu,
     };
 
@@ -915,6 +1129,18 @@ mod tests {
         // Only the point at (5,5) should be an outlier
         assert_eq!(outliers.len(), 1);
         assert_eq!(outliers[0], 2);
+    }
+
+    #[test]
+    fn test_select_outlier_gemm_batch_size() {
+        assert_eq!(select_outlier_gemm_batch_size(5000, 10_000), 4096);
+        assert_eq!(select_outlier_gemm_batch_size(3000, 10_000), 2048);
+        assert_eq!(select_outlier_gemm_batch_size(1024, 10_000), 1024);
+        assert_eq!(select_outlier_gemm_batch_size(777, 10_000), 512);
+        assert_eq!(select_outlier_gemm_batch_size(17, 10_000), 16);
+        assert_eq!(select_outlier_gemm_batch_size(1, 10_000), 1);
+        assert_eq!(select_outlier_gemm_batch_size(4096, 300), 256);
+        assert_eq!(select_outlier_gemm_batch_size(4096, 1), 1);
     }
 
     #[test]

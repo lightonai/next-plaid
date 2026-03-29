@@ -36,7 +36,7 @@ use std::fs;
 use std::path::Path;
 
 use regex::Regex;
-use rusqlite::{params_from_iter, Connection, Result as SqliteResult, ToSql};
+use rusqlite::{params, params_from_iter, Connection, Result as SqliteResult, ToSql};
 use serde_json::Value;
 
 use crate::error::{Error, Result};
@@ -46,6 +46,31 @@ const METADATA_DB_NAME: &str = "metadata.db";
 
 /// Primary key column name (matches fast-plaid).
 const SUBSET_COLUMN: &str = "_subset_";
+
+const CODEUNIT_METADATA_COLUMNS: [(&str, &str); 21] = [
+    ("name", "TEXT"),
+    ("qualified_name", "TEXT"),
+    ("file", "TEXT"),
+    ("line", "INTEGER"),
+    ("end_line", "INTEGER"),
+    ("language", "TEXT"),
+    ("unit_type", "TEXT"),
+    ("signature", "TEXT"),
+    ("docstring", "TEXT"),
+    ("parameters", "TEXT"),
+    ("return_type", "TEXT"),
+    ("extends", "TEXT"),
+    ("parent_class", "TEXT"),
+    ("calls", "TEXT"),
+    ("called_by", "TEXT"),
+    ("complexity", "INTEGER"),
+    ("has_loops", "INTEGER"),
+    ("has_branches", "INTEGER"),
+    ("has_error_handling", "INTEGER"),
+    ("variables", "TEXT"),
+    ("imports", "TEXT"),
+    // code appended manually below to keep large TEXT last in the schema
+];
 
 /// Validate that a column name is a safe SQL identifier.
 ///
@@ -595,9 +620,177 @@ fn get_db_path(index_path: &str) -> std::path::PathBuf {
     Path::new(index_path).join(METADATA_DB_NAME)
 }
 
+fn configure_connection(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
+         PRAGMA temp_store=MEMORY;",
+    )?;
+    Ok(())
+}
+
+fn create_codeunit_metadata_table(conn: &Connection) -> Result<()> {
+    let mut col_defs = vec![format!("\"{}\" INTEGER PRIMARY KEY", SUBSET_COLUMN)];
+    for (name, sql_type) in CODEUNIT_METADATA_COLUMNS {
+        col_defs.push(format!("\"{}\" {}", name, sql_type));
+    }
+    col_defs.push("\"code\" TEXT".to_string());
+    let create_sql = format!("CREATE TABLE METADATA ({})", col_defs.join(", "));
+    conn.execute(&create_sql, [])?;
+    Ok(())
+}
+
+fn json_string_field(obj: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    obj.get(key).and_then(|value| match value {
+        Value::Null => None,
+        Value::String(s) => Some(s.clone()),
+        other => Some(other.to_string()),
+    })
+}
+
+fn json_i64_field(obj: &serde_json::Map<String, Value>, key: &str) -> Option<i64> {
+    obj.get(key).and_then(|value| match value {
+        Value::Null => None,
+        Value::Number(n) => n.as_i64().or_else(|| n.as_u64().map(|u| u as i64)),
+        Value::Bool(b) => Some(if *b { 1 } else { 0 }),
+        _ => None,
+    })
+}
+
+fn json_bool_as_i64_field(obj: &serde_json::Map<String, Value>, key: &str) -> Option<i64> {
+    obj.get(key).and_then(|value| match value {
+        Value::Null => None,
+        Value::Bool(b) => Some(if *b { 1 } else { 0 }),
+        Value::Number(n) => n.as_i64(),
+        _ => None,
+    })
+}
+
+fn json_array_text_field(obj: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    obj.get(key).and_then(|value| match value {
+        Value::Null => None,
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).ok(),
+        Value::String(s) => Some(s.clone()),
+        other => Some(other.to_string()),
+    })
+}
+
+fn insert_codeunit_metadata_rows(
+    conn: &mut Connection,
+    metadata: &[Value],
+    doc_ids: &[i64],
+) -> Result<usize> {
+    let tx = conn.transaction()?;
+    let insert_sql = concat!(
+        "INSERT INTO METADATA (",
+        "\"_subset_\", \"name\", \"qualified_name\", \"file\", \"line\", \"end_line\", ",
+        "\"language\", \"unit_type\", \"signature\", \"docstring\", \"parameters\", ",
+        "\"return_type\", \"extends\", \"parent_class\", \"calls\", \"called_by\", ",
+        "\"complexity\", \"has_loops\", \"has_branches\", \"has_error_handling\", ",
+        "\"variables\", \"imports\", \"code\"",
+        ") VALUES (",
+        "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?",
+        ")"
+    );
+    {
+        let mut stmt = tx.prepare_cached(insert_sql)?;
+        for (i, item) in metadata.iter().enumerate() {
+            let obj = item.as_object().ok_or_else(|| {
+                Error::Filtering("Expected metadata rows to be JSON objects".into())
+            })?;
+
+            stmt.execute(params![
+                doc_ids[i],
+                json_string_field(obj, "name"),
+                json_string_field(obj, "qualified_name"),
+                json_string_field(obj, "file"),
+                json_i64_field(obj, "line"),
+                json_i64_field(obj, "end_line"),
+                json_string_field(obj, "language"),
+                json_string_field(obj, "unit_type"),
+                json_string_field(obj, "signature"),
+                json_string_field(obj, "docstring"),
+                json_array_text_field(obj, "parameters"),
+                json_string_field(obj, "return_type"),
+                json_string_field(obj, "extends"),
+                json_string_field(obj, "parent_class"),
+                json_array_text_field(obj, "calls"),
+                json_array_text_field(obj, "called_by"),
+                json_i64_field(obj, "complexity"),
+                json_bool_as_i64_field(obj, "has_loops"),
+                json_bool_as_i64_field(obj, "has_branches"),
+                json_bool_as_i64_field(obj, "has_error_handling"),
+                json_array_text_field(obj, "variables"),
+                json_array_text_field(obj, "imports"),
+                json_string_field(obj, "code"),
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(metadata.len())
+}
+
 /// Check if a metadata database exists for the given index.
 pub fn exists(index_path: &str) -> bool {
     get_db_path(index_path).exists()
+}
+
+/// Create a fixed-schema metadata database for code-unit metadata.
+///
+/// This avoids per-batch schema inference and ALTER TABLE churn for the common
+/// `colgrep` path where the metadata shape is known upfront.
+pub fn create_codeunit(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<usize> {
+    if metadata.len() != doc_ids.len() {
+        return Err(Error::Filtering(format!(
+            "Metadata length ({}) must match doc_ids length ({})",
+            metadata.len(),
+            doc_ids.len()
+        )));
+    }
+
+    let index_dir = Path::new(index_path);
+    if !index_dir.exists() {
+        fs::create_dir_all(index_dir)?;
+    }
+
+    let db_path = get_db_path(index_path);
+    if db_path.exists() {
+        fs::remove_file(&db_path)?;
+    }
+
+    if metadata.is_empty() {
+        return Ok(0);
+    }
+
+    let mut conn = Connection::open(&db_path)?;
+    configure_connection(&conn)?;
+    create_codeunit_metadata_table(&conn)?;
+    insert_codeunit_metadata_rows(&mut conn, metadata, doc_ids)
+}
+
+/// Append rows to an existing fixed-schema code-unit metadata database.
+pub fn update_codeunit(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<usize> {
+    if metadata.is_empty() {
+        return Ok(0);
+    }
+    if metadata.len() != doc_ids.len() {
+        return Err(Error::Filtering(format!(
+            "Metadata length ({}) must match doc_ids length ({})",
+            metadata.len(),
+            doc_ids.len()
+        )));
+    }
+
+    let db_path = get_db_path(index_path);
+    if !db_path.exists() {
+        return Err(Error::Filtering(
+            "Metadata database does not exist. Use create_codeunit() first.".into(),
+        ));
+    }
+
+    let mut conn = Connection::open(&db_path)?;
+    configure_connection(&conn)?;
+    insert_codeunit_metadata_rows(&mut conn, metadata, doc_ids)
 }
 
 /// Create a new SQLite metadata database, replacing any existing one.
@@ -688,7 +881,8 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
     }
 
     // Create connection
-    let conn = Connection::open(&db_path)?;
+    let mut conn = Connection::open(&db_path)?;
+    configure_connection(&conn)?;
 
     // Build CREATE TABLE statement
     let mut col_defs = vec![format!("\"{}\" INTEGER PRIMARY KEY", SUBSET_COLUMN)];
@@ -697,8 +891,9 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         col_defs.push(format!("\"{}\" {}", col, sql_type));
     }
 
+    let tx = conn.transaction()?;
     let create_sql = format!("CREATE TABLE METADATA ({})", col_defs.join(", "));
-    conn.execute(&create_sql, [])?;
+    tx.execute(&create_sql, [])?;
 
     // Prepare INSERT statement
     let placeholders: Vec<&str> = std::iter::repeat_n("?", columns.len() + 1).collect();
@@ -714,24 +909,26 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         )
     };
 
-    // Insert rows
-    let mut stmt = conn.prepare(&insert_sql)?;
-    for (i, item) in metadata.iter().enumerate() {
-        let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
-        if let Value::Object(obj) = item {
-            for col in &columns {
-                let value = obj.get(col).unwrap_or(&Value::Null);
-                values.push(json_to_sql(value));
+    {
+        let mut stmt = tx.prepare(&insert_sql)?;
+        for (i, item) in metadata.iter().enumerate() {
+            let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
+            if let Value::Object(obj) = item {
+                for col in &columns {
+                    let value = obj.get(col).unwrap_or(&Value::Null);
+                    values.push(json_to_sql(value));
+                }
+            } else {
+                // If not an object, insert nulls
+                for _ in &columns {
+                    values.push(Box::new(None::<String>));
+                }
             }
-        } else {
-            // If not an object, insert nulls
-            for _ in &columns {
-                values.push(Box::new(None::<String>));
-            }
+            let params: Vec<&dyn ToSql> = values.iter().map(|v| v.as_ref()).collect();
+            stmt.execute(params_from_iter(params))?;
         }
-        let params: Vec<&dyn ToSql> = values.iter().map(|v| v.as_ref()).collect();
-        stmt.execute(params_from_iter(params))?;
     }
+    tx.commit()?;
 
     Ok(metadata.len())
 }
@@ -779,7 +976,8 @@ pub fn update(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         ));
     }
 
-    let conn = Connection::open(&db_path)?;
+    let mut conn = Connection::open(&db_path)?;
+    configure_connection(&conn)?;
 
     // Get existing columns
     let mut existing_columns: Vec<String> = Vec::new();
@@ -818,11 +1016,12 @@ pub fn update(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         }
     }
 
+    let tx = conn.transaction()?;
     // Add new columns to table
     for col in &new_columns {
         let sql_type = column_types.get(col).copied().unwrap_or("TEXT");
         let alter_sql = format!("ALTER TABLE METADATA ADD COLUMN \"{}\" {}", col, sql_type);
-        conn.execute(&alter_sql, [])?;
+        tx.execute(&alter_sql, [])?;
     }
 
     // Get all columns (existing + new)
@@ -842,23 +1041,25 @@ pub fn update(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         )
     };
 
-    // Insert rows
-    let mut stmt = conn.prepare(&insert_sql)?;
-    for (i, item) in metadata.iter().enumerate() {
-        let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
-        if let Value::Object(obj) = item {
-            for col in &all_columns {
-                let value = obj.get(col).unwrap_or(&Value::Null);
-                values.push(json_to_sql(value));
+    {
+        let mut stmt = tx.prepare(&insert_sql)?;
+        for (i, item) in metadata.iter().enumerate() {
+            let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
+            if let Value::Object(obj) = item {
+                for col in &all_columns {
+                    let value = obj.get(col).unwrap_or(&Value::Null);
+                    values.push(json_to_sql(value));
+                }
+            } else {
+                for _ in &all_columns {
+                    values.push(Box::new(None::<String>));
+                }
             }
-        } else {
-            for _ in &all_columns {
-                values.push(Box::new(None::<String>));
-            }
+            let params: Vec<&dyn ToSql> = values.iter().map(|v| v.as_ref()).collect();
+            stmt.execute(params_from_iter(params))?;
         }
-        let params: Vec<&dyn ToSql> = values.iter().map(|v| v.as_ref()).collect();
-        stmt.execute(params_from_iter(params))?;
     }
+    tx.commit()?;
 
     Ok(metadata.len())
 }
