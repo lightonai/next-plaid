@@ -59,7 +59,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::Once;
@@ -67,14 +66,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use tokenizers::Encoding;
 use tokenizers::Tokenizer;
-use tracing::debug;
-#[cfg(windows)]
-use windows::core::Interface;
-#[cfg(windows)]
-use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
-    DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter1, IDXGIAdapter3, IDXGIFactory1,
-};
 
 // Conditional imports for execution providers
 use ort::ep::ExecutionProvider as ExecutionProviderTrait;
@@ -656,60 +647,8 @@ pub struct Colbert {
     skiplist_ids: Arc<HashSet<u32>>,
     next_session_idx: Arc<AtomicUsize>,
     requested_execution_provider: ExecutionProvider,
-    quantized: bool,
     batch_size: usize,
-    dynamic_batch: bool,
     fix_dynamic_batch: bool,
-    gpu_memory_snapshot: Option<GpuMemoryInfo>,
-    model_estimate: Option<StaticOnnxModelEstimate>,
-}
-
-#[derive(Debug, Clone)]
-pub struct GpuMemoryInfo {
-    pub free_mib: usize,
-    pub total_mib: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct EncodeBatchPlannerContext {
-    pub requested_execution_provider: ExecutionProvider,
-    pub quantized: bool,
-    pub num_sessions: usize,
-    pub batch_size: usize,
-    pub document_length: usize,
-    pub query_length: usize,
-    pub embedding_dim: usize,
-    pub gpu_memory: Option<GpuMemoryInfo>,
-    pub model_estimate: Option<StaticOnnxModelEstimate>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct BatchPlannerDecision {
-    target_padded_tokens: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct StaticOnnxModelEstimate {
-    pub weights_bytes: usize,
-    pub hidden_size: Option<usize>,
-    pub intermediate_size: Option<usize>,
-    pub num_layers: Option<usize>,
-    pub estimated_model_baseline_bytes: usize,
-    pub estimated_activation_bytes_per_token: usize,
-    pub estimated_planner_activation_bytes_per_token: usize,
-    pub estimated_reference_batch_incremental_bytes: usize,
-    pub estimated_reference_batch_peak_bytes: usize,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct StaticModelConfig {
-    hidden_size: Option<usize>,
-    intermediate_size: Option<usize>,
-    num_hidden_layers: Option<usize>,
-    num_attention_heads: Option<usize>,
-    local_attention: Option<usize>,
-    global_attn_every_n_layers: Option<usize>,
 }
 
 pub struct PreparedDocumentBatch {
@@ -846,7 +785,6 @@ pub struct ColbertBuilder {
     batch_size: Option<usize>,
     execution_provider: ExecutionProvider,
     quantized: bool,
-    dynamic_batch: bool,
     fix_dynamic_batch: bool,
     query_length: Option<usize>,
     document_length: Option<usize>,
@@ -870,7 +808,6 @@ impl ColbertBuilder {
             batch_size: None,
             execution_provider: ExecutionProvider::Auto,
             quantized: false,
-            dynamic_batch: false,
             fix_dynamic_batch: false,
             query_length: None,
             document_length: None,
@@ -930,11 +867,6 @@ impl ColbertBuilder {
     /// Quantization provides ~2x speedup with minimal quality loss (>99% cosine similarity).
     pub fn with_quantized(mut self, quantized: bool) -> Self {
         self.quantized = quantized;
-        self
-    }
-
-    pub fn with_dynamic_batch(mut self, dynamic_batch: bool) -> Self {
-        self.dynamic_batch = dynamic_batch;
         self
     }
 
@@ -1026,14 +958,6 @@ impl ColbertBuilder {
                 _ => DEFAULT_GPU_BATCH_SIZE,
             }
         });
-        let gpu_memory_snapshot = probe_gpu_memory();
-        let model_estimate = estimate_static_onnx_model(
-            &onnx_path,
-            config.document_length,
-            batch_size,
-            config.embedding_dim,
-        )
-        .ok();
 
         Ok(Colbert {
             sessions,
@@ -1042,14 +966,10 @@ impl ColbertBuilder {
             skiplist_ids: Arc::new(skiplist_ids),
             next_session_idx: Arc::new(AtomicUsize::new(0)),
             requested_execution_provider: self.execution_provider,
-            quantized: self.quantized,
             batch_size,
-            dynamic_batch: self.dynamic_batch,
             fix_dynamic_batch: self.fix_dynamic_batch,
-            gpu_memory_snapshot,
-            model_estimate,
         }
-        .with_logged_batch_planner_context())
+        )
     }
 }
 
@@ -1172,26 +1092,12 @@ impl Colbert {
         let use_gpu_batch_modes =
             !matches!(self.requested_execution_provider, ExecutionProvider::Cpu);
         let use_fix_dynamic_batch = self.fix_dynamic_batch && use_gpu_batch_modes;
-        let use_dynamic_batch = self.dynamic_batch && use_gpu_batch_modes && !use_fix_dynamic_batch;
-        let decision = if use_dynamic_batch {
-            estimate_batch_planner_decision(&self.batch_planner_context(), false)
-        } else if use_fix_dynamic_batch {
-            let reference_padded_tokens = self.batch_size.max(1) * self.config.document_length;
-            BatchPlannerDecision {
-                target_padded_tokens: reference_padded_tokens,
-            }
-        } else {
-            let reference_padded_tokens = self.batch_size.max(1) * self.config.document_length;
-            BatchPlannerDecision {
-                target_padded_tokens: reference_padded_tokens,
-            }
-        };
 
         let prepared_lengths: Vec<usize> = tokenized
             .iter()
             .map(|doc| doc.ids.len().min(truncate_limit) + 1)
             .collect();
-        if !use_dynamic_batch && !use_fix_dynamic_batch {
+        if !use_fix_dynamic_batch {
             let batch_docs = self.batch_size.max(1);
             let mut batches = Vec::new();
 
@@ -1254,45 +1160,7 @@ impl Colbert {
 
             return Ok(batches);
         }
-
-        let mut batches = Vec::new();
-
-        while !items.is_empty() {
-            let mut docs_in_batch = 0usize;
-            let mut piece_max_len = 0usize;
-            while docs_in_batch < items.len() {
-                let next_len = items[docs_in_batch].0;
-                let next_docs = docs_in_batch + 1;
-                let next_max_len = piece_max_len.max(next_len);
-                let next_planned_len = round_up_len_for_planning(next_max_len);
-                let next_padded_tokens = next_planned_len.saturating_mul(next_docs);
-                if next_padded_tokens > decision.target_padded_tokens && docs_in_batch > 0 {
-                    break;
-                }
-                docs_in_batch = next_docs;
-                piece_max_len = next_max_len;
-            }
-
-            let is_tail = docs_in_batch >= items.len();
-            let docs_in_batch = if is_tail {
-                docs_in_batch.max(1).min(items.len())
-            } else {
-                snap_non_tail_batch_docs(docs_in_batch.max(1)).min(items.len())
-            };
-            let piece_encodings: Vec<TokenizedDocument> = items
-                .drain(..docs_in_batch)
-                .map(|(_, encoding)| encoding)
-                .collect();
-            batches.push(prepare_batch_from_tokenized_documents(
-                &self.tokenizer,
-                &self.config,
-                piece_encodings,
-                false,
-                true,
-            )?);
-        }
-
-        Ok(batches)
+        unreachable!("fixed dynamic batches should return before reaching fallback")
     }
 
     pub fn encode_prepared_documents(
@@ -1506,43 +1374,6 @@ impl Colbert {
         self.sessions.len()
     }
 
-    pub fn batch_planner_context(&self) -> EncodeBatchPlannerContext {
-        EncodeBatchPlannerContext {
-            requested_execution_provider: self.requested_execution_provider,
-            quantized: self.quantized,
-            num_sessions: self.sessions.len(),
-            batch_size: self.batch_size,
-            document_length: self.config.document_length,
-            query_length: self.config.query_length,
-            embedding_dim: self.config.embedding_dim,
-            gpu_memory: self.gpu_memory_snapshot.clone(),
-            model_estimate: self.model_estimate.clone(),
-        }
-    }
-
-    pub fn static_model_estimate(&self) -> Option<&StaticOnnxModelEstimate> {
-        self.model_estimate.as_ref()
-    }
-
-    fn with_logged_batch_planner_context(self) -> Self {
-        let ctx = self.batch_planner_context();
-        let doc_decision = estimate_batch_planner_decision(&ctx, false);
-        debug!(
-            provider = ?ctx.requested_execution_provider,
-            quantized = ctx.quantized,
-            sessions = ctx.num_sessions,
-            batch_size = ctx.batch_size,
-            document_length = ctx.document_length,
-            query_length = ctx.query_length,
-            embedding_dim = ctx.embedding_dim,
-            gpu_memory_free_mib = ctx.gpu_memory.as_ref().map(|m| m.free_mib),
-            gpu_memory_total_mib = ctx.gpu_memory.as_ref().map(|m| m.total_mib),
-            doc_target_padded_tokens = doc_decision.target_padded_tokens,
-            "initialized batch planner context"
-        );
-        self
-    }
-
     // =========================================================================
     // Internal encoding implementations
     // =========================================================================
@@ -1707,197 +1538,6 @@ fn select_onnx_file<P: AsRef<Path>>(model_dir: P, quantized: bool) -> Result<std
     }
 }
 
-#[cfg(windows)]
-fn probe_windows_dedicated_gpu_memory() -> Option<GpuMemoryInfo> {
-    unsafe {
-        let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
-        let mut index = 0u32;
-        let mut best: Option<GpuMemoryInfo> = None;
-
-        loop {
-            let adapter: IDXGIAdapter1 = match factory.EnumAdapters1(index) {
-                Ok(adapter) => adapter,
-                Err(_) => break,
-            };
-            index += 1;
-
-            let desc = adapter.GetDesc1().ok()?;
-            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0 {
-                continue;
-            }
-
-            let adapter3: IDXGIAdapter3 = adapter.cast().ok()?;
-            let mut local = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
-            adapter3
-                .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut local)
-                .ok()?;
-
-            let budget_mib = (local.Budget / (1024 * 1024)) as usize;
-            let usage_mib = (local.CurrentUsage / (1024 * 1024)) as usize;
-            let total_mib = (desc.DedicatedVideoMemory / (1024 * 1024)) as usize;
-            let free_mib = budget_mib.saturating_sub(usage_mib);
-            let candidate = GpuMemoryInfo {
-                free_mib,
-                total_mib: total_mib.max(budget_mib),
-            };
-
-            if best
-                .as_ref()
-                .map(|current| candidate.free_mib > current.free_mib)
-                .unwrap_or(true)
-            {
-                best = Some(candidate);
-            }
-        }
-
-        best
-    }
-}
-
-fn probe_nvidia_gpu_memory() -> Option<GpuMemoryInfo> {
-    let output = Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=memory.free,memory.total",
-            "--format=csv,noheader,nounits",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    let first_line = stdout.lines().find(|line| !line.trim().is_empty())?;
-    let mut parts = first_line.split(',').map(|part| part.trim());
-    let free_mib = parts.next()?.parse::<usize>().ok()?;
-    let total_mib = parts.next()?.parse::<usize>().ok()?;
-    Some(GpuMemoryInfo {
-        free_mib,
-        total_mib,
-    })
-}
-
-fn probe_gpu_memory() -> Option<GpuMemoryInfo> {
-    #[cfg(windows)]
-    {
-        probe_windows_dedicated_gpu_memory().or_else(probe_nvidia_gpu_memory)
-    }
-    #[cfg(not(windows))]
-    {
-        probe_nvidia_gpu_memory()
-    }
-}
-
-fn estimate_static_onnx_model(
-    model_path: &Path,
-    document_length: usize,
-    batch_size: usize,
-    embedding_dim: usize,
-) -> Result<StaticOnnxModelEstimate> {
-    let weights_bytes = fs::metadata(model_path)
-        .with_context(|| {
-            format!(
-                "Failed to read model file metadata for batch planning: {}",
-                model_path.display()
-            )
-        })?
-        .len() as usize;
-
-    let model_config = load_static_model_config(model_path)
-        .context("Model config missing hidden/intermediate/layer metadata for batch planning")?;
-    let hidden_size = model_config.hidden_size;
-    let intermediate_size = model_config.intermediate_size;
-    let num_layers = model_config.num_hidden_layers;
-
-    let hidden_size = hidden_size.unwrap_or(embedding_dim.max(384));
-    let intermediate_size = intermediate_size.unwrap_or(hidden_size * 4);
-    let num_layers = num_layers.unwrap_or(8).max(1);
-    let local_attention = model_config.local_attention.unwrap_or(128).max(1);
-
-    // Peak batch memory after model load is governed far more by per-layer workspace shape
-    // than by summing all layers. Across the measured ModernBERT/ColBERT runs, the strongest
-    // predictor was hidden size with an explicit sequence-length penalty tied to the local
-    // attention span. Keep the raw dynamic estimate close to measured post-load growth, then
-    // use a slightly more conservative planner-only variant when turning free VRAM into a
-    // padded-token budget.
-    let attention_windows = document_length.div_ceil(local_attention).max(1);
-    let bytes_per_hidden_dim_per_token =
-        20usize.saturating_add(24usize.saturating_mul(attention_windows));
-    let activation_bytes_per_token =
-        hidden_size.saturating_mul(bytes_per_hidden_dim_per_token);
-    let planner_activation_bytes_per_token =
-        ((activation_bytes_per_token as f64) * 1.15).ceil() as usize;
-    let estimated_reference_batch_incremental_bytes = batch_size
-        .saturating_mul(document_length)
-        .saturating_mul(activation_bytes_per_token);
-    let weights_mib = (weights_bytes as f64) / (1024.0 * 1024.0);
-    let estimated_model_baseline_bytes =
-        (((900.0 + (2.3 * weights_mib)) * 1024.0 * 1024.0).round()) as usize;
-    let estimated_reference_batch_peak_bytes = estimated_model_baseline_bytes
-        .saturating_add(estimated_reference_batch_incremental_bytes);
-
-    Ok(StaticOnnxModelEstimate {
-        weights_bytes,
-        hidden_size: Some(hidden_size),
-        intermediate_size: Some(intermediate_size),
-        num_layers: Some(num_layers),
-        estimated_model_baseline_bytes,
-        estimated_activation_bytes_per_token: activation_bytes_per_token,
-        estimated_planner_activation_bytes_per_token: planner_activation_bytes_per_token,
-        estimated_reference_batch_incremental_bytes,
-        estimated_reference_batch_peak_bytes,
-    })
-}
-
-fn load_static_model_config(model_path: &Path) -> Option<StaticModelConfig> {
-    let config_path = model_path.parent()?.join("config.json");
-    let content = fs::read_to_string(config_path).ok()?;
-    serde_json::from_str::<StaticModelConfig>(&content).ok()
-}
-
-fn estimate_batch_planner_decision(
-    ctx: &EncodeBatchPlannerContext,
-    is_query: bool,
-) -> BatchPlannerDecision {
-    let max_length = if is_query {
-        ctx.query_length.max(1)
-    } else {
-        ctx.document_length.max(1)
-    };
-    let reference_padded_tokens = ctx.batch_size.max(1) * max_length;
-    let vram_capped_padded_tokens = ctx.gpu_memory.as_ref().and_then(|mem| {
-        if matches!(ctx.requested_execution_provider, ExecutionProvider::Cpu) {
-            return None;
-        }
-
-        let free_mib = mem.free_mib;
-        if free_mib == 0 {
-            return Some(reference_padded_tokens);
-        }
-
-        let free_after_headroom_mib = free_mib.saturating_sub(1024);
-        let usable_mib = ((free_after_headroom_mib as f64) * 0.85) as usize;
-        let bytes_per_padded_token = ctx
-            .model_estimate
-            .as_ref()
-            .map(|m| m.estimated_planner_activation_bytes_per_token)
-            .filter(|v| *v > 0)
-            .unwrap_or(if ctx.quantized { 72 * 1024 } else { 96 * 1024 });
-        let padded_tokens = usable_mib
-            .saturating_mul(1024 * 1024)
-            .checked_div(bytes_per_padded_token)
-            .unwrap_or(reference_padded_tokens);
-        Some(padded_tokens.max(max_length))
-    });
-
-    let target_padded_tokens = vram_capped_padded_tokens
-        .map(|cap| reference_padded_tokens.min(cap))
-        .unwrap_or(reference_padded_tokens)
-        .max(max_length);
-    BatchPlannerDecision {
-        target_padded_tokens,
-    }
-}
-
 fn preprocess_texts(config: &ColbertConfig, texts: &[&str]) -> Vec<String> {
     if config.do_lower_case {
         texts.iter().map(|t| t.trim().to_lowercase()).collect()
@@ -1986,16 +1626,6 @@ fn build_fixed_dynamic_shapes(batch_size: usize, document_length: usize) -> Vec<
 
     shapes.sort_by_key(|shape| shape.planned_len);
     shapes
-}
-
-fn snap_non_tail_batch_docs(count: usize) -> usize {
-    if count >= 8 {
-        (count / 4) * 4
-    } else if count >= 4 {
-        4
-    } else {
-        count.max(1)
-    }
 }
 
 fn update_token_ids(config: &mut ColbertConfig, tokenizer: &Tokenizer) {

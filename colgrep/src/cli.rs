@@ -506,12 +506,8 @@ pub enum Commands {
         #[arg(short = 'y', long = "yes")]
         auto_confirm: bool,
 
-        /// Enable dynamic GPU document batching based on token lengths and estimated VRAM
-        #[arg(long = "dynamic-batch", conflicts_with = "fix_dynamic")]
-        dynamic_batch: bool,
-
         /// Enable fixed GPU document batching using canonical (docs x len) shapes derived from batch-size
-        #[arg(long = "fix-dynamic", conflicts_with = "dynamic_batch")]
+        #[arg(long = "fix-dynamic")]
         fix_dynamic: bool,
     },
 
@@ -584,12 +580,8 @@ pub enum Commands {
         #[arg(long = "batch-sort-order", value_enum)]
         sort_order: Option<BatchSortOrder>,
 
-        /// Enable dynamic GPU document batching based on token lengths and estimated VRAM
-        #[arg(long = "dynamic-batch", conflicts_with = "fix_dynamic")]
-        dynamic_batch: bool,
-
         /// Enable fixed GPU document batching using canonical (docs x len) shapes derived from batch-size
-        #[arg(long = "fix-dynamic", conflicts_with = "dynamic_batch")]
+        #[arg(long = "fix-dynamic")]
         fix_dynamic: bool,
     },
 

@@ -115,7 +115,6 @@ fn main() -> Result<()> {
             no_pool,
             pool_factor,
             auto_confirm,
-            dynamic_batch,
             fix_dynamic,
         }) => {
             // If only -e pattern is given without a query, use the pattern as the query too
@@ -204,7 +203,6 @@ fn main() -> Result<()> {
                     code_only,
                     resolve_pool_factor(pool_factor, no_pool),
                     auto_confirm,
-                    dynamic_batch,
                     fix_dynamic,
                 )
             } else {
@@ -224,7 +222,6 @@ fn main() -> Result<()> {
             encode_batch_size,
             index_chunk_size,
             sort_order,
-            dynamic_batch,
             fix_dynamic,
         }) => cmd_init(
             &path,
@@ -236,7 +233,6 @@ fn main() -> Result<()> {
             encode_batch_size,
             index_chunk_size,
             sort_order,
-            dynamic_batch,
             fix_dynamic,
         ),
         Some(Commands::Update) => cmd_update(),
@@ -370,7 +366,6 @@ fn main() -> Result<()> {
                     cli.code_only,
                     resolve_pool_factor(cli.pool_factor, cli.no_pool),
                     cli.auto_confirm,
-                    false,
                     false,
                 )
             } else {

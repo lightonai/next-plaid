@@ -672,7 +672,6 @@ pub struct IndexBuilder {
     sort_order: EncodeSortOrder,
     encode_batch_size: Option<usize>,
     index_chunk_size: Option<usize>,
-    dynamic_batch: bool,
     fix_dynamic_batch: bool,
     /// If true, skip user confirmation for large indexes
     auto_confirm: bool,
@@ -712,7 +711,6 @@ impl IndexBuilder {
             sort_order: EncodeSortOrder::default(),
             encode_batch_size: None,
             index_chunk_size: None,
-            dynamic_batch: false,
             fix_dynamic_batch: false,
             auto_confirm: false, // Prompt by default for large indexes
             model_name: None,
@@ -739,10 +737,6 @@ impl IndexBuilder {
 
     pub fn set_index_chunk_size(&mut self, index_chunk_size: usize) {
         self.index_chunk_size = Some(index_chunk_size.max(1));
-    }
-
-    pub fn set_dynamic_batch(&mut self, dynamic_batch: bool) {
-        self.dynamic_batch = dynamic_batch;
     }
 
     pub fn set_fix_dynamic_batch(&mut self, fix_dynamic_batch: bool) {
@@ -877,7 +871,6 @@ impl IndexBuilder {
                         .with_quantized(self.quantized)
                         .with_parallel(num_sessions)
                         .with_batch_size(batch)
-                        .with_dynamic_batch(self.dynamic_batch)
                         .with_fix_dynamic_batch(self.fix_dynamic_batch)
                         .with_execution_provider(execution_provider)
                         .build()
