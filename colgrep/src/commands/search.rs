@@ -375,6 +375,8 @@ pub fn cmd_search(
     code_only: bool,
     pool_factor: Option<usize>,
     auto_confirm: bool,
+    dynamic_batch: bool,
+    fix_dynamic: bool,
 ) -> Result<()> {
     // Resolve context_lines: CLI > config > default (20)
     let context_lines = resolve_context_lines(cli_context_lines, 20);
@@ -402,6 +404,8 @@ pub fn cmd_search(
             code_only,
             pool_factor,
             auto_confirm,
+            dynamic_batch,
+            fix_dynamic,
         ) {
             Ok(results) => all_results.extend(results),
             Err(e) => {
@@ -779,6 +783,8 @@ fn search_single_path(
     code_only: bool,
     pool_factor: Option<usize>,
     auto_confirm: bool,
+    dynamic_batch: bool,
+    fix_dynamic: bool,
 ) -> Result<Vec<colgrep::SearchResult>> {
     let path = match std::fs::canonicalize(path) {
         Ok(p) => p,
@@ -884,6 +890,8 @@ fn search_single_path(
         )?;
         builder.set_auto_confirm(auto_confirm);
         builder.set_model_name(&model);
+        builder.set_dynamic_batch(dynamic_batch);
+        builder.set_fix_dynamic_batch(fix_dynamic);
 
         // Try non-blocking index update
         match builder.try_index(None, false) {
@@ -946,6 +954,8 @@ fn search_single_path(
                     )?;
                     new_builder.set_auto_confirm(auto_confirm);
                     new_builder.set_model_name(&model);
+                    new_builder.set_dynamic_batch(dynamic_batch);
+                    new_builder.set_fix_dynamic_batch(fix_dynamic);
                     new_builder.index(None, false)?;
                 } else {
                     return Err(e);
@@ -1056,6 +1066,8 @@ fn search_single_path(
             )?;
             builder.set_auto_confirm(auto_confirm);
             builder.set_model_name(&model);
+            builder.set_dynamic_batch(dynamic_batch);
+            builder.set_fix_dynamic_batch(fix_dynamic);
             builder.index(None, false)?;
 
             load_searcher()?

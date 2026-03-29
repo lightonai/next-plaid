@@ -2,8 +2,11 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use colgrep::{ensure_model, find_parent_index, index_exists, Config, IndexBuilder};
+use colgrep::{
+    ensure_model, find_parent_index, index_exists, Config, EncodeSortOrder, IndexBuilder,
+};
 
+use crate::cli::BatchSortOrder;
 use crate::commands::search::{resolve_model, resolve_pool_factor};
 
 pub fn cmd_init(
@@ -12,6 +15,12 @@ pub fn cmd_init(
     no_pool: bool,
     pool_factor: Option<usize>,
     auto_confirm: bool,
+    batch_size: Option<usize>,
+    encode_batch_size: Option<usize>,
+    index_chunk_size: Option<usize>,
+    sort_order: Option<BatchSortOrder>,
+    dynamic_batch: bool,
+    fix_dynamic: bool,
 ) -> Result<()> {
     let path = std::fs::canonicalize(path)
         .map_err(|_| anyhow::anyhow!("Path does not exist: {}", path.display()))?;
@@ -26,7 +35,7 @@ pub fn cmd_init(
     let config = Config::load().unwrap_or_default();
     let quantized = !config.use_fp32();
     let parallel_sessions = Some(config.get_parallel_sessions());
-    let batch_size = Some(config.get_batch_size());
+    let batch_size = Some(batch_size.unwrap_or_else(|| config.get_batch_size()));
 
     // Check if index already exists
     let has_existing_index = index_exists(&path) || find_parent_index(&path)?.is_some();
@@ -44,6 +53,18 @@ pub fn cmd_init(
     )?;
     builder.set_auto_confirm(auto_confirm);
     builder.set_model_name(&model);
+    builder.set_dynamic_batch(dynamic_batch);
+    builder.set_fix_dynamic_batch(fix_dynamic);
+    if let Some(encode_batch_size) = encode_batch_size {
+        builder.set_encode_batch_size(encode_batch_size.max(1));
+    }
+    if let Some(index_chunk_size) = index_chunk_size {
+        builder.set_index_chunk_size(index_chunk_size.max(1));
+    }
+    builder.set_sort_order(match sort_order.unwrap_or(BatchSortOrder::BigFirst) {
+        BatchSortOrder::BigFirst => EncodeSortOrder::BigFirst,
+        BatchSortOrder::SmallFirst => EncodeSortOrder::SmallFirst,
+    });
 
     let stats = builder.index(None, false)?;
 
