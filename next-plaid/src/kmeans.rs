@@ -307,18 +307,9 @@ pub fn compute_kmeans(
     });
     let n_samples_kmeans = n_samples_kmeans.min(num_documents);
 
-    println!(
-        "[next-plaid] kmeans docs: total={}, sampled={}",
-        num_documents, n_samples_kmeans
-    );
-
     let mut rng = ChaCha8Rng::seed_from_u64(config.seed);
     let sampled_indices: Vec<usize> = if let Some(prefix_docs) = config.sample_prefix_docs {
         let prefix_count = prefix_docs.min(n_samples_kmeans).min(num_documents);
-        println!(
-            "[next-plaid] kmeans sampling mode: prefix first {} docs",
-            prefix_count
-        );
         (0..prefix_count).collect()
     } else {
         let mut indices: Vec<usize> = (0..num_documents).collect();
@@ -348,11 +339,6 @@ pub fn compute_kmeans(
 
     let train_token_cap = max_kmeans_train_tokens();
     if samples_tensor.nrows() > train_token_cap {
-        println!(
-            "[next-plaid] kmeans token rows before cap={}, cap={}, applying row downsampling",
-            samples_tensor.nrows(),
-            train_token_cap
-        );
         let mut row_indices: Vec<usize> = (0..samples_tensor.nrows()).collect();
         row_indices.shuffle(&mut rng);
         row_indices.truncate(train_token_cap);
@@ -379,14 +365,6 @@ pub fn compute_kmeans(
 
     // The actual K that will be used
     let actual_k = num_partitions.min(effective_training_tokens);
-
-    println!(
-        "[next-plaid] kmeans train rows: sampled_doc_tokens={}, effective_train_rows={}, requested_partitions={}, actual_k={}",
-        total_sample_tokens,
-        effective_training_tokens,
-        num_partitions,
-        actual_k
-    );
 
     if actual_k == 0 {
         return Err(Error::IndexCreation("Cannot compute 0 centroids".into()));

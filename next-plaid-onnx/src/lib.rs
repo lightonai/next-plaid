@@ -685,8 +685,6 @@ pub struct EncodeBatchPlannerContext {
 #[derive(Debug, Clone, Copy)]
 struct BatchPlannerDecision {
     target_padded_tokens: usize,
-    reference_padded_tokens: usize,
-    vram_capped_padded_tokens: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -716,7 +714,6 @@ struct StaticModelConfig {
 pub struct PreparedDocumentBatch {
     batch_size: usize,
     batch_max_len: usize,
-    planned_len: usize,
     all_input_ids: Vec<i64>,
     all_attention_mask: Vec<i64>,
     all_token_type_ids: Option<Vec<i64>>,
@@ -738,18 +735,6 @@ impl PreparedDocumentBatch {
 
     pub fn batch_max_len(&self) -> usize {
         self.batch_max_len
-    }
-
-    pub fn planned_len(&self) -> usize {
-        self.planned_len
-    }
-
-    pub fn actual_padded_tokens(&self) -> usize {
-        self.batch_size * self.batch_max_len
-    }
-
-    pub fn planned_padded_tokens(&self) -> usize {
-        self.batch_size * self.planned_len
     }
 }
 
@@ -1193,15 +1178,11 @@ impl Colbert {
             let reference_padded_tokens = self.batch_size.max(1) * self.config.document_length;
             BatchPlannerDecision {
                 target_padded_tokens: reference_padded_tokens,
-                reference_padded_tokens,
-                vram_capped_padded_tokens: None,
             }
         } else {
             let reference_padded_tokens = self.batch_size.max(1) * self.config.document_length;
             BatchPlannerDecision {
                 target_padded_tokens: reference_padded_tokens,
-                reference_padded_tokens,
-                vram_capped_padded_tokens: None,
             }
         };
 
@@ -1543,112 +1524,6 @@ impl Colbert {
     }
 
     fn with_logged_batch_planner_context(self) -> Self {
-        let ctx = self.batch_planner_context();
-        let doc_decision = estimate_batch_planner_decision(&ctx, false);
-        if let Some(mem) = &ctx.gpu_memory {
-            println!(
-                "[next-plaid-onnx] batch planner context: provider={:?}, quantized={}, sessions={}, batch_size={}, document_length={}, query_length={}, embedding_dim={}, gpu_memory_free_mib={}, gpu_memory_total_mib={}, doc_target_padded_tokens={}, doc_reference_padded_tokens={}, doc_vram_cap_padded_tokens={}, model_weights_mib={}, model_hidden_size={}, model_intermediate_size={}, model_num_layers={}, model_baseline_mib={}, model_activation_bytes_per_token={}, model_planner_activation_bytes_per_token={}, model_reference_batch_incremental_mib={}, model_reference_batch_peak_mib={}",
-                ctx.requested_execution_provider,
-                ctx.quantized,
-                ctx.num_sessions,
-                ctx.batch_size,
-                ctx.document_length,
-                ctx.query_length,
-                ctx.embedding_dim,
-                mem.free_mib,
-                mem.total_mib,
-                doc_decision.target_padded_tokens,
-                doc_decision.reference_padded_tokens,
-                doc_decision
-                    .vram_capped_padded_tokens
-                    .unwrap_or(doc_decision.reference_padded_tokens),
-                ctx.model_estimate
-                    .as_ref()
-                    .map(|m| m.weights_bytes as f64 / (1024.0 * 1024.0))
-                    .unwrap_or(0.0),
-                ctx.model_estimate
-                    .as_ref()
-                    .and_then(|m| m.hidden_size)
-                    .unwrap_or(0),
-                ctx.model_estimate
-                    .as_ref()
-                    .and_then(|m| m.intermediate_size)
-                    .unwrap_or(0),
-                ctx.model_estimate
-                    .as_ref()
-                    .and_then(|m| m.num_layers)
-                    .unwrap_or(0),
-                ctx.model_estimate
-                    .as_ref()
-                    .map(|m| m.estimated_model_baseline_bytes as f64 / (1024.0 * 1024.0))
-                    .unwrap_or(0.0),
-                ctx.model_estimate
-                    .as_ref()
-                    .map(|m| m.estimated_activation_bytes_per_token)
-                    .unwrap_or(0),
-                ctx.model_estimate
-                    .as_ref()
-                    .map(|m| m.estimated_planner_activation_bytes_per_token)
-                    .unwrap_or(0),
-                ctx.model_estimate
-                    .as_ref()
-                    .map(|m| m.estimated_reference_batch_incremental_bytes as f64 / (1024.0 * 1024.0))
-                    .unwrap_or(0.0),
-                ctx.model_estimate
-                    .as_ref()
-                    .map(|m| m.estimated_reference_batch_peak_bytes as f64 / (1024.0 * 1024.0))
-                    .unwrap_or(0.0),
-            );
-        } else {
-            println!(
-                "[next-plaid-onnx] batch planner context: provider={:?}, quantized={}, sessions={}, batch_size={}, document_length={}, query_length={}, embedding_dim={}, gpu_memory=unavailable, doc_target_padded_tokens={}, doc_reference_padded_tokens={}, doc_vram_cap_padded_tokens=unavailable, model_weights_mib={}, model_hidden_size={}, model_intermediate_size={}, model_num_layers={}, model_baseline_mib={}, model_activation_bytes_per_token={}, model_planner_activation_bytes_per_token={}, model_reference_batch_incremental_mib={}, model_reference_batch_peak_mib={}",
-                ctx.requested_execution_provider,
-                ctx.quantized,
-                ctx.num_sessions,
-                ctx.batch_size,
-                ctx.document_length,
-                ctx.query_length,
-                ctx.embedding_dim,
-                doc_decision.target_padded_tokens,
-                doc_decision.reference_padded_tokens,
-                ctx.model_estimate
-                    .as_ref()
-                    .map(|m| m.weights_bytes as f64 / (1024.0 * 1024.0))
-                    .unwrap_or(0.0),
-                ctx.model_estimate
-                    .as_ref()
-                    .and_then(|m| m.hidden_size)
-                    .unwrap_or(0),
-                ctx.model_estimate
-                    .as_ref()
-                    .and_then(|m| m.intermediate_size)
-                    .unwrap_or(0),
-                ctx.model_estimate
-                    .as_ref()
-                    .and_then(|m| m.num_layers)
-                    .unwrap_or(0),
-                ctx.model_estimate
-                    .as_ref()
-                    .map(|m| m.estimated_model_baseline_bytes as f64 / (1024.0 * 1024.0))
-                    .unwrap_or(0.0),
-                ctx.model_estimate
-                    .as_ref()
-                    .map(|m| m.estimated_activation_bytes_per_token)
-                    .unwrap_or(0),
-                ctx.model_estimate
-                    .as_ref()
-                    .map(|m| m.estimated_planner_activation_bytes_per_token)
-                    .unwrap_or(0),
-                ctx.model_estimate
-                    .as_ref()
-                    .map(|m| m.estimated_reference_batch_incremental_bytes as f64 / (1024.0 * 1024.0))
-                    .unwrap_or(0.0),
-                ctx.model_estimate
-                    .as_ref()
-                    .map(|m| m.estimated_reference_batch_peak_bytes as f64 / (1024.0 * 1024.0))
-                    .unwrap_or(0.0),
-            );
-        }
         self
     }
 
@@ -2004,8 +1879,6 @@ fn estimate_batch_planner_decision(
         .max(max_length);
     BatchPlannerDecision {
         target_padded_tokens,
-        reference_padded_tokens,
-        vram_capped_padded_tokens,
     }
 }
 
@@ -2172,7 +2045,6 @@ fn prepare_batch_for_session(
         return Ok(PreparedDocumentBatch {
             batch_size: 0,
             batch_max_len: 0,
-            planned_len: 0,
             all_input_ids: Vec::new(),
             all_attention_mask: Vec::new(),
             all_token_type_ids: if config.uses_token_type_ids {
@@ -2245,7 +2117,6 @@ fn prepare_batch_from_tokenized_documents(
     }
 
     let batch_size = batch_docs.len();
-    let planned_len = round_up_len_for_planning(batch_max_len);
     let default_input_id = if is_query && config.do_query_expansion {
         config.mask_token_id as i64
     } else {
@@ -2308,7 +2179,6 @@ fn prepare_batch_from_tokenized_documents(
     Ok(PreparedDocumentBatch {
         batch_size,
         batch_max_len,
-        planned_len,
         all_input_ids,
         all_attention_mask,
         all_token_type_ids: if config.uses_token_type_ids {
@@ -2385,7 +2255,6 @@ fn prepare_batch_from_tokenizer_encodings(
     }
 
     let batch_size = batch_encodings.len();
-    let planned_len = round_up_len_for_planning(batch_max_len);
     let default_input_id = if is_query && config.do_query_expansion {
         config.mask_token_id as i64
     } else {
@@ -2451,7 +2320,6 @@ fn prepare_batch_from_tokenizer_encodings(
     Ok(PreparedDocumentBatch {
         batch_size,
         batch_max_len,
-        planned_len,
         all_input_ids,
         all_attention_mask,
         all_token_type_ids: if config.uses_token_type_ids {
@@ -2475,7 +2343,6 @@ fn encode_prepared_batch_with_session(
     let PreparedDocumentBatch {
         batch_size,
         batch_max_len,
-        planned_len: _planned_len,
         all_input_ids,
         all_attention_mask,
         all_token_type_ids,

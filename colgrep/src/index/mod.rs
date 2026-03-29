@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -86,74 +85,37 @@ pub struct UpdatePlan {
     pub unchanged: usize,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-struct DedupStats {
-    original_rows: usize,
-    unique_rows: usize,
-}
-
-#[derive(Default)]
-struct WriterStageTotals {
-    encode_duration: Duration,
-    vector_index_duration: Duration,
-    filtering_db_duration: Duration,
-}
-
 struct SortedUnit {
     unit: Arc<CodeUnit>,
     text: Arc<str>,
 }
 
 struct PreparedChunk {
-    chunk_idx: usize,
-    total_chunks: usize,
     units: Vec<Arc<CodeUnit>>,
     unique_texts: Vec<Arc<str>>,
     original_to_unique: Vec<usize>,
-    max_text_bytes: usize,
 }
 
 struct TokenizedChunk {
-    chunk_idx: usize,
-    total_chunks: usize,
     units: Vec<Arc<CodeUnit>>,
     prepared_batches: Vec<next_plaid_onnx::PreparedDocumentBatch>,
     original_to_unique: Vec<usize>,
-    tokenize_duration: Duration,
-    max_text_bytes: usize,
 }
 
 struct RawEncodedChunk {
-    chunk_idx: usize,
-    total_chunks: usize,
     units: Vec<Arc<CodeUnit>>,
     raw_embeddings: Vec<ndarray::Array2<f32>>,
     original_to_unique: Vec<usize>,
-    encode_duration: Duration,
-    max_text_bytes: usize,
 }
 
 struct PooledChunkForIndex {
-    chunk_idx: usize,
-    total_chunks: usize,
     units: Vec<Arc<CodeUnit>>,
     embeddings: Vec<ndarray::Array2<f32>>,
-    encode_duration: Duration,
-    max_text_bytes: usize,
 }
 
 struct IndexedChunkForMetadata {
-    chunk_idx: usize,
-    total_chunks: usize,
     units: Vec<Arc<CodeUnit>>,
     doc_ids: Vec<i64>,
-    encode_duration: Duration,
-    vector_index_duration: Duration,
-    max_text_bytes: usize,
-    total_tokens: usize,
-    max_tokens: usize,
-    embedding_dim: usize,
-    embedding_bytes: usize,
 }
 
 struct ChunkForCoding {
@@ -209,87 +171,7 @@ fn sorted_units_for_encoding_with_kmeans_sample_prefix(
     prefix_items
 }
 
-fn format_duration(duration: Duration) -> String {
-    format!("{:.3}s", duration.as_secs_f64())
-}
-
-fn format_bytes(bytes: usize) -> String {
-    const KB: usize = 1024;
-    const MB: usize = 1024 * KB;
-    if bytes >= MB {
-        format!("{:.2} MiB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.2} KiB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
-fn summarize_embedding_chunk(
-    chunk_embeddings: &[ndarray::Array2<f32>],
-) -> (usize, usize, usize, usize) {
-    let docs = chunk_embeddings.len();
-    let total_tokens = chunk_embeddings
-        .iter()
-        .map(|arr| arr.nrows())
-        .sum::<usize>();
-    let max_tokens = chunk_embeddings
-        .iter()
-        .map(|arr| arr.nrows())
-        .max()
-        .unwrap_or(0);
-    let embedding_dim = chunk_embeddings.first().map(|arr| arr.ncols()).unwrap_or(0);
-    (docs, total_tokens, max_tokens, embedding_dim)
-}
-
-fn summarize_metadata_values(
-    metadata: &[serde_json::Value],
-    units: &[Arc<CodeUnit>],
-) -> (usize, usize, usize) {
-    let total_json_bytes = metadata
-        .iter()
-        .map(|item| {
-            serde_json::to_string(item)
-                .map(|json| json.len())
-                .unwrap_or(0)
-        })
-        .sum::<usize>();
-    let max_json_bytes = metadata
-        .iter()
-        .map(|item| {
-            serde_json::to_string(item)
-                .map(|json| json.len())
-                .unwrap_or(0)
-        })
-        .max()
-        .unwrap_or(0);
-    let max_code_bytes = units.iter().map(|unit| unit.code.len()).max().unwrap_or(0);
-    (total_json_bytes, max_json_bytes, max_code_bytes)
-}
-
-fn log_chunk_dedup(original_rows: usize, unique_rows: usize) {
-    let backfilled_rows = original_rows.saturating_sub(unique_rows);
-    println!(
-        "   dedup: original {}, unique {}, backfilled {}",
-        original_rows, unique_rows, backfilled_rows
-    );
-}
-
-fn log_total_dedup(stats: DedupStats) {
-    println!(
-        "   dedup totals: original {}, unique {}, backfilled {}",
-        stats.original_rows,
-        stats.unique_rows,
-        stats.original_rows.saturating_sub(stats.unique_rows)
-    );
-}
-
-fn prepare_deduplicated_chunk(
-    chunk_idx: usize,
-    total_chunks: usize,
-    unit_chunk: &[SortedUnit],
-    dedup_stats: &mut DedupStats,
-) -> PreparedChunk {
+fn prepare_deduplicated_chunk(unit_chunk: &[SortedUnit]) -> PreparedChunk {
     let mut index_by_text: HashMap<&str, usize> = HashMap::new();
     let mut unique_texts: Vec<Arc<str>> = Vec::new();
     let mut original_to_unique: Vec<usize> = Vec::with_capacity(unit_chunk.len());
@@ -305,70 +187,11 @@ fn prepare_deduplicated_chunk(
         }
     }
 
-    log_chunk_dedup(unit_chunk.len(), unique_texts.len());
-    dedup_stats.original_rows += unit_chunk.len();
-    dedup_stats.unique_rows += unique_texts.len();
-    let max_text_bytes = unit_chunk
-        .iter()
-        .map(|item| item.text.len())
-        .max()
-        .unwrap_or(0);
-
     PreparedChunk {
-        chunk_idx,
-        total_chunks,
         units: unit_chunk.iter().map(|item| Arc::clone(&item.unit)).collect(),
         unique_texts,
         original_to_unique,
-        max_text_bytes,
     }
-}
-
-fn log_chunk_timing(
-    chunk_idx: usize,
-    total_chunks: usize,
-    unit_count: usize,
-    encode_label: &str,
-    encode_duration: Duration,
-    vector_index_duration: Duration,
-    filtering_db_duration: Duration,
-    max_text_bytes: usize,
-    total_tokens: usize,
-    max_tokens: usize,
-    embedding_dim: usize,
-    embedding_bytes: usize,
-    total_json_bytes: usize,
-    max_json_bytes: usize,
-    max_code_bytes: usize,
-) {
-    let index_total = vector_index_duration + filtering_db_duration;
-    let chunk_total = encode_duration + index_total;
-    println!(
-        "⏱️  Chunk {}/{} ({} units): {} {}, index {}, db {}, total {}",
-        chunk_idx + 1,
-        total_chunks,
-        unit_count,
-        encode_label,
-        format_duration(encode_duration),
-        format_duration(vector_index_duration),
-        format_duration(filtering_db_duration),
-        format_duration(chunk_total),
-    );
-    println!(
-        "   biggest text {}, next-plaid tensors: docs {}, total_tokens {}, max_tokens {}, dim {}, approx {}",
-        format_bytes(max_text_bytes),
-        unit_count,
-        total_tokens,
-        max_tokens,
-        embedding_dim,
-        format_bytes(embedding_bytes),
-    );
-    println!(
-        "   metadata db payload: total {}, max row {}, max code {}",
-        format_bytes(total_json_bytes),
-        format_bytes(max_json_bytes),
-        format_bytes(max_code_bytes),
-    );
 }
 
 fn run_encode_stage(
@@ -376,66 +199,29 @@ fn run_encode_stage(
     sender: mpsc::Sender<RawEncodedChunk>,
     model: Colbert,
     bench_max_doc_len: Option<usize>,
-) -> Result<Duration> {
-    let mut total = Duration::ZERO;
-
+) -> Result<()> {
     while let Ok(chunk) = receiver.recv() {
-        let total_microbatches = chunk.prepared_batches.len();
-        let mut kept_batches = Vec::with_capacity(total_microbatches);
-        for (microbatch_idx, prepared_batch) in chunk.prepared_batches.into_iter().enumerate() {
+        let mut kept_batches = Vec::with_capacity(chunk.prepared_batches.len());
+        for prepared_batch in chunk.prepared_batches {
             if let Some(max_doc_len) = bench_max_doc_len {
                 if prepared_batch.batch_max_len() > max_doc_len {
-                    println!(
-                        "[next-plaid-onnx] skipping microbatch: chunk={}/{}, idx={}/{}, docs={}, max_len={}, planned_len={}, actual_padded_tokens={}, planned_padded_tokens={}, reason=max_len>{}",
-                        chunk.chunk_idx + 1,
-                        chunk.total_chunks,
-                        microbatch_idx,
-                        total_microbatches,
-                        prepared_batch.batch_size(),
-                        prepared_batch.batch_max_len(),
-                        prepared_batch.planned_len(),
-                        prepared_batch.actual_padded_tokens(),
-                        prepared_batch.planned_padded_tokens(),
-                        max_doc_len,
-                    );
                     continue;
                 }
             }
-
-            println!(
-                "[next-plaid-onnx] running microbatch: chunk={}/{}, idx={}/{}, docs={}, max_len={}, planned_len={}, actual_padded_tokens={}, planned_padded_tokens={}",
-                chunk.chunk_idx + 1,
-                chunk.total_chunks,
-                microbatch_idx,
-                total_microbatches,
-                prepared_batch.batch_size(),
-                prepared_batch.batch_max_len(),
-                prepared_batch.planned_len(),
-                prepared_batch.actual_padded_tokens(),
-                prepared_batch.planned_padded_tokens(),
-            );
             kept_batches.push(prepared_batch);
         }
-        let started_at = Instant::now();
         let raw_embeddings = model.encode_prepared_document_batches(kept_batches)?;
-        let gpu_encode_duration = started_at.elapsed();
-        let encode_duration = chunk.tokenize_duration + gpu_encode_duration;
-        total += encode_duration;
 
         sender
             .send(RawEncodedChunk {
-                chunk_idx: chunk.chunk_idx,
-                total_chunks: chunk.total_chunks,
                 units: chunk.units,
                 raw_embeddings,
                 original_to_unique: chunk.original_to_unique,
-                encode_duration,
-                max_text_bytes: chunk.max_text_bytes,
             })
             .context("Failed to send raw embeddings to pooling stage")?;
     }
 
-    Ok(total)
+    Ok(())
 }
 
 fn bench_max_doc_len_limit(encode_only_bench: bool) -> Option<usize> {
@@ -453,34 +239,25 @@ fn run_tokenize_stage(
     receiver: mpsc::Receiver<PreparedChunk>,
     sender: mpsc::Sender<TokenizedChunk>,
     model: Colbert,
-) -> Result<Duration> {
-    let mut total = Duration::ZERO;
-
+) -> Result<()> {
     while let Ok(chunk) = receiver.recv() {
         let text_refs: Vec<&str> = chunk
             .unique_texts
             .iter()
             .map(|text| text.as_ref())
             .collect();
-        let started_at = Instant::now();
         let prepared_batches = model.tokenize_documents_in_batches(&text_refs)?;
-        let tokenize_duration = started_at.elapsed();
-        total += tokenize_duration;
 
         sender
             .send(TokenizedChunk {
-                chunk_idx: chunk.chunk_idx,
-                total_chunks: chunk.total_chunks,
                 units: chunk.units,
                 prepared_batches,
                 original_to_unique: chunk.original_to_unique,
-                tokenize_duration,
-                max_text_bytes: chunk.max_text_bytes,
             })
             .context("Failed to send tokenized chunk to encode stage")?;
     }
 
-    Ok(total)
+    Ok(())
 }
 
 fn run_pool_stage(
@@ -498,12 +275,8 @@ fn run_pool_stage(
 
         sender
             .send(PooledChunkForIndex {
-                chunk_idx: chunk.chunk_idx,
-                total_chunks: chunk.total_chunks,
                 units: chunk.units,
                 embeddings,
-                encode_duration: chunk.encode_duration,
-                max_text_bytes: chunk.max_text_bytes,
             })
             .context("Failed to send pooled embeddings to index stage")?;
     }
@@ -513,43 +286,19 @@ fn run_pool_stage(
 
 fn run_encode_only_sink_stage(
     receiver: mpsc::Receiver<RawEncodedChunk>,
-    encode_label: String,
     pb: Option<ProgressBar>,
-) -> Result<WriterStageTotals> {
-    let mut totals = WriterStageTotals::default();
+) -> Result<()> {
     let mut completed_units = 0u64;
 
     while let Ok(chunk) = receiver.recv() {
-        totals.encode_duration += chunk.encode_duration;
         completed_units += chunk.units.len() as u64;
 
         if let Some(pb) = pb.as_ref() {
             pb.set_position(completed_units);
         }
-
-        let (docs, total_tokens, max_tokens, embedding_dim) =
-            summarize_embedding_chunk(&chunk.raw_embeddings);
-        let embedding_bytes = total_tokens * embedding_dim * std::mem::size_of::<f32>();
-        log_chunk_timing(
-            chunk.chunk_idx,
-            chunk.total_chunks,
-            docs,
-            &encode_label,
-            chunk.encode_duration,
-            Duration::ZERO,
-            Duration::ZERO,
-            chunk.max_text_bytes,
-            total_tokens,
-            max_tokens,
-            embedding_dim,
-            embedding_bytes,
-            0,
-            0,
-            0,
-        );
     }
 
-    Ok(totals)
+    Ok(())
 }
 
 fn run_index_stage(
@@ -559,14 +308,13 @@ fn run_index_stage(
     config: IndexConfig,
     update_config: UpdateConfig,
     initial_kmeans_sample_docs: usize,
-) -> Result<WriterStageTotals> {
-    let mut totals = WriterStageTotals::default();
+) -> Result<()> {
     let initial_create = !Path::new(&index_path).join("metadata.json").exists();
 
     if initial_create {
         let first_chunk = match receiver.recv() {
             Ok(chunk) => chunk,
-            Err(_) => return Ok(totals),
+            Err(_) => return Ok(()),
         };
 
         let mut next_doc_id = 0i64;
@@ -610,11 +358,10 @@ fn run_index_stage(
         let coding_force_cpu = update_config.force_cpu;
         let coding_handle = thread::Builder::new()
             .name("colgrep-coding".to_string())
-            .spawn(move || -> Result<Duration> {
+            .spawn(move || -> Result<()> {
                 let codec_artifacts = kmeans_handle
                     .join()
                     .map_err(|_| anyhow::anyhow!("K-means stage thread panicked"))??;
-                let started_at = Instant::now();
                 let mut encoded_chunks: Vec<EncodedIndexChunk> = Vec::new();
                 while let Ok(chunk) = coding_rx.recv() {
                     let encoded = encode_index_chunk(
@@ -631,14 +378,12 @@ fn run_index_stage(
                     &coding_index_path,
                     &coding_config,
                 )?;
-                Ok(started_at.elapsed())
+                Ok(())
             })
             .context("Failed to spawn coding stage thread")?;
 
         let mut handle_chunk = |chunk: PooledChunkForIndex| -> Result<()> {
-            let (doc_count, total_tokens, max_tokens, embedding_dim) =
-                summarize_embedding_chunk(&chunk.embeddings);
-            let embedding_bytes = total_tokens * embedding_dim * std::mem::size_of::<f32>();
+            let doc_count = chunk.embeddings.len();
             let doc_ids: Vec<i64> = (next_doc_id..next_doc_id + doc_count as i64).collect();
             next_doc_id += doc_count as i64;
 
@@ -650,17 +395,8 @@ fn run_index_stage(
 
             sender
                 .send(IndexedChunkForMetadata {
-                    chunk_idx: chunk.chunk_idx,
-                    total_chunks: chunk.total_chunks,
                     units: chunk.units,
                     doc_ids,
-                    encode_duration: chunk.encode_duration,
-                    vector_index_duration: Duration::ZERO,
-                    max_text_bytes: chunk.max_text_bytes,
-                    total_tokens,
-                    max_tokens,
-                    embedding_dim,
-                    embedding_bytes,
                 })
                 .context("Failed to send indexed chunk to metadata stage")
         };
@@ -670,50 +406,33 @@ fn run_index_stage(
             handle_chunk(chunk)?;
         }
         drop(coding_tx);
-        totals.vector_index_duration += coding_handle
+        coding_handle
             .join()
             .map_err(|_| anyhow::anyhow!("Coding stage thread panicked"))??;
-        return Ok(totals);
+        return Ok(());
     }
 
     while let Ok(chunk) = receiver.recv() {
-        let (_docs, total_tokens, max_tokens, embedding_dim) =
-            summarize_embedding_chunk(&chunk.embeddings);
-        let embedding_bytes = total_tokens * embedding_dim * std::mem::size_of::<f32>();
         let _guard = CriticalSectionGuard::new();
-        let vector_index_started_at = Instant::now();
         let (_, doc_ids) =
             MmapIndex::update_or_create(&chunk.embeddings, &index_path, &config, &update_config)?;
-        let chunk_vector_index_duration = vector_index_started_at.elapsed();
-        totals.vector_index_duration += chunk_vector_index_duration;
 
         sender
             .send(IndexedChunkForMetadata {
-                chunk_idx: chunk.chunk_idx,
-                total_chunks: chunk.total_chunks,
                 units: chunk.units,
                 doc_ids,
-                encode_duration: chunk.encode_duration,
-                vector_index_duration: chunk_vector_index_duration,
-                max_text_bytes: chunk.max_text_bytes,
-                total_tokens,
-                max_tokens,
-                embedding_dim,
-                embedding_bytes,
             })
             .context("Failed to send indexed chunk to metadata stage")?;
     }
 
-    Ok(totals)
+    Ok(())
 }
 
 fn run_metadata_stage(
     receiver: mpsc::Receiver<IndexedChunkForMetadata>,
     index_path: String,
-    encode_label: String,
     pb: Option<ProgressBar>,
-) -> Result<WriterStageTotals> {
-    let mut totals = WriterStageTotals::default();
+) -> Result<()> {
     let mut filtering_exists = filtering::exists(&index_path);
     let mut completed_units = 0u64;
 
@@ -723,17 +442,11 @@ fn run_metadata_stage(
             .iter()
             .map(|unit| serde_json::to_value(unit.as_ref()).unwrap())
             .collect();
-        let (total_json_bytes, max_json_bytes, max_code_bytes) =
-            summarize_metadata_values(&metadata, &chunk.units);
-
-        let filtering_db_started_at = Instant::now();
         let db_result = if filtering_exists {
             filtering::update_codeunit(&index_path, &metadata, &chunk.doc_ids)
         } else {
             filtering::create_codeunit(&index_path, &metadata, &chunk.doc_ids)
         };
-        let chunk_filtering_db_duration = filtering_db_started_at.elapsed();
-        totals.filtering_db_duration += chunk_filtering_db_duration;
 
         if let Err(e) = db_result {
             if let Err(rollback_err) = delete_from_index(&chunk.doc_ids, &index_path) {
@@ -746,27 +459,9 @@ fn run_metadata_stage(
         if let Some(pb) = pb.as_ref() {
             pb.set_position(completed_units);
         }
-
-        log_chunk_timing(
-            chunk.chunk_idx,
-            chunk.total_chunks,
-            chunk.units.len(),
-            &encode_label,
-            chunk.encode_duration,
-            chunk.vector_index_duration,
-            chunk_filtering_db_duration,
-            chunk.max_text_bytes,
-            chunk.total_tokens,
-            chunk.max_tokens,
-            chunk.embedding_dim,
-            chunk.embedding_bytes,
-            total_json_bytes,
-            max_json_bytes,
-            max_code_bytes,
-        );
     }
 
-    Ok(totals)
+    Ok(())
 }
 
 fn run_chunk_pipeline(
@@ -777,13 +472,9 @@ fn run_chunk_pipeline(
     index_path: &str,
     config: IndexConfig,
     update_config: UpdateConfig,
-    encode_label: &str,
     pb: Option<&ProgressBar>,
-) -> Result<(WriterStageTotals, DedupStats, bool)> {
-    let total_chunks = sorted_units.len().div_ceil(index_chunk_size);
-    let mut dedup_stats = DedupStats::default();
+) -> Result<bool> {
     let mut was_interrupted = false;
-    let encode_pipeline_started_at = Instant::now();
     let encode_only_bench = std::env::var("NEXT_PLAID_BENCH_ENCODE_ONLY")
         .ok()
         .map(|v| {
@@ -812,11 +503,10 @@ fn run_chunk_pipeline(
         .spawn(move || run_encode_stage(encode_rx, pool_tx, encode_model, bench_max_doc_len))
         .context("Failed to spawn encode stage thread")?;
     let downstream_handles = if encode_only_bench {
-        let encode_label_for_sink = encode_label.to_string();
         let sink_pb = pb.cloned();
         let sink_handle = thread::Builder::new()
             .name("colgrep-encode-sink".to_string())
-            .spawn(move || run_encode_only_sink_stage(pool_rx, encode_label_for_sink, sink_pb))
+            .spawn(move || run_encode_only_sink_stage(pool_rx, sink_pb))
             .context("Failed to spawn encode-only sink stage thread")?;
         (Some(sink_handle), None, None)
     } else {
@@ -839,18 +529,10 @@ fn run_chunk_pipeline(
             })
             .context("Failed to spawn index stage thread")?;
         let index_path_for_metadata = index_path.to_string();
-        let encode_label_for_metadata = encode_label.to_string();
         let metadata_pb = pb.cloned();
         let metadata_handle = thread::Builder::new()
             .name("colgrep-metadata".to_string())
-            .spawn(move || {
-                run_metadata_stage(
-                    metadata_rx,
-                    index_path_for_metadata,
-                    encode_label_for_metadata,
-                    metadata_pb,
-                )
-            })
+            .spawn(move || run_metadata_stage(metadata_rx, index_path_for_metadata, metadata_pb))
             .context("Failed to spawn metadata stage thread")?;
         (
             None,
@@ -859,14 +541,13 @@ fn run_chunk_pipeline(
         )
     };
 
-    for (chunk_idx, unit_chunk) in sorted_units.chunks(index_chunk_size).enumerate() {
+    for unit_chunk in sorted_units.chunks(index_chunk_size) {
         if is_interrupted_outside_critical() {
             was_interrupted = true;
             break;
         }
 
-        let prepared =
-            prepare_deduplicated_chunk(chunk_idx, total_chunks, unit_chunk, &mut dedup_stats);
+        let prepared = prepare_deduplicated_chunk(unit_chunk);
 
         tokenize_tx
             .send(prepared)
@@ -875,26 +556,17 @@ fn run_chunk_pipeline(
 
     drop(tokenize_tx);
 
-    let _tokenize_duration = tokenize_handle
+    tokenize_handle
         .join()
         .map_err(|_| anyhow::anyhow!("Tokenize stage thread panicked"))??;
     encode_handle
         .join()
         .map_err(|_| anyhow::anyhow!("Encode stage thread panicked"))??;
-    let encode_duration = encode_pipeline_started_at.elapsed();
     if let Some(sink_handle) = downstream_handles.0 {
-        let _ = sink_handle
+        sink_handle
             .join()
             .map_err(|_| anyhow::anyhow!("Encode-only sink stage thread panicked"))??;
-        return Ok((
-            WriterStageTotals {
-                encode_duration,
-                vector_index_duration: Duration::ZERO,
-                filtering_db_duration: Duration::ZERO,
-            },
-            dedup_stats,
-            was_interrupted,
-        ));
+        return Ok(was_interrupted);
     }
     let (pool_handle, index_handle) = downstream_handles
         .1
@@ -903,22 +575,14 @@ fn run_chunk_pipeline(
     pool_handle
         .join()
         .map_err(|_| anyhow::anyhow!("Pool stage thread panicked"))??;
-    let index_totals = index_handle
+    index_handle
         .join()
         .map_err(|_| anyhow::anyhow!("Index stage thread panicked"))??;
-    let metadata_totals = metadata_handle
+    metadata_handle
         .join()
         .map_err(|_| anyhow::anyhow!("Metadata stage thread panicked"))??;
 
-    Ok((
-        WriterStageTotals {
-            encode_duration,
-            vector_index_duration: index_totals.vector_index_duration,
-            filtering_db_duration: metadata_totals.filtering_db_duration,
-        },
-        dedup_stats,
-        was_interrupted,
-    ))
+    Ok(was_interrupted)
 }
 
 fn parse_files_parallel(
@@ -1756,11 +1420,6 @@ impl IndexBuilder {
 
         // Compute effective pool factor based on batch size
         let effective_pool_factor = self.effective_pool_factor(new_units.len());
-        let encode_label = if force_cpu {
-            "cpu-encode"
-        } else {
-            "gpu/auto-encode"
-        };
 
         // Delete changed files from index right before writing new data.
         // Deferred from earlier to minimize the window where data is missing
@@ -1774,9 +1433,8 @@ impl IndexBuilder {
             self.sort_order,
             index_chunk_size,
         );
-        let indexing_started_at = Instant::now();
         self.ensure_model_created(new_units.len())?;
-        let (writer_totals, dedup_stats, was_interrupted) = run_chunk_pipeline(
+        let was_interrupted = run_chunk_pipeline(
             self.model().clone(),
             &sorted_units,
             index_chunk_size,
@@ -1784,22 +1442,10 @@ impl IndexBuilder {
             index_path_str,
             config,
             update_config,
-            encode_label,
             Some(&pb),
         )?;
 
         pb.finish_and_clear();
-
-        let total_duration = indexing_started_at.elapsed();
-        println!(
-            "⏱️  Totals: {} {}, index {}, db {}, total {}",
-            encode_label,
-            format_duration(writer_totals.encode_duration),
-            format_duration(writer_totals.vector_index_duration),
-            format_duration(writer_totals.filtering_db_duration),
-            format_duration(total_duration),
-        );
-        log_total_dedup(dedup_stats);
 
         if was_interrupted || is_interrupted() {
             // Don't save state — the index has partial data.
@@ -2123,11 +1769,6 @@ impl IndexBuilder {
                 .index_chunk_size
                 .unwrap_or(INDEX_CHUNK_SIZE)
                 .max(encode_batch_size);
-            let encode_label = if force_cpu {
-                "cpu-encode"
-            } else {
-                "gpu/auto-encode"
-            };
 
             // Compute effective pool factor based on batch size
             let effective_pool_factor = self.effective_pool_factor(new_units.len());
@@ -2144,9 +1785,8 @@ impl IndexBuilder {
                 self.sort_order,
                 index_chunk_size,
             );
-            let indexing_started_at = Instant::now();
             self.ensure_model_created(new_units.len())?;
-            let (writer_totals, dedup_stats, pipeline_interrupted) = run_chunk_pipeline(
+            let pipeline_interrupted = run_chunk_pipeline(
                 self.model().clone(),
                 &sorted_units,
                 index_chunk_size,
@@ -2154,23 +1794,11 @@ impl IndexBuilder {
                 index_path_str,
                 config,
                 update_config,
-                encode_label,
                 Some(&pb),
             )?;
             was_interrupted |= pipeline_interrupted;
 
             pb.finish_and_clear();
-
-            let total_duration = indexing_started_at.elapsed();
-            println!(
-                "⏱️  Totals: {} {}, index {}, db {}, total {}",
-                encode_label,
-                format_duration(writer_totals.encode_duration),
-                format_duration(writer_totals.vector_index_duration),
-                format_duration(writer_totals.filtering_db_duration),
-                format_duration(total_duration),
-            );
-            log_total_dedup(dedup_stats);
         }
 
         if was_interrupted || is_interrupted() {
@@ -2606,11 +2234,6 @@ impl IndexBuilder {
             .index_chunk_size
             .unwrap_or(INDEX_CHUNK_SIZE)
             .max(encode_batch_size);
-        let encode_label = if force_cpu {
-            "cpu-encode"
-        } else {
-            "gpu/auto-encode"
-        };
 
         // Compute effective pool factor based on batch size
         let effective_pool_factor = self.effective_pool_factor(units.len());
@@ -2620,9 +2243,8 @@ impl IndexBuilder {
             self.sort_order,
             index_chunk_size,
         );
-        let indexing_started_at = Instant::now();
         self.ensure_model_created(units.len())?;
-        let (writer_totals, dedup_stats, was_interrupted) = run_chunk_pipeline(
+        let was_interrupted = run_chunk_pipeline(
             self.model().clone(),
             &sorted_units,
             index_chunk_size,
@@ -2630,24 +2252,12 @@ impl IndexBuilder {
             index_path_str,
             config,
             update_config,
-            encode_label,
             pb.as_ref(),
         )?;
 
         if let Some(pb) = pb {
             pb.finish_and_clear();
         }
-
-        let total_duration = indexing_started_at.elapsed();
-        println!(
-            "⏱️  Totals: {} {}, index {}, db {}, total {}",
-            encode_label,
-            format_duration(writer_totals.encode_duration),
-            format_duration(writer_totals.vector_index_duration),
-            format_duration(writer_totals.filtering_db_duration),
-            format_duration(total_duration),
-        );
-        log_total_dedup(dedup_stats);
 
         // Check if interrupted after all processing (including deferred interrupts)
         Ok(was_interrupted || is_interrupted())
