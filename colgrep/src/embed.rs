@@ -2,6 +2,9 @@ use std::path::Path;
 
 use crate::parser::{CodeUnit, UnitType};
 
+const MAX_EMBEDDING_TEXT_CHARS: usize = 8 * 1024;
+const TRUNCATION_MARKER: &str = "\n[...truncated...]\n";
+
 /// Shorten a file path to keep only the filename and up to 3 parent folders.
 /// This makes paths easier for language models to encode and process.
 fn shorten_path(path: &Path) -> String {
@@ -74,12 +77,41 @@ fn normalize_path_for_embedding(path_str: &str) -> String {
     format!("{} {}", normalized, original_filename)
 }
 
+fn count_chars(s: &str) -> usize {
+    s.chars().count()
+}
+
+fn prefix_by_chars(s: &str, max_chars: usize) -> &str {
+    if max_chars == 0 {
+        return "";
+    }
+
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => &s[..idx],
+        None => s,
+    }
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    if count_chars(text) <= max_chars {
+        return text.to_string();
+    }
+
+    let marker_chars = count_chars(TRUNCATION_MARKER);
+    if max_chars <= marker_chars {
+        return prefix_by_chars(TRUNCATION_MARKER, max_chars).to_string();
+    }
+
+    let kept = prefix_by_chars(text, max_chars - marker_chars).trim_end();
+    format!("{kept}{TRUNCATION_MARKER}")
+}
+
 /// Build text representation combining all 5 analysis layers.
 /// This rich text is what gets embedded by ColBERT for semantic search.
 pub fn build_embedding_text(unit: &CodeUnit) -> String {
     // For RawCode and Constant units, return just the raw code content
     if unit.unit_type == UnitType::RawCode || unit.unit_type == UnitType::Constant {
-        return unit.code.clone();
+        return truncate_text(&unit.code, MAX_EMBEDDING_TEXT_CHARS);
     }
 
     let mut parts = Vec::new();
@@ -153,18 +185,19 @@ pub fn build_embedding_text(unit: &CodeUnit) -> String {
         parts.push(format!("Uses: {}", unit.imports.join(", ")));
     }
 
+    // === File Path (shortened for better LLM encoding) ===
+    let file_part = format!(
+        "File: {}",
+        normalize_path_for_embedding(&shorten_path(&unit.file))
+    );
+    parts.push(file_part);
+
     // === Full Source Code ===
     if !unit.code.is_empty() {
         parts.push(format!("Code:\n{}", unit.code));
     }
 
-    // === File Path (shortened for better LLM encoding) ===
-    parts.push(format!(
-        "File: {}",
-        normalize_path_for_embedding(&shorten_path(&unit.file))
-    ));
-
-    parts.join("\n")
+    truncate_text(&parts.join("\n"), MAX_EMBEDDING_TEXT_CHARS)
 }
 
 #[cfg(test)]
@@ -252,6 +285,48 @@ mod tests {
     #[test]
     fn test_normalize_simple_filename() {
         assert_eq!(normalize_path_for_embedding("main.rs"), "main main.rs");
+    }
+
+    #[test]
+    fn test_build_embedding_text_truncates_raw_code_early() {
+        let mut unit = CodeUnit::new(
+            "raw".to_string(),
+            "src/huge.rs".into(),
+            1,
+            1,
+            crate::parser::Language::Rust,
+            UnitType::RawCode,
+            None,
+        );
+        unit.code = "x".repeat(MAX_EMBEDDING_TEXT_CHARS + 100);
+
+        let text = build_embedding_text(&unit);
+        assert_eq!(count_chars(&text), MAX_EMBEDDING_TEXT_CHARS);
+        assert!(text.contains("[...truncated...]"));
+    }
+
+    #[test]
+    fn test_build_embedding_text_puts_file_before_code_and_truncates_tail() {
+        let mut unit = CodeUnit::new(
+            "huge_fn".to_string(),
+            "src/some/deep/module/very_long_name.rs".into(),
+            1,
+            10,
+            crate::parser::Language::Rust,
+            UnitType::Function,
+            None,
+        );
+        unit.signature = "fn huge_fn()".to_string();
+        unit.code = "a".repeat(MAX_EMBEDDING_TEXT_CHARS + 500);
+
+        let text = build_embedding_text(&unit);
+        assert!(count_chars(&text) <= MAX_EMBEDDING_TEXT_CHARS);
+        assert!(text.contains("[...truncated...]"));
+        assert!(text.contains("File: "));
+        assert!(text.contains("File: some deep module very long name very_long_name.rs"));
+        let file_idx = text.find("File: ").unwrap();
+        let code_idx = text.find("Code:\n").unwrap();
+        assert!(file_idx < code_idx);
     }
 
     #[test]
