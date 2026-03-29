@@ -73,3 +73,5 @@ onnx/ort_gpu/
 data/
 code-processing/
 target/
+.tools/
+captures/
