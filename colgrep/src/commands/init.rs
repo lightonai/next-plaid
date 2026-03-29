@@ -19,7 +19,7 @@ pub fn cmd_init(
     encode_batch_size: Option<usize>,
     index_chunk_size: Option<usize>,
     sort_order: Option<BatchSortOrder>,
-    fix_dynamic: bool,
+    static_batch: bool,
 ) -> Result<()> {
     let path = std::fs::canonicalize(path)
         .map_err(|_| anyhow::anyhow!("Path does not exist: {}", path.display()))?;
@@ -52,7 +52,7 @@ pub fn cmd_init(
     )?;
     builder.set_auto_confirm(auto_confirm);
     builder.set_model_name(&model);
-    builder.set_fix_dynamic_batch(fix_dynamic);
+    builder.set_fix_dynamic_batch(!static_batch);
     if let Some(encode_batch_size) = encode_batch_size {
         builder.set_encode_batch_size(encode_batch_size.max(1));
     }

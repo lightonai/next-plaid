@@ -711,7 +711,7 @@ impl IndexBuilder {
             sort_order: EncodeSortOrder::default(),
             encode_batch_size: None,
             index_chunk_size: None,
-            fix_dynamic_batch: false,
+            fix_dynamic_batch: true,
             auto_confirm: false, // Prompt by default for large indexes
             model_name: None,
         })

@@ -506,9 +506,9 @@ pub enum Commands {
         #[arg(short = 'y', long = "yes")]
         auto_confirm: bool,
 
-        /// Enable fixed GPU document batching using canonical (docs x len) shapes derived from batch-size
-        #[arg(long = "fix-dynamic")]
-        fix_dynamic: bool,
+        /// Use strict batch-size batching instead of fixed dynamic GPU batching
+        #[arg(long = "static-batch")]
+        static_batch: bool,
     },
 
     /// Show index status for a project
@@ -580,9 +580,9 @@ pub enum Commands {
         #[arg(long = "batch-sort-order", value_enum)]
         sort_order: Option<BatchSortOrder>,
 
-        /// Enable fixed GPU document batching using canonical (docs x len) shapes derived from batch-size
-        #[arg(long = "fix-dynamic")]
-        fix_dynamic: bool,
+        /// Use strict batch-size batching instead of fixed dynamic GPU batching
+        #[arg(long = "static-batch")]
+        static_batch: bool,
     },
 
     /// View or set configuration options (default k, n values)

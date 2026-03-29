@@ -115,7 +115,7 @@ fn main() -> Result<()> {
             no_pool,
             pool_factor,
             auto_confirm,
-            fix_dynamic,
+            static_batch,
         }) => {
             // If only -e pattern is given without a query, use the pattern as the query too
             let original_query = query.clone();
@@ -203,7 +203,7 @@ fn main() -> Result<()> {
                     code_only,
                     resolve_pool_factor(pool_factor, no_pool),
                     auto_confirm,
-                    fix_dynamic,
+                    static_batch,
                 )
             } else {
                 // No query or text_pattern provided - show help
@@ -222,7 +222,7 @@ fn main() -> Result<()> {
             encode_batch_size,
             index_chunk_size,
             sort_order,
-            fix_dynamic,
+            static_batch,
         }) => cmd_init(
             &path,
             model.as_deref(),
@@ -233,7 +233,7 @@ fn main() -> Result<()> {
             encode_batch_size,
             index_chunk_size,
             sort_order,
-            fix_dynamic,
+            static_batch,
         ),
         Some(Commands::Update) => cmd_update(),
         Some(Commands::Status { path }) => cmd_status(&path),

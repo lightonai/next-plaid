@@ -808,7 +808,7 @@ impl ColbertBuilder {
             batch_size: None,
             execution_provider: ExecutionProvider::Auto,
             quantized: false,
-            fix_dynamic_batch: false,
+            fix_dynamic_batch: true,
             query_length: None,
             document_length: None,
         }
