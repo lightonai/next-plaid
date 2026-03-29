@@ -66,9 +66,6 @@ pub struct ComputeKmeansConfig {
     /// If provided, explicitly sets the number of centroids (K).
     /// If None, K is calculated using heuristic based on dataset size.
     pub num_partitions: Option<usize>,
-    /// If provided, take the first N documents as the K-means training sample
-    /// instead of randomly sampling from the whole corpus.
-    pub sample_prefix_docs: Option<usize>,
     /// Force CPU execution even when CUDA feature is enabled.
     /// Useful for small batches where GPU initialization overhead exceeds benefits.
     pub force_cpu: bool,
@@ -82,7 +79,6 @@ impl Default for ComputeKmeansConfig {
             seed: 42,
             n_samples_kmeans: None,
             num_partitions: None,
-            sample_prefix_docs: None,
             force_cpu: false,
         }
     }
@@ -311,20 +307,14 @@ pub fn compute_kmeans(
     debug!(
         total_documents = num_documents,
         sampled_documents = n_samples_kmeans,
-        sample_prefix_docs = config.sample_prefix_docs,
         "preparing kmeans training sample"
     );
 
     let mut rng = ChaCha8Rng::seed_from_u64(config.seed);
-    let sampled_indices: Vec<usize> = if let Some(prefix_docs) = config.sample_prefix_docs {
-        let prefix_count = prefix_docs.min(n_samples_kmeans).min(num_documents);
-        (0..prefix_count).collect()
-    } else {
-        let mut indices: Vec<usize> = (0..num_documents).collect();
-        indices.shuffle(&mut rng);
-        indices.truncate(n_samples_kmeans);
-        indices
-    };
+    let mut indices: Vec<usize> = (0..num_documents).collect();
+    indices.shuffle(&mut rng);
+    indices.truncate(n_samples_kmeans);
+    let sampled_indices = indices;
 
     // Calculate total tokens in sampled documents
     let total_sample_tokens: usize = sampled_indices

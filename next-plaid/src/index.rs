@@ -58,10 +58,6 @@ pub struct IndexConfig {
     /// If None, uses heuristic: min(1 + 16 * sqrt(120 * num_documents), num_documents)
     #[serde(default)]
     pub n_samples_kmeans: Option<usize>,
-    /// Internal: if provided, use the first N documents as the K-means sample
-    /// rather than random sampling from the full corpus.
-    #[serde(default)]
-    pub kmeans_sample_prefix_docs: Option<usize>,
     /// Threshold for start-from-scratch mode (default: 999).
     /// When the number of documents is <= this threshold, raw embeddings are saved
     /// to embeddings.npy for potential rebuilds during updates.
@@ -94,7 +90,6 @@ impl Default for IndexConfig {
             kmeans_niters: 4,
             max_points_per_centroid: 256,
             n_samples_kmeans: None,
-            kmeans_sample_prefix_docs: None,
             start_from_scratch: 999,
             force_cpu: false,
         }
@@ -871,7 +866,6 @@ pub fn create_index_with_kmeans_files(
         seed: config.seed.unwrap_or(42),
         n_samples_kmeans: config.n_samples_kmeans,
         num_partitions: None, // Let the heuristic decide
-        sample_prefix_docs: config.kmeans_sample_prefix_docs,
         force_cpu: config.force_cpu,
     };
 
@@ -1395,7 +1389,6 @@ impl MmapIndex {
                     kmeans_niters: config.kmeans_niters,
                     max_points_per_centroid: config.max_points_per_centroid,
                     n_samples_kmeans: config.n_samples_kmeans,
-                    kmeans_sample_prefix_docs: None,
                     start_from_scratch: config.start_from_scratch,
                     force_cpu: config.force_cpu,
                 };

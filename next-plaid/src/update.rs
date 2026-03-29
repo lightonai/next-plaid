@@ -74,7 +74,6 @@ impl UpdateConfig {
             seed: self.seed,
             n_samples_kmeans: self.n_samples_kmeans,
             num_partitions: None,
-            sample_prefix_docs: None,
             force_cpu: self.force_cpu,
         }
     }
@@ -617,20 +616,7 @@ fn find_outliers(
     centroids: &Array2<f32>,
     threshold_sq: f32,
 ) -> Vec<usize> {
-    let blocked_started = std::time::Instant::now();
-    let blocked_result = find_outliers_blocked(flat_embeddings, centroids, threshold_sq);
-    let blocked_elapsed = blocked_started.elapsed();
-
-    eprintln!(
-        "[next-plaid] find_outliers: blocked {} (n={}, k={}, dim={}, outliers={})",
-        blocked_elapsed.as_secs_f64(),
-        flat_embeddings.nrows(),
-        centroids.nrows(),
-        flat_embeddings.ncols(),
-        blocked_result.len(),
-    );
-
-    blocked_result
+    find_outliers_blocked(flat_embeddings, centroids, threshold_sq)
 }
 
 /// Expand centroids by clustering embeddings far from existing centroids.
@@ -707,7 +693,6 @@ pub fn update_centroids(
         seed: config.seed,
         n_samples_kmeans: config.n_samples_kmeans,
         num_partitions: Some(k_update),
-        sample_prefix_docs: None,
         force_cpu: config.force_cpu,
     };
 

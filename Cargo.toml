@@ -20,9 +20,8 @@ anyhow = "1.0"
 tracing = "0.1"
 
 [profile.release]
-# lto = true
-# codegen-units = 1
-debug = true
+lto = true
+codegen-units = 1
 opt-level = 3
 
 [profile.bench]

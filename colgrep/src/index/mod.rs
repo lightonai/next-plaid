@@ -285,10 +285,6 @@ fn run_index_stage(
         if initial_create_config.n_samples_kmeans.is_none() {
             initial_create_config.n_samples_kmeans = Some(initial_kmeans_sample_docs.max(1));
         }
-        if initial_create_config.kmeans_sample_prefix_docs.is_none() {
-            initial_create_config.kmeans_sample_prefix_docs =
-                Some(initial_kmeans_sample_docs.max(1));
-        }
 
         let sample_embeddings = first_chunk.embeddings.clone();
         let kmeans_config = initial_create_config.clone();
@@ -303,7 +299,6 @@ fn run_index_stage(
                         seed: kmeans_config.seed.unwrap_or(42),
                         n_samples_kmeans: kmeans_config.n_samples_kmeans,
                         num_partitions: None,
-                        sample_prefix_docs: kmeans_config.kmeans_sample_prefix_docs,
                         force_cpu: kmeans_config.force_cpu,
                     },
                 )?;
