@@ -618,6 +618,8 @@ fn validate_fixed_columns(columns: &[(&str, &str)]) -> Result<()> {
 }
 
 fn create_fixed_metadata_table(conn: &Connection, columns: &[(&str, &str)]) -> Result<()> {
+    // The caller has already committed to a stable schema, so we can skip the
+    // generic "discover columns as we go" logic and create the table directly.
     let mut col_defs = vec![format!("\"{}\" INTEGER PRIMARY KEY", SUBSET_COLUMN)];
     for (name, sql_type) in columns {
         col_defs.push(format!("\"{}\" {}", name, sql_type));
@@ -650,6 +652,8 @@ fn insert_fixed_metadata_rows(
             })?;
             let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
             for (column_name, _) in columns {
+                // Reuse the generic JSON-to-SQL coercion so the fast path stores
+                // values exactly like the slower schema-discovery path.
                 let value = obj.get(*column_name).unwrap_or(&Value::Null);
                 values.push(json_to_sql(value));
             }
@@ -682,6 +686,8 @@ fn try_fixed_schema_from_first_row(
         columns.push((key.as_str(), infer_sql_type(value)));
     }
 
+    // If every later row is a subset of the first row's keys, the batch is
+    // effectively fixed-schema and we can stay on the cheaper insert path.
     for item in &metadata[1..] {
         if let Value::Object(obj) = item {
             for key in obj.keys() {
@@ -826,6 +832,9 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         return Ok(0);
     }
 
+    // Most colgrep metadata batches are fixed-shape JSON objects. Detect that
+    // early so creation does one direct CREATE TABLE + INSERT pass instead of
+    // paying for generic column discovery on every batch.
     if let Some(columns) = try_fixed_schema_from_first_row(metadata)? {
         return create_with_fixed_columns(index_path, &columns, metadata, doc_ids);
     }
@@ -979,6 +988,9 @@ pub fn update(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         })
     });
     if !has_new_columns {
+        // Common case: callers keep sending the same schema that already exists
+        // in SQLite. Skip PRAGMA-driven schema mutation work and append rows
+        // directly using the current column order.
         let fixed_columns: Vec<(&str, &str)> = existing_columns
             .iter()
             .map(|column| (column.as_str(), "TEXT"))
