@@ -1,8 +1,11 @@
 pub mod paths;
 pub mod state;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, mpsc};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -10,9 +13,12 @@ use ignore::gitignore::GitignoreBuilder;
 use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use next_plaid::{
-    delete_from_index, filtering, IndexConfig, Metadata, MmapIndex, SearchParameters, UpdateConfig,
+    delete_from_index, encode_index_chunk, filtering, prepare_codec_artifacts,
+    write_index_from_encoded_chunks, EncodedIndexChunk, IndexConfig, Metadata, MmapIndex,
+    SearchParameters, UpdateConfig,
 };
-use next_plaid_onnx::{Colbert, ExecutionProvider};
+use next_plaid_onnx::{pool_document_embeddings, Colbert, ExecutionProvider};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "cuda")]
@@ -47,10 +53,21 @@ const LARGE_BATCH_THRESHOLD: usize = 10_000;
 /// Higher value = fewer embeddings = faster indexing and smaller index.
 const LARGE_BATCH_POOL_FACTOR: usize = 2;
 
+const DEFAULT_ENCODE_BATCH_SIZE: usize = 64;
+
 /// Threshold for forcing CPU encoding even when CUDA is available.
 /// For small batches (< this many units), CPU is faster due to GPU initialization overhead.
 #[cfg(feature = "cuda")]
 const SMALL_BATCH_CPU_THRESHOLD: usize = 300;
+const POOLED_EMBEDDING_QUEUE_CAPACITY: usize = 4;
+const METADATA_QUEUE_CAPACITY: usize = 8;
+
+struct ParsedFileResult {
+    path: PathBuf,
+    units: Vec<CodeUnit>,
+    file_info: Option<FileInfo>,
+    skip_reason: Option<String>,
+}
 
 #[derive(Debug)]
 pub struct UpdateStats {
@@ -69,17 +86,912 @@ pub struct UpdatePlan {
     pub unchanged: usize,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct DedupStats {
+    original_rows: usize,
+    unique_rows: usize,
+}
+
+#[derive(Default)]
+struct WriterStageTotals {
+    encode_duration: Duration,
+    vector_index_duration: Duration,
+    filtering_db_duration: Duration,
+}
+
+struct SortedUnit {
+    unit: Arc<CodeUnit>,
+    text: Arc<str>,
+}
+
+struct PreparedChunk {
+    chunk_idx: usize,
+    total_chunks: usize,
+    units: Vec<Arc<CodeUnit>>,
+    unique_texts: Vec<Arc<str>>,
+    original_to_unique: Vec<usize>,
+    max_text_bytes: usize,
+}
+
+struct TokenizedChunk {
+    chunk_idx: usize,
+    total_chunks: usize,
+    units: Vec<Arc<CodeUnit>>,
+    prepared_batches: Vec<next_plaid_onnx::PreparedDocumentBatch>,
+    original_to_unique: Vec<usize>,
+    tokenize_duration: Duration,
+    max_text_bytes: usize,
+}
+
+struct RawEncodedChunk {
+    chunk_idx: usize,
+    total_chunks: usize,
+    units: Vec<Arc<CodeUnit>>,
+    raw_embeddings: Vec<ndarray::Array2<f32>>,
+    original_to_unique: Vec<usize>,
+    encode_duration: Duration,
+    max_text_bytes: usize,
+}
+
+struct PooledChunkForIndex {
+    chunk_idx: usize,
+    total_chunks: usize,
+    units: Vec<Arc<CodeUnit>>,
+    embeddings: Vec<ndarray::Array2<f32>>,
+    encode_duration: Duration,
+    max_text_bytes: usize,
+}
+
+struct IndexedChunkForMetadata {
+    chunk_idx: usize,
+    total_chunks: usize,
+    units: Vec<Arc<CodeUnit>>,
+    doc_ids: Vec<i64>,
+    encode_duration: Duration,
+    vector_index_duration: Duration,
+    max_text_bytes: usize,
+    total_tokens: usize,
+    max_tokens: usize,
+    embedding_dim: usize,
+    embedding_bytes: usize,
+}
+
+struct ChunkForCoding {
+    embeddings: Vec<ndarray::Array2<f32>>,
+}
+
 /// Threshold for prompting user confirmation before indexing.
 /// When encoding more than this many units, prompt the user unless auto_confirm is set.
 pub const CONFIRMATION_THRESHOLD: usize = 30_000;
 
-fn sorted_units_for_encoding(units: &[CodeUnit]) -> Vec<(&CodeUnit, String)> {
-    let mut items: Vec<(&CodeUnit, String)> = units
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EncodeSortOrder {
+    #[default]
+    BigFirst,
+    SmallFirst,
+}
+
+fn sorted_units_for_encoding_with_kmeans_sample_prefix(
+    units: &[CodeUnit],
+    sort_order: EncodeSortOrder,
+    sample_prefix_size: usize,
+) -> Vec<SortedUnit> {
+    let sample_prefix_size = sample_prefix_size.min(units.len());
+    let (sample_prefix, remainder) = units.split_at(sample_prefix_size);
+
+    let mut prefix_items: Vec<SortedUnit> = sample_prefix
         .iter()
-        .map(|unit| (unit, build_embedding_text(unit)))
+        .map(|unit| SortedUnit {
+            unit: Arc::new(unit.clone()),
+            text: Arc::<str>::from(build_embedding_text(unit)),
+        })
         .collect();
-    items.sort_unstable_by_key(|(_, text)| std::cmp::Reverse(text.len()));
-    items
+    let mut remainder_items: Vec<SortedUnit> = remainder
+        .iter()
+        .map(|unit| SortedUnit {
+            unit: Arc::new(unit.clone()),
+            text: Arc::<str>::from(build_embedding_text(unit)),
+        })
+        .collect();
+
+    match sort_order {
+        EncodeSortOrder::BigFirst => {
+            prefix_items.sort_unstable_by_key(|item| std::cmp::Reverse(item.text.len()));
+            remainder_items.sort_unstable_by_key(|item| std::cmp::Reverse(item.text.len()));
+        }
+        EncodeSortOrder::SmallFirst => {
+            prefix_items.sort_unstable_by_key(|item| item.text.len());
+            remainder_items.sort_unstable_by_key(|item| item.text.len());
+        }
+    }
+
+    prefix_items.extend(remainder_items);
+    prefix_items
+}
+
+fn format_duration(duration: Duration) -> String {
+    format!("{:.3}s", duration.as_secs_f64())
+}
+
+fn format_bytes(bytes: usize) -> String {
+    const KB: usize = 1024;
+    const MB: usize = 1024 * KB;
+    if bytes >= MB {
+        format!("{:.2} MiB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KiB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+fn summarize_embedding_chunk(
+    chunk_embeddings: &[ndarray::Array2<f32>],
+) -> (usize, usize, usize, usize) {
+    let docs = chunk_embeddings.len();
+    let total_tokens = chunk_embeddings
+        .iter()
+        .map(|arr| arr.nrows())
+        .sum::<usize>();
+    let max_tokens = chunk_embeddings
+        .iter()
+        .map(|arr| arr.nrows())
+        .max()
+        .unwrap_or(0);
+    let embedding_dim = chunk_embeddings.first().map(|arr| arr.ncols()).unwrap_or(0);
+    (docs, total_tokens, max_tokens, embedding_dim)
+}
+
+fn summarize_metadata_values(
+    metadata: &[serde_json::Value],
+    units: &[Arc<CodeUnit>],
+) -> (usize, usize, usize) {
+    let total_json_bytes = metadata
+        .iter()
+        .map(|item| {
+            serde_json::to_string(item)
+                .map(|json| json.len())
+                .unwrap_or(0)
+        })
+        .sum::<usize>();
+    let max_json_bytes = metadata
+        .iter()
+        .map(|item| {
+            serde_json::to_string(item)
+                .map(|json| json.len())
+                .unwrap_or(0)
+        })
+        .max()
+        .unwrap_or(0);
+    let max_code_bytes = units.iter().map(|unit| unit.code.len()).max().unwrap_or(0);
+    (total_json_bytes, max_json_bytes, max_code_bytes)
+}
+
+fn log_chunk_dedup(original_rows: usize, unique_rows: usize) {
+    let backfilled_rows = original_rows.saturating_sub(unique_rows);
+    println!(
+        "   dedup: original {}, unique {}, backfilled {}",
+        original_rows, unique_rows, backfilled_rows
+    );
+}
+
+fn log_total_dedup(stats: DedupStats) {
+    println!(
+        "   dedup totals: original {}, unique {}, backfilled {}",
+        stats.original_rows,
+        stats.unique_rows,
+        stats.original_rows.saturating_sub(stats.unique_rows)
+    );
+}
+
+fn prepare_deduplicated_chunk(
+    chunk_idx: usize,
+    total_chunks: usize,
+    unit_chunk: &[SortedUnit],
+    dedup_stats: &mut DedupStats,
+) -> PreparedChunk {
+    let mut index_by_text: HashMap<&str, usize> = HashMap::new();
+    let mut unique_texts: Vec<Arc<str>> = Vec::new();
+    let mut original_to_unique: Vec<usize> = Vec::with_capacity(unit_chunk.len());
+
+    for item in unit_chunk.iter() {
+        if let Some(&unique_idx) = index_by_text.get(item.text.as_ref()) {
+            original_to_unique.push(unique_idx);
+        } else {
+            let unique_idx = unique_texts.len();
+            index_by_text.insert(item.text.as_ref(), unique_idx);
+            unique_texts.push(Arc::clone(&item.text));
+            original_to_unique.push(unique_idx);
+        }
+    }
+
+    log_chunk_dedup(unit_chunk.len(), unique_texts.len());
+    dedup_stats.original_rows += unit_chunk.len();
+    dedup_stats.unique_rows += unique_texts.len();
+    let max_text_bytes = unit_chunk
+        .iter()
+        .map(|item| item.text.len())
+        .max()
+        .unwrap_or(0);
+
+    PreparedChunk {
+        chunk_idx,
+        total_chunks,
+        units: unit_chunk.iter().map(|item| Arc::clone(&item.unit)).collect(),
+        unique_texts,
+        original_to_unique,
+        max_text_bytes,
+    }
+}
+
+fn log_chunk_timing(
+    chunk_idx: usize,
+    total_chunks: usize,
+    unit_count: usize,
+    encode_label: &str,
+    encode_duration: Duration,
+    vector_index_duration: Duration,
+    filtering_db_duration: Duration,
+    max_text_bytes: usize,
+    total_tokens: usize,
+    max_tokens: usize,
+    embedding_dim: usize,
+    embedding_bytes: usize,
+    total_json_bytes: usize,
+    max_json_bytes: usize,
+    max_code_bytes: usize,
+) {
+    let index_total = vector_index_duration + filtering_db_duration;
+    let chunk_total = encode_duration + index_total;
+    println!(
+        "⏱️  Chunk {}/{} ({} units): {} {}, index {}, db {}, total {}",
+        chunk_idx + 1,
+        total_chunks,
+        unit_count,
+        encode_label,
+        format_duration(encode_duration),
+        format_duration(vector_index_duration),
+        format_duration(filtering_db_duration),
+        format_duration(chunk_total),
+    );
+    println!(
+        "   biggest text {}, next-plaid tensors: docs {}, total_tokens {}, max_tokens {}, dim {}, approx {}",
+        format_bytes(max_text_bytes),
+        unit_count,
+        total_tokens,
+        max_tokens,
+        embedding_dim,
+        format_bytes(embedding_bytes),
+    );
+    println!(
+        "   metadata db payload: total {}, max row {}, max code {}",
+        format_bytes(total_json_bytes),
+        format_bytes(max_json_bytes),
+        format_bytes(max_code_bytes),
+    );
+}
+
+fn run_encode_stage(
+    receiver: mpsc::Receiver<TokenizedChunk>,
+    sender: mpsc::Sender<RawEncodedChunk>,
+    model: Colbert,
+    bench_max_doc_len: Option<usize>,
+) -> Result<Duration> {
+    let mut total = Duration::ZERO;
+
+    while let Ok(chunk) = receiver.recv() {
+        let total_microbatches = chunk.prepared_batches.len();
+        let mut kept_batches = Vec::with_capacity(total_microbatches);
+        for (microbatch_idx, prepared_batch) in chunk.prepared_batches.into_iter().enumerate() {
+            if let Some(max_doc_len) = bench_max_doc_len {
+                if prepared_batch.batch_max_len() > max_doc_len {
+                    println!(
+                        "[next-plaid-onnx] skipping microbatch: chunk={}/{}, idx={}/{}, docs={}, max_len={}, planned_len={}, actual_padded_tokens={}, planned_padded_tokens={}, reason=max_len>{}",
+                        chunk.chunk_idx + 1,
+                        chunk.total_chunks,
+                        microbatch_idx,
+                        total_microbatches,
+                        prepared_batch.batch_size(),
+                        prepared_batch.batch_max_len(),
+                        prepared_batch.planned_len(),
+                        prepared_batch.actual_padded_tokens(),
+                        prepared_batch.planned_padded_tokens(),
+                        max_doc_len,
+                    );
+                    continue;
+                }
+            }
+
+            println!(
+                "[next-plaid-onnx] running microbatch: chunk={}/{}, idx={}/{}, docs={}, max_len={}, planned_len={}, actual_padded_tokens={}, planned_padded_tokens={}",
+                chunk.chunk_idx + 1,
+                chunk.total_chunks,
+                microbatch_idx,
+                total_microbatches,
+                prepared_batch.batch_size(),
+                prepared_batch.batch_max_len(),
+                prepared_batch.planned_len(),
+                prepared_batch.actual_padded_tokens(),
+                prepared_batch.planned_padded_tokens(),
+            );
+            kept_batches.push(prepared_batch);
+        }
+        let started_at = Instant::now();
+        let raw_embeddings = model.encode_prepared_document_batches(kept_batches)?;
+        let gpu_encode_duration = started_at.elapsed();
+        let encode_duration = chunk.tokenize_duration + gpu_encode_duration;
+        total += encode_duration;
+
+        sender
+            .send(RawEncodedChunk {
+                chunk_idx: chunk.chunk_idx,
+                total_chunks: chunk.total_chunks,
+                units: chunk.units,
+                raw_embeddings,
+                original_to_unique: chunk.original_to_unique,
+                encode_duration,
+                max_text_bytes: chunk.max_text_bytes,
+            })
+            .context("Failed to send raw embeddings to pooling stage")?;
+    }
+
+    Ok(total)
+}
+
+fn bench_max_doc_len_limit(encode_only_bench: bool) -> Option<usize> {
+    if !encode_only_bench {
+        return None;
+    }
+
+    std::env::var("NEXT_PLAID_BENCH_MAX_DOC_LEN")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+}
+
+fn run_tokenize_stage(
+    receiver: mpsc::Receiver<PreparedChunk>,
+    sender: mpsc::Sender<TokenizedChunk>,
+    model: Colbert,
+) -> Result<Duration> {
+    let mut total = Duration::ZERO;
+
+    while let Ok(chunk) = receiver.recv() {
+        let text_refs: Vec<&str> = chunk
+            .unique_texts
+            .iter()
+            .map(|text| text.as_ref())
+            .collect();
+        let started_at = Instant::now();
+        let prepared_batches = model.tokenize_documents_in_batches(&text_refs)?;
+        let tokenize_duration = started_at.elapsed();
+        total += tokenize_duration;
+
+        sender
+            .send(TokenizedChunk {
+                chunk_idx: chunk.chunk_idx,
+                total_chunks: chunk.total_chunks,
+                units: chunk.units,
+                prepared_batches,
+                original_to_unique: chunk.original_to_unique,
+                tokenize_duration,
+                max_text_bytes: chunk.max_text_bytes,
+            })
+            .context("Failed to send tokenized chunk to encode stage")?;
+    }
+
+    Ok(total)
+}
+
+fn run_pool_stage(
+    receiver: mpsc::Receiver<RawEncodedChunk>,
+    sender: mpsc::SyncSender<PooledChunkForIndex>,
+    effective_pool_factor: Option<usize>,
+) -> Result<()> {
+    while let Ok(chunk) = receiver.recv() {
+        let pooled_unique = pool_document_embeddings(chunk.raw_embeddings, effective_pool_factor);
+        let embeddings = chunk
+            .original_to_unique
+            .into_iter()
+            .map(|unique_idx| pooled_unique[unique_idx].clone())
+            .collect();
+
+        sender
+            .send(PooledChunkForIndex {
+                chunk_idx: chunk.chunk_idx,
+                total_chunks: chunk.total_chunks,
+                units: chunk.units,
+                embeddings,
+                encode_duration: chunk.encode_duration,
+                max_text_bytes: chunk.max_text_bytes,
+            })
+            .context("Failed to send pooled embeddings to index stage")?;
+    }
+
+    Ok(())
+}
+
+fn run_encode_only_sink_stage(
+    receiver: mpsc::Receiver<RawEncodedChunk>,
+    encode_label: String,
+    pb: Option<ProgressBar>,
+) -> Result<WriterStageTotals> {
+    let mut totals = WriterStageTotals::default();
+    let mut completed_units = 0u64;
+
+    while let Ok(chunk) = receiver.recv() {
+        totals.encode_duration += chunk.encode_duration;
+        completed_units += chunk.units.len() as u64;
+
+        if let Some(pb) = pb.as_ref() {
+            pb.set_position(completed_units);
+        }
+
+        let (docs, total_tokens, max_tokens, embedding_dim) =
+            summarize_embedding_chunk(&chunk.raw_embeddings);
+        let embedding_bytes = total_tokens * embedding_dim * std::mem::size_of::<f32>();
+        log_chunk_timing(
+            chunk.chunk_idx,
+            chunk.total_chunks,
+            docs,
+            &encode_label,
+            chunk.encode_duration,
+            Duration::ZERO,
+            Duration::ZERO,
+            chunk.max_text_bytes,
+            total_tokens,
+            max_tokens,
+            embedding_dim,
+            embedding_bytes,
+            0,
+            0,
+            0,
+        );
+    }
+
+    Ok(totals)
+}
+
+fn run_index_stage(
+    receiver: mpsc::Receiver<PooledChunkForIndex>,
+    sender: mpsc::SyncSender<IndexedChunkForMetadata>,
+    index_path: String,
+    config: IndexConfig,
+    update_config: UpdateConfig,
+    initial_kmeans_sample_docs: usize,
+) -> Result<WriterStageTotals> {
+    let mut totals = WriterStageTotals::default();
+    let initial_create = !Path::new(&index_path).join("metadata.json").exists();
+
+    if initial_create {
+        let first_chunk = match receiver.recv() {
+            Ok(chunk) => chunk,
+            Err(_) => return Ok(totals),
+        };
+
+        let mut next_doc_id = 0i64;
+        let mut initial_create_config = config.clone();
+        if initial_create_config.n_samples_kmeans.is_none() {
+            initial_create_config.n_samples_kmeans = Some(initial_kmeans_sample_docs.max(1));
+        }
+        if initial_create_config.kmeans_sample_prefix_docs.is_none() {
+            initial_create_config.kmeans_sample_prefix_docs =
+                Some(initial_kmeans_sample_docs.max(1));
+        }
+
+        let sample_embeddings = first_chunk.embeddings.clone();
+        let kmeans_config = initial_create_config.clone();
+        let kmeans_handle = thread::Builder::new()
+            .name("colgrep-kmeans".to_string())
+            .spawn(move || -> Result<_> {
+                let centroids = next_plaid::compute_kmeans(
+                    &sample_embeddings,
+                    &next_plaid::kmeans::ComputeKmeansConfig {
+                        kmeans_niters: kmeans_config.kmeans_niters,
+                        max_points_per_centroid: kmeans_config.max_points_per_centroid,
+                        seed: kmeans_config.seed.unwrap_or(42),
+                        n_samples_kmeans: kmeans_config.n_samples_kmeans,
+                        num_partitions: None,
+                        sample_prefix_docs: kmeans_config.kmeans_sample_prefix_docs,
+                        force_cpu: kmeans_config.force_cpu,
+                    },
+                )?;
+                Ok(prepare_codec_artifacts(
+                    &sample_embeddings,
+                    centroids,
+                    &kmeans_config,
+                )?)
+            })
+            .context("Failed to spawn kmeans stage thread")?;
+
+        let (coding_tx, coding_rx) = mpsc::sync_channel::<ChunkForCoding>(8);
+        let coding_index_path = index_path.clone();
+        let coding_config = initial_create_config.clone();
+        let coding_force_cpu = update_config.force_cpu;
+        let coding_handle = thread::Builder::new()
+            .name("colgrep-coding".to_string())
+            .spawn(move || -> Result<Duration> {
+                let codec_artifacts = kmeans_handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("K-means stage thread panicked"))??;
+                let started_at = Instant::now();
+                let mut encoded_chunks: Vec<EncodedIndexChunk> = Vec::new();
+                while let Ok(chunk) = coding_rx.recv() {
+                    let encoded = encode_index_chunk(
+                        &chunk.embeddings,
+                        &codec_artifacts.codec,
+                        coding_force_cpu,
+                    )?;
+                    encoded_chunks.push(encoded);
+                }
+                let _guard = CriticalSectionGuard::new();
+                write_index_from_encoded_chunks(
+                    &encoded_chunks,
+                    &codec_artifacts,
+                    &coding_index_path,
+                    &coding_config,
+                )?;
+                Ok(started_at.elapsed())
+            })
+            .context("Failed to spawn coding stage thread")?;
+
+        let mut handle_chunk = |chunk: PooledChunkForIndex| -> Result<()> {
+            let (doc_count, total_tokens, max_tokens, embedding_dim) =
+                summarize_embedding_chunk(&chunk.embeddings);
+            let embedding_bytes = total_tokens * embedding_dim * std::mem::size_of::<f32>();
+            let doc_ids: Vec<i64> = (next_doc_id..next_doc_id + doc_count as i64).collect();
+            next_doc_id += doc_count as i64;
+
+            coding_tx
+                .send(ChunkForCoding {
+                    embeddings: chunk.embeddings,
+                })
+                .context("Failed to send chunk to coding stage")?;
+
+            sender
+                .send(IndexedChunkForMetadata {
+                    chunk_idx: chunk.chunk_idx,
+                    total_chunks: chunk.total_chunks,
+                    units: chunk.units,
+                    doc_ids,
+                    encode_duration: chunk.encode_duration,
+                    vector_index_duration: Duration::ZERO,
+                    max_text_bytes: chunk.max_text_bytes,
+                    total_tokens,
+                    max_tokens,
+                    embedding_dim,
+                    embedding_bytes,
+                })
+                .context("Failed to send indexed chunk to metadata stage")
+        };
+
+        handle_chunk(first_chunk)?;
+        while let Ok(chunk) = receiver.recv() {
+            handle_chunk(chunk)?;
+        }
+        drop(coding_tx);
+        totals.vector_index_duration += coding_handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("Coding stage thread panicked"))??;
+        return Ok(totals);
+    }
+
+    while let Ok(chunk) = receiver.recv() {
+        let (_docs, total_tokens, max_tokens, embedding_dim) =
+            summarize_embedding_chunk(&chunk.embeddings);
+        let embedding_bytes = total_tokens * embedding_dim * std::mem::size_of::<f32>();
+        let _guard = CriticalSectionGuard::new();
+        let vector_index_started_at = Instant::now();
+        let (_, doc_ids) =
+            MmapIndex::update_or_create(&chunk.embeddings, &index_path, &config, &update_config)?;
+        let chunk_vector_index_duration = vector_index_started_at.elapsed();
+        totals.vector_index_duration += chunk_vector_index_duration;
+
+        sender
+            .send(IndexedChunkForMetadata {
+                chunk_idx: chunk.chunk_idx,
+                total_chunks: chunk.total_chunks,
+                units: chunk.units,
+                doc_ids,
+                encode_duration: chunk.encode_duration,
+                vector_index_duration: chunk_vector_index_duration,
+                max_text_bytes: chunk.max_text_bytes,
+                total_tokens,
+                max_tokens,
+                embedding_dim,
+                embedding_bytes,
+            })
+            .context("Failed to send indexed chunk to metadata stage")?;
+    }
+
+    Ok(totals)
+}
+
+fn run_metadata_stage(
+    receiver: mpsc::Receiver<IndexedChunkForMetadata>,
+    index_path: String,
+    encode_label: String,
+    pb: Option<ProgressBar>,
+) -> Result<WriterStageTotals> {
+    let mut totals = WriterStageTotals::default();
+    let mut filtering_exists = filtering::exists(&index_path);
+    let mut completed_units = 0u64;
+
+    while let Ok(chunk) = receiver.recv() {
+        let metadata: Vec<serde_json::Value> = chunk
+            .units
+            .iter()
+            .map(|unit| serde_json::to_value(unit.as_ref()).unwrap())
+            .collect();
+        let (total_json_bytes, max_json_bytes, max_code_bytes) =
+            summarize_metadata_values(&metadata, &chunk.units);
+
+        let filtering_db_started_at = Instant::now();
+        let db_result = if filtering_exists {
+            filtering::update_codeunit(&index_path, &metadata, &chunk.doc_ids)
+        } else {
+            filtering::create_codeunit(&index_path, &metadata, &chunk.doc_ids)
+        };
+        let chunk_filtering_db_duration = filtering_db_started_at.elapsed();
+        totals.filtering_db_duration += chunk_filtering_db_duration;
+
+        if let Err(e) = db_result {
+            if let Err(rollback_err) = delete_from_index(&chunk.doc_ids, &index_path) {
+                eprintln!("⚠️  Rollback failed: {}", rollback_err);
+            }
+            return Err(e.into());
+        }
+        filtering_exists = true;
+        completed_units += chunk.units.len() as u64;
+        if let Some(pb) = pb.as_ref() {
+            pb.set_position(completed_units);
+        }
+
+        log_chunk_timing(
+            chunk.chunk_idx,
+            chunk.total_chunks,
+            chunk.units.len(),
+            &encode_label,
+            chunk.encode_duration,
+            chunk.vector_index_duration,
+            chunk_filtering_db_duration,
+            chunk.max_text_bytes,
+            chunk.total_tokens,
+            chunk.max_tokens,
+            chunk.embedding_dim,
+            chunk.embedding_bytes,
+            total_json_bytes,
+            max_json_bytes,
+            max_code_bytes,
+        );
+    }
+
+    Ok(totals)
+}
+
+fn run_chunk_pipeline(
+    model: Colbert,
+    sorted_units: &[SortedUnit],
+    index_chunk_size: usize,
+    effective_pool_factor: Option<usize>,
+    index_path: &str,
+    config: IndexConfig,
+    update_config: UpdateConfig,
+    encode_label: &str,
+    pb: Option<&ProgressBar>,
+) -> Result<(WriterStageTotals, DedupStats, bool)> {
+    let total_chunks = sorted_units.len().div_ceil(index_chunk_size);
+    let mut dedup_stats = DedupStats::default();
+    let mut was_interrupted = false;
+    let encode_pipeline_started_at = Instant::now();
+    let encode_only_bench = std::env::var("NEXT_PLAID_BENCH_ENCODE_ONLY")
+        .ok()
+        .map(|v| {
+            let v = v.to_ascii_lowercase();
+            !matches!(v.as_str(), "" | "0" | "false" | "off" | "no")
+        })
+        .unwrap_or(false);
+    let bench_max_doc_len = bench_max_doc_len_limit(encode_only_bench);
+
+    let (tokenize_tx, tokenize_rx) = mpsc::channel::<PreparedChunk>();
+    let (encode_tx, encode_rx) = mpsc::channel::<TokenizedChunk>();
+    let (pool_tx, pool_rx) = mpsc::channel::<RawEncodedChunk>();
+    let (index_tx, index_rx) =
+        mpsc::sync_channel::<PooledChunkForIndex>(POOLED_EMBEDDING_QUEUE_CAPACITY);
+    let (metadata_tx, metadata_rx) =
+        mpsc::sync_channel::<IndexedChunkForMetadata>(METADATA_QUEUE_CAPACITY);
+
+    let tokenize_model = model.clone();
+    let tokenize_handle = thread::Builder::new()
+        .name("colgrep-tokenize".to_string())
+        .spawn(move || run_tokenize_stage(tokenize_rx, encode_tx, tokenize_model))
+        .context("Failed to spawn tokenize stage thread")?;
+    let encode_model = model.clone();
+    let encode_handle = thread::Builder::new()
+        .name("colgrep-encode".to_string())
+        .spawn(move || run_encode_stage(encode_rx, pool_tx, encode_model, bench_max_doc_len))
+        .context("Failed to spawn encode stage thread")?;
+    let downstream_handles = if encode_only_bench {
+        let encode_label_for_sink = encode_label.to_string();
+        let sink_pb = pb.cloned();
+        let sink_handle = thread::Builder::new()
+            .name("colgrep-encode-sink".to_string())
+            .spawn(move || run_encode_only_sink_stage(pool_rx, encode_label_for_sink, sink_pb))
+            .context("Failed to spawn encode-only sink stage thread")?;
+        (Some(sink_handle), None, None)
+    } else {
+        let pool_handle = thread::Builder::new()
+            .name("colgrep-pool".to_string())
+            .spawn(move || run_pool_stage(pool_rx, index_tx, effective_pool_factor))
+            .context("Failed to spawn pool stage thread")?;
+        let index_path_for_index = index_path.to_string();
+        let index_handle = thread::Builder::new()
+            .name("colgrep-index".to_string())
+            .spawn(move || {
+                run_index_stage(
+                    index_rx,
+                    metadata_tx,
+                    index_path_for_index,
+                    config,
+                    update_config,
+                    index_chunk_size,
+                )
+            })
+            .context("Failed to spawn index stage thread")?;
+        let index_path_for_metadata = index_path.to_string();
+        let encode_label_for_metadata = encode_label.to_string();
+        let metadata_pb = pb.cloned();
+        let metadata_handle = thread::Builder::new()
+            .name("colgrep-metadata".to_string())
+            .spawn(move || {
+                run_metadata_stage(
+                    metadata_rx,
+                    index_path_for_metadata,
+                    encode_label_for_metadata,
+                    metadata_pb,
+                )
+            })
+            .context("Failed to spawn metadata stage thread")?;
+        (
+            None,
+            Some((pool_handle, index_handle)),
+            Some(metadata_handle),
+        )
+    };
+
+    for (chunk_idx, unit_chunk) in sorted_units.chunks(index_chunk_size).enumerate() {
+        if is_interrupted_outside_critical() {
+            was_interrupted = true;
+            break;
+        }
+
+        let prepared =
+            prepare_deduplicated_chunk(chunk_idx, total_chunks, unit_chunk, &mut dedup_stats);
+
+        tokenize_tx
+            .send(prepared)
+            .context("Failed to send prepared chunk to tokenize stage")?;
+    }
+
+    drop(tokenize_tx);
+
+    let _tokenize_duration = tokenize_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Tokenize stage thread panicked"))??;
+    encode_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Encode stage thread panicked"))??;
+    let encode_duration = encode_pipeline_started_at.elapsed();
+    if let Some(sink_handle) = downstream_handles.0 {
+        let _ = sink_handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("Encode-only sink stage thread panicked"))??;
+        return Ok((
+            WriterStageTotals {
+                encode_duration,
+                vector_index_duration: Duration::ZERO,
+                filtering_db_duration: Duration::ZERO,
+            },
+            dedup_stats,
+            was_interrupted,
+        ));
+    }
+    let (pool_handle, index_handle) = downstream_handles
+        .1
+        .expect("missing downstream stage handles");
+    let metadata_handle = downstream_handles.2.expect("missing metadata stage handle");
+    pool_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Pool stage thread panicked"))??;
+    let index_totals = index_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Index stage thread panicked"))??;
+    let metadata_totals = metadata_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Metadata stage thread panicked"))??;
+
+    Ok((
+        WriterStageTotals {
+            encode_duration,
+            vector_index_duration: index_totals.vector_index_duration,
+            filtering_db_duration: metadata_totals.filtering_db_duration,
+        },
+        dedup_stats,
+        was_interrupted,
+    ))
+}
+
+fn parse_files_parallel(
+    project_root: &Path,
+    paths: &[PathBuf],
+    pb: Option<&ProgressBar>,
+) -> Vec<ParsedFileResult> {
+    let progress = pb.cloned();
+
+    paths
+        .par_iter()
+        .map(|path| {
+            let full_path = project_root.join(path);
+            let result = match detect_language(&full_path) {
+                Some(lang) => match std::fs::read_to_string(&full_path) {
+                    Ok(source) => {
+                        let units = extract_units(path, &source, lang);
+                        match hash_file(&full_path) {
+                            Ok(content_hash) => match get_mtime(&full_path) {
+                                Ok(mtime) => ParsedFileResult {
+                                    path: path.clone(),
+                                    units,
+                                    file_info: Some(FileInfo {
+                                        content_hash,
+                                        mtime,
+                                    }),
+                                    skip_reason: None,
+                                },
+                                Err(e) => ParsedFileResult {
+                                    path: path.clone(),
+                                    units: Vec::new(),
+                                    file_info: None,
+                                    skip_reason: Some(format!(
+                                        "Skipping {} ({})",
+                                        full_path.display(),
+                                        e
+                                    )),
+                                },
+                            },
+                            Err(e) => ParsedFileResult {
+                                path: path.clone(),
+                                units: Vec::new(),
+                                file_info: None,
+                                skip_reason: Some(format!(
+                                    "Skipping {} ({})",
+                                    full_path.display(),
+                                    e
+                                )),
+                            },
+                        }
+                    }
+                    Err(e) => ParsedFileResult {
+                        path: path.clone(),
+                        units: Vec::new(),
+                        file_info: None,
+                        skip_reason: Some(format!("Skipping {} ({})", full_path.display(), e)),
+                    },
+                },
+                None => ParsedFileResult {
+                    path: path.clone(),
+                    units: Vec::new(),
+                    file_info: None,
+                    skip_reason: None,
+                },
+            };
+
+            if let Some(pb) = &progress {
+                pb.inc(1);
+            }
+
+            result
+        })
+        .collect()
 }
 
 pub struct IndexBuilder {
@@ -93,6 +1005,11 @@ pub struct IndexBuilder {
     project_root: PathBuf,
     index_dir: PathBuf,
     pool_factor: Option<usize>,
+    sort_order: EncodeSortOrder,
+    encode_batch_size: Option<usize>,
+    index_chunk_size: Option<usize>,
+    dynamic_batch: bool,
+    fix_dynamic_batch: bool,
     /// If true, skip user confirmation for large indexes
     auto_confirm: bool,
     /// Model name/id for display (e.g., "lightonai/LateOn-Code-edge")
@@ -128,6 +1045,11 @@ impl IndexBuilder {
             project_root: project_root.to_path_buf(),
             index_dir,
             pool_factor,
+            sort_order: EncodeSortOrder::default(),
+            encode_batch_size: None,
+            index_chunk_size: None,
+            dynamic_batch: false,
+            fix_dynamic_batch: false,
             auto_confirm: false, // Prompt by default for large indexes
             model_name: None,
         })
@@ -141,6 +1063,26 @@ impl IndexBuilder {
     /// Set the model name for display purposes
     pub fn set_model_name(&mut self, name: &str) {
         self.model_name = Some(name.to_string());
+    }
+
+    pub fn set_sort_order(&mut self, sort_order: EncodeSortOrder) {
+        self.sort_order = sort_order;
+    }
+
+    pub fn set_encode_batch_size(&mut self, encode_batch_size: usize) {
+        self.encode_batch_size = Some(encode_batch_size.max(1));
+    }
+
+    pub fn set_index_chunk_size(&mut self, index_chunk_size: usize) {
+        self.index_chunk_size = Some(index_chunk_size.max(1));
+    }
+
+    pub fn set_dynamic_batch(&mut self, dynamic_batch: bool) {
+        self.dynamic_batch = dynamic_batch;
+    }
+
+    pub fn set_fix_dynamic_batch(&mut self, fix_dynamic_batch: bool) {
+        self.fix_dynamic_batch = fix_dynamic_batch;
     }
 
     /// Ensure the model is created for encoding.
@@ -271,6 +1213,8 @@ impl IndexBuilder {
                         .with_quantized(self.quantized)
                         .with_parallel(num_sessions)
                         .with_batch_size(batch)
+                        .with_dynamic_batch(self.dynamic_batch)
+                        .with_fix_dynamic_batch(self.fix_dynamic_batch)
                         .with_execution_provider(execution_provider)
                         .build()
                 })
@@ -303,15 +1247,11 @@ impl IndexBuilder {
 
     /// Compute the effective pool factor based on the number of units to encode.
     ///
-    /// - For large batches (> 10,000 units): use pool_factor = 3 for faster indexing
-    /// - For small batches (≤ 300 units): use the configured default pool factor
-    /// - Otherwise: use the configured pool factor
+    /// For large runs, forced pooling materially reduces downstream index cost.
     fn effective_pool_factor(&self, num_units: usize) -> Option<usize> {
         if num_units > LARGE_BATCH_THRESHOLD {
-            // Large batch: use higher pool factor for efficiency
             Some(LARGE_BATCH_POOL_FACTOR)
         } else {
-            // Use configured pool factor
             self.pool_factor
         }
     }
@@ -754,44 +1694,17 @@ impl IndexBuilder {
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
         pb.set_message("Parsing files...");
 
-        for path in &files_to_index {
-            let full_path = self.project_root.join(path);
-            let lang = match detect_language(&full_path) {
-                Some(l) => l,
-                None => {
-                    pb.inc(1);
-                    continue;
-                }
-            };
-            let source = match std::fs::read_to_string(&full_path) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
-                    new_state.ignored_files.insert(path.clone());
-                    pb.inc(1);
-                    continue;
-                }
-            };
-            let units = extract_units(path, &source, lang);
-            new_units.extend(units);
+        for parsed in parse_files_parallel(&self.project_root, &files_to_index, Some(&pb)) {
+            if let Some(reason) = parsed.skip_reason {
+                eprintln!("⚠️  {}", reason);
+                new_state.ignored_files.insert(parsed.path);
+                continue;
+            }
 
-            let content_hash = match hash_file(&full_path) {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
-                    new_state.ignored_files.insert(path.clone());
-                    pb.inc(1);
-                    continue;
-                }
-            };
-            new_state.files.insert(
-                path.clone(),
-                FileInfo {
-                    content_hash,
-                    mtime: get_mtime(&full_path)?,
-                },
-            );
-            pb.inc(1);
+            new_units.extend(parsed.units);
+            if let Some(file_info) = parsed.file_info {
+                new_state.files.insert(parsed.path, file_info);
+            }
         }
         pb.finish_and_clear();
 
@@ -835,10 +1748,19 @@ impl IndexBuilder {
             ..Default::default()
         };
 
-        let encode_batch_size = 64;
+        let encode_batch_size = self.encode_batch_size.unwrap_or(DEFAULT_ENCODE_BATCH_SIZE);
+        let index_chunk_size = self
+            .index_chunk_size
+            .unwrap_or(INDEX_CHUNK_SIZE)
+            .max(encode_batch_size);
 
         // Compute effective pool factor based on batch size
         let effective_pool_factor = self.effective_pool_factor(new_units.len());
+        let encode_label = if force_cpu {
+            "cpu-encode"
+        } else {
+            "gpu/auto-encode"
+        };
 
         // Delete changed files from index right before writing new data.
         // Deferred from earlier to minimize the window where data is missing
@@ -847,93 +1769,37 @@ impl IndexBuilder {
             self.delete_file_from_index(index_path_str, file_path)?;
         }
 
-        // Track encoding time separately to compute accurate ETA (excluding write time)
-        let mut encoding_duration = std::time::Duration::ZERO;
-        let mut processed = 0usize;
-        let mut was_interrupted = false;
-
-        let sorted_units = sorted_units_for_encoding(&new_units);
-        for (chunk_idx, unit_chunk) in sorted_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
-            self.ensure_model_created(new_units.len())?;
-            let text_refs: Vec<&str> = unit_chunk.iter().map(|(_, text)| text.as_str()).collect();
-
-            let mut chunk_embeddings = Vec::new();
-            for batch in text_refs.chunks(encode_batch_size) {
-                // Check for interrupt before each encoding batch (immediate response)
-                if is_interrupted_outside_critical() {
-                    was_interrupted = true;
-                    break;
-                }
-
-                let batch_start = std::time::Instant::now();
-                let batch_embeddings = self
-                    .model()
-                    .encode_documents(batch, effective_pool_factor)
-                    .context("Failed to encode documents")?;
-                encoding_duration += batch_start.elapsed();
-                let batch_len = batch_embeddings.len();
-                chunk_embeddings.extend(batch_embeddings);
-                processed += batch_len;
-
-                let progress = chunk_idx * INDEX_CHUNK_SIZE + chunk_embeddings.len();
-                pb.set_position(progress.min(new_units.len()) as u64);
-
-                // Compute manual ETA based on encoding time only (excludes write time)
-                if processed > 0 {
-                    let time_per_doc = encoding_duration.as_secs_f64() / processed as f64;
-                    let remaining = new_units.len().saturating_sub(processed);
-                    let eta_secs = (time_per_doc * remaining as f64) as u64;
-                    let eta_mins = eta_secs / 60;
-                    let eta_secs_rem = eta_secs % 60;
-                    if eta_mins > 0 {
-                        pb.set_message(format!("Encoding... ({}m {}s)", eta_mins, eta_secs_rem));
-                    } else {
-                        pb.set_message(format!("Encoding... ({}s)", eta_secs));
-                    }
-                }
-            }
-
-            // If interrupted during encoding, break out of chunk loop
-            if was_interrupted {
-                break;
-            }
-
-            // Write this chunk to the index (protected by critical section)
-            // Interrupts are deferred during index writes to ensure data consistency
-            {
-                let _guard = CriticalSectionGuard::new();
-
-                // STEP 1: Update vector index first
-                let (_, doc_ids) = MmapIndex::update_or_create(
-                    &chunk_embeddings,
-                    index_path_str,
-                    &config,
-                    &update_config,
-                )?;
-
-                // STEP 2: Update filtering DB with the actual doc_ids
-                let metadata: Vec<serde_json::Value> = unit_chunk
-                    .iter()
-                    .map(|(unit, _)| serde_json::to_value(unit).unwrap())
-                    .collect();
-
-                let db_result = if filtering::exists(index_path_str) {
-                    filtering::update(index_path_str, &metadata, &doc_ids)
-                } else {
-                    filtering::create(index_path_str, &metadata, &doc_ids)
-                };
-
-                if let Err(e) = db_result {
-                    // ROLLBACK: Remove docs we just added to index
-                    if let Err(rollback_err) = delete_from_index(&doc_ids, index_path_str) {
-                        eprintln!("⚠️  Rollback failed: {}", rollback_err);
-                    }
-                    return Err(e.into());
-                }
-            }
-        }
+        let sorted_units = sorted_units_for_encoding_with_kmeans_sample_prefix(
+            &new_units,
+            self.sort_order,
+            index_chunk_size,
+        );
+        let indexing_started_at = Instant::now();
+        self.ensure_model_created(new_units.len())?;
+        let (writer_totals, dedup_stats, was_interrupted) = run_chunk_pipeline(
+            self.model().clone(),
+            &sorted_units,
+            index_chunk_size,
+            effective_pool_factor,
+            index_path_str,
+            config,
+            update_config,
+            encode_label,
+            Some(&pb),
+        )?;
 
         pb.finish_and_clear();
+
+        let total_duration = indexing_started_at.elapsed();
+        println!(
+            "⏱️  Totals: {} {}, index {}, db {}, total {}",
+            encode_label,
+            format_duration(writer_totals.encode_duration),
+            format_duration(writer_totals.vector_index_duration),
+            format_duration(writer_totals.filtering_db_duration),
+            format_duration(total_duration),
+        );
+        log_total_dedup(dedup_stats);
 
         if was_interrupted || is_interrupted() {
             // Don't save state — the index has partial data.
@@ -998,52 +1864,19 @@ impl IndexBuilder {
         pb.set_message("Parsing files...");
 
         // Extract units from all files
-        let mut parsing_interrupted = false;
-        for path in &files {
-            // Check for interrupt during parsing
-            if is_interrupted() {
-                parsing_interrupted = true;
-                break;
+        for parsed in parse_files_parallel(&self.project_root, &files, Some(&pb)) {
+            if let Some(reason) = parsed.skip_reason {
+                eprintln!("⚠️  {}", reason);
+                state.ignored_files.insert(parsed.path);
+                continue;
             }
 
-            let full_path = self.project_root.join(path);
-            let lang = match detect_language(&full_path) {
-                Some(l) => l,
-                None => {
-                    pb.inc(1);
-                    continue;
-                }
-            };
-            let source = match std::fs::read_to_string(&full_path) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
-                    state.ignored_files.insert(path.clone());
-                    pb.inc(1);
-                    continue;
-                }
-            };
-            let units = extract_units(path, &source, lang);
-            all_units.extend(units);
-
-            let content_hash = match hash_file(&full_path) {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
-                    state.ignored_files.insert(path.clone());
-                    pb.inc(1);
-                    continue;
-                }
-            };
-            state.files.insert(
-                path.clone(),
-                FileInfo {
-                    content_hash,
-                    mtime: get_mtime(&full_path)?,
-                },
-            );
-            pb.inc(1);
+            all_units.extend(parsed.units);
+            if let Some(file_info) = parsed.file_info {
+                state.files.insert(parsed.path, file_info);
+            }
         }
+        let parsing_interrupted = is_interrupted();
         pb.finish_and_clear();
 
         if parsing_interrupted {
@@ -1211,65 +2044,22 @@ impl IndexBuilder {
             None
         };
 
-        let mut parsing_interrupted = false;
         let mut skipped_files: Vec<PathBuf> = Vec::new();
-        for path in &files_to_index {
-            // Check for interrupt during parsing
-            if is_interrupted() {
-                parsing_interrupted = true;
-                break;
+        for parsed in parse_files_parallel(&self.project_root, &files_to_index, pb.as_ref()) {
+            if let Some(reason) = parsed.skip_reason {
+                eprintln!("⚠️  {}", reason);
+                state.files.remove(&parsed.path);
+                state.ignored_files.insert(parsed.path.clone());
+                skipped_files.push(parsed.path);
+                continue;
             }
 
-            let full_path = self.project_root.join(path);
-            let lang = match detect_language(&full_path) {
-                Some(l) => l,
-                None => {
-                    if let Some(ref pb) = pb {
-                        pb.inc(1);
-                    }
-                    continue;
-                }
-            };
-            let source = match std::fs::read_to_string(&full_path) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
-                    state.files.remove(path);
-                    state.ignored_files.insert(path.clone());
-                    skipped_files.push(path.clone());
-                    if let Some(ref pb) = pb {
-                        pb.inc(1);
-                    }
-                    continue;
-                }
-            };
-            let units = extract_units(path, &source, lang);
-            new_units.extend(units);
-
-            let content_hash = match hash_file(&full_path) {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!("⚠️  Skipping {} ({})", full_path.display(), e);
-                    state.files.remove(path);
-                    state.ignored_files.insert(path.clone());
-                    skipped_files.push(path.clone());
-                    if let Some(ref pb) = pb {
-                        pb.inc(1);
-                    }
-                    continue;
-                }
-            };
-            state.files.insert(
-                path.clone(),
-                FileInfo {
-                    content_hash,
-                    mtime: get_mtime(&full_path)?,
-                },
-            );
-            if let Some(ref pb) = pb {
-                pb.inc(1);
+            new_units.extend(parsed.units);
+            if let Some(file_info) = parsed.file_info {
+                state.files.insert(parsed.path, file_info);
             }
         }
+        let parsing_interrupted = is_interrupted();
         if let Some(pb) = pb {
             pb.finish_and_clear();
         }
@@ -1328,7 +2118,16 @@ impl IndexBuilder {
                 ..Default::default()
             };
 
-            let encode_batch_size = 64;
+            let encode_batch_size = self.encode_batch_size.unwrap_or(DEFAULT_ENCODE_BATCH_SIZE);
+            let index_chunk_size = self
+                .index_chunk_size
+                .unwrap_or(INDEX_CHUNK_SIZE)
+                .max(encode_batch_size);
+            let encode_label = if force_cpu {
+                "cpu-encode"
+            } else {
+                "gpu/auto-encode"
+            };
 
             // Compute effective pool factor based on batch size
             let effective_pool_factor = self.effective_pool_factor(new_units.len());
@@ -1340,90 +2139,38 @@ impl IndexBuilder {
                 self.delete_file_from_index(index_path_str, file_path)?;
             }
 
-            // Track encoding time separately to compute accurate ETA (excluding write time)
-            let mut encoding_duration = std::time::Duration::ZERO;
-            let mut processed = 0usize;
-
-            let sorted_units = sorted_units_for_encoding(&new_units);
-            for (chunk_idx, unit_chunk) in sorted_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
-                self.ensure_model_created(new_units.len())?;
-                let text_refs: Vec<&str> =
-                    unit_chunk.iter().map(|(_, text)| text.as_str()).collect();
-
-                let mut chunk_embeddings = Vec::new();
-                for batch in text_refs.chunks(encode_batch_size) {
-                    // Check for interrupt before each encoding batch (immediate response)
-                    if is_interrupted_outside_critical() {
-                        was_interrupted = true;
-                        break;
-                    }
-
-                    let batch_start = std::time::Instant::now();
-                    let batch_embeddings = self
-                        .model()
-                        .encode_documents(batch, effective_pool_factor)
-                        .context("Failed to encode documents")?;
-                    encoding_duration += batch_start.elapsed();
-                    let batch_len = batch_embeddings.len();
-                    chunk_embeddings.extend(batch_embeddings);
-                    processed += batch_len;
-
-                    let progress = chunk_idx * INDEX_CHUNK_SIZE + chunk_embeddings.len();
-                    pb.set_position(progress.min(new_units.len()) as u64);
-
-                    // Compute manual ETA based on encoding time only (excludes write time)
-                    if processed > 0 {
-                        let time_per_doc = encoding_duration.as_secs_f64() / processed as f64;
-                        let remaining = new_units.len().saturating_sub(processed);
-                        let eta_secs = (time_per_doc * remaining as f64) as u64;
-                        let eta_mins = eta_secs / 60;
-                        let eta_secs_rem = eta_secs % 60;
-                        if eta_mins > 0 {
-                            pb.set_message(format!(
-                                "Encoding... ({}m {}s)",
-                                eta_mins, eta_secs_rem
-                            ));
-                        } else {
-                            pb.set_message(format!("Encoding... ({}s)", eta_secs));
-                        }
-                    }
-                }
-
-                // If interrupted during encoding, break out of chunk loop
-                if was_interrupted {
-                    break;
-                }
-
-                // Write this chunk to the index (protected by critical section)
-                // Interrupts are deferred during index writes to ensure data consistency
-                {
-                    let _guard = CriticalSectionGuard::new();
-
-                    // STEP 1: Update vector index first
-                    let (_, doc_ids) = MmapIndex::update_or_create(
-                        &chunk_embeddings,
-                        index_path_str,
-                        &config,
-                        &update_config,
-                    )?;
-
-                    // STEP 2: Update filtering DB with the actual doc_ids
-                    let metadata: Vec<serde_json::Value> = unit_chunk
-                        .iter()
-                        .map(|(unit, _)| serde_json::to_value(unit).unwrap())
-                        .collect();
-
-                    if let Err(e) = filtering::update(index_path_str, &metadata, &doc_ids) {
-                        // ROLLBACK: Remove docs we just added to index
-                        if let Err(rollback_err) = delete_from_index(&doc_ids, index_path_str) {
-                            eprintln!("⚠️  Rollback failed: {}", rollback_err);
-                        }
-                        return Err(e.into());
-                    }
-                }
-            }
+            let sorted_units = sorted_units_for_encoding_with_kmeans_sample_prefix(
+                &new_units,
+                self.sort_order,
+                index_chunk_size,
+            );
+            let indexing_started_at = Instant::now();
+            self.ensure_model_created(new_units.len())?;
+            let (writer_totals, dedup_stats, pipeline_interrupted) = run_chunk_pipeline(
+                self.model().clone(),
+                &sorted_units,
+                index_chunk_size,
+                effective_pool_factor,
+                index_path_str,
+                config,
+                update_config,
+                encode_label,
+                Some(&pb),
+            )?;
+            was_interrupted |= pipeline_interrupted;
 
             pb.finish_and_clear();
+
+            let total_duration = indexing_started_at.elapsed();
+            println!(
+                "⏱️  Totals: {} {}, index {}, db {}, total {}",
+                encode_label,
+                format_duration(writer_totals.encode_duration),
+                format_duration(writer_totals.vector_index_duration),
+                format_duration(writer_totals.filtering_db_duration),
+                format_duration(total_duration),
+            );
+            log_total_dedup(dedup_stats);
         }
 
         if was_interrupted || is_interrupted() {
@@ -1854,106 +2601,53 @@ impl IndexBuilder {
             ..Default::default()
         };
 
-        let encode_batch_size = 64;
+        let encode_batch_size = self.encode_batch_size.unwrap_or(DEFAULT_ENCODE_BATCH_SIZE);
+        let index_chunk_size = self
+            .index_chunk_size
+            .unwrap_or(INDEX_CHUNK_SIZE)
+            .max(encode_batch_size);
+        let encode_label = if force_cpu {
+            "cpu-encode"
+        } else {
+            "gpu/auto-encode"
+        };
 
         // Compute effective pool factor based on batch size
         let effective_pool_factor = self.effective_pool_factor(units.len());
 
-        // Track encoding time separately to compute accurate ETA (excluding write time)
-        let mut encoding_duration = std::time::Duration::ZERO;
-        let mut processed = 0usize;
-        let mut was_interrupted = false;
-
-        let sorted_units = sorted_units_for_encoding(units);
-        for (chunk_idx, unit_chunk) in sorted_units.chunks(INDEX_CHUNK_SIZE).enumerate() {
-            self.ensure_model_created(units.len())?;
-            let text_refs: Vec<&str> = unit_chunk.iter().map(|(_, text)| text.as_str()).collect();
-
-            // Encode in smaller batches within the chunk
-            let mut chunk_embeddings = Vec::new();
-            for batch in text_refs.chunks(encode_batch_size) {
-                // Check for interrupt before each encoding batch (immediate response)
-                if is_interrupted_outside_critical() {
-                    was_interrupted = true;
-                    break;
-                }
-
-                let batch_start = std::time::Instant::now();
-                let batch_embeddings = self
-                    .model()
-                    .encode_documents(batch, effective_pool_factor)
-                    .context("Failed to encode documents")?;
-                encoding_duration += batch_start.elapsed();
-                let batch_len = batch_embeddings.len();
-                chunk_embeddings.extend(batch_embeddings);
-                processed += batch_len;
-
-                if let Some(ref pb) = pb {
-                    let progress = chunk_idx * INDEX_CHUNK_SIZE + chunk_embeddings.len();
-                    pb.set_position(progress.min(units.len()) as u64);
-
-                    // Compute manual ETA based on encoding time only (excludes write time)
-                    if processed > 0 {
-                        let time_per_doc = encoding_duration.as_secs_f64() / processed as f64;
-                        let remaining = units.len().saturating_sub(processed);
-                        let eta_secs = (time_per_doc * remaining as f64) as u64;
-                        let eta_mins = eta_secs / 60;
-                        let eta_secs_rem = eta_secs % 60;
-                        if eta_mins > 0 {
-                            pb.set_message(format!(
-                                "Encoding... ({}m {}s)",
-                                eta_mins, eta_secs_rem
-                            ));
-                        } else {
-                            pb.set_message(format!("Encoding... ({}s)", eta_secs));
-                        }
-                    }
-                }
-            }
-
-            // If interrupted during encoding, break out of chunk loop
-            if was_interrupted {
-                break;
-            }
-
-            // Write this chunk to the index (protected by critical section)
-            // Interrupts are deferred during index writes to ensure data consistency
-            {
-                let _guard = CriticalSectionGuard::new();
-
-                // STEP 1: Update vector index first
-                let (_, doc_ids) = MmapIndex::update_or_create(
-                    &chunk_embeddings,
-                    index_path_str,
-                    &config,
-                    &update_config,
-                )?;
-
-                // STEP 2: Update filtering DB with the actual doc_ids
-                let metadata: Vec<serde_json::Value> = unit_chunk
-                    .iter()
-                    .map(|(unit, _)| serde_json::to_value(unit).unwrap())
-                    .collect();
-
-                let db_result = if filtering::exists(index_path_str) {
-                    filtering::update(index_path_str, &metadata, &doc_ids)
-                } else {
-                    filtering::create(index_path_str, &metadata, &doc_ids)
-                };
-
-                if let Err(e) = db_result {
-                    // ROLLBACK: Remove docs we just added to index
-                    if let Err(rollback_err) = delete_from_index(&doc_ids, index_path_str) {
-                        eprintln!("⚠️  Rollback failed: {}", rollback_err);
-                    }
-                    return Err(e.into());
-                }
-            }
-        }
+        let sorted_units = sorted_units_for_encoding_with_kmeans_sample_prefix(
+            units,
+            self.sort_order,
+            index_chunk_size,
+        );
+        let indexing_started_at = Instant::now();
+        self.ensure_model_created(units.len())?;
+        let (writer_totals, dedup_stats, was_interrupted) = run_chunk_pipeline(
+            self.model().clone(),
+            &sorted_units,
+            index_chunk_size,
+            effective_pool_factor,
+            index_path_str,
+            config,
+            update_config,
+            encode_label,
+            pb.as_ref(),
+        )?;
 
         if let Some(pb) = pb {
             pb.finish_and_clear();
         }
+
+        let total_duration = indexing_started_at.elapsed();
+        println!(
+            "⏱️  Totals: {} {}, index {}, db {}, total {}",
+            encode_label,
+            format_duration(writer_totals.encode_duration),
+            format_duration(writer_totals.vector_index_duration),
+            format_duration(writer_totals.filtering_db_duration),
+            format_duration(total_duration),
+        );
+        log_total_dedup(dedup_stats);
 
         // Check if interrupted after all processing (including deferred interrupts)
         Ok(was_interrupted || is_interrupted())
