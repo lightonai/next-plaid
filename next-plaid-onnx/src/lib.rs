@@ -1064,20 +1064,6 @@ impl Colbert {
         prepare_batch_for_session(&self.tokenizer, &self.config, documents, false, true)
     }
 
-    pub fn tokenize_document_lengths(&self, documents: &[&str]) -> Result<Vec<usize>> {
-        if documents.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let processed_texts = preprocess_texts(&self.config, documents);
-        let tokenized = tokenize_processed_texts_individually(&self.tokenizer, &processed_texts)?;
-        let truncate_limit = self.config.document_length.saturating_sub(1);
-        Ok(tokenized
-            .iter()
-            .map(|doc| doc.ids.len().min(truncate_limit) + 1)
-            .collect())
-    }
-
     pub fn tokenize_documents_in_batches(
         &self,
         documents: &[&str],
@@ -1125,42 +1111,39 @@ impl Colbert {
             prepared_lengths.into_iter().zip(tokenized).collect();
         items.sort_by_key(|(prepared_len, _)| *prepared_len);
 
-        if use_dynamic_batch {
-            let shapes = build_fixed_dynamic_shapes(self.batch_size.max(1), self.config.document_length);
-            let mut buckets: Vec<Vec<TokenizedDocument>> =
-                (0..shapes.len()).map(|_| Vec::new()).collect();
+        let shapes = build_fixed_dynamic_shapes(self.batch_size.max(1), self.config.document_length);
+        let mut buckets: Vec<Vec<TokenizedDocument>> =
+            (0..shapes.len()).map(|_| Vec::new()).collect();
 
-            for (prepared_len, encoding) in items {
-                let bucket_idx = shapes
-                    .iter()
-                    .position(|shape| prepared_len <= shape.planned_len)
-                    .unwrap_or(shapes.len().saturating_sub(1));
-                buckets[bucket_idx].push(encoding);
-            }
-
-            let mut batches = Vec::new();
-            for (shape, bucket_docs) in shapes.iter().zip(buckets.into_iter()) {
-                let docs_per_batch = shape.docs.max(1);
-                let mut bucket_iter = bucket_docs.into_iter();
-                while let Some(first) = bucket_iter.next() {
-                    let mut piece_encodings = Vec::with_capacity(docs_per_batch);
-                    piece_encodings.push(first);
-                    for encoding in bucket_iter.by_ref().take(docs_per_batch - 1) {
-                        piece_encodings.push(encoding);
-                    }
-                    batches.push(prepare_batch_from_tokenized_documents(
-                        &self.tokenizer,
-                        &self.config,
-                        piece_encodings,
-                        false,
-                        true,
-                    )?);
-                }
-            }
-
-            return Ok(batches);
+        for (prepared_len, encoding) in items {
+            let bucket_idx = shapes
+                .iter()
+                .position(|shape| prepared_len <= shape.planned_len)
+                .unwrap_or(shapes.len().saturating_sub(1));
+            buckets[bucket_idx].push(encoding);
         }
-        unreachable!("fixed dynamic batches should return before reaching fallback")
+
+        let mut batches = Vec::new();
+        for (shape, bucket_docs) in shapes.iter().zip(buckets.into_iter()) {
+            let docs_per_batch = shape.docs.max(1);
+            let mut bucket_iter = bucket_docs.into_iter();
+            while let Some(first) = bucket_iter.next() {
+                let mut piece_encodings = Vec::with_capacity(docs_per_batch);
+                piece_encodings.push(first);
+                for encoding in bucket_iter.by_ref().take(docs_per_batch - 1) {
+                    piece_encodings.push(encoding);
+                }
+                batches.push(prepare_batch_from_tokenized_documents(
+                    &self.tokenizer,
+                    &self.config,
+                    piece_encodings,
+                    false,
+                    true,
+                )?);
+            }
+        }
+
+        Ok(batches)
     }
 
     pub fn encode_prepared_documents(
