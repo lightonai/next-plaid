@@ -19,6 +19,7 @@ use next_plaid::{
 use next_plaid_onnx::{pool_document_embeddings, Colbert, ExecutionProvider};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use xxhash_rust::xxh3::xxh3_64;
 
 #[cfg(feature = "cuda")]
 use crate::acceleration::apply_acceleration_mode;
@@ -137,23 +138,29 @@ fn sorted_units_for_encoding_with_kmeans_sample_prefix(
     sort_order: EncodeSortOrder,
     sample_prefix_size: usize,
 ) -> Vec<SortedUnit> {
-    let sample_prefix_size = sample_prefix_size.min(units.len());
-    let (sample_prefix, remainder) = units.split_at(sample_prefix_size);
+    let mut shuffled_items: Vec<SortedUnit> = units
+        .iter()
+        .map(|unit| SortedUnit {
+            unit: Arc::new(unit.clone()),
+            text: Arc::<str>::from(build_embedding_text(unit)),
+        })
+        .collect();
 
-    let mut prefix_items: Vec<SortedUnit> = sample_prefix
-        .iter()
-        .map(|unit| SortedUnit {
-            unit: Arc::new(unit.clone()),
-            text: Arc::<str>::from(build_embedding_text(unit)),
-        })
-        .collect();
-    let mut remainder_items: Vec<SortedUnit> = remainder
-        .iter()
-        .map(|unit| SortedUnit {
-            unit: Arc::new(unit.clone()),
-            text: Arc::<str>::from(build_embedding_text(unit)),
-        })
-        .collect();
+    // Pseudo-shuffle deterministically before taking the k-means seed prefix so
+    // the first chunk is representative instead of reflecting parser/input
+    // order. The later length sort still controls encoding behavior within each
+    // partition.
+    shuffled_items.sort_unstable_by_key(|item| {
+        (
+            xxh3_64(item.text.as_bytes()),
+            xxh3_64(item.unit.file.to_string_lossy().as_bytes()),
+            item.unit.line as u64,
+        )
+    });
+
+    let sample_prefix_size = sample_prefix_size.min(shuffled_items.len());
+    let mut remainder_items = shuffled_items.split_off(sample_prefix_size);
+    let mut prefix_items = shuffled_items;
 
     match sort_order {
         EncodeSortOrder::BigFirst => {
