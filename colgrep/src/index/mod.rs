@@ -3,7 +3,7 @@ pub mod state;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::thread;
 
 use anyhow::{Context, Result};
@@ -188,7 +188,10 @@ fn prepare_deduplicated_chunk(unit_chunk: &[SortedUnit]) -> PreparedChunk {
     }
 
     PreparedChunk {
-        units: unit_chunk.iter().map(|item| Arc::clone(&item.unit)).collect(),
+        units: unit_chunk
+            .iter()
+            .map(|item| Arc::clone(&item.unit))
+            .collect(),
         unique_texts,
         original_to_unique,
     }
@@ -262,7 +265,6 @@ fn run_pool_stage(
 
     Ok(())
 }
-
 
 fn run_index_stage(
     receiver: mpsc::Receiver<PooledChunkForIndex>,

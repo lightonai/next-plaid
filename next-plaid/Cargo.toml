@@ -29,7 +29,6 @@ num-traits = "0.2"
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tracing = { workspace = true }
 ndarray-npy = "0.9.1"
 fastkmeans-rs = "1.0.6"
 memmap2 = "0.9"

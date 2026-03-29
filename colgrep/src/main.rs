@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use rayon::ThreadPoolBuilder;
-use tracing_subscriber::EnvFilter;
 
 use colgrep::{
     acceleration::{apply_acceleration_mode, env_acceleration_mode, AccelerationMode},
@@ -28,7 +27,6 @@ fn main() -> Result<()> {
     // This is non-fatal if it fails (e.g., in environments without signal support)
     let _ = setup_signal_handler();
 
-    init_tracing();
     init_global_rayon_pool();
 
     let cli = Cli::parse();
@@ -392,19 +390,4 @@ fn init_global_rayon_pool() {
         .num_threads(configured)
         .thread_name(|idx| format!("next-plaid-rayon-{idx}"))
         .build_global();
-}
-
-fn init_tracing() {
-    let filter = std::env::var("NEXT_PLAID_LOG")
-        .ok()
-        .or_else(|| std::env::var("RUST_LOG").ok());
-    let Some(filter) = filter else {
-        return;
-    };
-
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new(filter))
-        .with_target(false)
-        .without_time()
-        .try_init();
 }

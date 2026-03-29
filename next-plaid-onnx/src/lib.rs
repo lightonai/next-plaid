@@ -933,9 +933,9 @@ impl ColbertBuilder {
             // Keep the CPU-specific variable-shape tuning on CPU, but don't
             // disable ORT memory patterns on GPU/Auto where it may reduce throughput.
             let builder = if matches!(self.execution_provider, ExecutionProvider::Cpu) {
-                builder
-                    .with_memory_pattern(false)
-                    .map_err(|e| anyhow::anyhow!("Failed to configure ONNX memory pattern: {e:?}"))?
+                builder.with_memory_pattern(false).map_err(|e| {
+                    anyhow::anyhow!("Failed to configure ONNX memory pattern: {e:?}")
+                })?
             } else {
                 builder
             };
@@ -968,8 +968,7 @@ impl ColbertBuilder {
             requested_execution_provider: self.execution_provider,
             batch_size,
             dynamic_batch: self.dynamic_batch,
-        }
-        )
+        })
     }
 }
 
@@ -1111,7 +1110,8 @@ impl Colbert {
             prepared_lengths.into_iter().zip(tokenized).collect();
         items.sort_by_key(|(prepared_len, _)| *prepared_len);
 
-        let shapes = build_fixed_dynamic_shapes(self.batch_size.max(1), self.config.document_length);
+        let shapes =
+            build_fixed_dynamic_shapes(self.batch_size.max(1), self.config.document_length);
         let mut buckets: Vec<Vec<TokenizedDocument>> =
             (0..shapes.len()).map(|_| Vec::new()).collect();
 
@@ -1192,7 +1192,10 @@ impl Colbert {
                 }));
             }
 
-            handles.into_iter().map(|handle| handle.join().unwrap()).collect()
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect()
         });
 
         let mut all_embeddings = Vec::new();
@@ -1900,7 +1903,9 @@ fn prepare_batch_from_tokenizer_encodings(
     let mut all_token_ids: Vec<Vec<u32>> = Vec::with_capacity(batch_size);
     let mut original_lengths: Vec<usize> = Vec::with_capacity(batch_size);
 
-    for (row_idx, (encoding, &real_len)) in batch_encodings.into_iter().zip(&real_lengths).enumerate() {
+    for (row_idx, (encoding, &real_len)) in
+        batch_encodings.into_iter().zip(&real_lengths).enumerate()
+    {
         let row_start = row_idx * batch_max_len;
         let ids = encoding.get_ids();
         let masks = encoding.get_attention_mask();
@@ -1993,32 +1998,33 @@ fn encode_prepared_batch_with_session(
         .map(|ids| Tensor::from_array(([batch_size, batch_max_len], ids)))
         .transpose()?;
 
-    let (shape_slice, output_owned): (Vec<i64>, Vec<f32>) = if let Some(token_type_ids_tensor) = token_type_ids_tensor {
-        let outputs = session.run(ort::inputs![
-            "input_ids" => input_ids_tensor,
-            "attention_mask" => attention_mask_tensor,
-            "token_type_ids" => token_type_ids_tensor,
-        ])?;
-        let (output_shape, output_data) = outputs["output"]
-            .try_extract_tensor::<f32>()
-            .context("Failed to extract output tensor")?;
-        (
-            output_shape.iter().copied().collect(),
-            output_data.iter().copied().collect(),
-        )
-    } else {
-        let outputs = session.run(ort::inputs![
-            "input_ids" => input_ids_tensor,
-            "attention_mask" => attention_mask_tensor,
-        ])?;
-        let (output_shape, output_data) = outputs["output"]
-            .try_extract_tensor::<f32>()
-            .context("Failed to extract output tensor")?;
-        (
-            output_shape.iter().copied().collect(),
-            output_data.iter().copied().collect(),
-        )
-    };
+    let (shape_slice, output_owned): (Vec<i64>, Vec<f32>) =
+        if let Some(token_type_ids_tensor) = token_type_ids_tensor {
+            let outputs = session.run(ort::inputs![
+                "input_ids" => input_ids_tensor,
+                "attention_mask" => attention_mask_tensor,
+                "token_type_ids" => token_type_ids_tensor,
+            ])?;
+            let (output_shape, output_data) = outputs["output"]
+                .try_extract_tensor::<f32>()
+                .context("Failed to extract output tensor")?;
+            (
+                output_shape.iter().copied().collect(),
+                output_data.iter().copied().collect(),
+            )
+        } else {
+            let outputs = session.run(ort::inputs![
+                "input_ids" => input_ids_tensor,
+                "attention_mask" => attention_mask_tensor,
+            ])?;
+            let (output_shape, output_data) = outputs["output"]
+                .try_extract_tensor::<f32>()
+                .context("Failed to extract output tensor")?;
+            (
+                output_shape.iter().copied().collect(),
+                output_data.iter().copied().collect(),
+            )
+        };
 
     let embedding_dim = shape_slice[2] as usize;
     let output_data = &output_owned;
