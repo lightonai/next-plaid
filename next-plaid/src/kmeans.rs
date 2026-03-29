@@ -9,6 +9,7 @@
 use ndarray::{Array2, ArrayView2, Axis};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
+use tracing::debug;
 use rand_chacha::ChaCha8Rng;
 
 use crate::error::{Error, Result};
@@ -307,6 +308,13 @@ pub fn compute_kmeans(
     });
     let n_samples_kmeans = n_samples_kmeans.min(num_documents);
 
+    debug!(
+        total_documents = num_documents,
+        sampled_documents = n_samples_kmeans,
+        sample_prefix_docs = config.sample_prefix_docs,
+        "preparing kmeans training sample"
+    );
+
     let mut rng = ChaCha8Rng::seed_from_u64(config.seed);
     let sampled_indices: Vec<usize> = if let Some(prefix_docs) = config.sample_prefix_docs {
         let prefix_count = prefix_docs.min(n_samples_kmeans).min(num_documents);
@@ -365,6 +373,14 @@ pub fn compute_kmeans(
 
     // The actual K that will be used
     let actual_k = num_partitions.min(effective_training_tokens);
+
+    debug!(
+        sampled_doc_tokens = total_sample_tokens,
+        effective_train_rows = effective_training_tokens,
+        requested_partitions = num_partitions,
+        actual_k,
+        "prepared kmeans training rows"
+    );
 
     if actual_k == 0 {
         return Err(Error::IndexCreation("Cannot compute 0 centroids".into()));

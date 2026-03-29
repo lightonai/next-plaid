@@ -67,6 +67,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use tokenizers::Encoding;
 use tokenizers::Tokenizer;
+use tracing::debug;
 #[cfg(windows)]
 use windows::core::Interface;
 #[cfg(windows)]
@@ -1524,6 +1525,21 @@ impl Colbert {
     }
 
     fn with_logged_batch_planner_context(self) -> Self {
+        let ctx = self.batch_planner_context();
+        let doc_decision = estimate_batch_planner_decision(&ctx, false);
+        debug!(
+            provider = ?ctx.requested_execution_provider,
+            quantized = ctx.quantized,
+            sessions = ctx.num_sessions,
+            batch_size = ctx.batch_size,
+            document_length = ctx.document_length,
+            query_length = ctx.query_length,
+            embedding_dim = ctx.embedding_dim,
+            gpu_memory_free_mib = ctx.gpu_memory.as_ref().map(|m| m.free_mib),
+            gpu_memory_total_mib = ctx.gpu_memory.as_ref().map(|m| m.total_mib),
+            doc_target_padded_tokens = doc_decision.target_padded_tokens,
+            "initialized batch planner context"
+        );
         self
     }
 
