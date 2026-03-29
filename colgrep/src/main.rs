@@ -386,11 +386,7 @@ fn init_global_rayon_pool() {
     let available = std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(4);
-    let configured = std::env::var("NEXT_PLAID_GLOBAL_RAYON_THREADS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .map(|v| v.max(1))
-        .unwrap_or_else(|| available.saturating_sub(4).max(1));
+    let configured = available.saturating_sub(4).max(1);
 
     let _ = ThreadPoolBuilder::new()
         .num_threads(configured)

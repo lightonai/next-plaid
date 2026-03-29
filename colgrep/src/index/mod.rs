@@ -198,19 +198,9 @@ fn run_encode_stage(
     receiver: mpsc::Receiver<TokenizedChunk>,
     sender: mpsc::Sender<RawEncodedChunk>,
     model: Colbert,
-    bench_max_doc_len: Option<usize>,
 ) -> Result<()> {
     while let Ok(chunk) = receiver.recv() {
-        let mut kept_batches = Vec::with_capacity(chunk.prepared_batches.len());
-        for prepared_batch in chunk.prepared_batches {
-            if let Some(max_doc_len) = bench_max_doc_len {
-                if prepared_batch.batch_max_len() > max_doc_len {
-                    continue;
-                }
-            }
-            kept_batches.push(prepared_batch);
-        }
-        let raw_embeddings = model.encode_prepared_document_batches(kept_batches)?;
+        let raw_embeddings = model.encode_prepared_document_batches(chunk.prepared_batches)?;
 
         sender
             .send(RawEncodedChunk {
@@ -222,17 +212,6 @@ fn run_encode_stage(
     }
 
     Ok(())
-}
-
-fn bench_max_doc_len_limit(encode_only_bench: bool) -> Option<usize> {
-    if !encode_only_bench {
-        return None;
-    }
-
-    std::env::var("NEXT_PLAID_BENCH_MAX_DOC_LEN")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|v| *v > 0)
 }
 
 fn run_tokenize_stage(
@@ -284,22 +263,6 @@ fn run_pool_stage(
     Ok(())
 }
 
-fn run_encode_only_sink_stage(
-    receiver: mpsc::Receiver<RawEncodedChunk>,
-    pb: Option<ProgressBar>,
-) -> Result<()> {
-    let mut completed_units = 0u64;
-
-    while let Ok(chunk) = receiver.recv() {
-        completed_units += chunk.units.len() as u64;
-
-        if let Some(pb) = pb.as_ref() {
-            pb.set_position(completed_units);
-        }
-    }
-
-    Ok(())
-}
 
 fn run_index_stage(
     receiver: mpsc::Receiver<PooledChunkForIndex>,
@@ -475,14 +438,6 @@ fn run_chunk_pipeline(
     pb: Option<&ProgressBar>,
 ) -> Result<bool> {
     let mut was_interrupted = false;
-    let encode_only_bench = std::env::var("NEXT_PLAID_BENCH_ENCODE_ONLY")
-        .ok()
-        .map(|v| {
-            let v = v.to_ascii_lowercase();
-            !matches!(v.as_str(), "" | "0" | "false" | "off" | "no")
-        })
-        .unwrap_or(false);
-    let bench_max_doc_len = bench_max_doc_len_limit(encode_only_bench);
 
     let (tokenize_tx, tokenize_rx) = mpsc::channel::<PreparedChunk>();
     let (encode_tx, encode_rx) = mpsc::channel::<TokenizedChunk>();
@@ -500,46 +455,32 @@ fn run_chunk_pipeline(
     let encode_model = model.clone();
     let encode_handle = thread::Builder::new()
         .name("colgrep-encode".to_string())
-        .spawn(move || run_encode_stage(encode_rx, pool_tx, encode_model, bench_max_doc_len))
+        .spawn(move || run_encode_stage(encode_rx, pool_tx, encode_model))
         .context("Failed to spawn encode stage thread")?;
-    let downstream_handles = if encode_only_bench {
-        let sink_pb = pb.cloned();
-        let sink_handle = thread::Builder::new()
-            .name("colgrep-encode-sink".to_string())
-            .spawn(move || run_encode_only_sink_stage(pool_rx, sink_pb))
-            .context("Failed to spawn encode-only sink stage thread")?;
-        (Some(sink_handle), None, None)
-    } else {
-        let pool_handle = thread::Builder::new()
-            .name("colgrep-pool".to_string())
-            .spawn(move || run_pool_stage(pool_rx, index_tx, effective_pool_factor))
-            .context("Failed to spawn pool stage thread")?;
-        let index_path_for_index = index_path.to_string();
-        let index_handle = thread::Builder::new()
-            .name("colgrep-index".to_string())
-            .spawn(move || {
-                run_index_stage(
-                    index_rx,
-                    metadata_tx,
-                    index_path_for_index,
-                    config,
-                    update_config,
-                    index_chunk_size,
-                )
-            })
-            .context("Failed to spawn index stage thread")?;
-        let index_path_for_metadata = index_path.to_string();
-        let metadata_pb = pb.cloned();
-        let metadata_handle = thread::Builder::new()
-            .name("colgrep-metadata".to_string())
-            .spawn(move || run_metadata_stage(metadata_rx, index_path_for_metadata, metadata_pb))
-            .context("Failed to spawn metadata stage thread")?;
-        (
-            None,
-            Some((pool_handle, index_handle)),
-            Some(metadata_handle),
-        )
-    };
+    let pool_handle = thread::Builder::new()
+        .name("colgrep-pool".to_string())
+        .spawn(move || run_pool_stage(pool_rx, index_tx, effective_pool_factor))
+        .context("Failed to spawn pool stage thread")?;
+    let index_path_for_index = index_path.to_string();
+    let index_handle = thread::Builder::new()
+        .name("colgrep-index".to_string())
+        .spawn(move || {
+            run_index_stage(
+                index_rx,
+                metadata_tx,
+                index_path_for_index,
+                config,
+                update_config,
+                index_chunk_size,
+            )
+        })
+        .context("Failed to spawn index stage thread")?;
+    let index_path_for_metadata = index_path.to_string();
+    let metadata_pb = pb.cloned();
+    let metadata_handle = thread::Builder::new()
+        .name("colgrep-metadata".to_string())
+        .spawn(move || run_metadata_stage(metadata_rx, index_path_for_metadata, metadata_pb))
+        .context("Failed to spawn metadata stage thread")?;
 
     for unit_chunk in sorted_units.chunks(index_chunk_size) {
         if is_interrupted_outside_critical() {
@@ -562,16 +503,6 @@ fn run_chunk_pipeline(
     encode_handle
         .join()
         .map_err(|_| anyhow::anyhow!("Encode stage thread panicked"))??;
-    if let Some(sink_handle) = downstream_handles.0 {
-        sink_handle
-            .join()
-            .map_err(|_| anyhow::anyhow!("Encode-only sink stage thread panicked"))??;
-        return Ok(was_interrupted);
-    }
-    let (pool_handle, index_handle) = downstream_handles
-        .1
-        .expect("missing downstream stage handles");
-    let metadata_handle = downstream_handles.2.expect("missing metadata stage handle");
     pool_handle
         .join()
         .map_err(|_| anyhow::anyhow!("Pool stage thread panicked"))??;

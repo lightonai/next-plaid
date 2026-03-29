@@ -936,13 +936,6 @@ pub struct MmapIndex {
 }
 
 impl MmapIndex {
-    fn benchmark_skip_merged_reload() -> bool {
-        matches!(
-            std::env::var("NEXT_PLAID_BENCH_SKIP_MERGED_RELOAD").as_deref(),
-            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
-        )
-    }
-
     /// Load a memory-mapped index from disk.
     ///
     /// This creates merged files for codes and residuals if they don't exist,
@@ -1037,27 +1030,15 @@ impl MmapIndex {
         let last_len = *doc_lengths.last().unwrap_or(&0) as usize;
         let padding_needed = max_len.saturating_sub(last_len);
 
-        let (mmap_codes, mmap_residuals) = if Self::benchmark_skip_merged_reload() {
-            (
-                crate::mmap::MmapNpyArray1I64::empty(),
-                crate::mmap::MmapNpyArray2U8::empty(),
-            )
-        } else {
-            // Create merged files if needed
-            let merged_codes_path =
-                crate::mmap::merge_codes_chunks(index_dir, metadata.num_chunks, padding_needed)?;
-            let merged_residuals_path = crate::mmap::merge_residuals_chunks(
-                index_dir,
-                metadata.num_chunks,
-                padding_needed,
-            )?;
+        let merged_codes_path =
+            crate::mmap::merge_codes_chunks(index_dir, metadata.num_chunks, padding_needed)?;
+        let merged_residuals_path =
+            crate::mmap::merge_residuals_chunks(index_dir, metadata.num_chunks, padding_needed)?;
 
-            // Memory-map the merged files
-            (
-                crate::mmap::MmapNpyArray1I64::from_npy_file(&merged_codes_path)?,
-                crate::mmap::MmapNpyArray2U8::from_npy_file(&merged_residuals_path)?,
-            )
-        };
+        let (mmap_codes, mmap_residuals) = (
+            crate::mmap::MmapNpyArray1I64::from_npy_file(&merged_codes_path)?,
+            crate::mmap::MmapNpyArray2U8::from_npy_file(&merged_residuals_path)?,
+        );
 
         Ok(Self {
             path: index_path.to_string(),
