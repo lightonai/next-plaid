@@ -52,7 +52,7 @@ pub fn cmd_init(
     )?;
     builder.set_auto_confirm(auto_confirm);
     builder.set_model_name(&model);
-    builder.set_fix_dynamic_batch(!static_batch);
+    builder.set_dynamic_batch(!static_batch);
     if let Some(encode_batch_size) = encode_batch_size {
         builder.set_encode_batch_size(encode_batch_size.max(1));
     }

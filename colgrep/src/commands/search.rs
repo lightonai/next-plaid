@@ -887,7 +887,7 @@ fn search_single_path(
         )?;
         builder.set_auto_confirm(auto_confirm);
         builder.set_model_name(&model);
-        builder.set_fix_dynamic_batch(!static_batch);
+        builder.set_dynamic_batch(!static_batch);
 
         // Try non-blocking index update
         match builder.try_index(None, false) {
@@ -950,7 +950,7 @@ fn search_single_path(
                     )?;
                     new_builder.set_auto_confirm(auto_confirm);
                     new_builder.set_model_name(&model);
-                    new_builder.set_fix_dynamic_batch(!static_batch);
+                    new_builder.set_dynamic_batch(!static_batch);
                     new_builder.index(None, false)?;
                 } else {
                     return Err(e);
@@ -1061,7 +1061,7 @@ fn search_single_path(
             )?;
             builder.set_auto_confirm(auto_confirm);
             builder.set_model_name(&model);
-            builder.set_fix_dynamic_batch(!static_batch);
+            builder.set_dynamic_batch(!static_batch);
             builder.index(None, false)?;
 
             load_searcher()?

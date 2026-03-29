@@ -648,7 +648,7 @@ pub struct Colbert {
     next_session_idx: Arc<AtomicUsize>,
     requested_execution_provider: ExecutionProvider,
     batch_size: usize,
-    fix_dynamic_batch: bool,
+    dynamic_batch: bool,
 }
 
 pub struct PreparedDocumentBatch {
@@ -785,7 +785,7 @@ pub struct ColbertBuilder {
     batch_size: Option<usize>,
     execution_provider: ExecutionProvider,
     quantized: bool,
-    fix_dynamic_batch: bool,
+    dynamic_batch: bool,
     query_length: Option<usize>,
     document_length: Option<usize>,
 }
@@ -808,7 +808,7 @@ impl ColbertBuilder {
             batch_size: None,
             execution_provider: ExecutionProvider::Auto,
             quantized: false,
-            fix_dynamic_batch: true,
+            dynamic_batch: true,
             query_length: None,
             document_length: None,
         }
@@ -870,8 +870,8 @@ impl ColbertBuilder {
         self
     }
 
-    pub fn with_fix_dynamic_batch(mut self, fix_dynamic_batch: bool) -> Self {
-        self.fix_dynamic_batch = fix_dynamic_batch;
+    pub fn with_dynamic_batch(mut self, dynamic_batch: bool) -> Self {
+        self.dynamic_batch = dynamic_batch;
         self
     }
 
@@ -967,7 +967,7 @@ impl ColbertBuilder {
             next_session_idx: Arc::new(AtomicUsize::new(0)),
             requested_execution_provider: self.execution_provider,
             batch_size,
-            fix_dynamic_batch: self.fix_dynamic_batch,
+            dynamic_batch: self.dynamic_batch,
         }
         )
     }
@@ -1091,13 +1091,13 @@ impl Colbert {
         let truncate_limit = self.config.document_length - 1;
         let use_gpu_batch_modes =
             !matches!(self.requested_execution_provider, ExecutionProvider::Cpu);
-        let use_fix_dynamic_batch = self.fix_dynamic_batch && use_gpu_batch_modes;
+        let use_dynamic_batch = self.dynamic_batch && use_gpu_batch_modes;
 
         let prepared_lengths: Vec<usize> = tokenized
             .iter()
             .map(|doc| doc.ids.len().min(truncate_limit) + 1)
             .collect();
-        if !use_fix_dynamic_batch {
+        if !use_dynamic_batch {
             let batch_docs = self.batch_size.max(1);
             let mut batches = Vec::new();
 
@@ -1125,7 +1125,7 @@ impl Colbert {
             prepared_lengths.into_iter().zip(tokenized).collect();
         items.sort_by_key(|(prepared_len, _)| *prepared_len);
 
-        if use_fix_dynamic_batch {
+        if use_dynamic_batch {
             let shapes = build_fixed_dynamic_shapes(self.batch_size.max(1), self.config.document_length);
             let mut buckets: Vec<Vec<TokenizedDocument>> =
                 (0..shapes.len()).map(|_| Vec::new()).collect();
