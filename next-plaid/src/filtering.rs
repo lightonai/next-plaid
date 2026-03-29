@@ -36,7 +36,7 @@ use std::fs;
 use std::path::Path;
 
 use regex::Regex;
-use rusqlite::{params, params_from_iter, Connection, Result as SqliteResult, ToSql};
+use rusqlite::{params_from_iter, Connection, Result as SqliteResult, ToSql};
 use serde_json::Value;
 
 use crate::error::{Error, Result};
@@ -46,31 +46,6 @@ const METADATA_DB_NAME: &str = "metadata.db";
 
 /// Primary key column name (matches fast-plaid).
 const SUBSET_COLUMN: &str = "_subset_";
-
-const CODEUNIT_METADATA_COLUMNS: [(&str, &str); 21] = [
-    ("name", "TEXT"),
-    ("qualified_name", "TEXT"),
-    ("file", "TEXT"),
-    ("line", "INTEGER"),
-    ("end_line", "INTEGER"),
-    ("language", "TEXT"),
-    ("unit_type", "TEXT"),
-    ("signature", "TEXT"),
-    ("docstring", "TEXT"),
-    ("parameters", "TEXT"),
-    ("return_type", "TEXT"),
-    ("extends", "TEXT"),
-    ("parent_class", "TEXT"),
-    ("calls", "TEXT"),
-    ("called_by", "TEXT"),
-    ("complexity", "INTEGER"),
-    ("has_loops", "INTEGER"),
-    ("has_branches", "INTEGER"),
-    ("has_error_handling", "INTEGER"),
-    ("variables", "TEXT"),
-    ("imports", "TEXT"),
-    // code appended manually below to keep large TEXT last in the schema
-];
 
 /// Validate that a column name is a safe SQL identifier.
 ///
@@ -629,101 +604,57 @@ fn configure_connection(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn create_codeunit_metadata_table(conn: &Connection) -> Result<()> {
+fn validate_fixed_columns(columns: &[(&str, &str)]) -> Result<()> {
+    for (name, _) in columns {
+        if !is_valid_column_name(name) {
+            return Err(Error::Filtering(format!(
+                "Invalid column name '{}'. Column names must start with a letter or \
+                 underscore, followed by letters, digits, or underscores.",
+                name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn create_fixed_metadata_table(conn: &Connection, columns: &[(&str, &str)]) -> Result<()> {
     let mut col_defs = vec![format!("\"{}\" INTEGER PRIMARY KEY", SUBSET_COLUMN)];
-    for (name, sql_type) in CODEUNIT_METADATA_COLUMNS {
+    for (name, sql_type) in columns {
         col_defs.push(format!("\"{}\" {}", name, sql_type));
     }
-    col_defs.push("\"code\" TEXT".to_string());
     let create_sql = format!("CREATE TABLE METADATA ({})", col_defs.join(", "));
     conn.execute(&create_sql, [])?;
     Ok(())
 }
 
-fn json_string_field(obj: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
-    obj.get(key).and_then(|value| match value {
-        Value::Null => None,
-        Value::String(s) => Some(s.clone()),
-        other => Some(other.to_string()),
-    })
-}
-
-fn json_i64_field(obj: &serde_json::Map<String, Value>, key: &str) -> Option<i64> {
-    obj.get(key).and_then(|value| match value {
-        Value::Null => None,
-        Value::Number(n) => n.as_i64().or_else(|| n.as_u64().map(|u| u as i64)),
-        Value::Bool(b) => Some(if *b { 1 } else { 0 }),
-        _ => None,
-    })
-}
-
-fn json_bool_as_i64_field(obj: &serde_json::Map<String, Value>, key: &str) -> Option<i64> {
-    obj.get(key).and_then(|value| match value {
-        Value::Null => None,
-        Value::Bool(b) => Some(if *b { 1 } else { 0 }),
-        Value::Number(n) => n.as_i64(),
-        _ => None,
-    })
-}
-
-fn json_array_text_field(obj: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
-    obj.get(key).and_then(|value| match value {
-        Value::Null => None,
-        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).ok(),
-        Value::String(s) => Some(s.clone()),
-        other => Some(other.to_string()),
-    })
-}
-
-fn insert_codeunit_metadata_rows(
+fn insert_fixed_metadata_rows(
     conn: &mut Connection,
+    columns: &[(&str, &str)],
     metadata: &[Value],
     doc_ids: &[i64],
 ) -> Result<usize> {
     let tx = conn.transaction()?;
-    let insert_sql = concat!(
-        "INSERT INTO METADATA (",
-        "\"_subset_\", \"name\", \"qualified_name\", \"file\", \"line\", \"end_line\", ",
-        "\"language\", \"unit_type\", \"signature\", \"docstring\", \"parameters\", ",
-        "\"return_type\", \"extends\", \"parent_class\", \"calls\", \"called_by\", ",
-        "\"complexity\", \"has_loops\", \"has_branches\", \"has_error_handling\", ",
-        "\"variables\", \"imports\", \"code\"",
-        ") VALUES (",
-        "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?",
-        ")"
+    let mut column_names = vec![format!("\"{}\"", SUBSET_COLUMN)];
+    column_names.extend(columns.iter().map(|(name, _)| format!("\"{}\"", name)));
+    let placeholders: Vec<&str> = std::iter::repeat_n("?", columns.len() + 1).collect();
+    let insert_sql = format!(
+        "INSERT INTO METADATA ({}) VALUES ({})",
+        column_names.join(", "),
+        placeholders.join(", ")
     );
     {
-        let mut stmt = tx.prepare_cached(insert_sql)?;
+        let mut stmt = tx.prepare_cached(&insert_sql)?;
         for (i, item) in metadata.iter().enumerate() {
             let obj = item.as_object().ok_or_else(|| {
                 Error::Filtering("Expected metadata rows to be JSON objects".into())
             })?;
-
-            stmt.execute(params![
-                doc_ids[i],
-                json_string_field(obj, "name"),
-                json_string_field(obj, "qualified_name"),
-                json_string_field(obj, "file"),
-                json_i64_field(obj, "line"),
-                json_i64_field(obj, "end_line"),
-                json_string_field(obj, "language"),
-                json_string_field(obj, "unit_type"),
-                json_string_field(obj, "signature"),
-                json_string_field(obj, "docstring"),
-                json_array_text_field(obj, "parameters"),
-                json_string_field(obj, "return_type"),
-                json_string_field(obj, "extends"),
-                json_string_field(obj, "parent_class"),
-                json_array_text_field(obj, "calls"),
-                json_array_text_field(obj, "called_by"),
-                json_i64_field(obj, "complexity"),
-                json_bool_as_i64_field(obj, "has_loops"),
-                json_bool_as_i64_field(obj, "has_branches"),
-                json_bool_as_i64_field(obj, "has_error_handling"),
-                json_array_text_field(obj, "variables"),
-                json_array_text_field(obj, "imports"),
-                json_string_field(obj, "code"),
-            ])?;
+            let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
+            for (column_name, _) in columns {
+                let value = obj.get(*column_name).unwrap_or(&Value::Null);
+                values.push(json_to_sql(value));
+            }
+            let params: Vec<&dyn ToSql> = values.iter().map(|value| value.as_ref()).collect();
+            stmt.execute(params_from_iter(params))?;
         }
     }
     tx.commit()?;
@@ -735,11 +666,13 @@ pub fn exists(index_path: &str) -> bool {
     get_db_path(index_path).exists()
 }
 
-/// Create a fixed-schema metadata database for code-unit metadata.
-///
-/// This avoids per-batch schema inference and ALTER TABLE churn for the common
-/// `colgrep` path where the metadata shape is known upfront.
-pub fn create_codeunit(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<usize> {
+/// Create a metadata database using a caller-provided fixed schema.
+pub fn create_fixed(
+    index_path: &str,
+    columns: &[(&str, &str)],
+    metadata: &[Value],
+    doc_ids: &[i64],
+) -> Result<usize> {
     if metadata.len() != doc_ids.len() {
         return Err(Error::Filtering(format!(
             "Metadata length ({}) must match doc_ids length ({})",
@@ -747,6 +680,7 @@ pub fn create_codeunit(index_path: &str, metadata: &[Value], doc_ids: &[i64]) ->
             doc_ids.len()
         )));
     }
+    validate_fixed_columns(columns)?;
 
     let index_dir = Path::new(index_path);
     if !index_dir.exists() {
@@ -764,12 +698,17 @@ pub fn create_codeunit(index_path: &str, metadata: &[Value], doc_ids: &[i64]) ->
 
     let mut conn = Connection::open(&db_path)?;
     configure_connection(&conn)?;
-    create_codeunit_metadata_table(&conn)?;
-    insert_codeunit_metadata_rows(&mut conn, metadata, doc_ids)
+    create_fixed_metadata_table(&conn, columns)?;
+    insert_fixed_metadata_rows(&mut conn, columns, metadata, doc_ids)
 }
 
-/// Append rows to an existing fixed-schema code-unit metadata database.
-pub fn update_codeunit(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<usize> {
+/// Append rows to an existing fixed-schema metadata database.
+pub fn update_fixed(
+    index_path: &str,
+    columns: &[(&str, &str)],
+    metadata: &[Value],
+    doc_ids: &[i64],
+) -> Result<usize> {
     if metadata.is_empty() {
         return Ok(0);
     }
@@ -780,17 +719,18 @@ pub fn update_codeunit(index_path: &str, metadata: &[Value], doc_ids: &[i64]) ->
             doc_ids.len()
         )));
     }
+    validate_fixed_columns(columns)?;
 
     let db_path = get_db_path(index_path);
     if !db_path.exists() {
         return Err(Error::Filtering(
-            "Metadata database does not exist. Use create_codeunit() first.".into(),
+            "Metadata database does not exist. Use create_fixed() first.".into(),
         ));
     }
 
     let mut conn = Connection::open(&db_path)?;
     configure_connection(&conn)?;
-    insert_codeunit_metadata_rows(&mut conn, metadata, doc_ids)
+    insert_fixed_metadata_rows(&mut conn, columns, metadata, doc_ids)
 }
 
 /// Create a new SQLite metadata database, replacing any existing one.
