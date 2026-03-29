@@ -22,34 +22,6 @@ pub use fastkmeans_rs::FastKMeansCuda;
 #[cfg(feature = "metal_gpu")]
 pub use fastkmeans_rs::FastKMeansMetal;
 
-const DEFAULT_MAX_KMEANS_TRAIN_TOKENS: usize = 1_000_000;
-const DEFAULT_KMEANS_CHUNK_SIZE_DATA: usize = 8_192;
-const DEFAULT_KMEANS_CHUNK_SIZE_CENTROIDS: usize = 2_048;
-
-fn max_kmeans_train_tokens() -> usize {
-    std::env::var("NEXT_PLAID_MAX_KMEANS_TRAIN_TOKENS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|&v| v > 0)
-        .unwrap_or(DEFAULT_MAX_KMEANS_TRAIN_TOKENS)
-}
-
-fn kmeans_chunk_size_data() -> usize {
-    std::env::var("NEXT_PLAID_KMEANS_CHUNK_SIZE_DATA")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|&v| v > 0)
-        .unwrap_or(DEFAULT_KMEANS_CHUNK_SIZE_DATA)
-}
-
-fn kmeans_chunk_size_centroids() -> usize {
-    std::env::var("NEXT_PLAID_KMEANS_CHUNK_SIZE_CENTROIDS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|&v| v > 0)
-        .unwrap_or(DEFAULT_KMEANS_CHUNK_SIZE_CENTROIDS)
-}
-
 /// Configuration for the compute_kmeans function.
 #[derive(Debug, Clone)]
 pub struct ComputeKmeansConfig {
@@ -92,8 +64,8 @@ pub fn default_config(num_centroids: usize) -> KMeansConfig {
         tol: 1e-8,
         seed: 42,
         max_points_per_centroid: Some(256),
-        chunk_size_data: kmeans_chunk_size_data(),
-        chunk_size_centroids: kmeans_chunk_size_centroids(),
+        chunk_size_data: 51_200,
+        chunk_size_centroids: 10_240,
         verbose: false,
     }
 }
@@ -328,24 +300,6 @@ pub fn compute_kmeans(
         current_offset += length;
     }
 
-    let train_token_cap = max_kmeans_train_tokens();
-    if samples_tensor.nrows() > train_token_cap {
-        let mut row_indices: Vec<usize> = (0..samples_tensor.nrows()).collect();
-        row_indices.shuffle(&mut rng);
-        row_indices.truncate(train_token_cap);
-        row_indices.sort_unstable();
-
-        let mut sampled_rows = Array2::<f32>::zeros((train_token_cap, dim));
-        for (new_idx, &old_idx) in row_indices.iter().enumerate() {
-            sampled_rows
-                .row_mut(new_idx)
-                .assign(&samples_tensor.row(old_idx));
-        }
-        samples_tensor = sampled_rows;
-    }
-
-    let effective_training_tokens = samples_tensor.nrows();
-
     // Calculate num_partitions using fast-plaid's heuristic if not provided
     let num_partitions = config.num_partitions.unwrap_or_else(|| {
         // Calculate based on density of sample relative to whole dataset
@@ -355,7 +309,7 @@ pub fn compute_kmeans(
     });
 
     // The actual K that will be used
-    let actual_k = num_partitions.min(effective_training_tokens);
+    let actual_k = num_partitions.min(total_sample_tokens);
 
     if actual_k == 0 {
         return Err(Error::IndexCreation("Cannot compute 0 centroids".into()));
@@ -368,8 +322,8 @@ pub fn compute_kmeans(
         tol: 1e-8,
         seed: config.seed,
         max_points_per_centroid: Some(config.max_points_per_centroid),
-        chunk_size_data: kmeans_chunk_size_data(),
-        chunk_size_centroids: kmeans_chunk_size_centroids(),
+        chunk_size_data: 51_200,
+        chunk_size_centroids: 10_240,
         verbose: false,
     };
 
