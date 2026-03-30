@@ -217,6 +217,60 @@ impl AppState {
         }
     }
 
+    /// Backward-compatible constructor for tests and older callers that still
+    /// pass a single loaded model instead of a worker pool.
+    #[cfg(feature = "model")]
+    pub fn with_model(
+        config: ApiConfig,
+        model: Option<next_plaid_onnx::Colbert>,
+        model_info: Option<ModelInfo>,
+        pool_size: Option<usize>,
+    ) -> Self {
+        let model_pool = model.map(|m| {
+            let model_cfg = m.config();
+            let cached_info = CachedModelInfo {
+                name: model_cfg.model_name().map(|s| s.to_string()),
+                path: model_info
+                    .as_ref()
+                    .map(|info| info.path.clone())
+                    .unwrap_or_default(),
+                quantized: model_info.as_ref().is_some_and(|info| info.quantized),
+                embedding_dim: m.embedding_dim(),
+                batch_size: m.batch_size(),
+                num_sessions: m.num_sessions(),
+                query_prefix: model_cfg.query_prefix.clone(),
+                document_prefix: model_cfg.document_prefix.clone(),
+                query_length: model_cfg.query_length,
+                document_length: model_cfg.document_length,
+                do_query_expansion: model_cfg.do_query_expansion,
+                uses_token_type_ids: model_cfg.uses_token_type_ids,
+                mask_token_id: model_cfg.mask_token_id,
+                pad_token_id: model_cfg.pad_token_id,
+            };
+
+            let model_config = ModelConfig {
+                path: PathBuf::from(cached_info.path.clone()),
+                use_cuda: false,
+                use_int8: cached_info.quantized,
+                parallel_sessions: Some(cached_info.num_sessions),
+                batch_size: Some(cached_info.batch_size),
+                threads: None,
+                query_length: Some(cached_info.query_length),
+                document_length: Some(cached_info.document_length),
+            };
+
+            drop(m);
+
+            ModelPool {
+                pool_size: pool_size.unwrap_or(1),
+                model_config,
+                cached_info,
+            }
+        });
+
+        Self::with_model_pool(config, model_pool, model_info)
+    }
+
     /// Check if model pool is available.
     #[cfg(feature = "model")]
     pub fn has_model(&self) -> bool {

@@ -42,7 +42,7 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 
 /// Database file name within the index directory.
-const METADATA_DB_NAME: &str = "metadata.db";
+pub(crate) const METADATA_DB_NAME: &str = "metadata.db";
 
 /// Primary key column name (matches fast-plaid).
 pub(crate) const SUBSET_COLUMN: &str = "_subset_";
