@@ -289,7 +289,7 @@ pub fn prepare_codec_artifacts(
 pub fn encode_index_chunk(
     embeddings: &[Array2<f32>],
     codec: &ResidualCodec,
-    force_cpu: bool,
+    _force_cpu: bool,
 ) -> Result<EncodedIndexChunk> {
     let embedding_dim = codec.embedding_dim();
     let packed_dim = embedding_dim * codec.nbits / 8;

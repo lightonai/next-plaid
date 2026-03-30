@@ -68,7 +68,6 @@ use tokenizers::Encoding;
 use tokenizers::Tokenizer;
 
 // Conditional imports for execution providers
-use ort::ep::ExecutionProvider as ExecutionProviderTrait;
 #[cfg(feature = "cuda")]
 use ort::execution_providers::CUDAExecutionProvider;
 
