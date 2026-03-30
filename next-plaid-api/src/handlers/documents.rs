@@ -376,12 +376,12 @@ async fn process_batch(
 
     // Run heavy work in blocking thread
     let result = task::spawn_blocking(move || -> Result<BatchMetrics, String> {
-        // Load stored config
-        let config_path = state_clone.index_path(&name_inner).join("config.json");
-        let config_file = std::fs::File::open(&config_path)
-            .map_err(|e| format!("Failed to open config: {}", e))?;
-        let stored_config: IndexConfigStored = serde_json::from_reader(config_file)
-            .map_err(|e| format!("Failed to parse config: {}", e))?;
+        // Load stored config from the shared state cache. The config update endpoint
+        // writes through this cache first, so background updates should read from the
+        // same source of truth instead of racing a fresh config.json reopen.
+        let stored_config = state_clone
+            .get_index_config(&name_inner)
+            .ok_or_else(|| format!("Failed to load config for index '{}'", name_inner))?;
 
         // Check and automatically repair sync issues between index and DB
         if let Err(e) = repair_index_db_sync(&path_str) {
@@ -1180,6 +1180,11 @@ pub async fn add_documents(
                 .to_string_lossy()
                 .to_string();
 
+            // Release the shared mmap-backed index before loading a writable instance.
+            // On Windows, update/delete paths that rewrite files fail with OS error 1224
+            // if another mapped copy is still held in the state cache.
+            state_clone.unload_index(&name_inner);
+
             // Check sync before updating: if filtering DB exists, counts must match
             let index_path = std::path::Path::new(&path_str);
             if filtering::exists(&path_str) {
@@ -1203,22 +1208,18 @@ pub async fn add_documents(
             index.update_with_metadata(&embeddings, &update_config, Some(&metadata))?;
             let index_update_ms = index_update_start.elapsed().as_millis() as u64;
 
-            // Eviction: Load config to check max_documents
-            let config_path = state_clone.index_path(&name_inner).join("config.json");
-            if let Ok(config_file) = std::fs::File::open(&config_path) {
-                if let Ok(stored_config) =
-                    serde_json::from_reader::<_, IndexConfigStored>(config_file)
-                {
-                    if let Some(max_docs) = stored_config.max_documents {
-                        if let Err(e) = evict_oldest_documents(&mut index, max_docs) {
-                            tracing::warn!(
-                                index = %name_inner,
-                                error = %e,
-                                max_documents = max_docs,
-                                "documents.add.eviction.failed"
-                            );
-                        }
-                    }
+            // Eviction: consult the cached config instead of racing a fresh file read.
+            if let Some(max_docs) = state_clone
+                .get_index_config(&name_inner)
+                .and_then(|cfg| cfg.max_documents)
+            {
+                if let Err(e) = evict_oldest_documents(&mut index, max_docs) {
+                    tracing::warn!(
+                        index = %name_inner,
+                        error = %e,
+                        max_documents = max_docs,
+                        "documents.add.eviction.failed"
+                    );
                 }
             }
 
@@ -1390,11 +1391,30 @@ pub async fn delete_index(
     // isn't held while we delete (similar to colgrep's drop(lock) pattern).
     drop(_guard);
 
-    // Delete from disk
+    // Delete from disk. On Windows, recently dropped mmap/file handles can take a
+    // brief moment to release after unload, so retry a few times before failing.
     let path = state.index_path(&name);
     if path.exists() {
-        std::fs::remove_dir_all(&path)
-            .map_err(|e| ApiError::Internal(format!("Failed to delete index: {}", e)))?;
+        let mut last_err = None;
+        for attempt in 0..10 {
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => {
+                    last_err = None;
+                    break;
+                }
+                Err(e) if attempt < 9 => {
+                    last_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    break;
+                }
+            }
+        }
+        if let Some(e) = last_err {
+            return Err(ApiError::Internal(format!("Failed to delete index: {}", e)));
+        }
     }
 
     tracing::info!(

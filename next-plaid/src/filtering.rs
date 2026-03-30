@@ -1544,7 +1544,7 @@ pub fn update_where(
         return Ok(0);
     }
 
-    let conn = Connection::open(&db_path)?;
+    let conn = open_db(&db_path)?;
 
     // Validate condition against SQL injection
     let valid_columns = get_schema_columns(&conn)?;
@@ -1573,6 +1573,24 @@ pub fn update_where(
         }
     }
 
+    // Keep the FTS mirror in sync with metadata updates by recording affected rows
+    // before executing the UPDATE. This stays on the generic path so any caller that
+    // updates searchable fields gets consistent search results.
+    let affected_ids: Vec<i64> = {
+        let affected_query = format!(
+            "SELECT \"{}\" FROM METADATA WHERE {}",
+            SUBSET_COLUMN, condition
+        );
+        let cond_params: Vec<Box<dyn ToSql>> = parameters.iter().map(json_to_sql).collect();
+        let cond_param_refs: Vec<&dyn ToSql> = cond_params.iter().map(|v| v.as_ref()).collect();
+
+        let mut affected_stmt = conn.prepare(&affected_query)?;
+        let rows = affected_stmt.query_map(params_from_iter(cond_param_refs), |row| {
+            row.get::<_, i64>(0)
+        })?;
+        rows.filter_map(|row| row.ok()).collect()
+    };
+
     // Build SET clause
     let set_parts: Vec<String> = updates_obj
         .keys()
@@ -1590,6 +1608,10 @@ pub fn update_where(
     let param_refs: Vec<&dyn ToSql> = all_params.iter().map(|v| v.as_ref()).collect();
 
     let updated = conn.execute(&query, params_from_iter(param_refs))?;
+
+    if updated > 0 && !affected_ids.is_empty() {
+        crate::text_search::update_rows(index_path, &affected_ids)?;
+    }
 
     Ok(updated)
 }
