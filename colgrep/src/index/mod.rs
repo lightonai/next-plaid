@@ -129,8 +129,8 @@ pub const CONFIRMATION_THRESHOLD: usize = 30_000;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EncodeSortOrder {
     #[default]
-    BigFirst,
     SmallFirst,
+    BigFirst,
 }
 
 fn sorted_units_for_encoding_with_kmeans_sample_prefix(
