@@ -389,11 +389,14 @@ async fn process_batch(
         }
 
         // Build IndexConfig
+        let fts_tokenizer =
+            crate::models::parse_fts_tokenizer(&stored_config.fts_tokenizer).unwrap_or_default();
         let index_config = IndexConfig {
             nbits: stored_config.nbits,
             batch_size: stored_config.batch_size,
             seed: stored_config.seed,
             start_from_scratch: stored_config.start_from_scratch,
+            fts_tokenizer: fts_tokenizer.clone(),
             ..Default::default()
         };
         let update_config = UpdateConfig::default();
@@ -434,6 +437,18 @@ async fn process_batch(
                 );
             }
             return Err(format!("Failed to update metadata: {}", e));
+        }
+
+        // STEP 3: Index metadata into FTS5 for full-text / hybrid search
+        if let Err(e) =
+            next_plaid::text_search::index(&path_str, &metadata, &doc_ids, &fts_tokenizer)
+        {
+            tracing::warn!(
+                index = %name_inner,
+                error = %e,
+                "update.fts_index.failed"
+            );
+            // Non-fatal: FTS is optional, semantic search still works
         }
         let metadata_update_ms = metadata_update_start.elapsed().as_millis() as u64;
 
@@ -940,6 +955,11 @@ pub async fn create_index(
         seed: req.config.seed,
         start_from_scratch: req.config.start_from_scratch.unwrap_or(999),
         max_documents: req.config.max_documents,
+        fts_tokenizer: req
+            .config
+            .fts_tokenizer
+            .clone()
+            .unwrap_or_else(|| "unicode61".to_string()),
     };
 
     // Create index directory

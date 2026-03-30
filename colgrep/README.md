@@ -62,17 +62,19 @@ No setup, no config, no dependencies. `colgrep init` builds the index for the fi
 
 ## Search Modes
 
-ColGREP supports three search modes: **semantic**, **regex**, and **hybrid** (both combined).
+ColGREP supports four search modes: **semantic**, **keyword**, **hybrid** (semantic + keyword), and **regex**.
 
-### Semantic Search
+### Semantic + Keyword Hybrid (default)
 
-Find code by meaning, even when keywords don't match exactly:
+By default, every query runs both ColBERT semantic search and FTS5 trigram keyword search, fused with Reciprocal Rank Fusion (RRF). This finds code by meaning *and* by exact identifier/substring matches:
 
 ```bash
-colgrep "function that retries HTTP requests"
-colgrep "error handling in API layer"
+colgrep "database connection pooling"
+colgrep "parse_arguments"              # trigram matches substrings
 colgrep "authentication middleware" ./src
 ```
+
+The trigram tokenizer enables substring matching: searching `"parse"` finds `"parse_arguments"`, `"JSON.parse"`, etc. The FTS5 index covers all code unit metadata: names, signatures, file paths, source code, docstrings, parameters, imports, and call graph.
 
 ### Regex Search
 
@@ -84,7 +86,7 @@ colgrep -e "TODO|FIXME|HACK"
 colgrep -e "impl\s+Display" --include="*.rs"
 ```
 
-### Hybrid Search
+### Regex + Semantic Hybrid
 
 Combine regex filtering with semantic ranking. Regex narrows the candidates, semantics ranks them:
 
@@ -97,6 +99,18 @@ colgrep -e "Result<" "database operations" --include="*.rs"
 
 # Find TODOs, rank by relevance to "security"
 colgrep -e "TODO" "security concerns"
+```
+
+### Pure Semantic Search
+
+Disable keyword fusion with `--semantic-only` for a single query, or persistently via settings:
+
+```bash
+# One-shot
+colgrep --semantic-only "error handling"
+
+# Persistent
+colgrep settings --no-hybrid-search
 ```
 
 ---
@@ -119,6 +133,7 @@ colgrep -e "TODO" "security concerns"
 | `-y` | `--yes`             | Auto-confirm indexing                    |
 |      | `--json`            | JSON output                              |
 |      | `--code-only`       | Skip docs/config files                   |
+|      | `--semantic-only`   | Disable hybrid search (pure semantic)    |
 |      | `--include`         | Filter by glob (e.g., `"*.rs"`)          |
 |      | `--exclude`         | Exclude files by glob                    |
 |      | `--exclude-dir`     | Exclude directories                      |
@@ -226,6 +241,20 @@ colgrep settings --verbose
 # Reset a value to default (pass 0)
 colgrep settings --k 0 --n 0
 ```
+
+### Hybrid Search
+
+By default, colgrep fuses ColBERT semantic search with FTS5 trigram keyword search using Reciprocal Rank Fusion (RRF). This improves recall for exact identifier matches with negligible indexing overhead. You can disable it persistently:
+
+```bash
+# Disable hybrid search (pure semantic mode)
+colgrep settings --no-hybrid-search
+
+# Re-enable hybrid search (default)
+colgrep settings --hybrid-search
+```
+
+The `--semantic-only` CLI flag works as a one-shot override without changing the setting.
 
 ### Relative Paths
 
@@ -414,9 +443,11 @@ The search pipeline:
 1. **Encode** the query with ColBERT (single ONNX session, fast)
 2. **Pre-filter** by metadata if `--include`, `--exclude`, `--exclude-dir` or `--code-only` are set (SQLite)
 3. If `-e` pattern is provided: **regex filter** candidates, then score semantically
-4. **MaxSim** scoring against the PLAID index
-5. **Demote** test functions by -1 unless the query mentions "test"
-6. **Find representative lines** using weighted token matching with a sliding window
+4. **ColBERT MaxSim** scoring against the PLAID index
+5. **FTS5 BM25** keyword search against trigram-indexed metadata (names, code, paths, signatures)
+6. **RRF fusion** merges semantic and keyword rankings (alpha=0.75 favoring semantic)
+7. **Demote** test functions unless the query mentions "test"
+8. **Find representative lines** using weighted token matching with a sliding window
 
 ---
 

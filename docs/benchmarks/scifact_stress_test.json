@@ -59,7 +59,7 @@
       "cycle": 4,
       "count": 30,
       "expected": 160,
-      "actual": 165
+      "actual": 160
     },
     {
       "op": "add",
@@ -73,7 +73,7 @@
       "cycle": 5,
       "count": 30,
       "expected": 200,
-      "actual": 212
+      "actual": 200
     },
     {
       "op": "add",
@@ -157,7 +157,7 @@
       "cycle": 11,
       "count": 30,
       "expected": 440,
-      "actual": 443
+      "actual": 440
     },
     {
       "op": "add",
@@ -171,7 +171,7 @@
       "cycle": 12,
       "count": 30,
       "expected": 480,
-      "actual": 482
+      "actual": 480
     },
     {
       "op": "add",
@@ -199,7 +199,7 @@
       "cycle": 14,
       "count": 30,
       "expected": 560,
-      "actual": 565
+      "actual": 560
     },
     {
       "op": "add",
@@ -241,7 +241,7 @@
       "cycle": 17,
       "count": 30,
       "expected": 680,
-      "actual": 694
+      "actual": 680
     },
     {
       "op": "add",
@@ -255,7 +255,7 @@
       "cycle": 18,
       "count": 30,
       "expected": 720,
-      "actual": 728
+      "actual": 720
     },
     {
       "op": "add",
@@ -269,7 +269,7 @@
       "cycle": 19,
       "count": 30,
       "expected": 760,
-      "actual": 762
+      "actual": 760
     },
     {
       "op": "add",
@@ -283,7 +283,7 @@
       "cycle": 20,
       "count": 30,
       "expected": 800,
-      "actual": 802
+      "actual": 800
     },
     {
       "op": "add",
@@ -297,7 +297,7 @@
       "cycle": 21,
       "count": 30,
       "expected": 840,
-      "actual": 843
+      "actual": 840
     },
     {
       "op": "add",
@@ -311,7 +311,7 @@
       "cycle": 22,
       "count": 30,
       "expected": 880,
-      "actual": 883
+      "actual": 880
     },
     {
       "op": "add",
@@ -325,7 +325,7 @@
       "cycle": 23,
       "count": 30,
       "expected": 920,
-      "actual": 926
+      "actual": 920
     },
     {
       "op": "add",
@@ -339,7 +339,7 @@
       "cycle": 24,
       "count": 30,
       "expected": 960,
-      "actual": 967
+      "actual": 960
     },
     {
       "op": "add",
@@ -1064,16 +1064,16 @@
     }
   ],
   "final_doc_count": 5183,
-  "all_operations_passed": false,
+  "all_operations_passed": true,
   "timing": {
-    "test_time_s": 1532.806,
-    "search_time_s": 23.278
+    "test_time_s": 1471.935,
+    "search_time_s": 10.564
   },
   "metrics": {
-    "map": 0.7047,
-    "ndcg@10": 0.7433,
-    "ndcg@100": 0.762,
-    "recall@10": 0.8583,
-    "recall@100": 0.9477
+    "map": 0.7024,
+    "ndcg@10": 0.7401,
+    "ndcg@100": 0.7603,
+    "recall@10": 0.855,
+    "recall@100": 0.951
   }
 }

@@ -50,6 +50,11 @@ pub struct IndexConfigRequest {
     #[serde(default)]
     #[schema(example = 10000)]
     pub max_documents: Option<usize>,
+    /// FTS5 tokenizer for full-text search over metadata.
+    /// "unicode61" (default) for word-level search, "trigram" for code/substring search.
+    #[serde(default)]
+    #[schema(example = "unicode61")]
+    pub fts_tokenizer: Option<String>,
 }
 
 /// Response after declaring an index.
@@ -85,10 +90,28 @@ pub struct IndexConfigStored {
     #[serde(default)]
     #[schema(example = 10000)]
     pub max_documents: Option<usize>,
+    /// FTS5 tokenizer: "unicode61" (default) or "trigram"
+    #[serde(default = "default_fts_tokenizer")]
+    #[schema(example = "unicode61")]
+    pub fts_tokenizer: String,
 }
 
 fn default_start_from_scratch() -> usize {
     999
+}
+
+fn default_fts_tokenizer() -> String {
+    "unicode61".to_string()
+}
+
+/// Parse an FTS tokenizer string into the library enum.
+/// Returns `None` for unrecognized values.
+pub fn parse_fts_tokenizer(s: &str) -> Option<next_plaid::FtsTokenizer> {
+    match s {
+        "unicode61" => Some(next_plaid::FtsTokenizer::Unicode61),
+        "trigram" => Some(next_plaid::FtsTokenizer::Trigram),
+        _ => None,
+    }
 }
 
 /// Index status/info response.
@@ -192,10 +215,18 @@ pub struct QueryEmbeddings {
 }
 
 /// Request to search the index.
+///
+/// Supports three search modes:
+/// - **Semantic only**: provide `queries` (backward compatible)
+/// - **Keyword only**: provide `text_query` (FTS5 BM25 search over metadata)
+/// - **Hybrid**: provide both `queries` and `text_query`, blended by `alpha` + `fusion`
+///
+/// Optionally filter results with `filter_condition` (SQL WHERE clause).
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SearchRequest {
-    /// Query embeddings (single query or batch)
-    pub queries: Vec<QueryEmbeddings>,
+    /// Query embeddings (single query or batch). Required for semantic or hybrid search.
+    #[serde(default)]
+    pub queries: Option<Vec<QueryEmbeddings>>,
     /// Search parameters
     #[serde(default)]
     pub params: SearchParamsRequest,
@@ -203,6 +234,30 @@ pub struct SearchRequest {
     #[serde(default)]
     #[schema(example = json!([0, 5, 10, 15]))]
     pub subset: Option<Vec<i64>>,
+    /// FTS5 query strings for keyword search over metadata.
+    /// When combined with `queries`, performs hybrid search (must match queries length).
+    /// For keyword-only search, provide without `queries`.
+    #[serde(default)]
+    #[schema(example = json!(["machine learning"]))]
+    pub text_query: Option<Vec<String>>,
+    /// Balance between keyword and semantic search (hybrid mode only).
+    /// 0.0 = pure keyword, 1.0 = pure semantic. Default: 0.75.
+    #[serde(default)]
+    #[schema(example = 0.75)]
+    pub alpha: Option<f32>,
+    /// Fusion strategy for hybrid search: "rrf" (reciprocal rank fusion, default)
+    /// or "relative_score" (min-max normalize then alpha-weight).
+    #[serde(default)]
+    #[schema(example = "rrf")]
+    pub fusion: Option<String>,
+    /// SQL WHERE condition for metadata filtering.
+    #[serde(default)]
+    #[schema(example = "category = ? AND score > ?")]
+    pub filter_condition: Option<String>,
+    /// Parameters for the filter condition.
+    #[serde(default)]
+    #[schema(example = json!(["science", 90]))]
+    pub filter_parameters: Option<Vec<serde_json::Value>>,
 }
 
 /// Search parameters.
@@ -675,6 +730,15 @@ pub struct SearchWithEncodingRequest {
     #[serde(default)]
     #[schema(example = json!([0, 5, 10, 15]))]
     pub subset: Option<Vec<i64>>,
+    /// FTS5 query string for keyword search (enables hybrid mode when combined with queries)
+    #[serde(default)]
+    pub text_query: Option<Vec<String>>,
+    /// Balance between keyword and semantic (0.0 = pure keyword, 1.0 = pure semantic, default: 0.75)
+    #[serde(default)]
+    pub alpha: Option<f32>,
+    /// Fusion strategy: "rrf" (default) or "relative_score"
+    #[serde(default)]
+    pub fusion: Option<String>,
 }
 
 /// Request for filtered search using text queries.
@@ -693,6 +757,15 @@ pub struct FilteredSearchWithEncodingRequest {
     #[serde(default)]
     #[schema(example = json!(["science", 90]))]
     pub filter_parameters: Vec<serde_json::Value>,
+    /// FTS5 query string for keyword search (enables hybrid mode)
+    #[serde(default)]
+    pub text_query: Option<Vec<String>>,
+    /// Balance between keyword and semantic (0.0 = pure keyword, 1.0 = pure semantic, default: 0.75)
+    #[serde(default)]
+    pub alpha: Option<f32>,
+    /// Fusion strategy: "rrf" (default) or "relative_score"
+    #[serde(default)]
+    pub fusion: Option<String>,
 }
 
 /// Request to update index with document texts (requires model to be loaded).

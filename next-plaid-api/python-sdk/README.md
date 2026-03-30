@@ -102,8 +102,12 @@ client.add(
     metadata=[{"country": "France"}, {"country": "Germany"}]
 )
 
-# Search with text queries
+# Semantic search
 results = client.search("my_index", ["What is the capital of France?"])
+
+# Hybrid search (semantic + keyword fused with RRF)
+results = client.search("my_index", ["capital of France?"],
+    text_query=["capital France"], alpha=0.75)
 
 # Print results
 for result in results.results:
@@ -204,7 +208,8 @@ client.create_index("my_index", IndexConfig(
     batch_size=50000,           # Documents per chunk
     seed=42,                    # Random seed
     start_from_scratch=999,     # Rebuild threshold
-    max_documents=10000         # Max documents (None = unlimited)
+    max_documents=10000,        # Max documents (None = unlimited)
+    fts_tokenizer="unicode61"   # FTS5 tokenizer: "unicode61" (words) or "trigram" (substrings)
 ))
 ```
 
@@ -217,6 +222,7 @@ client.create_index("my_index", IndexConfig(
 | `seed` | `Optional[int]` | `None` | Random seed |
 | `start_from_scratch` | `int` | `999` | Rebuild threshold |
 | `max_documents` | `Optional[int]` | `None` | Max documents |
+| `fts_tokenizer` | `Optional[str]` | `None` | FTS5 tokenizer: `"unicode61"` (words) or `"trigram"` (substrings) |
 
 #### Update Index Config
 
@@ -327,6 +333,20 @@ results = client.search(
 )
 ```
 
+#### Hybrid Search
+
+Combine semantic and keyword search, fused with Reciprocal Rank Fusion (RRF):
+
+```python
+results = client.search(
+    "my_index",
+    ["What is machine learning?", "How does AI work?"],  # Semantic queries
+    text_query=["machine learning", "artificial intelligence"],  # Keyword queries (same length)
+    alpha=0.75,                      # 0.0 = pure keyword, 1.0 = pure semantic
+    fusion="rrf"                     # "rrf" (default) or "relative_score"
+)
+```
+
 #### Subset Search
 
 ```python
@@ -354,6 +374,14 @@ SearchParams(
 | `n_ivf_probe` | `int` | `8` | IVF cells to probe |
 | `n_full_scores` | `int` | `4096` | Candidates for exact scoring |
 | `centroid_score_threshold` | `Optional[float]` | `0.4` | Centroid pruning threshold (set to None to disable) |
+
+**Hybrid Search Parameters (on `search()`):**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `text_query` | `Optional[List[str]]` | `None` | FTS5 keyword queries (must match `queries` length in hybrid mode) |
+| `alpha` | `Optional[float]` | `0.75` | Balance: 0.0 = pure keyword, 1.0 = pure semantic |
+| `fusion` | `Optional[str]` | `"rrf"` | `"rrf"` (reciprocal rank fusion) or `"relative_score"` |
 
 **Returns:** `SearchResult`
 
@@ -572,6 +600,7 @@ class IndexConfig:
     seed: Optional[int] = None           # Random seed
     start_from_scratch: int = 999        # Rebuild threshold
     max_documents: Optional[int] = None  # Max documents
+    fts_tokenizer: Optional[str] = None  # "unicode61" (words) or "trigram" (substrings)
 ```
 
 ### IndexInfo

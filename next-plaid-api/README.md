@@ -54,8 +54,13 @@ client.add("docs",
     metadata=[{"id": "doc_1"}, {"id": "doc_2"}],
 )
 
-# Search
+# Semantic search
 results = client.search("docs", ["vector database"])
+
+# Hybrid search (semantic + keyword fused with RRF)
+results = client.search("docs", ["vector database"],
+    text_query=["multi-vector"], alpha=0.75, fusion="rrf",
+)
 
 # Search with metadata filtering
 results = client.search("docs", ["coding tool"],
@@ -135,12 +140,17 @@ All document mutations return `202 Accepted` and process asynchronously. Concurr
 
 ### Search
 
-| Method | Path                                            | Description                   |
-| ------ | ----------------------------------------------- | ----------------------------- |
-| `POST` | `/indices/{name}/search`                        | Search with embedding arrays  |
-| `POST` | `/indices/{name}/search/filtered`               | Search + SQL metadata filter  |
-| `POST` | `/indices/{name}/search_with_encoding`          | Search with text queries      |
-| `POST` | `/indices/{name}/search/filtered_with_encoding` | Text search + metadata filter |
+| Method | Path                                            | Description                                         |
+| ------ | ----------------------------------------------- | --------------------------------------------------- |
+| `POST` | `/indices/{name}/search`                        | Unified search: semantic, keyword, or hybrid        |
+| `POST` | `/indices/{name}/search/filtered`               | Search + SQL metadata filter (legacy)               |
+| `POST` | `/indices/{name}/search_with_encoding`          | Search with text queries                            |
+| `POST` | `/indices/{name}/search/filtered_with_encoding` | Text search + metadata filter                       |
+
+The unified `/search` endpoint supports three modes via optional fields:
+- **Semantic only**: provide `queries` (backward compatible)
+- **Keyword only**: provide `text_query` (FTS5 BM25 over metadata)
+- **Hybrid**: provide both `queries` + `text_query`, fused by `alpha` and `fusion`
 
 ### Metadata
 
@@ -191,6 +201,7 @@ POST /indices
 | `seed`               | `null`  | Random seed for K-means                       |
 | `start_from_scratch` | `999`   | Below this doc count, full rebuild on update  |
 | `max_documents`      | `null`  | Evict oldest when exceeded (null = unlimited) |
+| `fts_tokenizer`      | `"unicode61"` | FTS5 tokenizer: `"unicode61"` (words) or `"trigram"` (substrings) |
 
 ### Add Documents (text)
 
@@ -280,6 +291,47 @@ POST /indices/my_index/search/filtered_with_encoding
   "filter_parameters": ["France"]
 }
 ```
+
+### Keyword Search
+
+```bash
+POST /indices/my_index/search
+```
+
+```json
+{
+  "text_query": ["capital France"],
+  "params": { "top_k": 5 }
+}
+```
+
+Performs FTS5 BM25 keyword search over document metadata. Metadata is automatically indexed into FTS5 when documents are added.
+
+### Hybrid Search
+
+```bash
+POST /indices/my_index/search
+```
+
+```json
+{
+  "queries": [{"embeddings": [[0.1, 0.2, ...], [0.3, 0.4, ...]]}],
+  "text_query": ["capital France"],
+  "alpha": 0.75,
+  "fusion": "rrf",
+  "params": { "top_k": 10 }
+}
+```
+
+Combines semantic (ColBERT) and keyword (FTS5 BM25) search using fusion:
+
+| Parameter    | Default  | Description                                                        |
+| ------------ | -------- | ------------------------------------------------------------------ |
+| `text_query` | `null`   | List of FTS5 query strings (must match `queries` length in hybrid) |
+| `alpha`      | `0.75`   | Balance: 0.0 = pure keyword, 1.0 = pure semantic                  |
+| `fusion`     | `"rrf"`  | `"rrf"` (reciprocal rank fusion) or `"relative_score"` (min-max)   |
+
+The `filter_condition` and `filter_parameters` fields can also be included directly in the `/search` body, replacing the need for the separate `/search/filtered` endpoint.
 
 ### Search Parameters
 
@@ -452,18 +504,19 @@ await client.search("docs", ["query"])
 
 ### SDK Methods
 
-| Method                                                                      | Description                        |
-| --------------------------------------------------------------------------- | ---------------------------------- |
-| `client.health()`                                                           | Health check                       |
-| `client.create_index(name, config)`                                         | Create index                       |
-| `client.delete_index(name)`                                                 | Delete index                       |
-| `client.get_index(name)`                                                    | Get index info                     |
-| `client.list_indices()`                                                     | List all indices                   |
-| `client.add(name, documents, metadata)`                                     | Add documents (text or embeddings) |
-| `client.search(name, queries, params, filter_condition, filter_parameters)` | Search                             |
-| `client.delete(name, condition, parameters)`                                | Delete by filter                   |
-| `client.encode(texts, input_type, pool_factor)`                             | Encode texts                       |
-| `client.rerank(query, documents)`                                           | Rerank documents                   |
+| Method                                                                      | Description                           |
+| --------------------------------------------------------------------------- | ------------------------------------- |
+| `client.health()`                                                           | Health check                          |
+| `client.create_index(name, config)`                                         | Create index                          |
+| `client.delete_index(name)`                                                 | Delete index                          |
+| `client.get_index(name)`                                                    | Get index info                        |
+| `client.list_indices()`                                                     | List all indices                      |
+| `client.add(name, documents, metadata)`                                     | Add documents (text or embeddings)    |
+| `client.search(name, queries, ..., text_query, alpha, fusion)`              | Search (semantic, keyword, or hybrid) |
+| `client.keyword_search(name, text_query, params)`                           | Keyword-only search (FTS5 BM25)       |
+| `client.delete(name, condition, parameters)`                                | Delete by filter                      |
+| `client.encode(texts, input_type, pool_factor)`                             | Encode texts                          |
+| `client.rerank(query, documents)`                                           | Rerank documents                      |
 
 ---
 

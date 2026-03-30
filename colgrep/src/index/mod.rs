@@ -420,6 +420,16 @@ fn run_metadata_stage(
             }
             return Err(e.into());
         }
+
+        if let Err(e) = next_plaid::text_search::index(
+            &index_path,
+            &metadata,
+            &chunk.doc_ids,
+            &next_plaid::FtsTokenizer::Trigram,
+        ) {
+            eprintln!("⚠️  FTS indexing failed (non-fatal): {}", e);
+        }
+
         filtering_exists = true;
         completed_units += chunk.units.len() as u64;
         if let Some(pb) = pb.as_ref() {
@@ -1541,10 +1551,12 @@ impl IndexBuilder {
         let index_path = get_vector_index_path(&self.index_dir);
         let index_path_str = index_path.to_str().unwrap();
 
-        // Repair any desync between vector index and filtering DB before proceeding
-        if let Err(e) = self.repair_index_db_sync(&index_path) {
-            eprintln!("⚠️  Repair failed: {}, falling back to full rebuild", e);
-            return self.full_rebuild(languages);
+        // Repair desync only if the previous run was interrupted mid-write.
+        if old_state.dirty {
+            if let Err(e) = self.repair_index_db_sync(&index_path) {
+                eprintln!("⚠️  Repair failed: {}, falling back to full rebuild", e);
+                return self.full_rebuild(languages);
+            }
         }
 
         // 0. Clean up orphaned entries (files in index but not on disk)
@@ -1567,6 +1579,11 @@ impl IndexBuilder {
         }
 
         let mut state = old_state.clone();
+
+        if !plan.deleted.is_empty() || !plan.changed.is_empty() || !plan.added.is_empty() {
+            state.dirty = true;
+            state.save(&self.index_dir)?;
+        }
 
         // 1. Delete chunks for deleted files (safe — not re-adding these)
         for file_path in &plan.deleted {
@@ -1734,6 +1751,7 @@ impl IndexBuilder {
             anyhow::bail!("Indexing interrupted by user");
         }
 
+        state.dirty = false;
         state.save(&self.index_dir)?;
 
         Ok(UpdateStats {
@@ -3054,19 +3072,51 @@ impl Searcher {
         Ok(metadata)
     }
 
+    /// Encode a query once for reuse across multiple searches.
+    pub fn encode_query(&self, query: &str) -> Result<ndarray::Array2<f32>> {
+        let query_embeddings =
+            crate::stderr::with_suppressed_stderr(|| self.model.encode_queries(&[query]))
+                .context("Failed to encode query")?;
+        Ok(query_embeddings.into_iter().next().unwrap())
+    }
+
+    /// Run FTS5 keyword search if the text index is available and the query
+    /// remains non-empty after sanitization.
+    pub fn fts5_search(
+        &self,
+        query: &str,
+        top_k: usize,
+        subset: Option<&[i64]>,
+    ) -> Option<next_plaid::QueryResult> {
+        let sanitized_query = next_plaid::text_search::sanitize_fts5_query(query);
+        if sanitized_query.is_empty() {
+            return None;
+        }
+        if let Some(sub) = subset {
+            next_plaid::text_search::search_filtered(&self.index_path, &sanitized_query, top_k, sub)
+                .ok()
+        } else {
+            next_plaid::text_search::search(&self.index_path, &sanitized_query, top_k).ok()
+        }
+    }
+
     pub fn search(
         &self,
         query: &str,
         top_k: usize,
         subset: Option<&[i64]>,
     ) -> Result<Vec<SearchResult>> {
-        // Encode query (suppress stderr to hide CoreML's harmless warnings)
-        let query_embeddings =
-            crate::stderr::with_suppressed_stderr(|| self.model.encode_queries(&[query]))
-                .context("Failed to encode query")?;
-        let query_emb = &query_embeddings[0];
+        let query_emb = self.encode_query(query)?;
+        self.search_with_embedding(&query_emb, top_k, subset)
+    }
 
-        // Search
+    /// Semantic-only search with a pre-computed query embedding.
+    pub fn search_with_embedding(
+        &self,
+        query_emb: &ndarray::Array2<f32>,
+        top_k: usize,
+        subset: Option<&[i64]>,
+    ) -> Result<Vec<SearchResult>> {
         let params = SearchParameters {
             top_k,
             ..Default::default()
@@ -3076,34 +3126,120 @@ impl Searcher {
             .search(query_emb, &params, subset)
             .context("Search failed")?;
 
-        // Retrieve metadata for the result document IDs
         let doc_ids: Vec<i64> = results.passage_ids.to_vec();
         let metadata = filtering::get(&self.index_path, None, &[], Some(&doc_ids))
             .context("Failed to retrieve metadata")?;
 
-        // Map to SearchResult (fixing SQLite type conversions)
         let search_results: Vec<SearchResult> = metadata
             .into_iter()
             .zip(results.scores.iter())
             .filter_map(|(mut meta, &score)| {
-                if let serde_json::Value::Object(ref mut obj) = meta {
-                    // SQLite stores booleans as integers - convert them back
-                    for key in ["has_loops", "has_branches", "has_error_handling"] {
-                        if let Some(v) = obj.get(key) {
-                            if let Some(n) = v.as_i64() {
-                                obj.insert(key.to_string(), serde_json::Value::Bool(n != 0));
-                            }
+                fix_sqlite_types(&mut meta);
+                serde_json::from_value::<CodeUnit>(meta)
+                    .ok()
+                    .map(|unit| SearchResult { unit, score })
+            })
+            .collect();
+
+        Ok(search_results)
+    }
+
+    /// Hybrid search: semantic retrieval fused with FTS5 keyword search via RRF.
+    pub fn search_hybrid(
+        &self,
+        query: &str,
+        top_k: usize,
+        subset: Option<&[i64]>,
+        alpha: f32,
+    ) -> Result<Vec<SearchResult>> {
+        let query_emb = self.encode_query(query)?;
+        let fts5 = self.fts5_search(query, top_k * 3, subset);
+        self.search_hybrid_with_embedding(&query_emb, query, top_k, subset, alpha, fts5.as_ref())
+    }
+
+    /// Hybrid search using a pre-computed query embedding and optional cached
+    /// FTS5 results.
+    pub fn search_hybrid_with_embedding(
+        &self,
+        query_emb: &ndarray::Array2<f32>,
+        query: &str,
+        top_k: usize,
+        subset: Option<&[i64]>,
+        alpha: f32,
+        fts5_results: Option<&next_plaid::QueryResult>,
+    ) -> Result<Vec<SearchResult>> {
+        let fetch_k = top_k * 3;
+        let params = SearchParameters {
+            top_k: fetch_k,
+            ..Default::default()
+        };
+        let semantic = self
+            .index
+            .search(query_emb, &params, subset)
+            .context("Semantic search failed")?;
+
+        let owned_fts5;
+        let keyword = match fts5_results {
+            Some(fts5) => {
+                if let Some(sub) = subset {
+                    let sub_set: HashSet<i64> = sub.iter().copied().collect();
+                    let mut filtered_ids = Vec::new();
+                    let mut filtered_scores = Vec::new();
+                    for (id, score) in fts5.passage_ids.iter().zip(fts5.scores.iter()) {
+                        if sub_set.contains(id) {
+                            filtered_ids.push(*id);
+                            filtered_scores.push(*score);
                         }
                     }
-                    // SQLite stores arrays as JSON strings - parse them back
-                    for key in ["calls", "called_by", "parameters", "variables", "imports"] {
-                        if let Some(serde_json::Value::String(s)) = obj.get(key) {
-                            if let Ok(arr) = serde_json::from_str::<serde_json::Value>(s) {
-                                obj.insert(key.to_string(), arr);
-                            }
-                        }
-                    }
+                    owned_fts5 = next_plaid::QueryResult {
+                        query_id: 0,
+                        passage_ids: filtered_ids,
+                        scores: filtered_scores,
+                    };
+                    Some(&owned_fts5)
+                } else {
+                    Some(fts5)
                 }
+            }
+            None => {
+                owned_fts5 =
+                    self.fts5_search(query, fetch_k, subset)
+                        .unwrap_or(next_plaid::QueryResult {
+                            query_id: 0,
+                            passage_ids: vec![],
+                            scores: vec![],
+                        });
+                if owned_fts5.passage_ids.is_empty() {
+                    None
+                } else {
+                    Some(&owned_fts5)
+                }
+            }
+        };
+
+        let (fused_ids, fused_scores) = if let Some(kw) = keyword {
+            if kw.passage_ids.is_empty() {
+                (semantic.passage_ids, semantic.scores)
+            } else {
+                next_plaid::text_search::fuse_rrf(
+                    &semantic.passage_ids,
+                    &kw.passage_ids,
+                    alpha,
+                    top_k,
+                )
+            }
+        } else {
+            (semantic.passage_ids, semantic.scores)
+        };
+
+        let metadata = filtering::get(&self.index_path, None, &[], Some(&fused_ids))
+            .context("Failed to retrieve metadata")?;
+
+        let search_results: Vec<SearchResult> = metadata
+            .into_iter()
+            .zip(fused_scores.iter())
+            .filter_map(|(mut meta, &score)| {
+                fix_sqlite_types(&mut meta);
                 serde_json::from_value::<CodeUnit>(meta)
                     .ok()
                     .map(|unit| SearchResult { unit, score })
@@ -3115,6 +3251,33 @@ impl Searcher {
 
     pub fn num_documents(&self) -> usize {
         self.index.num_documents()
+    }
+}
+
+/// SQLite stores booleans as integers and arrays as JSON strings. Normalize
+/// those back to the shapes the rest of colgrep expects.
+fn fix_sqlite_types(meta: &mut serde_json::Value) {
+    if let serde_json::Value::Object(ref mut obj) = meta {
+        let keys: Vec<String> = obj.keys().cloned().collect();
+        for key in keys {
+            if key.starts_with("has_") || key.starts_with("is_") {
+                if let Some(v) = obj.get(&key) {
+                    if let Some(n) = v.as_i64() {
+                        obj.insert(key, serde_json::Value::Bool(n != 0));
+                    }
+                }
+                continue;
+            }
+            if let Some(serde_json::Value::String(s)) = obj.get(&key) {
+                if s.starts_with('[') {
+                    if let Ok(arr) = serde_json::from_str::<serde_json::Value>(s) {
+                        if arr.is_array() {
+                            obj.insert(key, arr);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

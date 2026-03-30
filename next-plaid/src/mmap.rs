@@ -1067,6 +1067,12 @@ pub struct MergeManifest {
     /// Number of padding rows used in the merge
     #[serde(default)]
     pub padding_rows: usize,
+    /// Number of chunks expected (for fast-path validation)
+    #[serde(default)]
+    pub num_chunks: usize,
+    /// Mtime of metadata.json at merge time (detects any index modifications)
+    #[serde(default)]
+    pub metadata_mtime: f64,
     /// Total rows in the merged file (including padding)
     #[serde(default)]
     pub total_rows: usize,
@@ -1099,6 +1105,8 @@ fn load_merge_manifest(manifest_path: &Path) -> Option<MergeManifest> {
                         padding_rows: 0,
                         total_rows: 0,
                         ncols: 0,
+                        num_chunks: 0,
+                        metadata_mtime: 0.0,
                     });
                 }
             }
@@ -1148,26 +1156,52 @@ fn get_mtime(path: &Path) -> Result<f64> {
     Ok(duration.as_secs_f64())
 }
 
-/// Write NPY header for a 1D array
-fn write_npy_header_1d(writer: &mut impl Write, len: usize, dtype: &str) -> Result<usize> {
-    // Build header dict
-    let header_dict = format!(
-        "{{'descr': '{}', 'fortran_order': False, 'shape': ({},), }}",
-        dtype, len
-    );
-
-    // Pad to 64-byte alignment (NPY requirement)
+/// Build the NPY header dict string and compute the total header size (magic + version + len + padded dict).
+fn npy_header_layout(header_dict: &str) -> (usize, usize) {
     let header_len = header_dict.len();
     let padding = (64 - ((10 + header_len) % 64)) % 64;
+    let total = 10 + header_len + padding + 1; // +1 for the trailing newline
+    (padding, total)
+}
+
+fn npy_header_dict_1d(len: usize, dtype: &str) -> String {
+    format!(
+        "{{'descr': '{}', 'fortran_order': False, 'shape': ({},), }}",
+        dtype, len
+    )
+}
+
+fn npy_header_dict_2d(nrows: usize, ncols: usize, dtype: &str) -> String {
+    format!(
+        "{{'descr': '{}', 'fortran_order': False, 'shape': ({}, {}), }}",
+        dtype, nrows, ncols
+    )
+}
+
+/// Compute the NPY header size for a 1D array (without writing).
+fn npy_header_size_1d(len: usize, dtype: &str) -> usize {
+    let dict = npy_header_dict_1d(len, dtype);
+    npy_header_layout(&dict).1
+}
+
+/// Compute the NPY header size for a 2D array (without writing).
+fn npy_header_size_2d(nrows: usize, ncols: usize, dtype: &str) -> usize {
+    let dict = npy_header_dict_2d(nrows, ncols, dtype);
+    npy_header_layout(&dict).1
+}
+
+/// Write an NPY header (shared implementation for 1D and 2D).
+fn write_npy_header(writer: &mut impl Write, header_dict: &str) -> Result<usize> {
+    let (padding, total) = npy_header_layout(header_dict);
     let padded_header = format!("{}{}\n", header_dict, " ".repeat(padding));
 
-    // Write magic + version
+    // Write magic + version (v1.0)
     writer
         .write_all(NPY_MAGIC)
         .map_err(|e| Error::IndexLoad(format!("Failed to write NPY magic: {}", e)))?;
     writer
         .write_all(&[1, 0])
-        .map_err(|e| Error::IndexLoad(format!("Failed to write version: {}", e)))?; // v1.0
+        .map_err(|e| Error::IndexLoad(format!("Failed to write version: {}", e)))?;
 
     // Write header length (2 bytes for v1.0)
     let header_len_bytes = (padded_header.len() as u16).to_le_bytes();
@@ -1180,7 +1214,12 @@ fn write_npy_header_1d(writer: &mut impl Write, len: usize, dtype: &str) -> Resu
         .write_all(padded_header.as_bytes())
         .map_err(|e| Error::IndexLoad(format!("Failed to write header: {}", e)))?;
 
-    Ok(10 + padded_header.len())
+    Ok(total)
+}
+
+/// Write NPY header for a 1D array
+fn write_npy_header_1d(writer: &mut impl Write, len: usize, dtype: &str) -> Result<usize> {
+    write_npy_header(writer, &npy_header_dict_1d(len, dtype))
 }
 
 /// Write NPY header for a 2D array
@@ -1190,37 +1229,7 @@ fn write_npy_header_2d(
     ncols: usize,
     dtype: &str,
 ) -> Result<usize> {
-    // Build header dict
-    let header_dict = format!(
-        "{{'descr': '{}', 'fortran_order': False, 'shape': ({}, {}), }}",
-        dtype, nrows, ncols
-    );
-
-    // Pad to 64-byte alignment
-    let header_len = header_dict.len();
-    let padding = (64 - ((10 + header_len) % 64)) % 64;
-    let padded_header = format!("{}{}\n", header_dict, " ".repeat(padding));
-
-    // Write magic + version
-    writer
-        .write_all(NPY_MAGIC)
-        .map_err(|e| Error::IndexLoad(format!("Failed to write NPY magic: {}", e)))?;
-    writer
-        .write_all(&[1, 0])
-        .map_err(|e| Error::IndexLoad(format!("Failed to write version: {}", e)))?;
-
-    // Write header length
-    let header_len_bytes = (padded_header.len() as u16).to_le_bytes();
-    writer
-        .write_all(&header_len_bytes)
-        .map_err(|e| Error::IndexLoad(format!("Failed to write header len: {}", e)))?;
-
-    // Write header
-    writer
-        .write_all(padded_header.as_bytes())
-        .map_err(|e| Error::IndexLoad(format!("Failed to write header: {}", e)))?;
-
-    Ok(10 + padded_header.len())
+    write_npy_header(writer, &npy_header_dict_2d(nrows, ncols, dtype))
 }
 
 /// Information about a chunk file for merging
@@ -1248,6 +1257,30 @@ pub fn merge_codes_chunks(
     let manifest_path = index_path.join("merged_codes.manifest.json");
     let temp_path = index_path.join("merged_codes.npy.tmp");
     let lock_path = index_path.join("merged_codes.lock");
+
+    // Fast path: if manifest exists with matching params, metadata.json hasn't changed,
+    // and merged file exists with correct size, skip chunk scanning entirely.
+    let metadata_json_path = index_path.join("metadata.json");
+    let current_metadata_mtime = get_mtime(&metadata_json_path).unwrap_or(0.0);
+    if let Some(ref manifest) = load_merge_manifest(&manifest_path) {
+        let mtime_matches = manifest.metadata_mtime > 0.0
+            && (manifest.metadata_mtime - current_metadata_mtime).abs() < 0.001;
+        if manifest.num_chunks == num_chunks
+            && manifest.padding_rows == padding_rows
+            && manifest.chunks.len() == num_chunks
+            && manifest.total_rows > 0
+            && mtime_matches
+            && merged_path.exists()
+        {
+            if let Ok(meta) = std::fs::metadata(&merged_path) {
+                let expected_size = npy_header_size_1d(manifest.total_rows, "<i8")
+                    + manifest.total_rows * std::mem::size_of::<i64>();
+                if meta.len() == expected_size as u64 {
+                    return Ok(merged_path);
+                }
+            }
+        }
+    }
 
     // Acquire exclusive lock to prevent concurrent merge operations.
     // This is critical for multi-process scenarios (e.g., multiple API workers).
@@ -1418,6 +1451,8 @@ pub fn merge_codes_chunks(
         padding_rows,
         total_rows: final_rows,
         ncols: 0, // Not used for 1D codes array
+        num_chunks,
+        metadata_mtime: current_metadata_mtime,
     };
     save_merge_manifest(&manifest_path, &new_manifest)?;
 
@@ -1439,6 +1474,30 @@ pub fn merge_residuals_chunks(
     let manifest_path = index_path.join("merged_residuals.manifest.json");
     let temp_path = index_path.join("merged_residuals.npy.tmp");
     let lock_path = index_path.join("merged_residuals.lock");
+
+    // Fast path: if manifest exists with matching params, metadata.json hasn't changed,
+    // and merged file has correct size, skip chunk scanning entirely.
+    let metadata_json_path = index_path.join("metadata.json");
+    let current_metadata_mtime = get_mtime(&metadata_json_path).unwrap_or(0.0);
+    if let Some(ref manifest) = load_merge_manifest(&manifest_path) {
+        if manifest.num_chunks == num_chunks
+            && manifest.padding_rows == padding_rows
+            && manifest.chunks.len() == num_chunks
+            && manifest.total_rows > 0
+            && manifest.ncols > 0
+            && manifest.metadata_mtime > 0.0
+            && (manifest.metadata_mtime - current_metadata_mtime).abs() < 0.001
+            && merged_path.exists()
+        {
+            if let Ok(meta) = std::fs::metadata(&merged_path) {
+                let expected_size = npy_header_size_2d(manifest.total_rows, manifest.ncols, "|u1")
+                    + manifest.total_rows * manifest.ncols;
+                if meta.len() == expected_size as u64 {
+                    return Ok(merged_path);
+                }
+            }
+        }
+    }
 
     // Acquire exclusive lock to prevent concurrent merge operations.
     // This is critical for multi-process scenarios (e.g., multiple API workers).
@@ -1619,6 +1678,8 @@ pub fn merge_residuals_chunks(
         padding_rows,
         total_rows: final_rows,
         ncols,
+        num_chunks,
+        metadata_mtime: current_metadata_mtime,
     };
     save_merge_manifest(&manifest_path, &new_manifest)?;
 

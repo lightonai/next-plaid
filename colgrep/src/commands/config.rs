@@ -105,6 +105,9 @@ pub fn cmd_config(
     no_verbose: bool,
     relative_paths: bool,
     no_relative_paths: bool,
+    hybrid_search: bool,
+    no_hybrid_search: bool,
+    alpha: Option<f32>,
     add_ignore: Vec<String>,
     remove_ignore: Vec<String>,
     add_force_include: Vec<String>,
@@ -134,6 +137,9 @@ pub fn cmd_config(
         && !no_verbose
         && !relative_paths
         && !no_relative_paths
+        && !hybrid_search
+        && !no_hybrid_search
+        && alpha.is_none()
         && !has_ignore_changes
     {
         println!("Current configuration:");
@@ -206,6 +212,25 @@ pub fn cmd_config(
             println!("  rel-paths:   false (default)");
         }
 
+        // hybrid search
+        if config.use_hybrid_search() {
+            if config.hybrid_search.is_some() {
+                println!("  hybrid:      true");
+            } else {
+                println!("  hybrid:      true (default)");
+            }
+        } else {
+            println!("  hybrid:      false");
+        }
+
+        // hybrid alpha
+        let ha = config.get_hybrid_alpha();
+        if config.hybrid_alpha.is_some() {
+            println!("  alpha:       {:.2}", ha);
+        } else {
+            println!("  alpha:       {:.2} (default)", ha);
+        }
+
         // max recursion depth
         let max_depth = config.get_max_recursion_depth();
         if config.max_recursion_depth.is_some() {
@@ -241,6 +266,10 @@ pub fn cmd_config(
         );
         println!("Use --verbose or --no-verbose to set default output mode.");
         println!("Use --relative-paths or --no-relative-paths to toggle relative/absolute paths.");
+        println!("Use --hybrid-search or --no-hybrid-search to toggle FTS5 hybrid search.");
+        println!(
+            "Use --alpha to set hybrid search balance (0=keyword, 1=semantic). Use 0 to reset."
+        );
         println!("Use --ignore/--no-ignore to add/remove extra ignore patterns. --clear-ignore to reset.");
         println!("Use --force-include/--no-force-include to add/remove force-include patterns. --clear-force-include to reset.");
         return Ok(());
@@ -358,6 +387,29 @@ pub fn cmd_config(
     } else if no_relative_paths {
         config.clear_relative_paths();
         println!("✅ Disabled relative paths (absolute paths are now default)");
+        changed = true;
+    }
+
+    // Set hybrid search or no_hybrid_search
+    if hybrid_search {
+        config.clear_hybrid_search();
+        println!("✅ Enabled hybrid search (FTS5 keyword + ColBERT semantic)");
+        changed = true;
+    } else if no_hybrid_search {
+        config.set_hybrid_search(false);
+        println!("✅ Disabled hybrid search (pure semantic search mode)");
+        changed = true;
+    }
+
+    // Set or clear hybrid alpha
+    if let Some(a) = alpha {
+        if a == 0.0 {
+            config.clear_hybrid_alpha();
+            println!("✅ Reset hybrid alpha to 0.75 (default)");
+        } else {
+            config.set_hybrid_alpha(a);
+            println!("✅ Set hybrid alpha to {:.2}", config.get_hybrid_alpha());
+        }
         changed = true;
     }
 

@@ -20,6 +20,9 @@ pub struct IndexState {
     /// Number of searches performed against this index
     #[serde(default)]
     pub search_count: u64,
+    /// Set before index writes, cleared after. Allows skipping repair on clean shutdown.
+    #[serde(default)]
+    pub dirty: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +142,7 @@ mod tests {
             files,
             ignored_files: HashSet::new(),
             search_count: 0,
+            dirty: false,
         };
 
         let json = serde_json::to_string(&state).unwrap();

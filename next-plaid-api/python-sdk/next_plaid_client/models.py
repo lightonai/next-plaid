@@ -10,13 +10,20 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class IndexConfig:
-    """Configuration for creating a new index."""
+    """Configuration for creating a new index.
+
+    Attributes:
+        fts_tokenizer: FTS5 tokenizer for full-text search over metadata.
+            "unicode61" (default) for word-level search,
+            "trigram" for code/substring search.
+    """
 
     nbits: int = 4
     batch_size: int = 50000
     seed: Optional[int] = None
     start_from_scratch: int = 999
     max_documents: Optional[int] = None
+    fts_tokenizer: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -28,6 +35,8 @@ class IndexConfig:
             result["seed"] = self.seed
         if self.max_documents is not None:
             result["max_documents"] = self.max_documents
+        if self.fts_tokenizer is not None:
+            result["fts_tokenizer"] = self.fts_tokenizer
         return result
 
 

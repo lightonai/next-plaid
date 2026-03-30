@@ -245,11 +245,11 @@ EXAMPLES:
     # Clear all force-include patterns
     colgrep settings --clear-force-include
 
-    # Show relative paths in search output (saves tokens for LLM usage)
-    colgrep settings --relative-paths
-
-    # Show absolute paths in search output (default)
+    # Show absolute paths in search output
     colgrep settings --no-relative-paths
+
+    # Show relative paths in search output (default, saves tokens for LLM usage)
+    colgrep settings --relative-paths
 
 NOTES:
     • Values are stored in ~/.config/colgrep/config.json
@@ -363,6 +363,14 @@ pub struct Cli {
     /// Only search code files, skip text/config files (md, txt, yaml, json, toml, etc.)
     #[arg(long)]
     pub code_only: bool,
+
+    /// Disable FTS5 hybrid search (use pure semantic search only)
+    #[arg(long = "semantic-only")]
+    pub no_fts: bool,
+
+    /// Hybrid search alpha: balance between keyword (0.0) and semantic (1.0). Default: 0.75.
+    #[arg(long, value_name = "FLOAT")]
+    pub alpha: Option<f32>,
 
     /// Install colgrep as a plugin for Claude Code
     #[arg(long = "install-claude-code")]
@@ -493,6 +501,14 @@ pub enum Commands {
         /// Only search code files, skip text/config files (md, txt, yaml, json, toml, etc.)
         #[arg(long)]
         code_only: bool,
+
+        /// Disable FTS5 hybrid search (use pure semantic search only)
+        #[arg(long = "semantic-only")]
+        no_fts: bool,
+
+        /// Hybrid search alpha: balance between keyword (0.0) and semantic (1.0). Default: 0.75.
+        #[arg(long, value_name = "FLOAT")]
+        alpha: Option<f32>,
 
         /// Disable embedding pooling (use full embeddings, slower but more precise)
         #[arg(long = "no-pool")]
@@ -638,6 +654,19 @@ pub enum Commands {
         /// Show absolute paths in search output (this is the default)
         #[arg(long = "no-relative-paths", conflicts_with = "relative_paths")]
         no_relative_paths: bool,
+
+        /// Enable hybrid search (FTS5 keyword + ColBERT semantic fused with RRF, this is the default)
+        #[arg(long = "hybrid-search", conflicts_with = "no_hybrid_search")]
+        hybrid_search: bool,
+
+        /// Disable hybrid search (use pure semantic search only)
+        #[arg(long = "no-hybrid-search", conflicts_with = "hybrid_search")]
+        no_hybrid_search: bool,
+
+        /// Set hybrid search alpha: balance between keyword (0.0) and semantic (1.0).
+        /// Default: 0.75. Use 0 to reset to default.
+        #[arg(long, value_name = "FLOAT")]
+        alpha: Option<f32>,
 
         /// Add patterns to ignore during indexing (on top of defaults)
         /// Can be repeated. Examples: --ignore generated --ignore "*.pb.go"

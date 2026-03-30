@@ -306,12 +306,12 @@ pub fn resolve_context_lines(cli_n: Option<usize>, default: usize) -> usize {
     default
 }
 
-/// Resolve relative_paths: saved config > default (false = absolute paths)
+/// Resolve relative_paths: saved config > default (true = relative paths)
 pub fn resolve_relative_paths() -> bool {
     if let Ok(config) = Config::load() {
         return config.use_relative_paths();
     }
-    false
+    true
 }
 
 /// Format a path for display, using relative or absolute based on config.
@@ -373,6 +373,8 @@ pub fn cmd_search(
     exclude_patterns: &[String],
     exclude_dirs: &[String],
     code_only: bool,
+    no_fts: bool,
+    alpha: Option<f32>,
     pool_factor: Option<usize>,
     auto_confirm: bool,
     static_batch: bool,
@@ -401,6 +403,8 @@ pub fn cmd_search(
             exclude_patterns,
             exclude_dirs,
             code_only,
+            no_fts,
+            alpha,
             pool_factor,
             auto_confirm,
             static_batch,
@@ -479,16 +483,12 @@ pub fn cmd_search(
         };
 
         if !verbose {
-            // Non-verbose (compact) mode: show filepath:lines (score: X.XX) ordered by score
+            // Non-verbose (compact) mode: show filepath:lines ordered by score
             for result in &results {
                 let file_path = display_path(&result.unit.file, use_relative);
                 let start_line = result.unit.line;
                 let end_line = result.unit.end_line;
-                let score = result.score;
-                println!(
-                    "{}:{}-{} (score: {:.2})",
-                    file_path, start_line, end_line, score
-                );
+                println!("{}:{}-{}", file_path, start_line, end_line);
             }
         } else {
             // Verbose mode: full content grouped by file with syntax highlighting
@@ -779,6 +779,8 @@ fn search_single_path(
     exclude_patterns: &[String],
     exclude_dirs: &[String],
     code_only: bool,
+    no_fts: bool,
+    alpha: Option<f32>,
     pool_factor: Option<usize>,
     auto_confirm: bool,
     static_batch: bool,
@@ -1230,17 +1232,58 @@ fn search_single_path(
     // Request more results to allow for re-ranking with query boost and test function demotion
     let search_top_k = if code_only { top_k * 4 } else { top_k * 3 };
 
-    // When no -e flag is provided, run BOTH semantic search and hybrid search (query as text pattern)
+    // Resolve hybrid search: --semantic-only CLI flag overrides, then config, default is enabled
+    let config = colgrep::Config::load().unwrap_or_default();
+    let hybrid_disabled = if no_fts {
+        true
+    } else {
+        !config.use_hybrid_search()
+    };
+
+    // CLI --alpha overrides config, config overrides default (0.75)
+    let hybrid_alpha = alpha.unwrap_or_else(|| config.get_hybrid_alpha());
+
+    // When no -e flag is provided, run BOTH semantic/hybrid search and text-pattern search
     // This ensures exact matches are found even if the vector database doesn't rank them highly
     let results = if let Some(pattern) = &text_pattern {
         // -e flag provided: use existing hybrid search logic
         // Enhance semantic query with -e pattern (strip regex metacharacters and dedupe tokens)
         let sanitized_pattern = strip_regex_for_semantic(pattern);
         let enhanced_query = merge_query_with_pattern(query, &sanitized_pattern);
-        searcher.search(&enhanced_query, search_top_k, subset.as_deref())?
+        if hybrid_disabled {
+            searcher.search(&enhanced_query, search_top_k, subset.as_deref())?
+        } else {
+            searcher.search_hybrid(
+                &enhanced_query,
+                search_top_k,
+                subset.as_deref(),
+                hybrid_alpha,
+            )?
+        }
     } else {
-        // 1. Run pure semantic search
-        let semantic_results = searcher.search(query, search_top_k, subset.as_deref())?;
+        // Encode query once and reuse across both searches
+        let query_emb = searcher.encode_query(query)?;
+
+        // Run FTS5 once and reuse across both searches
+        let fts5_results = if hybrid_disabled {
+            None
+        } else {
+            searcher.fts5_search(query, search_top_k * 3, subset.as_deref())
+        };
+
+        // 1. Run semantic search (with FTS5 fusion if enabled)
+        let semantic_results = if hybrid_disabled {
+            searcher.search_with_embedding(&query_emb, search_top_k, subset.as_deref())?
+        } else {
+            searcher.search_hybrid_with_embedding(
+                &query_emb,
+                query,
+                search_top_k,
+                subset.as_deref(),
+                hybrid_alpha,
+                fts5_results.as_ref(),
+            )?
+        };
 
         // 2. Run hybrid search: filter by query text, then semantic rank
         // Use fixed_strings mode to treat the query as a literal pattern
@@ -1262,7 +1305,23 @@ fn search_single_path(
             };
 
             if !hybrid_subset.is_empty() {
-                searcher.search(query, search_top_k, Some(&hybrid_subset))?
+                // Reuse cached embedding and FTS5 results (filtered to subset)
+                if hybrid_disabled {
+                    searcher.search_with_embedding(
+                        &query_emb,
+                        search_top_k,
+                        Some(&hybrid_subset),
+                    )?
+                } else {
+                    searcher.search_hybrid_with_embedding(
+                        &query_emb,
+                        query,
+                        search_top_k,
+                        Some(&hybrid_subset),
+                        hybrid_alpha,
+                        fts5_results.as_ref(),
+                    )?
+                }
             } else {
                 vec![]
             }

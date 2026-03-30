@@ -67,6 +67,10 @@ pub struct IndexConfig {
     /// Useful for small batches where GPU initialization overhead exceeds benefits.
     #[serde(default)]
     pub force_cpu: bool,
+    /// FTS5 tokenizer for full-text search over metadata.
+    /// Default: `Unicode61` (word-level). Use `Trigram` for code / substring search.
+    #[serde(default)]
+    pub fts_tokenizer: crate::text_search::FtsTokenizer,
 }
 
 fn default_start_from_scratch() -> usize {
@@ -92,6 +96,7 @@ impl Default for IndexConfig {
             n_samples_kmeans: None,
             start_from_scratch: 999,
             force_cpu: false,
+            fts_tokenizer: crate::text_search::FtsTokenizer::default(),
         }
     }
 }
@@ -1391,6 +1396,7 @@ impl MmapIndex {
                     n_samples_kmeans: config.n_samples_kmeans,
                     start_from_scratch: config.start_from_scratch,
                     force_cpu: config.force_cpu,
+                    ..Default::default()
                 };
 
                 // Rebuild index from scratch with fresh K-means
@@ -1573,6 +1579,68 @@ impl MmapIndex {
         }
     }
 
+    /// Update an existing index or create a new one, with metadata and automatic
+    /// FTS5 full-text indexing.
+    ///
+    /// This is the primary entry point for streaming document ingestion. On each
+    /// call, embeddings and their metadata are added to the index. The FTS5
+    /// full-text search index over metadata is kept in sync automatically.
+    ///
+    /// # Arguments
+    ///
+    /// * `embeddings` - Document embeddings to add
+    /// * `index_path` - Directory for the index
+    /// * `index_config` - Configuration for index creation (used only on first call)
+    /// * `update_config` - Configuration for updates
+    /// * `metadata` - Optional metadata for the documents (one JSON object per embedding)
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (MmapIndex, `Vec<i64>`) containing the index and assigned document IDs
+    pub fn update_or_create_with_metadata(
+        embeddings: &[Array2<f32>],
+        index_path: &str,
+        index_config: &IndexConfig,
+        update_config: &crate::update::UpdateConfig,
+        metadata: Option<&[serde_json::Value]>,
+    ) -> Result<(Self, Vec<i64>)> {
+        if let Some(meta) = metadata {
+            if meta.len() != embeddings.len() {
+                return Err(Error::Config(format!(
+                    "Metadata length ({}) must match embeddings length ({})",
+                    meta.len(),
+                    embeddings.len()
+                )));
+            }
+        }
+
+        let index_dir = std::path::Path::new(index_path);
+        let metadata_json_path = index_dir.join("metadata.json");
+
+        let (index, doc_ids) = if metadata_json_path.exists() {
+            let mut index = Self::load(index_path)?;
+            let doc_ids = index.update(embeddings, update_config)?;
+            (index, doc_ids)
+        } else {
+            let num_docs = embeddings.len();
+            let index = Self::create_with_kmeans(embeddings, index_path, index_config)?;
+            let doc_ids: Vec<i64> = (0..num_docs as i64).collect();
+            (index, doc_ids)
+        };
+
+        if let Some(meta) = metadata {
+            if crate::filtering::exists(index_path) {
+                crate::filtering::update(index_path, meta, &doc_ids)?;
+            } else {
+                crate::filtering::create(index_path, meta, &doc_ids)?;
+            }
+            // Index metadata into FTS5 for full-text search
+            crate::text_search::index(index_path, meta, &doc_ids, &index_config.fts_tokenizer)?;
+        }
+
+        Ok((index, doc_ids))
+    }
+
     /// Reload the index from disk.
     ///
     /// This should be called after delete operations to refresh the in-memory
@@ -1632,6 +1700,8 @@ impl MmapIndex {
             let db_path = index_path.join("metadata.db");
             if db_path.exists() {
                 crate::filtering::delete(&path, doc_ids)?;
+                // Rebuild FTS5 index after metadata re-indexing
+                crate::text_search::rebuild(&path)?;
             }
         }
 

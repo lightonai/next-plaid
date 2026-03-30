@@ -300,13 +300,18 @@ class NextPlaidClient(BaseNextPlaidClient):
         filter_condition: Optional[str] = None,
         filter_parameters: Optional[List[Any]] = None,
         subset: Optional[List[int]] = None,
+        text_query: Optional[List[str]] = None,
+        alpha: Optional[float] = None,
+        fusion: Optional[str] = None,
     ) -> SearchResult:
         """
         Search an index. Automatically detects query input type.
 
-        This method accepts either:
-        - Text queries (List[str]): Server encodes them (requires model)
-        - Embedding queries (List[List[List[float]]]): Pre-computed embeddings
+        Supports three search modes:
+        - **Semantic only**: provide ``queries`` (text or embeddings)
+        - **Keyword only**: provide ``text_query`` without ``queries``
+        - **Hybrid**: provide both ``queries`` and ``text_query`` (same length),
+          blended by ``alpha`` and ``fusion``
 
         Args:
             index_name: Name of the index to search.
@@ -315,6 +320,13 @@ class NextPlaidClient(BaseNextPlaidClient):
             filter_condition: SQL WHERE condition for metadata filtering (optional).
             filter_parameters: Parameters for the filter condition (optional).
             subset: Optional list of document IDs to search within.
+            text_query: List of FTS5 query strings for keyword search over metadata.
+                When combined with ``queries``, performs hybrid search
+                (must have the same length as ``queries``).
+            alpha: Balance between keyword and semantic search (hybrid mode).
+                0.0 = pure keyword, 1.0 = pure semantic. Default: 0.75.
+            fusion: Fusion strategy for hybrid search: ``"rrf"`` (reciprocal
+                rank fusion, default) or ``"relative_score"``.
 
         Returns:
             SearchResult with results for each query.
@@ -322,13 +334,20 @@ class NextPlaidClient(BaseNextPlaidClient):
         Raises:
             IndexNotFoundError: If the index does not exist.
             ModelNotLoadedError: If text queries are provided but no model is loaded.
+            ValidationError: If queries and text_query have different lengths in hybrid mode.
 
         Examples:
-            # Search with text queries (requires model on server)
+            # Semantic search with text queries (requires model on server)
             results = client.search("my_index", ["What is AI?"])
 
-            # Search with pre-computed embeddings
-            results = client.search("my_index", [[[0.1, 0.2], [0.3, 0.4]]])
+            # Hybrid search: semantic + keyword fused with RRF
+            results = client.search(
+                "my_index",
+                ["What is AI?", "How does ML work?"],
+                text_query=["artificial intelligence", "machine learning"],
+                alpha=0.75,
+                fusion="rrf",
+            )
 
             # Search with metadata filter
             results = client.search(
@@ -337,20 +356,47 @@ class NextPlaidClient(BaseNextPlaidClient):
                 filter_condition="category = ?",
                 filter_parameters=["science"]
             )
-
-            # Search with parameters
-            results = client.search(
-                "my_index",
-                ["query text"],
-                params=SearchParams(top_k=5, n_ivf_probe=16)
-            )
         """
         is_text = _is_text_input(queries)
         has_filter = filter_condition is not None
+        has_hybrid = text_query is not None
+
+        # Hybrid/keyword search — use the unified /search endpoint directly
+        if has_hybrid:
+            if is_text and queries:
+                # Encode text queries first, then send as embeddings + text_query
+                enc_payload: Dict[str, Any] = {
+                    "queries": queries,
+                    "input_type": "query",
+                }
+                enc_data = self._request("POST", "/encode", json=enc_payload)
+                emb_queries = [{"embeddings": emb} for emb in enc_data["embeddings"]]
+                payload: Dict[str, Any] = {"queries": emb_queries}
+            elif not is_text and queries:
+                payload = {"queries": self._prepare_search_payload(queries, None, None)["queries"]}  # type: ignore
+            else:
+                payload = {}
+
+            payload["text_query"] = text_query
+            if params:
+                payload["params"] = params.to_dict()
+            if alpha is not None:
+                payload["alpha"] = alpha
+            if fusion is not None:
+                payload["fusion"] = fusion
+            if filter_condition:
+                payload["filter_condition"] = filter_condition
+                if filter_parameters:
+                    payload["filter_parameters"] = filter_parameters
+            if subset:
+                payload["subset"] = subset
+
+            data = self._request("POST", f"/indices/{index_name}/search", json=payload)
+            return SearchResult.from_dict(data)
 
         if is_text:
             # Text queries - use encoding endpoints
-            payload: Dict[str, Any] = {"queries": queries}
+            payload = {"queries": queries}
             if params:
                 payload["params"] = params.to_dict()
 
@@ -379,6 +425,39 @@ class NextPlaidClient(BaseNextPlaidClient):
 
             data = self._request("POST", endpoint, json=payload)
             return SearchResult.from_dict(data)
+
+    def keyword_search(
+        self,
+        index_name: str,
+        text_query: Union[str, List[str]],
+        params: Optional[SearchParams] = None,
+        filter_condition: Optional[str] = None,
+        filter_parameters: Optional[List[Any]] = None,
+    ) -> SearchResult:
+        """
+        Keyword-only search using FTS5 BM25 over document metadata.
+
+        Args:
+            index_name: Name of the index to search.
+            text_query: FTS5 query string or list of query strings.
+            params: Search parameters (optional, only top_k is used).
+            filter_condition: SQL WHERE condition for metadata filtering.
+            filter_parameters: Parameters for the filter condition.
+
+        Returns:
+            SearchResult with keyword search results.
+        """
+        queries = [text_query] if isinstance(text_query, str) else text_query
+        payload: Dict[str, Any] = {"text_query": queries}
+        if params:
+            payload["params"] = params.to_dict()
+        if filter_condition:
+            payload["filter_condition"] = filter_condition
+            if filter_parameters:
+                payload["filter_parameters"] = filter_parameters
+
+        data = self._request("POST", f"/indices/{index_name}/search", json=payload)
+        return SearchResult.from_dict(data)
 
     # ==================== Metadata Management ====================
 

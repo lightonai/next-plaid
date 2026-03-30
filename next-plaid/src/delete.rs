@@ -448,6 +448,7 @@ mod tests {
             n_samples_kmeans: None,
             start_from_scratch: 999,
             force_cpu: false,
+            ..Default::default()
         };
 
         let index = MmapIndex::create_with_kmeans(&embeddings, index_path, &config).unwrap();
@@ -522,6 +523,7 @@ mod tests {
             n_samples_kmeans: None,
             start_from_scratch: 999,
             force_cpu: false,
+            ..Default::default()
         };
 
         MmapIndex::create_with_kmeans(&embeddings, index_path, &config).unwrap();

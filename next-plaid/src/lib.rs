@@ -22,6 +22,7 @@ pub mod kmeans;
 pub mod maxsim;
 pub mod mmap;
 pub mod search;
+pub mod text_search;
 pub mod update;
 pub mod utils;
 
@@ -38,6 +39,7 @@ pub use kmeans::{
     ComputeKmeansConfig, FastKMeans, KMeansConfig,
 };
 pub use search::{QueryResult, SearchParameters};
+pub use text_search::FtsTokenizer;
 pub use update::UpdateConfig;
 
 #[cfg(feature = "cuda")]

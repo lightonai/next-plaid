@@ -322,9 +322,18 @@ def add_documents_one_by_one(
 
 
 def wait_for_document_count(
-    client: NextPlaidClient, index_name: str, expected_count: int, timeout: float = 300.0
+    client: NextPlaidClient,
+    index_name: str,
+    expected_count: int,
+    timeout: float = 300.0,
+    direction: str = "add",
 ) -> bool:
-    """Wait for the index to reach the expected document count."""
+    """Wait for the index to reach the expected document count.
+
+    Args:
+        direction: "add" allows count >= expected (overshoot is ok),
+                   "delete" requires count <= expected (must wait for deletion to finish).
+    """
     start_wait = time.time()
     while time.time() - start_wait < timeout:
         health = client.health()
@@ -332,10 +341,16 @@ def wait_for_document_count(
             if idx_info.name == index_name:
                 if idx_info.num_documents == expected_count:
                     return True
-                elif idx_info.num_documents > expected_count:
+                elif direction == "add" and idx_info.num_documents > expected_count:
                     print(
                         f"    WARNING: Index has {idx_info.num_documents} docs, expected {expected_count}"
                     )
+                    return True
+                elif direction == "delete" and idx_info.num_documents <= expected_count:
+                    if idx_info.num_documents < expected_count:
+                        print(
+                            f"    WARNING: Index has {idx_info.num_documents} docs, expected {expected_count}"
+                        )
                     return True
         time.sleep(2.0)
     return False
@@ -514,7 +529,7 @@ def run_stress_test(
             current_index_count -= docs_to_delete
             print(f"    Waiting for deletion to complete (expecting {current_index_count})...")
             time.sleep(5)  # Give time for async delete
-            if not wait_for_document_count(client, index_name, current_index_count, timeout=120.0):
+            if not wait_for_document_count(client, index_name, current_index_count, timeout=120.0, direction="delete"):
                 print(f"    WARNING: Timeout waiting for {current_index_count} documents")
             info = get_index_info(client, index_name)
             print(f"    Index now has {info['num_documents']} documents")

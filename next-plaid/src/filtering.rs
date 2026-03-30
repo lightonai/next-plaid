@@ -45,7 +45,7 @@ use crate::error::{Error, Result};
 const METADATA_DB_NAME: &str = "metadata.db";
 
 /// Primary key column name (matches fast-plaid).
-const SUBSET_COLUMN: &str = "_subset_";
+pub(crate) const SUBSET_COLUMN: &str = "_subset_";
 
 /// Validate that a column name is a safe SQL identifier.
 ///
@@ -591,17 +591,24 @@ fn json_to_sql(value: &Value) -> Box<dyn ToSql> {
 }
 
 /// Get the path to the metadata database for an index.
-fn get_db_path(index_path: &str) -> std::path::PathBuf {
+pub(crate) fn get_db_path(index_path: &str) -> std::path::PathBuf {
     Path::new(index_path).join(METADATA_DB_NAME)
 }
 
-fn configure_connection(conn: &Connection) -> Result<()> {
+/// Open a SQLite connection with the metadata DB defaults we want everywhere.
+///
+/// WAL keeps readers unblocked during writes, the busy timeout makes transient
+/// lock contention survivable, and the extra pragmas keep write-heavy metadata
+/// updates closer to the previous tuned behavior.
+pub(crate) fn open_db(db_path: &std::path::Path) -> Result<Connection> {
+    let conn = Connection::open(db_path)?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA synchronous=NORMAL;
-         PRAGMA temp_store=MEMORY;",
+         PRAGMA temp_store=MEMORY;
+         PRAGMA busy_timeout=5000;",
     )?;
-    Ok(())
+    Ok(conn)
 }
 
 fn validate_fixed_columns(columns: &[(&str, &str)]) -> Result<()> {
@@ -735,8 +742,7 @@ fn create_with_fixed_columns(
         return Ok(0);
     }
 
-    let mut conn = Connection::open(&db_path)?;
-    configure_connection(&conn)?;
+    let mut conn = open_db(&db_path)?;
     create_fixed_metadata_table(&conn, columns)?;
     insert_fixed_metadata_rows(&mut conn, columns, metadata, doc_ids)
 }
@@ -762,12 +768,11 @@ fn update_with_fixed_columns(
     let db_path = get_db_path(index_path);
     if !db_path.exists() {
         return Err(Error::Filtering(
-            "Metadata database does not exist. Use create_fixed() first.".into(),
+            "Metadata database does not exist. Use create() first.".into(),
         ));
     }
 
-    let mut conn = Connection::open(&db_path)?;
-    configure_connection(&conn)?;
+    let mut conn = open_db(&db_path)?;
     insert_fixed_metadata_rows(&mut conn, columns, metadata, doc_ids)
 }
 
@@ -866,8 +871,7 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
     }
 
     // Create connection
-    let mut conn = Connection::open(&db_path)?;
-    configure_connection(&conn)?;
+    let mut conn = open_db(&db_path)?;
 
     // Build CREATE TABLE statement
     let mut col_defs = vec![format!("\"{}\" INTEGER PRIMARY KEY", SUBSET_COLUMN)];
@@ -961,8 +965,7 @@ pub fn update(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         ));
     }
 
-    let mut conn = Connection::open(&db_path)?;
-    configure_connection(&conn)?;
+    let mut conn = open_db(&db_path)?;
 
     // Get existing columns
     let mut existing_columns: Vec<String> = Vec::new();
