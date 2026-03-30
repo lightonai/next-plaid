@@ -289,12 +289,15 @@ pub fn prepare_codec_artifacts(
 pub fn encode_index_chunk(
     embeddings: &[Array2<f32>],
     codec: &ResidualCodec,
-    _force_cpu: bool,
+    force_cpu: bool,
 ) -> Result<EncodedIndexChunk> {
     let embedding_dim = codec.embedding_dim();
     let packed_dim = embedding_dim * codec.nbits / 8;
     let doclens: Vec<i64> = embeddings.iter().map(|d| d.nrows() as i64).collect();
     let total_tokens: usize = doclens.iter().sum::<i64>() as usize;
+
+    #[cfg(not(feature = "cuda"))]
+    let _ = force_cpu;
 
     let mut batch_embeddings = Array2::<f32>::zeros((total_tokens, embedding_dim));
     let mut offset = 0;

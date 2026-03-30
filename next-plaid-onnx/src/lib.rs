@@ -69,6 +69,8 @@ use tokenizers::Tokenizer;
 
 // Conditional imports for execution providers
 #[cfg(feature = "cuda")]
+use ort::ep::ExecutionProvider as OrtExecutionProviderTrait;
+#[cfg(feature = "cuda")]
 use ort::execution_providers::CUDAExecutionProvider;
 
 /// Run a closure, catching panics without printing the default panic message.
