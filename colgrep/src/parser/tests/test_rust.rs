@@ -18,11 +18,11 @@ fn test_basic_function() {
 Signature: fn add(a: i32, b: i32) -> i32 {
 Parameters: a, b
 Returns: i32
+File: test test.rs
 Code:
 fn add(a: i32, b: i32) -> i32 {
     a + b
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -46,6 +46,7 @@ Signature: fn add(a: i32, b: i32) -> i32 {
 Description: Calculates the sum of two numbers.  # Arguments * `a` - First number * `b` - Second number
 Parameters: a, b
 Returns: i32
+File: test test.rs
 Code:
 /// Calculates the sum of two numbers.
 ///
@@ -54,8 +55,7 @@ Code:
 /// * `b` - Second number
 fn add(a: i32, b: i32) -> i32 {
     a + b
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -73,11 +73,11 @@ fn test_public_function() {
 Signature: pub fn public_func() -> String {
 Returns: String
 Calls: from
+File: test test.rs
 Code:
 pub fn public_func() -> String {
     String::from("public")
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -98,11 +98,11 @@ Signature: fn read_file(path: &str) -> Result<String, io::Error> {
 Parameters: path
 Returns: Result<String, io::Error>
 Calls: read_to_string
+File: test test.rs
 Code:
 fn read_file(path: &str) -> Result<String, io::Error> {
     std::fs::read_to_string(path)
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -122,12 +122,12 @@ Parameters: url
 Returns: Result<String, Error>
 Calls: get, text
 Variables: response
+File: test test.rs
 Code:
 async fn fetch_data(url: &str) -> Result<String, Error> {
     let response = reqwest::get(url).await?;
     response.text().await
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -145,13 +145,13 @@ pub struct Point {
     let expected = r#"Class: Point
 Signature: pub struct Point {
 Description: A 2D point.
+File: test test.rs
 Code:
 /// A 2D point.
 pub struct Point {
     pub x: f64,
     pub y: f64,
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -177,11 +177,11 @@ impl Calculator {
     let class_text = build_embedding_text(class);
     let expected_class = r#"Class: Calculator
 Signature: struct Calculator {
+File: test test.rs
 Code:
 struct Calculator {
     value: i32,
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(class_text, expected_class);
 
     let new_method = get_unit_by_name(&units, "new").unwrap();
@@ -191,11 +191,11 @@ Signature: pub fn new(initial: i32) -> Self {
 Class: Calculator
 Parameters: initial
 Returns: Self
+File: test test.rs
 Code:
     pub fn new(initial: i32) -> Self {
         Self { value: initial }
-    }
-File: test test.rs"#;
+    }"#;
     assert_eq!(new_text, expected_new);
 
     let add_method = get_unit_by_name(&units, "add").unwrap();
@@ -205,12 +205,12 @@ Signature: pub fn add(&mut self, x: i32) -> i32 {
 Class: Calculator
 Parameters: x
 Returns: i32
+File: test test.rs
 Code:
     pub fn add(&mut self, x: i32) -> i32 {
         self.value += x;
         self.value
-    }
-File: test test.rs"#;
+    }"#;
     assert_eq!(add_text, expected_add);
 }
 
@@ -231,11 +231,11 @@ fn swap<T, U>(a: T, b: U) -> (U, T) {
 Signature: fn identity<T>(value: T) -> T {
 Parameters: value
 Returns: T
+File: test test.rs
 Code:
 fn identity<T>(value: T) -> T {
     value
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(identity_text, expected_identity);
 
     let swap = get_unit_by_name(&units, "swap").unwrap();
@@ -244,11 +244,11 @@ File: test test.rs"#;
 Signature: fn swap<T, U>(a: T, b: U) -> (U, T) {
 Parameters: a, b
 Returns: (U, T)
+File: test test.rs
 Code:
 fn swap<T, U>(a: T, b: U) -> (U, T) {
     (b, a)
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(swap_text, expected_swap);
 }
 
@@ -266,13 +266,13 @@ fn test_macro_calls() {
     let expected = r#"Function: main
 Signature: fn main() {
 Calls: assert, println, vec
+File: test test.rs
 Code:
 fn main() {
     println!("Hello, world!");
     vec![1, 2, 3];
     assert!(true);
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -307,12 +307,12 @@ fn test_trait_definition() {
 
     let expected = r#"Class: Drawable
 Signature: pub trait Drawable {
+File: test test.rs
 Code:
 pub trait Drawable {
     fn draw(&self);
     fn bounds(&self) -> Rectangle;
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -329,13 +329,13 @@ fn test_enum_definition() {
 
     let expected = r#"Class: Status
 Signature: pub enum Status {
+File: test test.rs
 Code:
 pub enum Status {
     Active,
     Inactive,
     Pending(String),
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -358,13 +358,13 @@ struct MyStruct {
     let expected = r#"Function: test_something
 Signature: fn test_something() {
 Calls: assert
+File: test test.rs
 Code:
 #[test]
 #[ignore]
 fn test_something() {
     assert!(true);
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -392,11 +392,11 @@ Parameters: path
 Returns: io::Result<String>
 Calls: open, read_to_string
 Variables: file
+File: test test.rs
 Code:
 fn read_config(path: &str) -> io::Result<String> {
     let file = File::open(path)?;
     std::io::read_to_string(file)
-}
-File: test test.rs"#;
+}"#;
     assert_eq!(text, expected);
 }

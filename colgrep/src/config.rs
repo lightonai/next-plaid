@@ -630,14 +630,36 @@ mod tests {
         // Verify the constant is set to 16
         assert_eq!(MAX_PARALLEL_SESSIONS_CPU, 16);
 
-        // Verify get_default_parallel_sessions returns min(cpu_count, 16)
         let sessions = get_default_parallel_sessions();
-        let cpu_count = std::thread::available_parallelism()
+        #[cfg(feature = "cuda")]
+        let expected = match env_acceleration_mode_lossy() {
+            AccelerationMode::ForceCpu => std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(16)
+                .min(MAX_PARALLEL_SESSIONS_CPU),
+            AccelerationMode::ForceGpu => DEFAULT_PARALLEL_SESSIONS_GPU,
+            AccelerationMode::Auto => {
+                if crate::onnx_runtime::is_cudnn_available() {
+                    DEFAULT_PARALLEL_SESSIONS_GPU
+                } else {
+                    std::thread::available_parallelism()
+                        .map(|p| p.get())
+                        .unwrap_or(16)
+                        .min(MAX_PARALLEL_SESSIONS_CPU)
+                }
+            }
+        };
+        #[cfg(not(feature = "cuda"))]
+        let expected = std::thread::available_parallelism()
             .map(|p| p.get())
-            .unwrap_or(16);
-        let expected = cpu_count.min(MAX_PARALLEL_SESSIONS_CPU);
+            .unwrap_or(16)
+            .min(MAX_PARALLEL_SESSIONS_CPU);
+
         assert_eq!(sessions, expected);
-        assert!(sessions <= 16, "Sessions should never exceed 16");
+        assert!(
+            sessions <= MAX_PARALLEL_SESSIONS_CPU || sessions == DEFAULT_PARALLEL_SESSIONS_GPU,
+            "Sessions should match either the capped CPU default or the fixed GPU default"
+        );
     }
 
     #[test]

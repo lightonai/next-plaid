@@ -17,10 +17,10 @@ fn test_basic_function() {
     let expected = r#"Function: greet
 Signature: let greet name =
 Parameters: name
+File: test test.ml
 Code:
 let greet name =
-  "Hello, " ^ name ^ "!"
-File: test test.ml"#;
+  "Hello, " ^ name ^ "!""#;
     assert_eq!(text, expected);
 }
 
@@ -38,9 +38,9 @@ let add a b = a + b
 Signature: let add a b = a + b
 Description: Calculates the sum of two numbers.
 Parameters: a, b
+File: test test.ml
 Code:
-let add a b = a + b
-File: test test.ml"#;
+let add a b = a + b"#;
     assert_eq!(text, expected);
 }
 
@@ -59,11 +59,11 @@ fn test_recursive_function() {
 Signature: let rec factorial n =
 Parameters: n
 Calls: factorial
+File: test test.ml
 Code:
 let rec factorial n =
   if n <= 1 then 1
-  else n * factorial (n - 1)
-File: test test.ml";
+  else n * factorial (n - 1)";
     assert_eq!(text, expected);
 }
 
@@ -93,9 +93,9 @@ end
     let helper_expected = "Function: helper
 Signature: let helper x = x * 2
 Parameters: x
+File: test test.ml
 Code:
-  let helper x = x * 2
-File: test test.ml";
+  let helper x = x * 2";
     assert_eq!(helper_text, helper_expected);
 
     let another_func = get_unit_by_name(&units, "another").unwrap();
@@ -104,9 +104,9 @@ File: test test.ml";
     let another_expected = "Function: another
 Signature: let another y = y + 1
 Parameters: y
+File: test test.ml
 Code:
-  let another y = y + 1
-File: test test.ml";
+  let another y = y + 1";
     assert_eq!(another_text, another_expected);
 }
 
@@ -122,9 +122,9 @@ fn test_function_with_type_annotation() {
     let expected = "Function: add
 Signature: let add (a : int) (b : int) : int = a + b
 Parameters: a, b
+File: test test.ml
 Code:
-let add (a : int) (b : int) : int = a + b
-File: test test.ml";
+let add (a : int) (b : int) : int = a + b";
     assert_eq!(text, expected);
 }
 
@@ -142,11 +142,11 @@ fn test_pattern_matching() {
     let expected = "Function: length
 Signature: let rec length = function
 Calls: length
+File: test test.ml
 Code:
 let rec length = function
   | [] -> 0
-  | _ :: xs -> 1 + length xs
-File: test test.ml";
+  | _ :: xs -> 1 + length xs";
     assert_eq!(text, expected);
 }
 
@@ -197,11 +197,11 @@ fn test_let_binding_with_match() {
     let expected = "Function: first_or_default
 Signature: let first_or_default default = function
 Parameters: default
+File: test test.ml
 Code:
 let first_or_default default = function
   | [] -> default
-  | x :: _ -> x
-File: test test.ml";
+  | x :: _ -> x";
     assert_eq!(text, expected);
 }
 
@@ -221,10 +221,10 @@ and odd n =
 Signature: let rec even n =
 Parameters: n
 Calls: odd
+File: test test.ml
 Code:
 let rec even n =
-  if n = 0 then true else odd (n - 1)
-File: test test.ml";
+  if n = 0 then true else odd (n - 1)";
     assert_eq!(even_text, even_expected);
 
     let odd_func = get_unit_by_name(&units, "odd").unwrap();
@@ -234,10 +234,10 @@ File: test test.ml";
 Signature: and odd n =
 Parameters: n
 Calls: even
+File: test test.ml
 Code:
 and odd n =
-  if n = 0 then false else even (n - 1)
-File: test test.ml";
+  if n = 0 then false else even (n - 1)";
     assert_eq!(odd_text, odd_expected);
 }
 
@@ -258,9 +258,9 @@ Signature: let greet name =
 Parameters: name
 Calls: printf
 Uses: Printf
+File: test test.ml
 Code:
 let greet name =
-  Printf.printf "Hello, %s!\n" name
-File: test test.ml"#;
+  Printf.printf "Hello, %s!\n" name"#;
     assert_eq!(text, expected);
 }

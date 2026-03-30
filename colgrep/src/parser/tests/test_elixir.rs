@@ -21,9 +21,9 @@ end
 Signature: def greet(name) do
 Calls: greet
 Uses: greet(name
+File: test test.ex
 Code:
-def greet(name) do
-File: test test.ex"
+def greet(name) do"
     );
 }
 
@@ -47,9 +47,9 @@ end
 Signature: def add(a, b) do
 Calls: add
 Uses: add(a
+File: test test.ex
 Code:
-def add(a, b) do
-File: test test.ex"
+def add(a, b) do"
     );
 }
 
@@ -73,6 +73,7 @@ end
 Signature: defmodule MyModule do
 Calls: def, defmodule
 Uses: def, defmodule
+File: test test.ex
 Code:
 defmodule MyModule do
   def hello do
@@ -82,8 +83,7 @@ defmodule MyModule do
   def goodbye do
     "Goodbye!"
   end
-end
-File: test test.ex"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -104,9 +104,9 @@ end
 Signature: defp helper(x) do
 Calls: helper
 Uses: helper(x
+File: test test.ex
 Code:
-defp helper(x) do
-File: test test.ex"
+defp helper(x) do"
     );
 }
 
@@ -128,11 +128,11 @@ end
 Signature: def abs(x) when x >= 0 do
 Calls: abs, def
 Uses: abs(x, def
+File: test test.ex
 Code:
 def abs(x) when x >= 0 do
   x
-end
-File: test test.ex"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -152,13 +152,13 @@ end
 Signature: defmacro my_macro(arg) do
 Calls: defmacro, my_macro, quote, unquote
 Uses: defmacro, my_macro(arg, quote, unquote(arg
+File: test test.ex
 Code:
 defmacro my_macro(arg) do
   quote do
     unquote(arg)
   end
-end
-File: test test.ex"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -180,11 +180,11 @@ end
 Signature: def handle({:ok, value}) do
 Calls: def, handle
 Uses: def, handle({:error, handle({:ok
+File: test test.ex
 Code:
 def handle({:ok, value}) do
   value
-end
-File: test test.ex"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -206,6 +206,7 @@ end
 Signature: defmodule User do
 Calls: def, defmodule, defstruct, new
 Uses: def, defmodule, defstruct, new(name
+File: test test.ex
 Code:
 defmodule User do
   defstruct [:name, :email, age: 0]
@@ -213,8 +214,7 @@ defmodule User do
   def new(name, email) do
     %User{name: name, email: email}
   end
-end
-File: test test.ex"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -234,13 +234,13 @@ end
 Signature: defimpl String.Chars, for: User do
 Calls: def, defimpl, name, to_string
 Uses: def, defimpl, to_string(user
+File: test test.ex
 Code:
 defimpl String.Chars, for: User do
   def to_string(user) do
     "User: #{user.name}"
   end
-end
-File: test test.ex"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -266,11 +266,11 @@ end
 Signature: defmodule MyBehaviour do
 Calls: callback, defmodule, do_something, t
 Uses: String, callback, def, defmodule, do_something(term, do_something(value
+File: test test.ex
 Code:
 defmodule MyBehaviour do
   @callback do_something(term) :: {:ok, term} | {:error, String.t()}
-end
-File: test test.ex"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -291,13 +291,13 @@ end
 Signature: def process(items) do
 Calls: def, filter, map, process, sort, starts_with?, upcase
 Uses: def, process(items
+File: test test.ex
 Code:
 def process(items) do
   items
   |> Enum.map(&String.upcase/1)
   |> Enum.filter(&String.starts_with?(&1, "A"))
   |> Enum.sort()
-end
-File: test test.ex"#;
+end"#;
     assert_eq!(text, expected);
 }

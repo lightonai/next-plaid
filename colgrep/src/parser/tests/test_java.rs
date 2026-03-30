@@ -19,13 +19,13 @@ fn test_basic_method() {
     let class_text = build_embedding_text(class_unit);
     let class_expected = r#"Class: Calculator
 Signature: public class Calculator {
+File: calculator Calculator.java
 Code:
 public class Calculator {
     public int add(int a, int b) {
         return a + b;
     }
-}
-File: calculator Calculator.java"#;
+}"#;
     assert_eq!(class_text, class_expected);
 
     // Verify NO separate method unit exists
@@ -55,6 +55,7 @@ fn test_method_with_javadoc() {
     let class_text = build_embedding_text(class_unit);
     let class_expected = r#"Class: Math
 Signature: public class Math {
+File: math Math.java
 Code:
 public class Math {
     /**
@@ -66,8 +67,7 @@ public class Math {
     public int add(int a, int b) {
         return a + b;
     }
-}
-File: math Math.java"#;
+}"#;
     assert_eq!(class_text, class_expected);
 
     // Verify NO separate method unit exists
@@ -93,13 +93,13 @@ fn test_static_method() {
 Signature: public class Utils {
 Calls: format
 Variables: args
+File: utils Utils.java
 Code:
 public class Utils {
     public static String format(String template, Object... args) {
         return String.format(template, args);
     }
-}
-File: utils Utils.java"#;
+}"#;
     assert_eq!(class_text, class_expected);
 
     // Verify NO separate method unit exists
@@ -131,6 +131,7 @@ fn test_method_with_generics() {
 Signature: public class Container<T> {
 Parameters: T
 Variables: value
+File: container Container.java
 Code:
 public class Container<T> {
     private T value;
@@ -142,8 +143,7 @@ public class Container<T> {
     public void setValue(T value) {
         this.value = value;
     }
-}
-File: container Container.java"#;
+}"#;
     assert_eq!(class_text, class_expected);
 
     // Verify NO separate method units exist
@@ -175,6 +175,7 @@ fn test_constructor() {
     let class_expected = r#"Class: Person
 Signature: public class Person {
 Variables: age, name
+File: person Person.java
 Code:
 public class Person {
     private String name;
@@ -184,8 +185,7 @@ public class Person {
         this.name = name;
         this.age = age;
     }
-}
-File: person Person.java"#;
+}"#;
     assert_eq!(class_text, class_expected);
 }
 
@@ -201,12 +201,12 @@ fn test_interface() {
     let text = build_embedding_text(unit);
     let expected = r#"Class: Drawable
 Signature: public interface Drawable {
+File: drawable Drawable.java
 Code:
 public interface Drawable {
     void draw();
     Rectangle getBounds();
-}
-File: drawable Drawable.java"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -225,13 +225,13 @@ fn test_method_throws() {
     let class_expected = r#"Class: FileReader
 Signature: public class FileReader {
 Calls: of, readString
+File: file reader FileReader.java
 Code:
 public class FileReader {
     public String read(String path) throws IOException {
         return Files.readString(Path.of(path));
     }
-}
-File: file reader FileReader.java"#;
+}"#;
     assert_eq!(class_text, class_expected);
 
     // Verify NO separate method unit exists
@@ -265,6 +265,7 @@ fn test_enum() {
     let expected = r#"Class: Status
 Signature: public enum Status {
 Variables: value
+File: status Status.java
 Code:
 public enum Status {
     ACTIVE("active"),
@@ -280,8 +281,7 @@ public enum Status {
     public String getValue() {
         return value;
     }
-}
-File: status Status.java"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -302,6 +302,7 @@ fn test_abstract_class() {
     let class_expected = r#"Class: Shape
 Signature: public abstract class Shape {
 Calls: println
+File: shape Shape.java
 Code:
 public abstract class Shape {
     public abstract double area();
@@ -309,8 +310,7 @@ public abstract class Shape {
     public void describe() {
         System.out.println("I am a shape");
     }
-}
-File: shape Shape.java"#;
+}"#;
     assert_eq!(class_text, class_expected);
 
     // Verify NO separate method units exist
@@ -345,6 +345,7 @@ fn test_annotations() {
     let class_text = build_embedding_text(class_unit);
     let class_expected = r#"Class: Service
 Signature: public class Service {
+File: service Service.java
 Code:
 public class Service {
     @Override
@@ -357,8 +358,7 @@ public class Service {
     public void init() {
         // Initialize
     }
-}
-File: service Service.java"#;
+}"#;
     assert_eq!(class_text, class_expected);
 
     // Verify NO separate method units exist
@@ -389,6 +389,7 @@ fn test_lambda_expression() {
     let class_expected = r#"Class: StreamExample
 Signature: public class StreamExample {
 Calls: collect, filter, startsWith, stream, toList
+File: stream example StreamExample.java
 Code:
 public class StreamExample {
     public List<String> filter(List<String> items) {
@@ -396,8 +397,7 @@ public class StreamExample {
             .filter(s -> s.startsWith("a"))
             .collect(Collectors.toList());
     }
-}
-File: stream example StreamExample.java"#;
+}"#;
     assert_eq!(class_text, class_expected);
 
     // Verify NO separate method unit exists
@@ -434,14 +434,14 @@ public class Dog extends Animal {
 Signature: public class Dog extends Animal {
 Extends: Animal
 Calls: println
+File: animals Animals.java
 Code:
 public class Dog extends Animal {
     @Override
     public void speak() {
         System.out.println("Woof!");
     }
-}
-File: animals Animals.java"#;
+}"#;
     assert_eq!(dog_text, expected_dog);
 }
 
@@ -464,13 +464,13 @@ public class ListUtils {
 Signature: public class ListUtils {
 Calls: new
 Uses: ArrayList
+File: list utils ListUtils.java
 Code:
 public class ListUtils {
     public List<String> createList() {
         return new ArrayList<String>();
     }
-}
-File: list utils ListUtils.java"#;
+}"#;
     assert_eq!(class_text, class_expected);
 
     // Verify NO separate method unit exists

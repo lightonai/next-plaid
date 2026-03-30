@@ -29,11 +29,11 @@ fn test_basic_component() {
         text,
         "Function: increment
 Signature: function increment() {
+File: test test.svelte
 Code:
     function increment() {
         count += 1;
-    }
-File: test test.svelte"
+    }"
     );
 
     let text = build_embedding_text(&units[2]);
@@ -68,11 +68,11 @@ fn test_reactive_declarations() {
         text,
         "Function: increment
 Signature: function increment() {
+File: test test.svelte
 Code:
     function increment() {
         count += 1;
-    }
-File: test test.svelte"
+    }"
     );
 }
 
@@ -97,11 +97,11 @@ fn test_props() {
     let greet_text = build_embedding_text(greet_unit);
     let expected_greet = r#"Function: greet
 Signature: function greet() {
+File: test test.svelte
 Code:
     function greet() {
         return `${greeting}, ${name}!`;
-    }
-File: test test.svelte"#;
+    }"#;
     assert_eq!(greet_text, expected_greet);
 }
 
@@ -280,11 +280,11 @@ Signature: async function fetchUsers() {
 Calls: get
 Variables: const, response
 Uses: axios
+File: test test.svelte
 Code:
 async function fetchUsers() {
     const response = await axios.get('/api/users');
     return response.data;
-}
-File: test test.svelte"#;
+}"#;
     assert_eq!(text, expected);
 }

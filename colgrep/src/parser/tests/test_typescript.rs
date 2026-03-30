@@ -17,11 +17,11 @@ fn test_basic_function_with_types() {
 Signature: function add(a: number, b: number): number {
 Parameters: a, b
 Returns: : number
+File: test test.ts
 Code:
 function add(a: number, b: number): number {
     return a + b;
-}
-File: test test.ts"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -43,11 +43,11 @@ function getUser(id: number): User {
 Signature: function getUser(id: number): User {
 Parameters: id
 Returns: : User
+File: test test.ts
 Code:
 function getUser(id: number): User {
     return { id, name: "John" };
-}
-File: test test.ts"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -64,11 +64,11 @@ fn test_generic_function() {
 Signature: function identity<T>(value: T): T {
 Parameters: value
 Returns: : T
+File: test test.ts
 Code:
 function identity<T>(value: T): T {
     return value;
-}
-File: test test.ts"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -88,12 +88,12 @@ Parameters: id
 Returns: : Promise<User>
 Calls: fetch, json
 Variables: const, response
+File: test test.ts
 Code:
 async function fetchUser(id: number): Promise<User> {
     const response = await fetch(`/users/${id}`);
     return response.json();
-}
-File: test test.ts"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -120,6 +120,7 @@ fn test_class_with_types() {
         class_text,
         r#"Class: Calculator
 Signature: class Calculator {
+File: test test.ts
 Code:
 class Calculator {
     private value: number;
@@ -132,8 +133,7 @@ class Calculator {
         this.value += x;
         return this.value;
     }
-}
-File: test test.ts"#
+}"#
     );
 
     // Verify NO separate method unit exists
@@ -156,11 +156,11 @@ fn test_function_with_optional_params() {
 Signature: function greet(name: string, greeting?: string): string {
 Parameters: name, greeting
 Returns: : string
+File: test test.ts
 Code:
 function greet(name: string, greeting?: string): string {
     return `${greeting || "Hello"}, ${name}!`;
-}
-File: test test.ts"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -179,11 +179,11 @@ function getUsers(): UserMap {
     let expected = r#"Function: getUsers
 Signature: function getUsers(): UserMap {
 Returns: : UserMap
+File: test test.ts
 Code:
 function getUsers(): UserMap {
     return new Map();
-}
-File: test test.ts"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -205,11 +205,11 @@ function getStatus(): Status {
     let expected = r#"Function: getStatus
 Signature: function getStatus(): Status {
 Returns: : Status
+File: test test.ts
 Code:
 function getStatus(): Status {
     return Status.Active;
-}
-File: test test.ts"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -224,9 +224,9 @@ fn test_arrow_function_with_types() {
 Signature: const multiply = (a: number, b: number): number => a * b;
 Parameters: a, b
 Returns: : number
+File: test test.ts
 Code:
-const multiply = (a: number, b: number): number => a * b;
-File: test test.ts"#;
+const multiply = (a: number, b: number): number => a * b;"#;
     assert_eq!(text, expected);
 }
 
@@ -252,11 +252,11 @@ class Service {
 Signature: function Log(target: any, key: string) {
 Parameters: target, key
 Calls: log
+File: test test.ts
 Code:
 function Log(target: any, key: string) {
     console.log(`Called ${key}`);
-}
-File: test test.ts"#
+}"#
     );
 
     // Class is extracted as a single chunk with decorated method inside
@@ -267,14 +267,14 @@ File: test test.ts"#
         r#"Class: Service
 Signature: class Service {
 Calls: log
+File: test test.ts
 Code:
 class Service {
     @Log
     doSomething(): void {
         console.log("doing something");
     }
-}
-File: test test.ts"#
+}"#
     );
 
     // Verify NO separate method unit exists
@@ -324,13 +324,13 @@ class Dog extends Animal {
         animal_text,
         r#"Class: Animal
 Signature: class Animal {
+File: test test.ts
 Code:
 class Animal {
     speak(): string {
         return "...";
     }
-}
-File: test test.ts"#
+}"#
     );
     // Animal has no parent
     assert!(!animal_text.contains("Extends:"));
@@ -343,13 +343,13 @@ File: test test.ts"#
         r#"Class: Dog
 Signature: class Dog extends Animal {
 Extends: Animal
+File: test test.ts
 Code:
 class Dog extends Animal {
     speak(): string {
         return "Woof!";
     }
-}
-File: test test.ts"#
+}"#
     );
 
     // Verify NO separate method units exist
@@ -377,10 +377,10 @@ Parameters: url
 Returns: : Promise<any>
 Calls: get
 Uses: axios
+File: test test.ts
 Code:
 function fetchData(url: string): Promise<any> {
     return axios.get(url);
-}
-File: test test.ts"#;
+}"#;
     assert_eq!(text, expected);
 }

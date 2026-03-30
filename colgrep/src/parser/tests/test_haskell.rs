@@ -16,9 +16,9 @@ greet name = "Hello, " ++ name ++ "!"
 
     let expected = r#"Function: greet
 Signature: greet name = "Hello, " ++ name ++ "!"
+File: test test.hs
 Code:
-greet name = "Hello, " ++ name ++ "!"
-File: test test.hs"#;
+greet name = "Hello, " ++ name ++ "!""#;
     assert_eq!(text, expected);
 }
 
@@ -35,9 +35,9 @@ add a b = a + b
 
     let expected = r#"Function: add
 Signature: add a b = a + b
+File: test test.hs
 Code:
-add a b = a + b
-File: test test.hs"#;
+add a b = a + b"#;
     assert_eq!(text, expected);
 }
 
@@ -87,11 +87,11 @@ abs x
 
     let expected = r#"Function: abs
 Signature: abs x
+File: test test.hs
 Code:
 abs x
   | x >= 0    = x
-  | otherwise = -x
-File: test test.hs"#;
+  | otherwise = -x"#;
     assert_eq!(text, expected);
 }
 
@@ -105,9 +105,9 @@ fn test_newtype() {
     let text = build_embedding_text(unit);
     let expected = r#"Class: UserId
 Signature: newtype UserId = UserId Int
+File: test test.hs
 Code:
-newtype UserId = UserId Int
-File: test test.hs"#;
+newtype UserId = UserId Int"#;
     assert_eq!(text, expected);
 }
 
@@ -124,9 +124,9 @@ length (_:xs) = 1 + length xs
 
     let expected = r#"Function: length
 Signature: length [] = 0
+File: test test.hs
 Code:
-length [] = 0
-File: test test.hs"#;
+length [] = 0"#;
     assert_eq!(text, expected);
 }
 
@@ -144,11 +144,11 @@ quadratic a b c x = a*x^2 + b*x + c
 
     let expected = r#"Function: quadratic
 Signature: quadratic a b c x = a*x^2 + b*x + c
+File: test test.hs
 Code:
 quadratic a b c x = a*x^2 + b*x + c
   where
-    square y = y * y
-File: test test.hs"#;
+    square y = y * y"#;
     assert_eq!(text, expected);
 }
 
@@ -165,9 +165,9 @@ fn test_instance_declaration() {
     let text0 = build_embedding_text(unit0);
     let expected0 = r#"Function: show
 Signature: show (Person name age) = name ++ " (" ++ show age ++ ")"
+File: test test.hs
 Code:
-  show (Person name age) = name ++ " (" ++ show age ++ ")"
-File: test test.hs"#;
+  show (Person name age) = name ++ " (" ++ show age ++ ")""#;
     assert_eq!(text0, expected0);
 
     let unit1 = &units[1];
@@ -206,8 +206,8 @@ map f (x:xs) = f x : map f xs
 
     let expected = r#"Function: map
 Signature: map _ [] = []
+File: test test.hs
 Code:
-map _ [] = []
-File: test test.hs"#;
+map _ [] = []"#;
     assert_eq!(text, expected);
 }

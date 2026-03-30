@@ -20,11 +20,11 @@ func add(a, b int) int {
 Signature: func add(a, b int) int {
 Parameters: a, b
 Returns: int
+File: test test.go
 Code:
 func add(a, b int) int {
     return a + b
-}
-File: test test.go"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -47,13 +47,13 @@ Signature: func Add(a, b int) int {
 Description: Add calculates the sum of two integers. It returns the result as an integer.
 Parameters: a, b
 Returns: int
+File: test test.go
 Code:
 // Add calculates the sum of two integers.
 // It returns the result as an integer.
 func Add(a, b int) int {
     return a + b
-}
-File: test test.go"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -77,14 +77,14 @@ Signature: func divide(a, b int) (int, error) {
 Parameters: a, b
 Returns: (int, error)
 Calls: New
+File: test test.go
 Code:
 func divide(a, b int) (int, error) {
     if b == 0 {
         return 0, errors.New("division by zero")
     }
     return a / b, nil
-}
-File: test test.go"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -110,12 +110,12 @@ Signature: func (c *Calculator) Add(x int) int {
 Class: Calculator
 Parameters: x
 Returns: int
+File: test test.go
 Code:
 func (c *Calculator) Add(x int) int {
     c.value += x
     return c.value
-}
-File: test test.go"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -142,11 +142,11 @@ Parameters: name
 Returns: string
 Calls: Sprintf, TrimSpace
 Uses: fmt, strings
+File: test test.go
 Code:
 func greet(name string) string {
     return fmt.Sprintf("Hello, %s!", strings.TrimSpace(name))
-}
-File: test test.go"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -170,6 +170,7 @@ Signature: func sum(numbers ...int) int {
 Parameters: numbers
 Returns: int
 Variables: total
+File: test test.go
 Code:
 func sum(numbers ...int) int {
     total := 0
@@ -177,8 +178,7 @@ func sum(numbers ...int) int {
         total += n
     }
     return total
-}
-File: test test.go"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -239,12 +239,12 @@ Class: Point
 Description: Distance calculates the distance from origin.
 Returns: float64
 Calls: Sqrt
+File: test test.go
 Code:
 // Distance calculates the distance from origin.
 func (p Point) Distance() float64 {
     return math.Sqrt(p.X*p.X + p.Y*p.Y)
-}
-File: test test.go"#;
+}"#;
     assert_eq!(text, expected);
 
     let scale = get_unit_by_name(&units, "Scale").unwrap();
@@ -254,13 +254,13 @@ Signature: func (p *Point) Scale(factor float64) {
 Class: Point
 Description: Scale multiplies the point by a factor.
 Parameters: factor
+File: test test.go
 Code:
 // Scale multiplies the point by a factor.
 func (p *Point) Scale(factor float64) {
     p.X *= factor
     p.Y *= factor
-}
-File: test test.go"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -302,21 +302,21 @@ func main() {
     let text = build_embedding_text(init);
     let expected = r#"Function: init
 Signature: func init() {
+File: test test.go
 Code:
 func init() {
     // Initialize package
-}
-File: test test.go"#;
+}"#;
     assert_eq!(text, expected);
 
     let main = get_unit_by_name(&units, "main").unwrap();
     let text = build_embedding_text(main);
     let expected = r#"Function: main
 Signature: func main() {
+File: test test.go
 Code:
 func main() {
     // Main function
-}
-File: test test.go"#;
+}"#;
     assert_eq!(text, expected);
 }

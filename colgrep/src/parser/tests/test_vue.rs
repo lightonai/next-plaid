@@ -29,10 +29,10 @@ export default {
     assert_eq!(units.len(), 3);
 
     let text = build_embedding_text(&units[0]);
-    assert_eq!(text, "Function: data\nSignature: data() {\nCode:\n    data() {\n        return { count: 0 }\n    },\nFile: test test.vue");
+    assert_eq!(text, "Function: data\nSignature: data() {\nFile: test test.vue\nCode:\n    data() {\n        return { count: 0 }\n    },");
 
     let text = build_embedding_text(&units[1]);
-    assert_eq!(text, "Function: increment\nSignature: increment() {\nCode:\n        increment() {\n            this.count++\n        }\nFile: test test.vue");
+    assert_eq!(text, "Function: increment\nSignature: increment() {\nFile: test test.vue\nCode:\n        increment() {\n            this.count++\n        }");
 
     let text = build_embedding_text(&units[2]);
     assert_eq!(
@@ -65,7 +65,7 @@ function increment() {
     assert_eq!(text, "const count = ref(0)");
 
     let text = build_embedding_text(&units[1]);
-    assert_eq!(text, "Function: increment\nSignature: function increment() {\nCode:\nfunction increment() {\n    count.value++\n}\nFile: test test.vue");
+    assert_eq!(text, "Function: increment\nSignature: function increment() {\nFile: test test.vue\nCode:\nfunction increment() {\n    count.value++\n}");
 
     let text = build_embedding_text(&units[2]);
     assert_eq!(
@@ -97,10 +97,10 @@ export default defineComponent({
     assert_eq!(units.len(), 3);
 
     let text = build_embedding_text(&units[0]);
-    assert_eq!(text, "Class: User\nSignature: interface User {\nCode:\ninterface User {\n    name: string\n    age: number\n}\nFile: test test.vue");
+    assert_eq!(text, "Class: User\nSignature: interface User {\nFile: test test.vue\nCode:\ninterface User {\n    name: string\n    age: number\n}");
 
     let text = build_embedding_text(&units[1]);
-    assert_eq!(text, "Function: setup\nSignature: setup() {\nCalls: ref\nVariables: const, user\nCode:\n    setup() {\n        const user = ref<User>({ name: 'John', age: 30 })\n        return { user }\n    }\nFile: test test.vue");
+    assert_eq!(text, "Function: setup\nSignature: setup() {\nCalls: ref\nVariables: const, user\nFile: test test.vue\nCode:\n    setup() {\n        const user = ref<User>({ name: 'John', age: 30 })\n        return { user }\n    }");
 
     let text = build_embedding_text(&units[2]);
     assert_eq!(
@@ -272,11 +272,11 @@ Parameters: url
 Calls: get
 Variables: const, response
 Uses: axios
+File: test test.vue
 Code:
 async function fetchData(url) {
     const response = await axios.get(url)
     data.value = response.data
-}
-File: test test.vue"#;
+}"#;
     assert_eq!(text, expected);
 }
