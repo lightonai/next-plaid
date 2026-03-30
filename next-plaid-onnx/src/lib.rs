@@ -1126,7 +1126,7 @@ impl Colbert {
         }
 
         let mut batches = Vec::new();
-        for (shape, bucket_docs) in shapes.iter().zip(buckets.into_iter()) {
+        for (shape, bucket_docs) in shapes.iter().zip(buckets) {
             let docs_per_batch = shape.docs.max(1);
             let mut bucket_iter = bucket_docs.into_iter();
             while let Some(first) = bucket_iter.next() {
@@ -2010,10 +2010,7 @@ fn encode_prepared_batch_with_session(
             let (output_shape, output_data) = outputs["output"]
                 .try_extract_tensor::<f32>()
                 .context("Failed to extract output tensor")?;
-            (
-                output_shape.iter().copied().collect(),
-                output_data.iter().copied().collect(),
-            )
+            (output_shape.to_vec(), output_data.to_vec())
         } else {
             let outputs = session.run(ort::inputs![
                 "input_ids" => input_ids_tensor,
@@ -2022,10 +2019,7 @@ fn encode_prepared_batch_with_session(
             let (output_shape, output_data) = outputs["output"]
                 .try_extract_tensor::<f32>()
                 .context("Failed to extract output tensor")?;
-            (
-                output_shape.iter().copied().collect(),
-                output_data.iter().copied().collect(),
-            )
+            (output_shape.to_vec(), output_data.to_vec())
         };
 
     let embedding_dim = shape_slice[2] as usize;
@@ -2052,9 +2046,7 @@ fn encode_prepared_batch_with_session(
                 .count();
 
             let mut flat: Vec<f32> = Vec::with_capacity(valid_count * embedding_dim);
-            for j in 0..orig_len {
-                let token_id = token_ids[j];
-
+            for (j, &token_id) in token_ids.iter().enumerate().take(orig_len) {
                 if filter_skiplist && skiplist_ids.contains(&token_id) {
                     continue;
                 }

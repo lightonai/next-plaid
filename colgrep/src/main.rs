@@ -19,7 +19,7 @@ use cli::{Cli, Commands};
 use commands::search::{resolve_pool_factor, resolve_top_k};
 use commands::{
     cmd_clear, cmd_config, cmd_init, cmd_reset_stats, cmd_search, cmd_session_hook, cmd_set_model,
-    cmd_stats, cmd_status, cmd_task_hook, cmd_update,
+    cmd_stats, cmd_status, cmd_task_hook, cmd_update, InitOptions,
 };
 
 fn main() -> Result<()> {
@@ -227,15 +227,17 @@ fn main() -> Result<()> {
             static_batch,
         }) => cmd_init(
             &path,
-            model.as_deref(),
-            no_pool,
-            pool_factor,
-            auto_confirm,
-            batch_size,
-            encode_batch_size,
-            index_chunk_size,
-            sort_order,
-            static_batch,
+            InitOptions {
+                cli_model: model.as_deref(),
+                no_pool,
+                pool_factor,
+                auto_confirm,
+                batch_size,
+                encode_batch_size,
+                index_chunk_size,
+                sort_order,
+                static_batch,
+            },
         ),
         Some(Commands::Update) => cmd_update(),
         Some(Commands::Status { path }) => cmd_status(&path),

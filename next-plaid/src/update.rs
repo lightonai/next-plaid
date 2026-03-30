@@ -977,16 +977,14 @@ pub fn update_index(
 
     // Build new partial IVF
     let mut partition_pids_map: HashMap<usize, Vec<i64>> = HashMap::new();
-    let mut pid_counter = old_num_documents as i64;
 
-    for doc_codes in &new_codes_accumulated {
+    for (pid_counter, doc_codes) in (old_num_documents as i64..).zip(new_codes_accumulated.iter()) {
         for &code in doc_codes {
             partition_pids_map
                 .entry(code)
                 .or_default()
                 .push(pid_counter);
         }
-        pid_counter += 1;
     }
 
     // Load old IVF and merge

@@ -220,6 +220,7 @@ impl AppState {
     /// Backward-compatible constructor for tests and older callers that still
     /// pass a single loaded model instead of a worker pool.
     #[cfg(feature = "model")]
+    #[allow(dead_code)]
     pub fn with_model(
         config: ApiConfig,
         model: Option<next_plaid_onnx::Colbert>,

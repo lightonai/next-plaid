@@ -118,6 +118,15 @@ struct IndexedChunkForMetadata {
     doc_ids: Vec<i64>,
 }
 
+struct ChunkPipelineConfig<'a> {
+    index_chunk_size: usize,
+    effective_pool_factor: Option<usize>,
+    index_path: &'a str,
+    config: IndexConfig,
+    update_config: UpdateConfig,
+    pb: Option<&'a ProgressBar>,
+}
+
 struct ChunkForCoding {
     embeddings: Vec<ndarray::Array2<f32>>,
 }
@@ -443,14 +452,17 @@ fn run_metadata_stage(
 fn run_chunk_pipeline(
     model: Colbert,
     sorted_units: &[SortedUnit],
-    index_chunk_size: usize,
-    effective_pool_factor: Option<usize>,
-    index_path: &str,
-    config: IndexConfig,
-    update_config: UpdateConfig,
-    pb: Option<&ProgressBar>,
+    pipeline: ChunkPipelineConfig<'_>,
 ) -> Result<bool> {
     let mut was_interrupted = false;
+    let ChunkPipelineConfig {
+        index_chunk_size,
+        effective_pool_factor,
+        index_path,
+        config,
+        update_config,
+        pb,
+    } = pipeline;
 
     let (tokenize_tx, tokenize_rx) = mpsc::channel::<PreparedChunk>();
     let (encode_tx, encode_rx) = mpsc::channel::<TokenizedChunk>();
@@ -1374,12 +1386,14 @@ impl IndexBuilder {
         let was_interrupted = run_chunk_pipeline(
             self.model().clone(),
             &sorted_units,
-            index_chunk_size,
-            effective_pool_factor,
-            index_path_str,
-            config,
-            update_config,
-            Some(&pb),
+            ChunkPipelineConfig {
+                index_chunk_size,
+                effective_pool_factor,
+                index_path: index_path_str,
+                config,
+                update_config,
+                pb: Some(&pb),
+            },
         )?;
 
         pb.finish_and_clear();
@@ -1733,12 +1747,14 @@ impl IndexBuilder {
             let pipeline_interrupted = run_chunk_pipeline(
                 self.model().clone(),
                 &sorted_units,
-                index_chunk_size,
-                effective_pool_factor,
-                index_path_str,
-                config,
-                update_config,
-                Some(&pb),
+                ChunkPipelineConfig {
+                    index_chunk_size,
+                    effective_pool_factor,
+                    index_path: index_path_str,
+                    config,
+                    update_config,
+                    pb: Some(&pb),
+                },
             )?;
             was_interrupted |= pipeline_interrupted;
 
@@ -2192,12 +2208,14 @@ impl IndexBuilder {
         let was_interrupted = run_chunk_pipeline(
             self.model().clone(),
             &sorted_units,
-            index_chunk_size,
-            effective_pool_factor,
-            index_path_str,
-            config,
-            update_config,
-            pb.as_ref(),
+            ChunkPipelineConfig {
+                index_chunk_size,
+                effective_pool_factor,
+                index_path: index_path_str,
+                config,
+                update_config,
+                pb: pb.as_ref(),
+            },
         )?;
 
         if let Some(pb) = pb {
