@@ -1,0 +1,85 @@
+[package]
+name = "fastkmeans-rs"
+version = "1.0.6"
+edition = "2021"
+description = "A fast and efficient k-means clustering implementation in Rust, compatible with ndarray"
+license = "Apache-2.0"
+repository = "https://github.com/lightonai/fastkmeans-rs"
+homepage = "https://github.com/lightonai/fastkmeans-rs"
+documentation = "https://docs.rs/fastkmeans-rs"
+keywords = ["kmeans", "clustering", "machine-learning", "ndarray"]
+categories = ["science", "algorithms"]
+
+[dependencies]
+ndarray = { version = "0.16", features = ["rayon"] }
+ndarray-rand = "0.15"
+rand = "0.8"
+rand_chacha = "0.3"
+rayon = "1.10"
+num-traits = "0.2"
+thiserror = "2.0"
+ndarray-npy = { version = "0.9", optional = true }
+
+# BLAS backends (optional)
+blas-src = { version = "0.10", optional = true }
+openblas-src = { version = "0.10", features = [
+    "cblas",
+    "system",
+], optional = true }
+intel-mkl-src = { version = "0.8", features = ["mkl-static-lp64-seq"], optional = true  }
+accelerate-src = { version = "0.3", optional = true }
+
+# CUDA dependencies (optional)
+cudarc = { version = "0.19", default-features = false, features = ["cuda-11080", "cublas", "dynamic-loading", "nvrtc"], optional = true }
+
+# Metal GPU dependencies (macOS only, optional)
+metal = { version = "0.31", optional = true }
+objc = { version = "0.2", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+approx = "0.5"
+
+[features]
+default = []
+npy = ["ndarray-npy"]
+
+# BLAS acceleration features
+# Use system OpenBLAS (requires libopenblas-dev on Linux, brew install openblas on macOS)
+openblas = ["blas-src", "openblas-src", "ndarray/blas"]
+# Use Intel MKL (recommended for Intel/AMD CPUs on Linux)
+mkl = ["blas-src", "intel-mkl-src", "ndarray/blas"]
+# Use Apple Accelerate framework (macOS only, recommended for macOS)
+accelerate = ["blas-src", "accelerate-src", "ndarray/blas"]
+
+# CUDA GPU acceleration
+# Requires CUDA toolkit installed (nvcc in PATH)
+cuda = ["cudarc"]
+
+# Metal GPU acceleration (macOS only, Apple Silicon recommended)
+# Uses Metal compute shaders for GPU-accelerated k-means
+metal_gpu = ["dep:metal", "dep:objc"]
+
+[[bin]]
+name = "compare-kmeans"
+path = "src/bin/compare_kmeans.rs"
+required-features = ["npy"]
+
+[[bin]]
+name = "compare-kmeans-cuda"
+path = "src/bin/compare_kmeans_cuda.rs"
+required-features = ["npy", "cuda"]
+
+[[bench]]
+name = "kmeans_benchmark"
+harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+
+[profile.bench]
+lto = true
+codegen-units = 1
+opt-level = 3
