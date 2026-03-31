@@ -1202,7 +1202,7 @@ pub fn where_condition(
         ));
     }
 
-    let conn = Connection::open(&db_path)?;
+    let conn = open_db(&db_path)?;
 
     // Validate condition against SQL injection
     let valid_columns = get_schema_columns(&conn)?;
@@ -1286,7 +1286,7 @@ pub fn where_condition_regexp(
             })?,
     );
 
-    let conn = Connection::open(&db_path)?;
+    let conn = open_db(&db_path)?;
 
     // Validate condition against SQL injection
     let valid_columns = get_schema_columns(&conn)?;
@@ -1363,7 +1363,7 @@ pub fn get(
         return Ok(Vec::new());
     }
 
-    let conn = Connection::open(&db_path)?;
+    let conn = open_db(&db_path)?;
 
     // Validate condition against SQL injection if provided
     if let Some(cond) = condition {
@@ -1622,7 +1622,7 @@ pub fn count(index_path: &str) -> Result<usize> {
         return Ok(0);
     }
 
-    let conn = Connection::open(&db_path)?;
+    let conn = open_db(&db_path)?;
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM METADATA", [], |row| row.get(0))?;
     Ok(count as usize)
 }
