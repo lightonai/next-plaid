@@ -1100,20 +1100,22 @@ pub fn delete(index_path: &str, subset: &[i64]) -> Result<usize> {
         return Ok(0);
     }
 
-    let conn = Connection::open(&db_path)?;
+    let conn = open_db(&db_path)?;
 
     // Start transaction
     conn.execute("BEGIN", [])?;
 
     // Delete specified rows
-    let placeholders: Vec<String> = subset.iter().map(|_| "?".to_string()).collect();
+    let (in_clause, in_params, temp_table) = crate::text_search::build_in_clause(&conn, subset)?;
     let delete_sql = format!(
-        "DELETE FROM METADATA WHERE \"{}\" IN ({})",
-        SUBSET_COLUMN,
-        placeholders.join(", ")
+        "DELETE FROM METADATA WHERE \"{}\" {}",
+        SUBSET_COLUMN, in_clause
     );
-    let subset_refs: Vec<&dyn ToSql> = subset.iter().map(|v| v as &dyn ToSql).collect();
-    let deleted = conn.execute(&delete_sql, params_from_iter(subset_refs))?;
+    let param_refs: Vec<&dyn ToSql> = in_params.iter().map(|v| v.as_ref()).collect();
+    let deleted = conn.execute(&delete_sql, params_from_iter(param_refs))?;
+    if let Some(ref name) = temp_table {
+        crate::text_search::drop_temp_table(&conn, name);
+    }
 
     // Get column names (excluding _subset_)
     let mut columns: Vec<String> = Vec::new();
@@ -1391,16 +1393,13 @@ pub fn get(
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+        let (in_clause, params, _temp) = crate::text_search::build_in_clause(&conn, ids)?;
         let query = format!(
-            "SELECT * FROM METADATA WHERE \"{}\" IN ({})",
-            SUBSET_COLUMN,
-            placeholders.join(", ")
+            "SELECT * FROM METADATA WHERE \"{}\" {}",
+            SUBSET_COLUMN, in_clause
         );
-        let params: Vec<Box<dyn ToSql>> = ids
-            .iter()
-            .map(|&id| Box::new(id) as Box<dyn ToSql>)
-            .collect();
+        // Note: temp table (if created) lives for the connection lifetime,
+        // cleaned up when conn is dropped.
         (query, params)
     } else {
         let query = format!("SELECT * FROM METADATA ORDER BY \"{}\"", SUBSET_COLUMN);
