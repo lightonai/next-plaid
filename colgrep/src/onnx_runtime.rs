@@ -152,6 +152,13 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
 }
 
 fn pin_runtime_library(path: &Path) {
+    // Validate the library can actually be loaded before committing to it.
+    // This catches glibc version mismatches (e.g., ORT built against glibc 2.27
+    // on a system with glibc 2.26) with a clear error message instead of a
+    // silent panic later during model initialization.
+    #[cfg(target_os = "linux")]
+    validate_library_loadable(path);
+
     env::set_var("ORT_DYLIB_PATH", path);
 
     #[cfg(target_os = "linux")]
@@ -164,6 +171,81 @@ fn pin_runtime_library(path: &Path) {
         // Check for cuDNN availability (result is stored in CUDNN_AVAILABLE)
         let _ = check_cudnn_available();
     }
+}
+
+/// Validate that a shared library can be loaded by the dynamic linker.
+///
+/// This performs a trial `dlopen`/`dlclose` to detect problems like glibc version
+/// mismatches *before* the ONNX Runtime initialization path, where errors would be
+/// swallowed by the stderr suppression used to silence harmless CoreML warnings.
+///
+/// On failure, prints a diagnostic message explaining the likely cause and exits.
+/// Without this check, the user would see "Building index..." followed by a silent
+/// exit code 101, with no indication of what went wrong.
+#[cfg(target_os = "linux")]
+fn validate_library_loadable(path: &Path) {
+    use std::ffi::CString;
+
+    let path_str = match path.to_str() {
+        Some(s) => s,
+        None => return, // non-UTF8 path; skip validation, let ort handle it
+    };
+
+    let c_path = match CString::new(path_str) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    // RTLD_NOW: resolve all symbols immediately so version errors surface here.
+    // RTLD_LOCAL: don't pollute the global symbol namespace.
+    let handle = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+    if handle.is_null() {
+        let err = unsafe { std::ffi::CStr::from_ptr(libc::dlerror()) };
+        let err_msg = err.to_string_lossy();
+
+        eprintln!("\nerror: cannot load ONNX Runtime library: {}", path_str);
+        eprintln!("  cause: {}", err_msg);
+
+        if err_msg.contains("GLIBC_") {
+            eprintln!();
+            eprintln!("  This usually means the pre-built ONNX Runtime binary requires a");
+            eprintln!("  newer version of glibc than what is installed on this system.");
+            eprintln!();
+            eprintln!("  Possible fixes:");
+            eprintln!("    1. Upgrade to a newer OS (e.g., Amazon Linux 2023, Ubuntu 22.04+)");
+            eprintln!("    2. Set ORT_DYLIB_PATH to a compatible libonnxruntime.so");
+            eprintln!("    3. Delete the cached library and let colgrep re-download:");
+            eprintln!("       rm -rf ~/.cache/colgrep/onnxruntime/");
+            eprintln!();
+            eprintln!("  System glibc version:");
+
+            // Print the system glibc version for diagnostics.
+            let gnu_get_libc_version: Option<unsafe extern "C" fn() -> *const libc::c_char> = {
+                let sym = unsafe {
+                    libc::dlsym(libc::RTLD_DEFAULT, c"gnu_get_libc_version".as_ptr())
+                };
+                if sym.is_null() {
+                    None
+                } else {
+                    Some(unsafe {
+                        std::mem::transmute::<
+                            *mut libc::c_void,
+                            unsafe extern "C" fn() -> *const libc::c_char,
+                        >(sym)
+                    })
+                }
+            };
+            if let Some(get_ver) = gnu_get_libc_version {
+                let ver = unsafe { std::ffi::CStr::from_ptr(get_ver()) };
+                eprintln!("    glibc {}", ver.to_string_lossy());
+            }
+        }
+
+        std::process::exit(1);
+    }
+
+    // Library loaded successfully; close the validation handle.
+    unsafe { libc::dlclose(handle) };
 }
 
 /// Find the cuDNN library directory (without setting any global state)

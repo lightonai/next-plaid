@@ -293,7 +293,23 @@ impl IndexBuilder {
             let model = match model_result {
                 Ok(result) => result.context("Failed to load ColBERT model")?,
                 Err(panic_payload) => {
-                    // Re-panic with the original payload now that stderr is restored
+                    // Stderr is now restored (the SuppressStderr guard was dropped
+                    // during unwinding). However, the panic hook ran *before* unwinding
+                    // while stderr was still suppressed, so the original panic message
+                    // was sent to /dev/null. Extract and print it here before re-panicking,
+                    // since resume_unwind does not re-trigger the panic hook.
+                    let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown error (non-string panic payload)".to_string()
+                    };
+                    eprintln!("\nerror: ONNX Runtime failed to initialize: {}", msg);
+                    eprintln!(
+                        "hint: run `ldd {}` to check for missing symbols or glibc version mismatches",
+                        std::env::var("ORT_DYLIB_PATH").unwrap_or_else(|_| "libonnxruntime.so".into())
+                    );
                     std::panic::resume_unwind(panic_payload);
                 }
             };
