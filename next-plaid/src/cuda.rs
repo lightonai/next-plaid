@@ -145,7 +145,7 @@ pub fn is_initialized() -> bool {
     GLOBAL_CUDA_CONTEXT
         .get()
         .and_then(|m| m.lock().ok())
-        .map_or(false, |guard| guard.is_some())
+        .is_some_and(|guard| guard.is_some())
 }
 
 /// Check if CUDA has been determined to be broken/unavailable.

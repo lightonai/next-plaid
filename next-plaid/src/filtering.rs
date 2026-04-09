@@ -595,22 +595,185 @@ pub(crate) fn get_db_path(index_path: &str) -> std::path::PathBuf {
     Path::new(index_path).join(METADATA_DB_NAME)
 }
 
-/// Open a SQLite connection with WAL mode and busy timeout.
+/// Open a SQLite connection with the metadata DB defaults we want everywhere.
 ///
-/// WAL mode allows concurrent readers during writes. The busy timeout
-/// makes writers retry for up to 5 seconds instead of failing immediately.
+/// WAL keeps readers unblocked during writes, the busy timeout makes transient
+/// lock contention survivable, and the extra pragmas keep write-heavy metadata
+/// updates closer to the previous tuned behavior.
 pub(crate) fn open_db(db_path: &std::path::Path) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
-    conn.pragma_update(None, "journal_mode", "WAL")
-        .map_err(|e| Error::Filtering(format!("Failed to set WAL mode: {}", e)))?;
-    conn.pragma_update(None, "busy_timeout", 5000)
-        .map_err(|e| Error::Filtering(format!("Failed to set busy_timeout: {}", e)))?;
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
+         PRAGMA temp_store=MEMORY;
+         PRAGMA busy_timeout=5000;",
+    )?;
     Ok(conn)
+}
+
+fn validate_fixed_columns(columns: &[(&str, &str)]) -> Result<()> {
+    for (name, _) in columns {
+        if !is_valid_column_name(name) {
+            return Err(Error::Filtering(format!(
+                "Invalid column name '{}'. Column names must start with a letter or \
+                 underscore, followed by letters, digits, or underscores.",
+                name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn create_fixed_metadata_table(conn: &Connection, columns: &[(&str, &str)]) -> Result<()> {
+    // The caller has already committed to a stable schema, so we can skip the
+    // generic "discover columns as we go" logic and create the table directly.
+    let mut col_defs = vec![format!("\"{}\" INTEGER PRIMARY KEY", SUBSET_COLUMN)];
+    for (name, sql_type) in columns {
+        col_defs.push(format!("\"{}\" {}", name, sql_type));
+    }
+    let create_sql = format!("CREATE TABLE METADATA ({})", col_defs.join(", "));
+    conn.execute(&create_sql, [])?;
+    Ok(())
+}
+
+fn insert_fixed_metadata_rows(
+    conn: &mut Connection,
+    columns: &[(&str, &str)],
+    metadata: &[Value],
+    doc_ids: &[i64],
+) -> Result<usize> {
+    let tx = conn.transaction()?;
+    let mut column_names = vec![format!("\"{}\"", SUBSET_COLUMN)];
+    column_names.extend(columns.iter().map(|(name, _)| format!("\"{}\"", name)));
+    let placeholders: Vec<&str> = std::iter::repeat_n("?", columns.len() + 1).collect();
+    let insert_sql = format!(
+        "INSERT INTO METADATA ({}) VALUES ({})",
+        column_names.join(", "),
+        placeholders.join(", ")
+    );
+    {
+        let mut stmt = tx.prepare_cached(&insert_sql)?;
+        for (i, item) in metadata.iter().enumerate() {
+            let obj = item.as_object().ok_or_else(|| {
+                Error::Filtering("Expected metadata rows to be JSON objects".into())
+            })?;
+            let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
+            for (column_name, _) in columns {
+                // Reuse the generic JSON-to-SQL coercion so the fast path stores
+                // values exactly like the slower schema-discovery path.
+                let value = obj.get(*column_name).unwrap_or(&Value::Null);
+                values.push(json_to_sql(value));
+            }
+            let params: Vec<&dyn ToSql> = values.iter().map(|value| value.as_ref()).collect();
+            stmt.execute(params_from_iter(params))?;
+        }
+    }
+    tx.commit()?;
+    Ok(metadata.len())
+}
+
+fn try_fixed_schema_from_first_row(
+    metadata: &[Value],
+) -> Result<Option<Vec<(&str, &'static str)>>> {
+    let Some(Value::Object(first_obj)) = metadata.first() else {
+        return Ok(None);
+    };
+
+    let mut columns = Vec::with_capacity(first_obj.len());
+    let mut seen = HashSet::with_capacity(first_obj.len());
+    for (key, value) in first_obj {
+        if !is_valid_column_name(key) {
+            return Err(Error::Filtering(format!(
+                "Invalid column name '{}'. Column names must start with a letter or \
+                 underscore, followed by letters, digits, or underscores.",
+                key
+            )));
+        }
+        seen.insert(key.as_str());
+        columns.push((key.as_str(), infer_sql_type(value)));
+    }
+
+    // If every later row is a subset of the first row's keys, the batch is
+    // effectively fixed-schema and we can stay on the cheaper insert path.
+    for item in &metadata[1..] {
+        if let Value::Object(obj) = item {
+            for key in obj.keys() {
+                if !seen.contains(key.as_str()) {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    Ok(Some(columns))
 }
 
 /// Check if a metadata database exists for the given index.
 pub fn exists(index_path: &str) -> bool {
     get_db_path(index_path).exists()
+}
+
+fn create_with_fixed_columns(
+    index_path: &str,
+    columns: &[(&str, &str)],
+    metadata: &[Value],
+    doc_ids: &[i64],
+) -> Result<usize> {
+    if metadata.len() != doc_ids.len() {
+        return Err(Error::Filtering(format!(
+            "Metadata length ({}) must match doc_ids length ({})",
+            metadata.len(),
+            doc_ids.len()
+        )));
+    }
+    validate_fixed_columns(columns)?;
+
+    let index_dir = Path::new(index_path);
+    if !index_dir.exists() {
+        fs::create_dir_all(index_dir)?;
+    }
+
+    let db_path = get_db_path(index_path);
+    if db_path.exists() {
+        fs::remove_file(&db_path)?;
+    }
+
+    if metadata.is_empty() {
+        return Ok(0);
+    }
+
+    let mut conn = open_db(&db_path)?;
+    create_fixed_metadata_table(&conn, columns)?;
+    insert_fixed_metadata_rows(&mut conn, columns, metadata, doc_ids)
+}
+
+fn update_with_fixed_columns(
+    index_path: &str,
+    columns: &[(&str, &str)],
+    metadata: &[Value],
+    doc_ids: &[i64],
+) -> Result<usize> {
+    if metadata.is_empty() {
+        return Ok(0);
+    }
+    if metadata.len() != doc_ids.len() {
+        return Err(Error::Filtering(format!(
+            "Metadata length ({}) must match doc_ids length ({})",
+            metadata.len(),
+            doc_ids.len()
+        )));
+    }
+    validate_fixed_columns(columns)?;
+
+    let db_path = get_db_path(index_path);
+    if !db_path.exists() {
+        return Err(Error::Filtering(
+            "Metadata database does not exist. Use create() first.".into(),
+        ));
+    }
+
+    let mut conn = open_db(&db_path)?;
+    insert_fixed_metadata_rows(&mut conn, columns, metadata, doc_ids)
 }
 
 /// Create a new SQLite metadata database, replacing any existing one.
@@ -674,6 +837,13 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         return Ok(0);
     }
 
+    // Most colgrep metadata batches are fixed-shape JSON objects. Detect that
+    // early so creation does one direct CREATE TABLE + INSERT pass instead of
+    // paying for generic column discovery on every batch.
+    if let Some(columns) = try_fixed_schema_from_first_row(metadata)? {
+        return create_with_fixed_columns(index_path, &columns, metadata, doc_ids);
+    }
+
     // Collect all unique column names and infer types
     let mut columns: Vec<String> = Vec::new();
     let mut column_types: HashMap<String, &'static str> = HashMap::new();
@@ -701,7 +871,7 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
     }
 
     // Create connection
-    let conn = open_db(&db_path)?;
+    let mut conn = open_db(&db_path)?;
 
     // Build CREATE TABLE statement
     let mut col_defs = vec![format!("\"{}\" INTEGER PRIMARY KEY", SUBSET_COLUMN)];
@@ -710,8 +880,9 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         col_defs.push(format!("\"{}\" {}", col, sql_type));
     }
 
+    let tx = conn.transaction()?;
     let create_sql = format!("CREATE TABLE METADATA ({})", col_defs.join(", "));
-    conn.execute(&create_sql, [])?;
+    tx.execute(&create_sql, [])?;
 
     // Prepare INSERT statement
     let placeholders: Vec<&str> = std::iter::repeat_n("?", columns.len() + 1).collect();
@@ -727,27 +898,26 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         )
     };
 
-    // Insert rows (in a transaction for performance — single fsync)
-    conn.execute_batch("BEGIN")?;
-    let mut stmt = conn.prepare(&insert_sql)?;
-    for (i, item) in metadata.iter().enumerate() {
-        let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
-        if let Value::Object(obj) = item {
-            for col in &columns {
-                let value = obj.get(col).unwrap_or(&Value::Null);
-                values.push(json_to_sql(value));
+    {
+        let mut stmt = tx.prepare(&insert_sql)?;
+        for (i, item) in metadata.iter().enumerate() {
+            let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
+            if let Value::Object(obj) = item {
+                for col in &columns {
+                    let value = obj.get(col).unwrap_or(&Value::Null);
+                    values.push(json_to_sql(value));
+                }
+            } else {
+                // If not an object, insert nulls
+                for _ in &columns {
+                    values.push(Box::new(None::<String>));
+                }
             }
-        } else {
-            // If not an object, insert nulls
-            for _ in &columns {
-                values.push(Box::new(None::<String>));
-            }
+            let params: Vec<&dyn ToSql> = values.iter().map(|v| v.as_ref()).collect();
+            stmt.execute(params_from_iter(params))?;
         }
-        let params: Vec<&dyn ToSql> = values.iter().map(|v| v.as_ref()).collect();
-        stmt.execute(params_from_iter(params))?;
     }
-    drop(stmt);
-    conn.execute_batch("COMMIT")?;
+    tx.commit()?;
 
     Ok(metadata.len())
 }
@@ -795,7 +965,7 @@ pub fn update(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         ));
     }
 
-    let conn = open_db(&db_path)?;
+    let mut conn = open_db(&db_path)?;
 
     // Get existing columns
     let mut existing_columns: Vec<String> = Vec::new();
@@ -808,6 +978,27 @@ pub fn update(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
                 existing_columns.push(col);
             }
         }
+    }
+
+    let existing_column_set: HashSet<&str> = existing_columns
+        .iter()
+        .map(|column| column.as_str())
+        .collect();
+    let has_new_columns = metadata.iter().any(|item| {
+        item.as_object().is_some_and(|obj| {
+            obj.keys()
+                .any(|key| !existing_column_set.contains(key.as_str()))
+        })
+    });
+    if !has_new_columns {
+        // Common case: callers keep sending the same schema that already exists
+        // in SQLite. Skip PRAGMA-driven schema mutation work and append rows
+        // directly using the current column order.
+        let fixed_columns: Vec<(&str, &str)> = existing_columns
+            .iter()
+            .map(|column| (column.as_str(), "TEXT"))
+            .collect();
+        return update_with_fixed_columns(index_path, &fixed_columns, metadata, doc_ids);
     }
 
     // Find new columns and add them
@@ -834,11 +1025,12 @@ pub fn update(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         }
     }
 
+    let tx = conn.transaction()?;
     // Add new columns to table
     for col in &new_columns {
         let sql_type = column_types.get(col).copied().unwrap_or("TEXT");
         let alter_sql = format!("ALTER TABLE METADATA ADD COLUMN \"{}\" {}", col, sql_type);
-        conn.execute(&alter_sql, [])?;
+        tx.execute(&alter_sql, [])?;
     }
 
     // Get all columns (existing + new)
@@ -858,26 +1050,25 @@ pub fn update(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         )
     };
 
-    // Insert rows (in a transaction for performance — single fsync)
-    conn.execute_batch("BEGIN")?;
-    let mut stmt = conn.prepare(&insert_sql)?;
-    for (i, item) in metadata.iter().enumerate() {
-        let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
-        if let Value::Object(obj) = item {
-            for col in &all_columns {
-                let value = obj.get(col).unwrap_or(&Value::Null);
-                values.push(json_to_sql(value));
+    {
+        let mut stmt = tx.prepare(&insert_sql)?;
+        for (i, item) in metadata.iter().enumerate() {
+            let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
+            if let Value::Object(obj) = item {
+                for col in &all_columns {
+                    let value = obj.get(col).unwrap_or(&Value::Null);
+                    values.push(json_to_sql(value));
+                }
+            } else {
+                for _ in &all_columns {
+                    values.push(Box::new(None::<String>));
+                }
             }
-        } else {
-            for _ in &all_columns {
-                values.push(Box::new(None::<String>));
-            }
+            let params: Vec<&dyn ToSql> = values.iter().map(|v| v.as_ref()).collect();
+            stmt.execute(params_from_iter(params))?;
         }
-        let params: Vec<&dyn ToSql> = values.iter().map(|v| v.as_ref()).collect();
-        stmt.execute(params_from_iter(params))?;
     }
-    drop(stmt);
-    conn.execute_batch("COMMIT")?;
+    tx.commit()?;
 
     Ok(metadata.len())
 }
@@ -1381,7 +1572,9 @@ pub fn update_where(
         }
     }
 
-    // Find which _subset_ IDs will be affected (before the UPDATE)
+    // Keep the FTS mirror in sync with metadata updates by recording affected rows
+    // before executing the UPDATE. This stays on the generic path so any caller that
+    // updates searchable fields gets consistent search results.
     let affected_ids: Vec<i64> = {
         let affected_query = format!(
             "SELECT \"{}\" FROM METADATA WHERE {}",
@@ -1394,8 +1587,7 @@ pub fn update_where(
         let rows = affected_stmt.query_map(params_from_iter(cond_param_refs), |row| {
             row.get::<_, i64>(0)
         })?;
-        let ids: Vec<i64> = rows.filter_map(|r| r.ok()).collect();
-        ids
+        rows.filter_map(|row| row.ok()).collect()
     };
 
     // Build SET clause
@@ -1416,8 +1608,6 @@ pub fn update_where(
 
     let updated = conn.execute(&query, params_from_iter(param_refs))?;
 
-    // Sync FTS5 index for affected rows.
-    // With WAL mode, the existing conn (reader) coexists with update_rows' writer.
     if updated > 0 && !affected_ids.is_empty() {
         crate::text_search::update_rows(index_path, &affected_ids)?;
     }

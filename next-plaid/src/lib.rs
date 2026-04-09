@@ -30,7 +30,10 @@ pub use codec::ResidualCodec;
 pub use delete::delete_from_index;
 pub use error::{Error, Result};
 pub use index::MmapIndex;
-pub use index::{IndexConfig, Metadata};
+pub use index::{
+    encode_index_chunk, prepare_codec_artifacts, write_index_from_encoded_chunks,
+    EncodedIndexChunk, IndexConfig, Metadata, PreparedCodecArtifacts,
+};
 pub use kmeans::{
     compute_centroids, compute_centroids_from_documents, compute_kmeans, estimate_num_partitions,
     ComputeKmeansConfig, FastKMeans, KMeansConfig,

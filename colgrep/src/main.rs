@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
+use rayon::ThreadPoolBuilder;
 
 use colgrep::{
     acceleration::{apply_acceleration_mode, env_acceleration_mode, AccelerationMode},
@@ -18,13 +19,15 @@ use cli::{Cli, Commands};
 use commands::search::{resolve_pool_factor, resolve_top_k};
 use commands::{
     cmd_clear, cmd_config, cmd_init, cmd_reset_stats, cmd_search, cmd_session_hook, cmd_set_model,
-    cmd_stats, cmd_status, cmd_task_hook, cmd_update,
+    cmd_stats, cmd_status, cmd_task_hook, cmd_update, InitOptions,
 };
 
 fn main() -> Result<()> {
     // Set up Ctrl+C handler for graceful interruption during indexing
     // This is non-fatal if it fails (e.g., in environments without signal support)
     let _ = setup_signal_handler();
+
+    init_global_rayon_pool();
 
     let cli = Cli::parse();
     let env_mode = env_acceleration_mode()?;
@@ -112,6 +115,7 @@ fn main() -> Result<()> {
             no_pool,
             pool_factor,
             auto_confirm,
+            static_batch,
         }) => {
             // If only -e pattern is given without a query, use the pattern as the query too
             let original_query = query.clone();
@@ -201,6 +205,7 @@ fn main() -> Result<()> {
                     alpha,
                     resolve_pool_factor(pool_factor, no_pool),
                     auto_confirm,
+                    static_batch,
                 )
             } else {
                 // No query or text_pattern provided - show help
@@ -215,7 +220,23 @@ fn main() -> Result<()> {
             no_pool,
             pool_factor,
             auto_confirm,
-        }) => cmd_init(&path, model.as_deref(), no_pool, pool_factor, auto_confirm),
+            batch_size,
+            encode_batch_size,
+            index_chunk_size,
+            static_batch,
+        }) => cmd_init(
+            &path,
+            InitOptions {
+                cli_model: model.as_deref(),
+                no_pool,
+                pool_factor,
+                auto_confirm,
+                batch_size,
+                encode_batch_size,
+                index_chunk_size,
+                static_batch,
+            },
+        ),
         Some(Commands::Update) => cmd_update(),
         Some(Commands::Status { path }) => cmd_status(&path),
         Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
@@ -355,6 +376,7 @@ fn main() -> Result<()> {
                     cli.alpha,
                     resolve_pool_factor(cli.pool_factor, cli.no_pool),
                     cli.auto_confirm,
+                    false,
                 )
             } else {
                 // No query provided - show help
@@ -364,4 +386,20 @@ fn main() -> Result<()> {
             }
         }
     }
+}
+
+fn init_global_rayon_pool() {
+    if std::env::var_os("RAYON_NUM_THREADS").is_some() {
+        return;
+    }
+
+    let available = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(4);
+    let configured = available.saturating_sub(4).max(1);
+
+    let _ = ThreadPoolBuilder::new()
+        .num_threads(configured)
+        .thread_name(|idx| format!("next-plaid-rayon-{idx}"))
+        .build_global();
 }

@@ -164,6 +164,337 @@ pub struct ChunkMetadata {
     pub embedding_offset: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct EncodedIndexChunk {
+    pub codes: Array1<i64>,
+    pub residuals: Array2<u8>,
+    pub doclens: Vec<i64>,
+}
+
+pub struct PreparedCodecArtifacts {
+    pub codec: ResidualCodec,
+    pub cluster_threshold: f32,
+    pub bucket_cutoffs: Array1<f32>,
+    pub bucket_weights: Array1<f32>,
+    pub avg_res_per_dim: Array1<f32>,
+}
+
+pub fn prepare_codec_artifacts(
+    embeddings: &[Array2<f32>],
+    centroids: Array2<f32>,
+    config: &IndexConfig,
+) -> Result<PreparedCodecArtifacts> {
+    let embedding_dim = centroids.ncols();
+    let total_embeddings: usize = embeddings.iter().map(|e| e.nrows()).sum();
+    let num_documents = embeddings.len();
+
+    if num_documents == 0 {
+        return Err(Error::IndexCreation("No documents provided".into()));
+    }
+
+    let sample_count = ((16.0 * (120.0 * num_documents as f64).sqrt()) as usize)
+        .min(num_documents)
+        .max(1);
+
+    let mut rng = if let Some(seed) = config.seed {
+        use rand::SeedableRng;
+        rand_chacha::ChaCha8Rng::seed_from_u64(seed)
+    } else {
+        use rand::SeedableRng;
+        rand_chacha::ChaCha8Rng::from_entropy()
+    };
+
+    use rand::seq::SliceRandom;
+    let mut indices: Vec<usize> = (0..num_documents).collect();
+    indices.shuffle(&mut rng);
+    let sample_indices: Vec<usize> = indices.into_iter().take(sample_count).collect();
+
+    let heldout_size = (0.05 * total_embeddings as f64).min(50000.0) as usize;
+    let mut heldout_embeddings: Vec<f32> = Vec::with_capacity(heldout_size * embedding_dim);
+    let mut collected = 0;
+
+    for &idx in sample_indices.iter().rev() {
+        if collected >= heldout_size {
+            break;
+        }
+        let emb = &embeddings[idx];
+        let take = (heldout_size - collected).min(emb.nrows());
+        for row in emb.axis_iter(Axis(0)).take(take) {
+            heldout_embeddings.extend(row.iter());
+        }
+        collected += take;
+    }
+
+    let heldout = Array2::from_shape_vec((collected, embedding_dim), heldout_embeddings)
+        .map_err(|e| Error::IndexCreation(format!("Failed to create heldout array: {}", e)))?;
+
+    let avg_residual = Array1::zeros(embedding_dim);
+    let initial_codec =
+        ResidualCodec::new(config.nbits, centroids.clone(), avg_residual, None, None)?;
+
+    let heldout_codes = if config.force_cpu {
+        initial_codec.compress_into_codes_cpu(&heldout)
+    } else {
+        initial_codec.compress_into_codes(&heldout)
+    };
+
+    let mut residuals = heldout.clone();
+    for i in 0..heldout.nrows() {
+        let centroid = initial_codec.centroids.row(heldout_codes[i]);
+        for j in 0..embedding_dim {
+            residuals[[i, j]] -= centroid[j];
+        }
+    }
+
+    let distances: Array1<f32> = residuals
+        .axis_iter(Axis(0))
+        .map(|row| row.dot(&row).sqrt())
+        .collect();
+    let cluster_threshold = quantile(&distances, 0.75);
+
+    let avg_res_per_dim: Array1<f32> = residuals
+        .axis_iter(Axis(1))
+        .map(|col| col.iter().map(|x| x.abs()).sum::<f32>() / col.len() as f32)
+        .collect();
+
+    let n_options = 1 << config.nbits;
+    let quantile_values: Vec<f64> = (1..n_options)
+        .map(|i| i as f64 / n_options as f64)
+        .collect();
+    let weight_quantile_values: Vec<f64> = (0..n_options)
+        .map(|i| (i as f64 + 0.5) / n_options as f64)
+        .collect();
+
+    let flat_residuals: Array1<f32> = residuals.iter().copied().collect();
+    let bucket_cutoffs = Array1::from_vec(quantiles(&flat_residuals, &quantile_values));
+    let bucket_weights = Array1::from_vec(quantiles(&flat_residuals, &weight_quantile_values));
+
+    let codec = ResidualCodec::new(
+        config.nbits,
+        centroids,
+        avg_res_per_dim.clone(),
+        Some(bucket_cutoffs.clone()),
+        Some(bucket_weights.clone()),
+    )?;
+
+    Ok(PreparedCodecArtifacts {
+        codec,
+        cluster_threshold,
+        bucket_cutoffs,
+        bucket_weights,
+        avg_res_per_dim,
+    })
+}
+
+pub fn encode_index_chunk(
+    embeddings: &[Array2<f32>],
+    codec: &ResidualCodec,
+    force_cpu: bool,
+) -> Result<EncodedIndexChunk> {
+    let embedding_dim = codec.embedding_dim();
+    let packed_dim = embedding_dim * codec.nbits / 8;
+    let doclens: Vec<i64> = embeddings.iter().map(|d| d.nrows() as i64).collect();
+    let total_tokens: usize = doclens.iter().sum::<i64>() as usize;
+
+    #[cfg(not(feature = "cuda"))]
+    let _ = force_cpu;
+
+    let mut batch_embeddings = Array2::<f32>::zeros((total_tokens, embedding_dim));
+    let mut offset = 0;
+    for doc in embeddings {
+        let n = doc.nrows();
+        batch_embeddings
+            .slice_mut(s![offset..offset + n, ..])
+            .assign(doc);
+        offset += n;
+    }
+
+    let (batch_codes, batch_residuals) = {
+        #[cfg(feature = "cuda")]
+        {
+            let force_gpu = crate::is_force_gpu();
+            if !force_cpu {
+                if let Some(ctx) = crate::cuda::get_global_context() {
+                    match crate::cuda::compress_and_residuals_cuda_batched(
+                        &ctx,
+                        &batch_embeddings.view(),
+                        &codec.centroids_view(),
+                        None,
+                    ) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            if force_gpu {
+                                panic!(
+                                    "FORCE_GPU is set but CUDA compress_and_residuals failed: {}",
+                                    e
+                                );
+                            }
+                            println!(
+                                "[next-plaid] CUDA compress_and_residuals failed: {}, falling back to CPU",
+                                e
+                            );
+                            compress_and_residuals_cpu(&batch_embeddings, codec)
+                        }
+                    }
+                } else if force_gpu {
+                    panic!("FORCE_GPU is set but CUDA context is unavailable");
+                } else {
+                    compress_and_residuals_cpu(&batch_embeddings, codec)
+                }
+            } else {
+                compress_and_residuals_cpu(&batch_embeddings, codec)
+            }
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            compress_and_residuals_cpu(&batch_embeddings, codec)
+        }
+    };
+
+    let batch_packed = codec.quantize_residuals(&batch_residuals)?;
+    let (raw_residuals, residuals_offset) = batch_packed.into_raw_vec_and_offset();
+    if residuals_offset != Some(0) {
+        return Err(Error::Shape(format!(
+            "Unexpected residual packing offset: {:?}",
+            residuals_offset
+        )));
+    }
+    let residuals = Array2::from_shape_vec((batch_codes.len(), packed_dim), raw_residuals)
+        .map_err(|e| Error::Shape(format!("Failed to reshape residuals: {}", e)))?;
+    let codes: Array1<i64> = batch_codes.iter().map(|&x| x as i64).collect();
+
+    Ok(EncodedIndexChunk {
+        codes,
+        residuals,
+        doclens,
+    })
+}
+
+pub fn write_index_from_encoded_chunks(
+    chunks: &[EncodedIndexChunk],
+    codec_artifacts: &PreparedCodecArtifacts,
+    index_path: &str,
+    config: &IndexConfig,
+) -> Result<Metadata> {
+    use ndarray_npy::WriteNpyExt;
+
+    let index_dir = Path::new(index_path);
+    fs::create_dir_all(index_dir)?;
+
+    let embedding_dim = codec_artifacts.codec.embedding_dim();
+    let num_centroids = codec_artifacts.codec.num_centroids();
+    let total_embeddings: usize = chunks.iter().map(|c| c.codes.len()).sum();
+    let num_documents: usize = chunks.iter().map(|c| c.doclens.len()).sum();
+    let avg_doclen = if num_documents > 0 {
+        total_embeddings as f64 / num_documents as f64
+    } else {
+        0.0
+    };
+
+    let centroids_path = index_dir.join("centroids.npy");
+    codec_artifacts
+        .codec
+        .centroids_view()
+        .to_owned()
+        .write_npy(File::create(&centroids_path)?)?;
+    codec_artifacts
+        .bucket_cutoffs
+        .write_npy(File::create(index_dir.join("bucket_cutoffs.npy"))?)?;
+    codec_artifacts
+        .bucket_weights
+        .write_npy(File::create(index_dir.join("bucket_weights.npy"))?)?;
+    codec_artifacts
+        .avg_res_per_dim
+        .write_npy(File::create(index_dir.join("avg_residual.npy"))?)?;
+    Array1::from_vec(vec![codec_artifacts.cluster_threshold])
+        .write_npy(File::create(index_dir.join("cluster_threshold.npy"))?)?;
+
+    let n_chunks = chunks.len();
+    let plan = serde_json::json!({
+        "nbits": config.nbits,
+        "num_chunks": n_chunks,
+    });
+    let mut plan_file = File::create(index_dir.join("plan.json"))?;
+    writeln!(plan_file, "{}", serde_json::to_string_pretty(&plan)?)?;
+
+    let mut all_codes: Vec<usize> = Vec::with_capacity(total_embeddings);
+    let mut doc_lengths: Vec<i64> = Vec::with_capacity(num_documents);
+    let mut current_offset = 0usize;
+
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        let chunk_meta = ChunkMetadata {
+            num_documents: chunk.doclens.len(),
+            num_embeddings: chunk.codes.len(),
+            embedding_offset: current_offset,
+        };
+        current_offset += chunk.codes.len();
+
+        serde_json::to_writer_pretty(
+            BufWriter::new(File::create(
+                index_dir.join(format!("{}.metadata.json", chunk_idx)),
+            )?),
+            &chunk_meta,
+        )?;
+        serde_json::to_writer(
+            BufWriter::new(File::create(
+                index_dir.join(format!("doclens.{}.json", chunk_idx)),
+            )?),
+            &chunk.doclens,
+        )?;
+        chunk.codes.write_npy(File::create(
+            index_dir.join(format!("{}.codes.npy", chunk_idx)),
+        )?)?;
+        chunk.residuals.write_npy(File::create(
+            index_dir.join(format!("{}.residuals.npy", chunk_idx)),
+        )?)?;
+
+        doc_lengths.extend_from_slice(&chunk.doclens);
+        all_codes.extend(chunk.codes.iter().map(|&x| x as usize));
+    }
+
+    let mut code_to_docs: BTreeMap<usize, Vec<i64>> = BTreeMap::new();
+    let mut emb_idx = 0;
+    for (doc_id, &len) in doc_lengths.iter().enumerate() {
+        for _ in 0..len {
+            let code = all_codes[emb_idx];
+            code_to_docs.entry(code).or_default().push(doc_id as i64);
+            emb_idx += 1;
+        }
+    }
+
+    let mut ivf_data: Vec<i64> = Vec::new();
+    let mut ivf_lengths: Vec<i32> = vec![0; num_centroids];
+    for (centroid_id, ivf_len) in ivf_lengths.iter_mut().enumerate() {
+        if let Some(docs) = code_to_docs.get(&centroid_id) {
+            let mut unique_docs = docs.clone();
+            unique_docs.sort_unstable();
+            unique_docs.dedup();
+            *ivf_len = unique_docs.len() as i32;
+            ivf_data.extend(unique_docs);
+        }
+    }
+
+    Array1::from_vec(ivf_data).write_npy(File::create(index_dir.join("ivf.npy"))?)?;
+    Array1::from_vec(ivf_lengths).write_npy(File::create(index_dir.join("ivf_lengths.npy"))?)?;
+
+    let metadata = Metadata {
+        num_chunks: n_chunks,
+        nbits: config.nbits,
+        num_partitions: num_centroids,
+        num_embeddings: total_embeddings,
+        avg_doclen,
+        num_documents,
+        embedding_dim,
+        next_plaid_compatible: true,
+    };
+    serde_json::to_writer_pretty(
+        BufWriter::new(File::create(index_dir.join("metadata.json"))?),
+        &metadata,
+    )?;
+
+    Ok(metadata)
+}
+
 // ============================================================================
 // Standalone Index Creation Functions
 // ============================================================================
@@ -363,6 +694,7 @@ pub fn create_index_files(
         let (batch_codes, batch_residuals) = {
             #[cfg(feature = "cuda")]
             {
+                let force_gpu = crate::is_force_gpu();
                 if !config.force_cpu {
                     if let Some(ctx) = crate::cuda::get_global_context() {
                         match crate::cuda::compress_and_residuals_cuda_batched(
@@ -373,6 +705,9 @@ pub fn create_index_files(
                         ) {
                             Ok(result) => result,
                             Err(e) => {
+                                if force_gpu {
+                                    panic!("FORCE_GPU is set but CUDA compress_and_residuals failed: {}", e);
+                                }
                                 eprintln!(
                                     "[next-plaid] CUDA compress_and_residuals failed: {}, falling back to CPU",
                                     e
@@ -380,6 +715,8 @@ pub fn create_index_files(
                                 compress_and_residuals_cpu(&batch_embeddings, &codec)
                             }
                         }
+                    } else if force_gpu {
+                        panic!("FORCE_GPU is set but CUDA context is unavailable");
                     } else {
                         compress_and_residuals_cpu(&batch_embeddings, &codec)
                     }
@@ -522,7 +859,12 @@ pub fn create_index_with_kmeans_files(
     // Skip if force_cpu is set to avoid unnecessary initialization overhead
     #[cfg(feature = "cuda")]
     if !config.force_cpu {
-        let _ = crate::cuda::get_global_context();
+        if crate::is_force_gpu() {
+            crate::cuda::get_global_context()
+                .expect("FORCE_GPU is set but CUDA context failed to initialize");
+        } else {
+            let _ = crate::cuda::get_global_context();
+        }
     }
 
     // Build K-means configuration from IndexConfig
@@ -690,15 +1032,15 @@ impl MmapIndex {
         let last_len = *doc_lengths.last().unwrap_or(&0) as usize;
         let padding_needed = max_len.saturating_sub(last_len);
 
-        // Create merged files if needed
         let merged_codes_path =
             crate::mmap::merge_codes_chunks(index_dir, metadata.num_chunks, padding_needed)?;
         let merged_residuals_path =
             crate::mmap::merge_residuals_chunks(index_dir, metadata.num_chunks, padding_needed)?;
 
-        // Memory-map the merged files
-        let mmap_codes = crate::mmap::MmapNpyArray1I64::from_npy_file(&merged_codes_path)?;
-        let mmap_residuals = crate::mmap::MmapNpyArray2U8::from_npy_file(&merged_residuals_path)?;
+        let (mmap_codes, mmap_residuals) = (
+            crate::mmap::MmapNpyArray1I64::from_npy_file(&merged_codes_path)?,
+            crate::mmap::MmapNpyArray2U8::from_npy_file(&merged_residuals_path)?,
+        );
 
         Ok(Self {
             path: index_path.to_string(),

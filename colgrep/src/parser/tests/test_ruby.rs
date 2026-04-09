@@ -18,11 +18,11 @@ end
     let expected = r#"Function: greet
 Signature: def greet(name)
 Parameters: name
+File: test test.rb
 Code:
 def greet(name)
   "Hello, #{name}!"
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -45,11 +45,11 @@ end
 Signature: def add(a, b)
 Description: Calculates the sum of two numbers. @param a [Integer] First number @param b [Integer] Second number @return [Integer] Sum of a and b
 Parameters: a, b
+File: test test.rb
 Code:
 def add(a, b)
   a + b
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -72,6 +72,7 @@ end
     let class_text = build_embedding_text(class_unit);
     let expected_class = r#"Class: Calculator
 Signature: class Calculator
+File: test test.rb
 Code:
 class Calculator
   def initialize(value = 0)
@@ -81,8 +82,7 @@ class Calculator
   def add(x)
     @value += x
   end
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(class_text, expected_class);
 
     // Verify NO separate method units exist
@@ -110,11 +110,11 @@ end
     let expected = r#"Function: greet
 Signature: def greet(name = "World", greeting = "Hello")
 Parameters: name, greeting
+File: test test.rb
 Code:
 def greet(name = "World", greeting = "Hello")
   greeting + ", " + name + "!"
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -132,11 +132,11 @@ end
     let expected = r#"Function: create_user
 Signature: def create_user(name:, email:, age: nil)
 Parameters: name, email, age
+File: test test.rb
 Code:
 def create_user(name:, email:, age: nil)
   { name: name, email: email, age: age }
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -159,6 +159,7 @@ end
     let module_text = build_embedding_text(module_unit);
     let expected_module = r#"Class: Utils
 Signature: module Utils
+File: test test.rb
 Code:
 module Utils
   def self.helper(x)
@@ -168,8 +169,7 @@ module Utils
   def instance_helper(x)
     x + 1
   end
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(module_text, expected_module);
 
     // Verify NO separate method units exist
@@ -201,14 +201,14 @@ end
 Signature: def with_logging
 Calls: puts
 Variables: result
+File: test test.rb
 Code:
 def with_logging
   puts "Starting..."
   result = yield
   puts "Done!"
   result
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(text, expected);
 }
 
@@ -231,6 +231,7 @@ end
     let expected_class = r#"Class: Factory
 Signature: class Factory
 Calls: new
+File: test test.rb
 Code:
 class Factory
   def self.create(type)
@@ -239,8 +240,7 @@ class Factory
     when :gadget then Gadget.new
     end
   end
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(class_text, expected_class);
 
     // Verify NO separate method unit exists
@@ -268,11 +268,11 @@ end
 Signature: def sum(*numbers)
 Parameters: numbers
 Calls: reduce
+File: test test.rb
 Code:
 def sum(*numbers)
   numbers.reduce(0, :+)
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(sum_text, expected_sum);
 
     let merge_unit = get_unit_by_name(&units, "merge").unwrap();
@@ -281,11 +281,11 @@ File: test test.rb"#;
 Signature: def merge(**options)
 Parameters: options
 Calls: merge
+File: test test.rb
 Code:
 def merge(**options)
   { default: true }.merge(options)
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(merge_text, expected_merge);
 }
 
@@ -309,6 +309,7 @@ end
     let expected_class = r#"Class: Person
 Signature: class Person
 Calls: attr_accessor, attr_reader
+File: test test.rb
 Code:
 class Person
   attr_reader :name
@@ -318,8 +319,7 @@ class Person
     @name = name
     @age = age
   end
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(class_text, expected_class);
 
     // Verify NO separate method unit exists
@@ -350,6 +350,7 @@ end
     let class_text = build_embedding_text(class_unit);
     let expected_class = r#"Class: Service
 Signature: class Service
+File: test test.rb
 Code:
 class Service
   def public_method
@@ -361,8 +362,7 @@ class Service
   def helper
     "secret"
   end
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(class_text, expected_class);
 
     // Verify NO separate method units exist
@@ -397,13 +397,13 @@ end
     let animal_text = build_embedding_text(animal);
     let expected_animal = r#"Class: Animal
 Signature: class Animal
+File: test test.rb
 Code:
 class Animal
   def speak
     "..."
   end
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(animal_text, expected_animal);
     // Animal has no parent
     assert!(!animal_text.contains("Extends:"));
@@ -414,13 +414,13 @@ File: test test.rb"#;
     let expected_dog = r#"Class: Dog
 Signature: class Dog < Animal
 Extends: Animal
+File: test test.rb
 Code:
 class Dog < Animal
   def speak
     "Woof!"
   end
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(dog_text, expected_dog);
 
     // Verify NO separate method units exist
@@ -447,10 +447,10 @@ Signature: def parse_data(str)
 Parameters: str
 Calls: parse
 Uses: json
+File: test test.rb
 Code:
 def parse_data(str)
   JSON.parse(str)
-end
-File: test test.rb"#;
+end"#;
     assert_eq!(text, expected);
 }

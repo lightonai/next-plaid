@@ -357,67 +357,185 @@ pub fn update_cluster_threshold(
 ///
 /// Returns indices of embeddings where min L2² distance > threshold².
 ///
-/// Uses batch matrix multiplication for efficiency:
-/// ||a - b||² = ||a||² + ||b||² - 2*a·b
-fn find_outliers(
+const OUTLIER_CENTROID_TILE: usize = 8;
+const OUTLIER_EMBEDDING_TILE: usize = 64;
+const OUTLIER_BLOCKS_MIN_LEN: usize = 4;
+const OUTLIER_THRESHOLD_RECHECK_REL_EPS: f32 = 1e-5;
+
+#[inline]
+fn squared_norm(row: &[f32]) -> f32 {
+    let mut sum0 = 0.0f32;
+    let mut sum1 = 0.0f32;
+    let mut sum2 = 0.0f32;
+    let mut sum3 = 0.0f32;
+
+    let mut i = 0;
+    while i + 4 <= row.len() {
+        sum0 += row[i] * row[i];
+        sum1 += row[i + 1] * row[i + 1];
+        sum2 += row[i + 2] * row[i + 2];
+        sum3 += row[i + 3] * row[i + 3];
+        i += 4;
+    }
+
+    let mut total = sum0 + sum1 + sum2 + sum3;
+    while i < row.len() {
+        total += row[i] * row[i];
+        i += 1;
+    }
+
+    total
+}
+
+#[inline]
+fn min_distance_sq_precise(row: &[f32], centroids_flat: &[f32], dim: usize) -> f32 {
+    let mut min_dist_sq = f32::INFINITY;
+
+    for centroid in centroids_flat.chunks_exact(dim) {
+        let mut dist_sq = 0.0f64;
+        let mut d = 0;
+        while d < dim {
+            let diff = row[d] as f64 - centroid[d] as f64;
+            dist_sq += diff * diff;
+            d += 1;
+        }
+
+        min_dist_sq = min_dist_sq.min(dist_sq as f32);
+    }
+
+    min_dist_sq
+}
+
+/// Find outliers with a blocked raw-slice kernel over centroid tiles.
+///
+/// This avoids materializing the intermediate [batch, num_centroids] scores matrix,
+/// removes iterator overhead from the hot loop, and parallelizes across embedding blocks.
+fn find_outliers_blocked(
     flat_embeddings: &Array2<f32>,
     centroids: &Array2<f32>,
     threshold_sq: f32,
 ) -> Vec<usize> {
     let n = flat_embeddings.nrows();
     let k = centroids.nrows();
+    let dim = flat_embeddings.ncols();
 
     if n == 0 || k == 0 {
         return Vec::new();
     }
 
-    // Pre-compute squared norms for embeddings and centroids
-    let emb_norms_sq: Vec<f32> = flat_embeddings
-        .axis_iter(Axis(0))
-        .into_par_iter()
-        .map(|row| row.dot(&row))
+    let embeddings_owned;
+    let embeddings_flat = if let Some(slice) = flat_embeddings.as_slice_memory_order() {
+        slice
+    } else {
+        embeddings_owned = flat_embeddings.as_standard_layout().to_owned();
+        embeddings_owned
+            .as_slice_memory_order()
+            .expect("standard-layout embeddings should be contiguous")
+    };
+    let centroids_owned;
+    let centroids_flat = if let Some(slice) = centroids.as_slice_memory_order() {
+        slice
+    } else {
+        centroids_owned = centroids.as_standard_layout().to_owned();
+        centroids_owned
+            .as_slice_memory_order()
+            .expect("standard-layout centroids should be contiguous")
+    };
+
+    let centroid_norms_sq: Vec<f32> = centroids_flat
+        .par_chunks_exact(dim)
+        .map(squared_norm)
         .collect();
 
-    let centroid_norms_sq: Vec<f32> = centroids
-        .axis_iter(Axis(0))
-        .into_par_iter()
-        .map(|row| row.dot(&row))
-        .collect();
+    let row_stride = dim * OUTLIER_EMBEDDING_TILE;
+    embeddings_flat
+        .par_chunks(row_stride)
+        .with_min_len(OUTLIER_BLOCKS_MIN_LEN)
+        .enumerate()
+        .flat_map_iter(|(block_idx, rows_block)| {
+            let row_count = rows_block.len() / dim;
+            let row_offset = block_idx * OUTLIER_EMBEDDING_TILE;
 
-    // Batch matrix multiplication: [n, d] @ [d, k] -> [n, k]
-    // This computes dot products: similarities[i, j] = embeddings[i] · centroids[j]
-    // Process in batches to limit memory usage
-    let batch_size = (2 * 1024 * 1024 * 1024 / (k * std::mem::size_of::<f32>())).clamp(1, 4096);
+            let mut min_dists = vec![f32::INFINITY; row_count];
+            let emb_norms: Vec<f32> = rows_block.chunks_exact(dim).map(squared_norm).collect();
 
-    let mut outlier_indices = Vec::new();
+            let mut centroid_idx = 0;
+            while centroid_idx + OUTLIER_CENTROID_TILE <= k {
+                let centroid_bases: [usize; OUTLIER_CENTROID_TILE] =
+                    std::array::from_fn(|j| (centroid_idx + j) * dim);
 
-    for batch_start in (0..n).step_by(batch_size) {
-        let batch_end = (batch_start + batch_size).min(n);
-        let batch = flat_embeddings.slice(s![batch_start..batch_end, ..]);
+                let mut dots = [[0.0f32; OUTLIER_CENTROID_TILE]; OUTLIER_EMBEDDING_TILE];
 
-        // Compute dot products: [batch, k]
-        let dot_products = batch.dot(&centroids.t());
+                let mut d = 0;
+                while d < dim {
+                    let centroid_vals: [f32; OUTLIER_CENTROID_TILE] =
+                        std::array::from_fn(|j| centroids_flat[centroid_bases[j] + d]);
 
-        // Find min L2² distance for each embedding in batch
-        for (batch_idx, row) in dot_products.axis_iter(Axis(0)).enumerate() {
-            let global_idx = batch_start + batch_idx;
-            let emb_norm_sq = emb_norms_sq[global_idx];
+                    for row_idx in 0..row_count {
+                        let x = rows_block[row_idx * dim + d];
+                        for j in 0..OUTLIER_CENTROID_TILE {
+                            dots[row_idx][j] += x * centroid_vals[j];
+                        }
+                    }
 
-            // L2² = ||a||² + ||b||² - 2*a·b
-            // Find minimum over all centroids
-            let min_dist_sq = row
-                .iter()
-                .zip(centroid_norms_sq.iter())
-                .map(|(&dot, &c_norm_sq)| emb_norm_sq + c_norm_sq - 2.0 * dot)
-                .fold(f32::INFINITY, f32::min);
+                    d += 1;
+                }
 
-            if min_dist_sq > threshold_sq {
-                outlier_indices.push(global_idx);
+                for row_idx in 0..row_count {
+                    let emb_norm_sq = emb_norms[row_idx];
+                    for j in 0..OUTLIER_CENTROID_TILE {
+                        let dist_sq = emb_norm_sq + centroid_norms_sq[centroid_idx + j]
+                            - 2.0 * dots[row_idx][j];
+                        min_dists[row_idx] = min_dists[row_idx].min(dist_sq);
+                    }
+                }
+
+                centroid_idx += OUTLIER_CENTROID_TILE;
             }
-        }
-    }
 
-    outlier_indices
+            while centroid_idx < k {
+                let centroid = &centroids_flat[centroid_idx * dim..(centroid_idx + 1) * dim];
+                for row_idx in 0..row_count {
+                    let row = &rows_block[row_idx * dim..(row_idx + 1) * dim];
+                    let mut dot = 0.0f32;
+                    let mut d = 0;
+                    while d < dim {
+                        dot += row[d] * centroid[d];
+                        d += 1;
+                    }
+
+                    let dist_sq = emb_norms[row_idx] + centroid_norms_sq[centroid_idx] - 2.0 * dot;
+                    min_dists[row_idx] = min_dists[row_idx].min(dist_sq);
+                }
+
+                centroid_idx += 1;
+            }
+
+            min_dists
+                .into_iter()
+                .enumerate()
+                .filter_map(move |(row_idx, min_dist_sq)| {
+                    let final_min_dist_sq = if (min_dist_sq - threshold_sq).abs()
+                        <= threshold_sq.abs().max(1.0) * OUTLIER_THRESHOLD_RECHECK_REL_EPS
+                    {
+                        let row = &rows_block[row_idx * dim..(row_idx + 1) * dim];
+                        min_distance_sq_precise(row, centroids_flat, dim)
+                    } else {
+                        min_dist_sq
+                    };
+
+                    (final_min_dist_sq > threshold_sq).then_some(row_offset + row_idx)
+                })
+        })
+        .collect()
+}
+
+fn find_outliers(
+    flat_embeddings: &Array2<f32>,
+    centroids: &Array2<f32>,
+    threshold_sq: f32,
+) -> Vec<usize> {
+    find_outliers_blocked(flat_embeddings, centroids, threshold_sq)
 }
 
 /// Expand centroids by clustering embeddings far from existing centroids.
@@ -778,16 +896,14 @@ pub fn update_index(
 
     // Build new partial IVF
     let mut partition_pids_map: HashMap<usize, Vec<i64>> = HashMap::new();
-    let mut pid_counter = old_num_documents as i64;
 
-    for doc_codes in &new_codes_accumulated {
+    for (pid_counter, doc_codes) in (old_num_documents as i64..).zip(new_codes_accumulated.iter()) {
         for &code in doc_codes {
             partition_pids_map
                 .entry(code)
                 .or_default()
                 .push(pid_counter);
         }
-        pid_counter += 1;
     }
 
     // Load old IVF and merge

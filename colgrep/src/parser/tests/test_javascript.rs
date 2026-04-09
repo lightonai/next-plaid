@@ -16,11 +16,11 @@ fn test_basic_function() {
     let expected = r#"Function: greet
 Signature: function greet(name) {
 Parameters: name
+File: test test.js
 Code:
 function greet(name) {
     return `Hello, ${name}!`;
-}
-File: test test.js"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -36,11 +36,11 @@ fn test_arrow_function() {
     let expected = r#"Function: add
 Signature: const add = (a, b) => {
 Parameters: a, b
+File: test test.js
 Code:
 const add = (a, b) => {
     return a + b;
-};
-File: test test.js"#;
+};"#;
     assert_eq!(text, expected);
 }
 
@@ -63,6 +63,7 @@ function add(a, b) {
 Signature: function add(a, b) {
 Description: Calculates the sum of two numbers. @param {number} a - First number @param {number} b - Second number @returns {number} Sum of a and b /
 Parameters: a, b
+File: test test.js
 Code:
 /**
  * Calculates the sum of two numbers.
@@ -72,8 +73,7 @@ Code:
  */
 function add(a, b) {
     return a + b;
-}
-File: test test.js"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -96,6 +96,7 @@ fn test_class_definition() {
     let class_text = build_embedding_text(class);
     let expected_class = r#"Class: Calculator
 Signature: class Calculator {
+File: test test.js
 Code:
 class Calculator {
     constructor(value) {
@@ -106,8 +107,7 @@ class Calculator {
         this.value += x;
         return this.value;
     }
-}
-File: test test.js"#;
+}"#;
     assert_eq!(class_text, expected_class);
 
     // Verify NO separate method units exist - methods are inside the class chunk
@@ -136,12 +136,12 @@ Signature: async function fetchData(url) {
 Parameters: url
 Calls: fetch, json
 Variables: const, response
+File: test test.js
 Code:
 async function fetchData(url) {
     const response = await fetch(url);
     return response.json();
-}
-File: test test.js"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -156,11 +156,11 @@ fn test_function_with_default_params() {
 
     let expected = r#"Function: greet
 Signature: function greet(name = "World", greeting = "Hello") {
+File: test test.js
 Code:
 function greet(name = "World", greeting = "Hello") {
     return `${greeting}, ${name}!`;
-}
-File: test test.js"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -176,11 +176,11 @@ fn test_function_with_rest_params() {
     let expected = r#"Function: sum
 Signature: function sum(...numbers) {
 Calls: reduce
+File: test test.js
 Code:
 function sum(...numbers) {
     return numbers.reduce((a, b) => a + b, 0);
-}
-File: test test.js"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -199,22 +199,22 @@ export default function defaultFunc() {
     let public_text = build_embedding_text(public_func);
     let expected_public = r#"Function: publicFunc
 Signature: export function publicFunc() {
+File: test test.js
 Code:
 export function publicFunc() {
     return "public";
-}
-File: test test.js"#;
+}"#;
     assert_eq!(public_text, expected_public);
 
     let default_func = get_unit_by_name(&units, "defaultFunc").unwrap();
     let default_text = build_embedding_text(default_func);
     let expected_default = r#"Function: defaultFunc
 Signature: export default function defaultFunc() {
+File: test test.js
 Code:
 export default function defaultFunc() {
     return "default";
-}
-File: test test.js"#;
+}"#;
     assert_eq!(default_text, expected_default);
 }
 
@@ -294,13 +294,13 @@ class Dog extends Animal {
     let expected_dog = r#"Class: Dog
 Signature: class Dog extends Animal {
 Extends: Animal
+File: test test.js
 Code:
 class Dog extends Animal {
     speak() {
         return "Woof!";
     }
-}
-File: test test.js"#;
+}"#;
     assert_eq!(dog_text, expected_dog);
 }
 
@@ -321,10 +321,10 @@ Signature: function fetchData(url) {
 Parameters: url
 Calls: get
 Uses: axios
+File: test test.js
 Code:
 function fetchData(url) {
     return axios.get(url);
-}
-File: test test.js"#;
+}"#;
     assert_eq!(text, expected);
 }

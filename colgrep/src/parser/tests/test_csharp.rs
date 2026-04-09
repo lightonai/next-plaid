@@ -22,6 +22,7 @@ fn test_basic_method() {
         class_text,
         "Class: Calculator
 Signature: public class Calculator
+File: calculator Calculator.cs
 Code:
 public class Calculator
 {
@@ -29,8 +30,7 @@ public class Calculator
     {
         return a + b;
     }
-}
-File: calculator Calculator.cs"
+}"
     );
 
     // Verify NO separate method unit exists
@@ -64,6 +64,7 @@ fn test_method_with_xml_doc() {
         class_text,
         r#"Class: Math
 Signature: public class Math
+File: math Math.cs
 Code:
 public class Math
 {
@@ -77,8 +78,7 @@ public class Math
     {
         return a + b;
     }
-}
-File: math Math.cs"#
+}"#
     );
 
     // Verify NO separate method unit exists
@@ -115,6 +115,7 @@ fn test_class_definition() {
         class_text,
         r#"Class: Person
 Signature: public class Person
+File: person Person.cs
 Code:
 public class Person
 {
@@ -131,8 +132,7 @@ public class Person
     {
         return $"Hello, I'm {Name}";
     }
-}
-File: person Person.cs"#
+}"#
     );
 
     // Verify NO separate method/constructor units exist
@@ -170,6 +170,7 @@ fn test_async_method() {
 Signature: public class DataService
 Calls: new
 Variables: client
+File: data service DataService.cs
 Code:
 public class DataService
 {
@@ -178,8 +179,7 @@ public class DataService
         using var client = new HttpClient();
         return await client.GetStringAsync(url);
     }
-}
-File: data service DataService.cs"
+}"
     );
 
     // Verify NO separate method unit exists
@@ -207,6 +207,7 @@ fn test_static_method() {
         class_text,
         "Class: Utils
 Signature: public static class Utils
+File: utils Utils.cs
 Code:
 public static class Utils
 {
@@ -214,8 +215,7 @@ public static class Utils
     {
         return string.Format(template, args);
     }
-}
-File: utils Utils.cs"
+}"
     );
 
     // Verify NO separate method unit exists
@@ -241,13 +241,13 @@ fn test_interface() {
         interface_text,
         "Class: IDrawable
 Signature: public interface IDrawable
+File: idrawable IDrawable.cs
 Code:
 public interface IDrawable
 {
     void Draw();
     Rectangle GetBounds();
-}
-File: idrawable IDrawable.cs"
+}"
     );
 
     // Verify NO separate method units exist
@@ -287,6 +287,7 @@ fn test_generic_method() {
         "Class: Container
 Signature: public class Container<T>
 Variables: _value
+File: container Container.cs
 Code:
 public class Container<T>
 {
@@ -301,8 +302,7 @@ public class Container<T>
     {
         _value = value;
     }
-}
-File: container Container.cs"
+}"
     );
 
     // Verify NO separate method units exist
@@ -334,6 +334,7 @@ fn test_extension_method() {
         class_text,
         r#"Class: StringExtensions
 Signature: public static class StringExtensions
+File: string extensions StringExtensions.cs
 Code:
 public static class StringExtensions
 {
@@ -341,8 +342,7 @@ public static class StringExtensions
     {
         return str + "!";
     }
-}
-File: string extensions StringExtensions.cs"#
+}"#
     );
 
     // Verify NO separate method unit exists
@@ -376,6 +376,7 @@ fn test_property_accessor() {
         "Class: Circle
 Signature: public class Circle
 Variables: _radius
+File: circle Circle.cs
 Code:
 public class Circle
 {
@@ -388,8 +389,7 @@ public class Circle
     }
 
     public double Area => Math.PI * _radius * _radius;
-}
-File: circle Circle.cs"
+}"
     );
 }
 
@@ -440,6 +440,7 @@ fn test_linq_expression() {
         class_text,
         r#"Class: QueryService
 Signature: public class QueryService
+File: query service QueryService.cs
 Code:
 public class QueryService
 {
@@ -449,8 +450,7 @@ public class QueryService
                     .OrderBy(n => n)
                     .ToList();
     }
-}
-File: query service QueryService.cs"#
+}"#
     );
 
     // Verify NO separate method unit exists
@@ -486,6 +486,7 @@ public class Dog : Animal
         animal_text,
         r#"Class: Animal
 Signature: public class Animal
+File: animals Animals.cs
 Code:
 public class Animal
 {
@@ -493,8 +494,7 @@ public class Animal
     {
         Console.WriteLine("...");
     }
-}
-File: animals Animals.cs"#
+}"#
     );
     // Animal has no parent
     assert!(!animal_text.contains("Extends:"));
@@ -507,6 +507,7 @@ File: animals Animals.cs"#
         r#"Class: Dog
 Signature: public class Dog : Animal
 Extends: Animal
+File: animals Animals.cs
 Code:
 public class Dog : Animal
 {
@@ -514,8 +515,7 @@ public class Dog : Animal
     {
         Console.WriteLine("Woof!");
     }
-}
-File: animals Animals.cs"#
+}"#
     );
 
     // Verify NO separate method units exist
@@ -550,6 +550,7 @@ public class Factory
         r#"Class: Factory
 Signature: public class Factory
 Calls: new
+File: factory Factory.cs
 Code:
 public class Factory
 {
@@ -557,8 +558,7 @@ public class Factory
     {
         return new User();
     }
-}
-File: factory Factory.cs"#
+}"#
     );
 
     // Verify NO separate method unit exists

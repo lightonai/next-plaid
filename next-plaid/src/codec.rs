@@ -4,10 +4,20 @@ use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2, Axis};
 
 use crate::error::{Error, Result};
 
-/// Maximum memory (bytes) to allocate for nearest centroid computation in `compress_into_codes`.
-/// This limits the size of the [batch_size, num_centroids] scores matrix to prevent OOM errors
-/// with large centroid counts (e.g., 2.5M centroids).
-const MAX_NEAREST_CENTROID_MEMORY: usize = 4 * 1024 * 1024 * 1024; // 4GB
+/// Default maximum memory (bytes) to allocate for nearest centroid computation in
+/// `compress_into_codes`. This limits the size of the `[batch_size, num_centroids]`
+/// scores matrix. Keeping this lower reduces page-fault and zero-fill overhead
+/// from giant temporary score buffers.
+const DEFAULT_MAX_NEAREST_CENTROID_MEMORY: usize = 1024 * 1024 * 1024; // 1GB
+
+fn max_nearest_centroid_memory() -> usize {
+    std::env::var("NEXT_PLAID_MAX_NEAREST_CENTROID_MEMORY_MB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&mb| mb > 0)
+        .map(|mb| mb.saturating_mul(1024 * 1024))
+        .unwrap_or(DEFAULT_MAX_NEAREST_CENTROID_MEMORY)
+}
 
 /// Storage backend for centroids, supporting both owned arrays and memory-mapped files.
 ///
@@ -241,6 +251,7 @@ impl ResidualCodec {
         // Try CUDA acceleration if available
         #[cfg(feature = "cuda")]
         {
+            let force_gpu = crate::is_force_gpu();
             if let Some(ctx) = crate::cuda::get_global_context() {
                 let centroids = self.centroids_view();
                 match crate::cuda::compress_into_codes_cuda_batched(
@@ -251,12 +262,20 @@ impl ResidualCodec {
                 ) {
                     Ok(codes) => return codes,
                     Err(e) => {
+                        if force_gpu {
+                            panic!(
+                                "FORCE_GPU is set but CUDA compress_into_codes failed: {}",
+                                e
+                            );
+                        }
                         eprintln!(
                             "[next-plaid] CUDA compression error: {}. Falling back to CPU.",
                             e
                         );
                     }
                 }
+            } else if force_gpu {
+                panic!("FORCE_GPU is set but CUDA context is unavailable");
             }
         }
 
@@ -281,35 +300,36 @@ impl ResidualCodec {
         // The scores matrix has shape [batch_size, num_centroids] with f32 elements.
         // With 2.5M centroids and 4GB budget: batch_size = 4GB / (2.5M * 4) = 400
         let max_batch_by_memory =
-            MAX_NEAREST_CENTROID_MEMORY / (num_centroids * std::mem::size_of::<f32>());
-        let batch_size = max_batch_by_memory.clamp(1, 2048);
+            max_nearest_centroid_memory() / (num_centroids * std::mem::size_of::<f32>());
+        let batch_size = max_batch_by_memory.clamp(1, 1024);
+        let batch_ranges: Vec<(usize, usize)> = (0..n)
+            .step_by(batch_size)
+            .map(|start| (start, (start + batch_size).min(n)))
+            .collect();
 
-        let mut all_codes = Vec::with_capacity(n);
+        let chunked_codes: Vec<Vec<usize>> = batch_ranges
+            .into_par_iter()
+            .map(|(start, end)| {
+                let batch = embeddings.slice(ndarray::s![start..end, ..]);
 
-        for start in (0..n).step_by(batch_size) {
-            let end = (start + batch_size).min(n);
-            let batch = embeddings.slice(ndarray::s![start..end, ..]);
+                // Batch matrix multiplication: [batch, dim] @ [dim, K] -> [batch, K]
+                let scores = batch.dot(&centroids.t());
 
-            // Batch matrix multiplication: [batch, dim] @ [dim, K] -> [batch, K]
-            let scores = batch.dot(&centroids.t());
+                // Keep the per-row scan local to avoid nested parallelism.
+                scores
+                    .axis_iter(Axis(0))
+                    .map(|row| {
+                        row.iter()
+                            .enumerate()
+                            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                            .map(|(idx, _)| idx)
+                            .unwrap_or(0)
+                    })
+                    .collect()
+            })
+            .collect();
 
-            // Parallel argmax over each row
-            let batch_codes: Vec<usize> = scores
-                .axis_iter(Axis(0))
-                .into_par_iter()
-                .map(|row| {
-                    row.iter()
-                        .enumerate()
-                        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                        .map(|(idx, _)| idx)
-                        .unwrap_or(0)
-                })
-                .collect();
-
-            all_codes.extend(batch_codes);
-        }
-
-        Array1::from_vec(all_codes)
+        Array1::from_vec(chunked_codes.into_iter().flatten().collect())
     }
 
     /// Quantize residuals into packed bytes.

@@ -275,11 +275,11 @@ pub fn compute_kmeans(
     });
     let n_samples_kmeans = n_samples_kmeans.min(num_documents);
 
-    // Sample random documents
     let mut rng = ChaCha8Rng::seed_from_u64(config.seed);
-    let mut sampled_indices: Vec<usize> = (0..num_documents).collect();
-    sampled_indices.shuffle(&mut rng);
-    sampled_indices.truncate(n_samples_kmeans);
+    let mut indices: Vec<usize> = (0..num_documents).collect();
+    indices.shuffle(&mut rng);
+    indices.truncate(n_samples_kmeans);
+    let sampled_indices = indices;
 
     // Calculate total tokens in sampled documents
     let total_sample_tokens: usize = sampled_indices

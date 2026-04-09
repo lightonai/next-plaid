@@ -17,11 +17,11 @@ fn test_basic_function() {
 Signature: int add(int a, int b) {
 Parameters: a, b
 Returns: int
+File: test test.c
 Code:
 int add(int a, int b) {
     return a + b;
-}
-File: test test.c"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -42,11 +42,11 @@ Signature: int add(int a, int b) {
 Description: Calculates the sum of two integers. Returns the result. /
 Parameters: a, b
 Returns: int
+File: test test.c
 Code:
 int add(int a, int b) {
     return a + b;
-}
-File: test test.c"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -63,11 +63,11 @@ fn test_void_function() {
 Signature: void print_hello(void) {
 Returns: void
 Calls: printf
+File: test test.c
 Code:
 void print_hello(void) {
     printf("Hello, World!\n");
-}
-File: test test.c"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -87,13 +87,13 @@ Signature: void swap(int *a, int *b) {
 Parameters: a, b
 Returns: void
 Variables: temp
+File: test test.c
 Code:
 void swap(int *a, int *b) {
     int temp = *a;
     *a = *b;
     *b = temp;
-}
-File: test test.c"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -109,12 +109,12 @@ fn test_struct() {
     let text = build_embedding_text(unit);
     let expected = r#"Class: Point
 Signature: struct Point {
+File: test test.c
 Code:
 struct Point {
     int x;
     int y;
-};
-File: test test.c"#;
+};"#;
     assert_eq!(text, expected);
 }
 
@@ -136,12 +136,12 @@ Signature: int main(int argc, char *argv[]) {
 Parameters: argc, argv
 Returns: int
 Calls: printf
+File: test test.c
 Code:
 int main(int argc, char *argv[]) {
     printf("Hello\n");
     return 0;
-}
-File: test test.c"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -158,11 +158,11 @@ fn test_static_function() {
 Signature: static int helper(int x) {
 Parameters: x
 Returns: int
+File: test test.c
 Code:
 static int helper(int x) {
     return x * 2;
-}
-File: test test.c"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -182,13 +182,13 @@ Signature: void process_array(int arr[], int size) {
 Parameters: arr, size
 Returns: void
 Variables: i
+File: test test.c
 Code:
 void process_array(int arr[], int size) {
     for (int i = 0; i < size; i++) {
         arr[i] *= 2;
     }
-}
-File: test test.c"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -212,12 +212,12 @@ Signature: Point create_point(int x, int y) {
 Parameters: x, y
 Returns: Point
 Variables: p
+File: test test.c
 Code:
 Point create_point(int x, int y) {
     Point p = {x, y};
     return p;
-}
-File: test test.c"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -238,13 +238,13 @@ Parameters: arr, size, func
 Returns: void
 Calls: func
 Variables: i
+File: test test.c
 Code:
 void apply(int *arr, int size, int (*func)(int)) {
     for (int i = 0; i < size; i++) {
         arr[i] = func(arr[i]);
     }
-}
-File: test test.c"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -264,11 +264,11 @@ Signature: int max_value(int x, int y) {
 Parameters: x, y
 Returns: int
 Calls: MAX
+File: test test.c
 Code:
 int max_value(int x, int y) {
     return MAX(x, y);
-}
-File: test test.c"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -295,11 +295,11 @@ Signature: double calculate(double x) {
 Parameters: x
 Returns: double
 Calls: printf, sqrt
+File: test test.c
 Code:
 double calculate(double x) {
     printf("Calculating...\n");
     return sqrt(x);
-}
-File: test test.c"#;
+}"#;
     assert_eq!(text, expected);
 }

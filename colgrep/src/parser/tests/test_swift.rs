@@ -17,11 +17,11 @@ fn test_basic_function() {
     let expected = r#"Function: greet
 Signature: func greet(name: String) -> String {
 Parameters: name
+File: test test.swift
 Code:
 func greet(name: String) -> String {
     return "Hello, \(name)!"
-}
-File: test test.swift"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -44,11 +44,11 @@ func add(a: Int, b: Int) -> Int {
 Signature: func add(a: Int, b: Int) -> Int {
 Description: Calculates the sum of two numbers. - Parameters: - a: First number - b: Second number - Returns: Sum of a and b
 Parameters: a, b
+File: test test.swift
 Code:
 func add(a: Int, b: Int) -> Int {
     return a + b
-}
-File: test test.swift"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -75,6 +75,7 @@ fn test_class_definition() {
     let expected = r#"Class: Person
 Signature: class Person {
 Variables: age, name
+File: test test.swift
 Code:
 class Person {
     var name: String
@@ -88,8 +89,7 @@ class Person {
     func greet() -> String {
         return "Hello, I'm \(name)"
     }
-}
-File: test test.swift"#;
+}"#;
     assert_eq!(text, expected);
 
     // Verify NO separate method unit exists
@@ -118,6 +118,7 @@ fn test_struct_definition() {
 Signature: struct Point {
 Calls: sqrt
 Variables: x, y
+File: test test.swift
 Code:
 struct Point {
     var x: Double
@@ -126,8 +127,7 @@ struct Point {
     func distance() -> Double {
         return sqrt(x*x + y*y)
     }
-}
-File: test test.swift"#;
+}"#;
     assert_eq!(text, expected);
 
     // Verify NO separate method unit exists
@@ -152,12 +152,12 @@ fn test_async_function() {
 Signature: func fetchData(url: URL) async throws -> Data {
 Parameters: url
 Calls: data
+File: test test.swift
 Code:
 func fetchData(url: URL) async throws -> Data {
     let (data, _) = try await URLSession.shared.data(from: url)
     return data
-}
-File: test test.swift"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -178,14 +178,14 @@ fn test_function_with_throws() {
 Signature: func parse(data: String) throws -> Int {
 Parameters: data
 Calls: Int
+File: test test.swift
 Code:
 func parse(data: String) throws -> Int {
     guard let result = Int(data) else {
         throw ParseError.invalidFormat
     }
     return result
-}
-File: test test.swift"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -201,12 +201,12 @@ fn test_protocol_definition() {
     let text = build_embedding_text(protocol);
     let expected = r#"Class: Drawable
 Signature: protocol Drawable {
+File: test test.swift
 Code:
 protocol Drawable {
     func draw()
     var bounds: CGRect { get }
-}
-File: test test.swift"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -232,6 +232,7 @@ fn test_enum_definition() {
     let expected = r#"Class: Status
 Signature: enum Status {
 Variables: description
+File: test test.swift
 Code:
 enum Status {
     case active
@@ -245,8 +246,7 @@ enum Status {
         case .pending(let reason): return "Pending: \(reason)"
         }
     }
-}
-File: test test.swift"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -264,13 +264,13 @@ fn test_extension() {
     let text = build_embedding_text(ext);
     let expected = r#"Class: String
 Signature: extension String {
+File: test test.swift
 Code:
 extension String {
     func addExclamation() -> String {
         return self + "!"
     }
-}
-File: test test.swift"#;
+}"#;
     assert_eq!(text, expected);
 
     // Verify NO separate method unit exists
@@ -295,13 +295,13 @@ fn test_generic_function() {
 Signature: func swap<T>(a: inout T, b: inout T) {
 Parameters: a, b
 Variables: temp
+File: test test.swift
 Code:
 func swap<T>(a: inout T, b: inout T) {
     let temp = a
     a = b
     b = temp
-}
-File: test test.swift"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -322,6 +322,7 @@ struct Clamped<Value: Comparable> {
 Signature: @propertyWrapper
 Calls: max, min
 Variables: range, wrappedValue
+File: test test.swift
 Code:
 @propertyWrapper
 struct Clamped<Value: Comparable> {
@@ -329,8 +330,7 @@ struct Clamped<Value: Comparable> {
         didSet { wrappedValue = min(max(wrappedValue, range.lowerBound), range.upperBound) }
     }
     let range: ClosedRange<Value>
-}
-File: test test.swift"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -356,13 +356,13 @@ class Dog: Animal {
         animal_text,
         r#"Class: Animal
 Signature: class Animal {
+File: test test.swift
 Code:
 class Animal {
     func speak() -> String {
         return "..."
     }
-}
-File: test test.swift"#
+}"#
     );
     // Animal has no parent
     assert!(!animal_text.contains("Extends:"));
@@ -375,13 +375,13 @@ File: test test.swift"#
         r#"Class: Dog
 Signature: class Dog: Animal {
 Extends: Animal
+File: test test.swift
 Code:
 class Dog: Animal {
     override func speak() -> String {
         return "Woof!"
     }
-}
-File: test test.swift"#
+}"#
     );
 
     // Verify NO separate method units exist
@@ -414,12 +414,12 @@ Signature: func formatDate(_ date: Date) -> String {
 Parameters: date
 Calls: DateFormatter, string
 Variables: formatter
+File: test test.swift
 Code:
 func formatDate(_ date: Date) -> String {
     let formatter = DateFormatter()
     formatter.dateStyle = .medium
     return formatter.string(from: date)
-}
-File: test test.swift"#;
+}"#;
     assert_eq!(text, expected);
 }

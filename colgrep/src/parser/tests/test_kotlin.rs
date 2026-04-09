@@ -17,11 +17,11 @@ fn test_basic_function() {
     let expected = r#"Function: greet
 Signature: fun greet(name: String): String {
 Parameters: name
+File: test test.kt
 Code:
 fun greet(name: String): String {
     return "Hello, $name!"
-}
-File: test test.kt"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -45,11 +45,11 @@ fun add(a: Int, b: Int): Int {
 Signature: fun add(a: Int, b: Int): Int {
 Description: Calculates the sum of two numbers. @param a First number @param b Second number @return Sum of a and b /
 Parameters: a, b
+File: test test.kt
 Code:
 fun add(a: Int, b: Int): Int {
     return a + b
-}
-File: test test.kt"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -66,13 +66,13 @@ fn test_class_definition() {
     let text = build_embedding_text(unit);
     let expected = r#"Class: Person
 Signature: class Person(val name: String, var age: Int) {
+File: test test.kt
 Code:
 class Person(val name: String, var age: Int) {
     fun greet(): String {
         return "Hello, I'm $name"
     }
-}
-File: test test.kt"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -87,11 +87,11 @@ fn test_extension_function() {
     let text = build_embedding_text(unit);
     let expected = r#"Function: addExclamation
 Signature: fun String.addExclamation(): String {
+File: test test.kt
 Code:
 fun String.addExclamation(): String {
     return this + "!"
-}
-File: test test.kt"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -111,13 +111,13 @@ fn test_suspend_function() {
 Signature: suspend fun fetchData(url: String): String {
 Parameters: url
 Calls: Dispatchers, IO), URL, URL(url), readText, withContext
+File: test test.kt
 Code:
 suspend fun fetchData(url: String): String {
     return withContext(Dispatchers.IO) {
         URL(url).readText()
     }
-}
-File: test test.kt"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -130,9 +130,9 @@ fn test_data_class() {
     let text = build_embedding_text(unit);
     let expected = r#"Class: User
 Signature: data class User(val id: Int, val name: String, val email: String)
+File: test test.kt
 Code:
-data class User(val id: Int, val name: String, val email: String)
-File: test test.kt"#;
+data class User(val id: Int, val name: String, val email: String)"#;
     assert_eq!(text, expected);
 }
 
@@ -152,11 +152,11 @@ fun <K, V> createPair(key: K, value: V): Pair<K, V> {
     let expected = r#"Function: identity
 Signature: fun <T> identity(value: T): T {
 Parameters: value
+File: test test.kt
 Code:
 fun <T> identity(value: T): T {
     return value
-}
-File: test test.kt"#;
+}"#;
     assert_eq!(text, expected);
 
     let unit = get_unit_by_name(&units, "createPair").unwrap();
@@ -165,11 +165,11 @@ File: test test.kt"#;
 Signature: fun <K, V> createPair(key: K, value: V): Pair<K, V> {
 Parameters: key, value
 Calls: Pair
+File: test test.kt
 Code:
 fun <K, V> createPair(key: K, value: V): Pair<K, V> {
     return Pair(key, value)
-}
-File: test test.kt"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -186,13 +186,13 @@ fn test_object_declaration() {
     let text = build_embedding_text(unit);
     let expected = r#"Class: Singleton
 Signature: object Singleton {
+File: test test.kt
 Code:
 object Singleton {
     fun doSomething(): String {
         return "singleton"
     }
-}
-File: test test.kt"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -212,6 +212,7 @@ fn test_companion_object() {
     let expected = r#"Class: Factory
 Signature: class Factory {
 Calls: Factory
+File: test test.kt
 Code:
 class Factory {
     companion object {
@@ -219,8 +220,7 @@ class Factory {
             return Factory()
         }
     }
-}
-File: test test.kt"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -236,12 +236,12 @@ fn test_sealed_class() {
     let text = build_embedding_text(unit);
     let expected = r#"Class: Result
 Signature: sealed class Result<out T> {
+File: test test.kt
 Code:
 sealed class Result<out T> {
     data class Success<T>(val data: T) : Result<T>()
     data class Error(val message: String) : Result<Nothing>()
-}
-File: test test.kt"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -258,11 +258,11 @@ fn test_inline_function() {
 Signature: inline fun <reified T> parseJson(json: String): T {
 Parameters: json
 Calls: Gson, Gson(), T, class, fromJson
+File: test test.kt
 Code:
 inline fun <reified T> parseJson(json: String): T {
     return Gson().fromJson(json, T::class.java)
-}
-File: test test.kt"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -291,13 +291,13 @@ class Dog : Animal() {
     let expected_dog = r#"Class: Dog
 Signature: class Dog : Animal() {
 Extends: Animal
+File: test test.kt
 Code:
 class Dog : Animal() {
     override fun speak(): String {
         return "Woof!"
     }
-}
-File: test test.kt"#;
+}"#;
     assert_eq!(dog_text, expected_dog);
 }
 
@@ -316,10 +316,10 @@ Signature: fun sortArray(arr: IntArray) {
 Parameters: arr
 Calls: Arrays, sort
 Uses: Arrays
+File: test test.kt
 Code:
 fun sortArray(arr: IntArray) {
     Arrays.sort(arr)
-}
-File: test test.kt"#;
+}"#;
     assert_eq!(text, expected);
 }

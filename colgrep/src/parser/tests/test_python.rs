@@ -18,11 +18,11 @@ Signature: def greet(name: str) -> str:
 Description: """Say hello to someone.
 Parameters: name
 Returns: str
+File: test test.py
 Code:
 def greet(name: str) -> str:
     """Say hello to someone."""
-    return f"Hello, {name}!"
-File: test test.py"#;
+    return f"Hello, {name}!""#;
     assert_eq!(text, expected);
 }
 
@@ -45,11 +45,11 @@ Parameters: url
 Returns: dict
 Calls: loads
 Uses: json
+File: test test.py
 Code:
 def fetch_data(url: str) -> dict:
     """Fetch JSON data from URL."""
-    return json.loads("{}")
-File: test test.py"#;
+    return json.loads("{}")"#;
     assert_eq!(text, expected);
 }
 
@@ -74,6 +74,7 @@ fn test_class_definition() {
 Signature: class Calculator:
 Description: """A simple calculator class.
 Variables: self.value
+File: test test.py
 Code:
 class Calculator:
     """A simple calculator class."""
@@ -84,8 +85,7 @@ class Calculator:
     def add(self, x: int) -> int:
         """Add x to the current value."""
         self.value += x
-        return self.value
-File: test test.py"#;
+        return self.value"#;
     assert_eq!(class_text, expected_class);
 
     // Methods should NOT be extracted separately - they are part of the class chunk
@@ -117,13 +117,13 @@ def decorated_func():
     let expected = r#"Function: decorated_func
 Signature: def decorated_func():
 Description: """A decorated function.
+File: test test.py
 Code:
 @staticmethod
 @decorator_with_args(arg=1)
 def decorated_func():
     """A decorated function."""
-    pass
-File: test test.py"#;
+    pass"#;
     assert_eq!(text, expected);
 }
 
@@ -141,11 +141,11 @@ Signature: async def fetch_async(url: str) -> bytes:
 Description: """Fetch data asynchronously.
 Parameters: url
 Returns: bytes
+File: test test.py
 Code:
 async def fetch_async(url: str) -> bytes:
     """Fetch data asynchronously."""
-    return b"data"
-File: test test.py"#;
+    return b"data""#;
     assert_eq!(text, expected);
 }
 
@@ -162,11 +162,11 @@ fn test_function_with_args_kwargs() {
 Signature: def variadic_func(*args, **kwargs):
 Description: """Function with variadic arguments.
 Parameters: args, kwargs
+File: test test.py
 Code:
 def variadic_func(*args, **kwargs):
     """Function with variadic arguments."""
-    return args, kwargs
-File: test test.py"#;
+    return args, kwargs"#;
     assert_eq!(text, expected);
 }
 
@@ -205,6 +205,7 @@ Description: """
         The processed result
 Parameters: x, y
 Returns: int
+File: test test.py
 Code:
 def complex_function(x: int, y: int) -> int:
     """
@@ -219,8 +220,7 @@ def complex_function(x: int, y: int) -> int:
     Returns:
         The processed result
     """
-    return x + y
-File: test test.py"##;
+    return x + y"##;
     assert_eq!(text, expected);
 }
 
@@ -265,6 +265,7 @@ fn test_nested_class() {
     let expected_outer = r#"Class: Outer
 Signature: class Outer:
 Description: """Outer class.
+File: test test.py
 Code:
 class Outer:
     """Outer class."""
@@ -273,8 +274,7 @@ class Outer:
         """Inner class."""
 
         def inner_method(self):
-            pass
-File: test test.py"#;
+            pass"#;
     assert_eq!(outer_text, expected_outer);
 }
 
@@ -308,12 +308,12 @@ class Cat(Animal):
 Signature: class Dog(Animal):
 Extends: Animal
 Description: """A dog that barks.
+File: test test.py
 Code:
 class Dog(Animal):
     """A dog that barks."""
     def speak(self):
-        return "Woof!"
-File: test test.py"#;
+        return "Woof!""#;
     assert_eq!(dog_text, expected_dog);
 
     let cat = get_unit_by_name(&units, "Cat").unwrap();
@@ -322,12 +322,12 @@ File: test test.py"#;
 Signature: class Cat(Animal):
 Extends: Animal
 Description: """A cat that meows.
+File: test test.py
 Code:
 class Cat(Animal):
     """A cat that meows."""
     def speak(self):
-        return "Meow!"
-File: test test.py"#;
+        return "Meow!""#;
     assert_eq!(cat_text, expected_cat);
 }
 
@@ -344,10 +344,10 @@ def real_function():
     let expected = r#"Function: real_function
 Signature: def real_function():
 Calls: square
+File: test test.py
 Code:
 def real_function():
-    return square(5)
-File: test test.py"#;
+    return square(5)"#;
     assert_eq!(text, expected);
 
     // Lambda should not be extracted as a separate function

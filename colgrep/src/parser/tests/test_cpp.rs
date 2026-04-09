@@ -17,11 +17,11 @@ fn test_basic_function() {
 Signature: int add(int a, int b) {
 Parameters: a, b
 Returns: int
+File: test test.cpp
 Code:
 int add(int a, int b) {
     return a + b;
-}
-File: test test.cpp"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -45,6 +45,7 @@ private:
     let class_text = build_embedding_text(class);
     let expected_class = r#"Class: Calculator
 Signature: class Calculator {
+File: test test.cpp
 Code:
 class Calculator {
 public:
@@ -54,8 +55,7 @@ public:
 
 private:
     int value;
-};
-File: test test.cpp"#;
+};"#;
     assert_eq!(class_text, expected_class);
 
     // Verify NO separate method unit exists
@@ -88,6 +88,7 @@ public:
     let class_text = build_embedding_text(class_unit);
     let expected = r#"Class: Math
 Signature: class Math {
+File: test test.cpp
 Code:
 class Math {
 public:
@@ -100,8 +101,7 @@ public:
     int add(int a, int b) {
         return a + b;
     }
-};
-File: test test.cpp"#;
+};"#;
     assert_eq!(class_text, expected);
 
     // Verify NO separate method unit exists
@@ -125,11 +125,11 @@ T max(T a, T b) {
 Signature: T max(T a, T b) {
 Parameters: a, b
 Returns: T
+File: test test.cpp
 Code:
 T max(T a, T b) {
     return (a > b) ? a : b;
-}
-File: test test.cpp"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -148,11 +148,11 @@ fn test_namespace_function() {
 Signature: int helper(int x) {
 Parameters: x
 Returns: int
+File: test test.cpp
 Code:
     int helper(int x) {
         return x * 2;
-    }
-File: test test.cpp"#;
+    }"#;
     assert_eq!(text, expected);
 }
 
@@ -176,6 +176,7 @@ private:
     let class_text = build_embedding_text(class_unit);
     let expected = r#"Class: Person
 Signature: class Person {
+File: test test.cpp
 Code:
 class Person {
 public:
@@ -185,8 +186,7 @@ public:
 private:
     std::string name_;
     int age_;
-};
-File: test test.cpp"#;
+};"#;
     assert_eq!(class_text, expected);
 
     // Verify NO separate constructor unit exists (constructor has same name as class)
@@ -214,13 +214,13 @@ public:
     let class_text = build_embedding_text(class_unit);
     let expected = r#"Class: Shape
 Signature: class Shape {
+File: test test.cpp
 Code:
 class Shape {
 public:
     virtual double area() const = 0;
     virtual ~Shape() = default;
-};
-File: test test.cpp"#;
+};"#;
     assert_eq!(class_text, expected);
 
     // Verify NO separate method/destructor units exist
@@ -257,14 +257,14 @@ Parameters: nums
 Returns: std::vector<int>
 Calls: back_inserter, begin, copy_if, end
 Variables: result
+File: test test.cpp
 Code:
 std::vector<int> filter_positive(const std::vector<int>& nums) {
     std::vector<int> result;
     std::copy_if(nums.begin(), nums.end(), std::back_inserter(result),
                  [](int x) { return x > 0; });
     return result;
-}
-File: test test.cpp"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -287,6 +287,7 @@ fn test_struct_with_methods() {
     let expected = r#"Class: Point
 Signature: struct Point {
 Calls: sqrt
+File: test test.cpp
 Code:
 struct Point {
     double x, y;
@@ -294,8 +295,7 @@ struct Point {
     double distance() const {
         return std::sqrt(x*x + y*y);
     }
-};
-File: test test.cpp"#;
+};"#;
     assert_eq!(text, expected);
 
     // Verify NO separate method unit exists
@@ -326,6 +326,7 @@ private:
     let expected = r#"Class: Vector
 Signature: class Vector {
 Calls: Vector
+File: test test.cpp
 Code:
 class Vector {
 public:
@@ -335,8 +336,7 @@ public:
 
 private:
     double x, y;
-};
-File: test test.cpp"#;
+};"#;
     assert_eq!(class_text, expected);
 
     // Verify NO separate operator method unit exists
@@ -362,11 +362,11 @@ Signature: constexpr int factorial(int n) {
 Parameters: n
 Returns: int
 Calls: factorial
+File: test test.cpp
 Code:
 constexpr int factorial(int n) {
     return n <= 1 ? 1 : n * factorial(n - 1);
-}
-File: test test.cpp"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -394,14 +394,14 @@ public:
     let animal_text = build_embedding_text(animal);
     let expected_animal = r#"Class: Animal
 Signature: class Animal {
+File: test test.cpp
 Code:
 class Animal {
 public:
     virtual void speak() {
         std::cout << "..." << std::endl;
     }
-};
-File: test test.cpp"#;
+};"#;
     assert_eq!(animal_text, expected_animal);
     // Animal has no parent
     assert!(!animal_text.contains("Extends:"));
@@ -411,14 +411,14 @@ File: test test.cpp"#;
     let expected_dog = r#"Class: Dog
 Signature: class Dog : public Animal {
 Extends: Animal
+File: test test.cpp
 Code:
 class Dog : public Animal {
 public:
     void speak() override {
         std::cout << "Woof!" << std::endl;
     }
-};
-File: test test.cpp"#;
+};"#;
     assert_eq!(dog_text, expected_dog);
 
     // Verify NO separate method units exist
@@ -451,12 +451,12 @@ void print_values(const std::vector<int>& values) {
 Signature: void print_values(const std::vector<int>& values) {
 Parameters: values
 Returns: void
+File: test test.cpp
 Code:
 void print_values(const std::vector<int>& values) {
     for (int v : values) {
         std::cout << v << std::endl;
     }
-}
-File: test test.cpp"#;
+}"#;
     assert_eq!(text, expected);
 }

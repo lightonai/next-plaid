@@ -17,11 +17,11 @@ fn test_basic_function() {
     let expected = r#"Function: greet
 Signature: def greet(name: String): String = {
 Parameters: name
+File: test test.scala
 Code:
 def greet(name: String): String = {
   s"Hello, $name!"
-}
-File: test test.scala"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -43,9 +43,9 @@ def add(a: Int, b: Int): Int = a + b"#;
 Signature: def add(a: Int, b: Int): Int = a + b
 Description: Calculates the sum of two numbers. @param a First number @param b Second number @return Sum of a and b /
 Parameters: a, b
+File: test test.scala
 Code:
-def add(a: Int, b: Int): Int = a + b
-File: test test.scala";
+def add(a: Int, b: Int): Int = a + b";
     assert_eq!(text, expected);
 }
 
@@ -63,11 +63,11 @@ fn test_class_definition() {
         text,
         r#"Class: Person
 Signature: class Person(val name: String, var age: Int) {
+File: test test.scala
 Code:
 class Person(val name: String, var age: Int) {
   def greet(): String = s"Hello, I'm $name"
-}
-File: test test.scala"#
+}"#
     );
 
     // Verify NO separate method unit exists
@@ -86,9 +86,9 @@ fn test_case_class() {
     let text = build_embedding_text(class);
     let expected = r#"Class: User
 Signature: case class User(id: Int, name: String, email: String)
+File: test test.scala
 Code:
-case class User(id: Int, name: String, email: String)
-File: test test.scala"#;
+case class User(id: Int, name: String, email: String)"#;
     assert_eq!(text, expected);
 }
 
@@ -109,13 +109,13 @@ fn test_object_definition() {
         r#"Class: Utils
 Signature: object Utils {
 Variables: constant
+File: test test.scala
 Code:
 object Utils {
   def helper(x: Int): Int = x * 2
 
   val constant: String = "value"
-}
-File: test test.scala"#
+}"#
     );
 
     // Verify NO separate method unit exists
@@ -140,12 +140,12 @@ fn test_trait_definition() {
         text,
         r#"Class: Drawable
 Signature: trait Drawable {
+File: test test.scala
 Code:
 trait Drawable {
   def draw(): Unit
   def bounds: Rectangle
-}
-File: test test.scala"#
+}"#
     );
 
     // Verify NO separate method units exist
@@ -171,9 +171,9 @@ def swap[A, B](pair: (A, B)): (B, A) = (pair._2, pair._1)"#;
     let expected = r#"Function: identity
 Signature: def identity[T](value: T): T = value
 Parameters: value
+File: test test.scala
 Code:
-def identity[T](value: T): T = value
-File: test test.scala"#;
+def identity[T](value: T): T = value"#;
     assert_eq!(text, expected);
 
     let func = get_unit_by_name(&units, "swap").unwrap();
@@ -181,9 +181,9 @@ File: test test.scala"#;
     let expected = r#"Function: swap
 Signature: def swap[A, B](pair: (A, B)): (B, A) = (pair._2, pair._1)
 Parameters: pair
+File: test test.scala
 Code:
-def swap[A, B](pair: (A, B)): (B, A) = (pair._2, pair._1)
-File: test test.scala"#;
+def swap[A, B](pair: (A, B)): (B, A) = (pair._2, pair._1)"#;
     assert_eq!(text, expected);
 }
 
@@ -202,11 +202,11 @@ fn test_implicit_class() {
         r#"Class: StringOps
 Signature: implicit class StringOps(val s: String) extends AnyVal {
 Extends: AnyVal
+File: test test.scala
 Code:
 implicit class StringOps(val s: String) extends AnyVal {
   def addExclamation: String = s + "!"
-}
-File: test test.scala"#
+}"#
     );
 
     // Verify NO separate method unit exists
@@ -228,9 +228,9 @@ case class Failure(message: String) extends Result[Nothing]"#;
     let expected = r#"Class: Result
 Signature: sealed trait Result[+T]
 Parameters: T
+File: test test.scala
 Code:
-sealed trait Result[+T]
-File: test test.scala"#;
+sealed trait Result[+T]"#;
     assert_eq!(text, expected);
 
     let class = get_unit_by_name(&units, "Success").unwrap();
@@ -239,9 +239,9 @@ File: test test.scala"#;
 Signature: case class Success[T](value: T) extends Result[T]
 Extends: Result
 Parameters: T
+File: test test.scala
 Code:
-case class Success[T](value: T) extends Result[T]
-File: test test.scala"#;
+case class Success[T](value: T) extends Result[T]"#;
     assert_eq!(text, expected);
 
     let class = get_unit_by_name(&units, "Failure").unwrap();
@@ -249,9 +249,9 @@ File: test test.scala"#;
     let expected = r#"Class: Failure
 Signature: case class Failure(message: String) extends Result[Nothing]
 Extends: Result
+File: test test.scala
 Code:
-case class Failure(message: String) extends Result[Nothing]
-File: test test.scala"#;
+case class Failure(message: String) extends Result[Nothing]"#;
     assert_eq!(text, expected);
 }
 
@@ -276,9 +276,9 @@ object Circle {
         text,
         r#"Class: Circle
 Signature: class Circle(val radius: Double)
+File: test test.scala
 Code:
-class Circle(val radius: Double)
-File: test test.scala"#
+class Circle(val radius: Double)"#
     );
 
     // Companion object is extracted as a single chunk with methods inside
@@ -288,12 +288,12 @@ File: test test.scala"#
         text,
         r#"Class: Circle
 Signature: object Circle {
+File: test test.scala
 Code:
 object Circle {
   def apply(radius: Double): Circle = new Circle(radius)
   def unit: Circle = new Circle(1.0)
-}
-File: test test.scala"#
+}"#
     );
 
     // Verify NO separate method units exist
@@ -320,11 +320,11 @@ fn test_higher_order_function() {
 Signature: def map[A, B](list: List[A])(f: A => B): List[B] = {
 Parameters: list
 Calls: map
+File: test test.scala
 Code:
 def map[A, B](list: List[A])(f: A => B): List[B] = {
   list.map(f)
-}
-File: test test.scala"#;
+}"#;
     assert_eq!(text, expected);
 }
 
@@ -346,11 +346,11 @@ class Dog extends Animal {
         animal_text,
         r#"Class: Animal
 Signature: class Animal {
+File: test test.scala
 Code:
 class Animal {
   def speak(): String = "..."
-}
-File: test test.scala"#
+}"#
     );
     // Animal has no parent
     assert!(!animal_text.contains("Extends:"));
@@ -363,11 +363,11 @@ File: test test.scala"#
         r#"Class: Dog
 Signature: class Dog extends Animal {
 Extends: Animal
+File: test test.scala
 Code:
 class Dog extends Animal {
   override def speak(): String = "Woof!"
-}
-File: test test.scala"#
+}"#
     );
 
     // Verify NO separate method units exist
@@ -396,12 +396,12 @@ Parameters: items
 Calls: foreach
 Variables: buffer
 Uses: ArrayBuffer
+File: test test.scala
 Code:
 def processBuffer(items: List[String]): ArrayBuffer[String] = {
   val buffer = ArrayBuffer.empty[String]
   items.foreach(item => buffer += item)
   buffer
-}
-File: test test.scala"#;
+}"#;
     assert_eq!(text, expected);
 }

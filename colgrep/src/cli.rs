@@ -161,6 +161,19 @@ EXAMPLES:
     # Use a specific model
     colgrep init --model lightonai/LateOn-Code-edge
 
+    # Override model/session batch size for this run
+    colgrep init --batch-size 2
+
+    # Override outer encoding batch size for benchmarking/tuning
+    colgrep init --encode-batch-size 1024
+
+    # Override outer index chunk size for benchmarking/tuning
+    colgrep init --index-chunk-size 4096
+
+    # Compare batch sort orders during encoding
+    colgrep init --batch-sort-order big-first
+    colgrep init --batch-sort-order small-first
+
 NOTES:
     • Creates a new index if none exists
     • Incrementally updates the index if files changed
@@ -502,6 +515,10 @@ pub enum Commands {
         /// Automatically confirm indexing without prompting (for large codebases > 10K code units)
         #[arg(short = 'y', long = "yes")]
         auto_confirm: bool,
+
+        /// Use strict batch-size batching instead of fixed dynamic GPU batching
+        #[arg(long = "static-batch")]
+        static_batch: bool,
     },
 
     /// Show index status for a project
@@ -556,6 +573,22 @@ pub enum Commands {
         /// Automatically confirm indexing without prompting (for large codebases > 10K code units)
         #[arg(short = 'y', long = "yes")]
         auto_confirm: bool,
+
+        /// Override model/session batch size for this run
+        #[arg(long = "batch-size", value_name = "SIZE")]
+        batch_size: Option<usize>,
+
+        /// Override outer encoding batch size for this run
+        #[arg(long = "encode-batch-size", value_name = "SIZE")]
+        encode_batch_size: Option<usize>,
+
+        /// Override outer index chunk size for this run
+        #[arg(long = "index-chunk-size", value_name = "SIZE")]
+        index_chunk_size: Option<usize>,
+
+        /// Use strict batch-size batching instead of fixed dynamic GPU batching
+        #[arg(long = "static-batch")]
+        static_batch: bool,
     },
 
     /// View or set configuration options (default k, n values)

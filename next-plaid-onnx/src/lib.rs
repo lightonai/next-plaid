@@ -53,17 +53,23 @@ use ndarray::Array2;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Tensor;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::Once;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::JoinHandle;
+use tokenizers::Encoding;
 use tokenizers::Tokenizer;
 
 // Conditional imports for execution providers
 #[cfg(feature = "cuda")]
-use ort::ep::ExecutionProvider as ExecutionProviderTrait;
+use ort::ep::ExecutionProvider as _;
 #[cfg(feature = "cuda")]
 use ort::execution_providers::CUDAExecutionProvider;
 
@@ -218,6 +224,13 @@ fn get_cuda_device_id() -> i32 {
     0
 }
 
+#[cfg(feature = "cuda")]
+fn configured_cuda_execution_provider() -> CUDAExecutionProvider {
+    CUDAExecutionProvider::default()
+        .with_device_id(get_cuda_device_id())
+        .with_tf32(true)
+}
+
 /// Check if CPU-only mode is forced via environment variable.
 /// Only checks the canonical `NEXT_PLAID_FORCE_CPU` env var.
 /// The higher-level `colgrep` crate's `apply_acceleration_mode()` propagates
@@ -310,13 +323,9 @@ fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
         // Wrap CUDA initialization in catch_cuda_panic to handle panics from stub libraries
         // without printing the default panic message to stderr
         let cuda_result = catch_cuda_panic(std::panic::AssertUnwindSafe(|| {
-            let device_id = get_cuda_device_id();
             builder
                 .clone()
-                .with_execution_providers([CUDAExecutionProvider::default()
-                    .with_device_id(device_id)
-                    .with_tf32(true)
-                    .build()])
+                .with_execution_providers([configured_cuda_execution_provider().build()])
         }));
         match cuda_result {
             Ok(Ok(b)) => return Ok(b),
@@ -380,13 +389,9 @@ fn configure_cuda(builder: SessionBuilder) -> Result<SessionBuilder> {
     // Wrap CUDA initialization in catch_cuda_panic to handle panics from stub/invalid libraries
     // without printing the default panic message to stderr
     let cuda_result = catch_cuda_panic(std::panic::AssertUnwindSafe(|| {
-        let device_id = get_cuda_device_id();
         builder
             .clone()
-            .with_execution_providers([CUDAExecutionProvider::default()
-                .with_device_id(device_id)
-                .with_tf32(true)
-                .build()])
+            .with_execution_providers([configured_cuda_execution_provider().build()])
     }));
 
     match cuda_result {
@@ -617,8 +622,6 @@ const DEFAULT_CPU_BATCH_SIZE: usize = 32;
 const DEFAULT_GPU_BATCH_SIZE: usize = 64;
 
 /// Type alias for batch encoding data: (input_ids, attention_mask, token_type_ids, token_ids)
-type BatchEncoding = (Vec<i64>, Vec<i64>, Vec<i64>, Vec<u32>);
-
 /// ColBERT model for encoding documents and queries into multi-vector embeddings.
 ///
 /// Supports both single-session and parallel multi-session encoding.
@@ -639,12 +642,109 @@ type BatchEncoding = (Vec<i64>, Vec<i64>, Vec<i64>, Vec<u32>);
 ///     .with_parallel(25)
 ///     .build()?;
 /// ```
+#[derive(Clone)]
 pub struct Colbert {
-    sessions: Vec<Mutex<Session>>,
+    sessions: Vec<Arc<Mutex<Session>>>,
     tokenizer: Arc<Tokenizer>,
-    config: ColbertConfig,
-    skiplist_ids: HashSet<u32>,
+    config: Arc<ColbertConfig>,
+    skiplist_ids: Arc<HashSet<u32>>,
+    next_session_idx: Arc<AtomicUsize>,
+    requested_execution_provider: ExecutionProvider,
     batch_size: usize,
+    dynamic_batch: bool,
+}
+
+pub struct PreparedDocumentBatch {
+    batch_size: usize,
+    batch_max_len: usize,
+    all_input_ids: Vec<i64>,
+    all_attention_mask: Vec<i64>,
+    all_token_type_ids: Option<Vec<i64>>,
+    all_token_ids: Vec<Vec<u32>>,
+    original_lengths: Vec<usize>,
+    is_query: bool,
+    filter_skiplist: bool,
+}
+
+struct TokenizedDocument {
+    ids: Vec<u32>,
+    type_ids: Vec<u32>,
+}
+
+struct DocumentEmbeddingChunk {
+    start_offset: usize,
+    embeddings: Vec<Array2<f32>>,
+}
+
+struct RawDocumentEmbeddingChunk {
+    start_offset: usize,
+    embeddings: Vec<Array2<f32>>,
+}
+
+struct RawDocumentEmbeddingStream {
+    receiver: mpsc::Receiver<Result<RawDocumentEmbeddingChunk>>,
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl Iterator for RawDocumentEmbeddingStream {
+    type Item = Result<RawDocumentEmbeddingChunk>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.receiver.recv() {
+            Ok(item) => Some(item),
+            Err(_) => {
+                self.join_workers();
+                None
+            }
+        }
+    }
+}
+
+impl Drop for RawDocumentEmbeddingStream {
+    fn drop(&mut self) {
+        self.join_workers();
+    }
+}
+
+impl RawDocumentEmbeddingStream {
+    fn join_workers(&mut self) {
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
+        }
+    }
+}
+
+struct DocumentEmbeddingStream {
+    receiver: mpsc::Receiver<Result<DocumentEmbeddingChunk>>,
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl Iterator for DocumentEmbeddingStream {
+    type Item = Result<DocumentEmbeddingChunk>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.receiver.recv() {
+            Ok(item) => Some(item),
+            Err(_) => {
+                self.join_workers();
+                None
+            }
+        }
+    }
+}
+
+impl Drop for DocumentEmbeddingStream {
+    fn drop(&mut self) {
+        self.join_workers();
+    }
+}
+
+impl DocumentEmbeddingStream {
+    fn join_workers(&mut self) {
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
+        }
+    }
 }
 
 /// Builder for configuring [`Colbert`].
@@ -672,6 +772,7 @@ pub struct ColbertBuilder {
     batch_size: Option<usize>,
     execution_provider: ExecutionProvider,
     quantized: bool,
+    dynamic_batch: bool,
     query_length: Option<usize>,
     document_length: Option<usize>,
 }
@@ -694,6 +795,7 @@ impl ColbertBuilder {
             batch_size: None,
             execution_provider: ExecutionProvider::Auto,
             quantized: false,
+            dynamic_batch: true,
             query_length: None,
             document_length: None,
         }
@@ -705,9 +807,23 @@ impl ColbertBuilder {
     /// When enabled, uses 1 thread per session (optimal for parallel execution).
     ///
     /// Recommended: 25 for large models, 8 for small models.
+    /// This code is called with `num_sessions` set to 1 when intention
+    /// is clearly to run one session with many parallel threads.
     pub fn with_parallel(mut self, num_sessions: usize) -> Self {
-        self.num_sessions = num_sessions.max(1);
-        self.threads_per_session = 1; // Optimal for parallel sessions
+        match num_sessions {
+            0 | 1 => {
+                // Single session with auto-detected threads (default)
+                self.threads_per_session = std::thread::available_parallelism()
+                    .map(|p| p.get())
+                    .unwrap_or(4);
+                self.num_sessions = 1;
+            }
+            _ => {
+                // Parallel sessions with 1 thread each
+                self.num_sessions = num_sessions;
+                self.threads_per_session = 1; // Optimal for parallel sessions
+            }
+        };
         self
     }
 
@@ -738,6 +854,11 @@ impl ColbertBuilder {
     /// Quantization provides ~2x speedup with minimal quality loss (>99% cosine similarity).
     pub fn with_quantized(mut self, quantized: bool) -> Self {
         self.quantized = quantized;
+        self
+    }
+
+    pub fn with_dynamic_batch(mut self, dynamic_batch: bool) -> Self {
+        self.dynamic_batch = dynamic_batch;
         self
     }
 
@@ -796,11 +917,15 @@ impl ColbertBuilder {
                 .map_err(|e| anyhow::anyhow!("Failed to set ONNX intra-op threads: {e:?}"))?
                 .with_inter_threads(if self.num_sessions > 1 { 1 } else { 2 })
                 .map_err(|e| anyhow::anyhow!("Failed to set ONNX inter-op threads: {e:?}"))?;
-            // Disable memory pattern optimization for ~7% speedup on CPU
-            // (based on benchmarking - helps with variable-length sequences)
-            let builder = builder
-                .with_memory_pattern(false)
-                .map_err(|e| anyhow::anyhow!("Failed to configure ONNX memory pattern: {e:?}"))?;
+            // Keep the CPU-specific variable-shape tuning on CPU, but don't
+            // disable ORT memory patterns on GPU/Auto where it may reduce throughput.
+            let builder = if matches!(self.execution_provider, ExecutionProvider::Cpu) {
+                builder.with_memory_pattern(false).map_err(|e| {
+                    anyhow::anyhow!("Failed to configure ONNX memory pattern: {e:?}")
+                })?
+            } else {
+                builder
+            };
 
             let builder = configure_execution_provider(builder, self.execution_provider)?;
 
@@ -808,7 +933,7 @@ impl ColbertBuilder {
                 .commit_from_file(&onnx_path)
                 .context("Failed to load ONNX model")?;
 
-            sessions.push(Mutex::new(session));
+            sessions.push(Arc::new(Mutex::new(session)));
         }
 
         // Determine batch size
@@ -824,9 +949,12 @@ impl ColbertBuilder {
         Ok(Colbert {
             sessions,
             tokenizer: Arc::new(tokenizer),
-            config,
-            skiplist_ids,
+            config: Arc::new(config),
+            skiplist_ids: Arc::new(skiplist_ids),
+            next_session_idx: Arc::new(AtomicUsize::new(0)),
+            requested_execution_provider: self.execution_provider,
             batch_size,
+            dynamic_batch: self.dynamic_batch,
         })
     }
 }
@@ -888,24 +1016,274 @@ impl Colbert {
         if documents.is_empty() {
             return Ok(Vec::new());
         }
+        let owned_documents: Vec<String> = documents.iter().map(|doc| (*doc).to_string()).collect();
+        let mut stream = self.encode_documents_stream(owned_documents, pool_factor)?;
+        let mut ordered_embeddings: Vec<Option<Array2<f32>>> = vec![None; documents.len()];
 
-        let embeddings = if self.sessions.len() == 1 {
-            self.encode_single_session(documents, false, true)?
-        } else {
-            self.encode_parallel(documents, false, true)?
-        };
-
-        // Apply pooling if requested
-        match pool_factor {
-            Some(pf) if pf > 1 => {
-                let pooled: Vec<Array2<f32>> = embeddings
-                    .into_iter()
-                    .map(|emb| pool_embeddings_hierarchical(emb, pf, 1))
-                    .collect();
-                Ok(pooled)
+        for chunk in &mut stream {
+            let chunk = chunk?;
+            for (offset, embedding) in chunk.embeddings.into_iter().enumerate() {
+                ordered_embeddings[chunk.start_offset + offset] = Some(embedding);
             }
-            _ => Ok(embeddings),
         }
+
+        Ok(ordered_embeddings
+            .into_iter()
+            .map(|embedding| embedding.expect("Missing embedding from document stream"))
+            .collect())
+    }
+
+    pub fn tokenize_documents_in_batches(
+        &self,
+        documents: &[&str],
+    ) -> Result<Vec<PreparedDocumentBatch>> {
+        if documents.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let processed_texts = preprocess_texts(&self.config, documents);
+        let tokenized = tokenize_processed_texts_individually(&self.tokenizer, &processed_texts)?;
+        let truncate_limit = self.config.document_length - 1;
+        let use_gpu_batch_modes =
+            !matches!(self.requested_execution_provider, ExecutionProvider::Cpu);
+        let use_dynamic_batch = self.dynamic_batch && use_gpu_batch_modes;
+
+        let prepared_lengths: Vec<usize> = tokenized
+            .iter()
+            .map(|doc| doc.ids.len().min(truncate_limit) + 1)
+            .collect();
+        if !use_dynamic_batch {
+            let batch_docs = self.batch_size.max(1);
+            let mut batches = Vec::new();
+
+            let mut tokenized_iter = tokenized.into_iter();
+            while let Some(first) = tokenized_iter.next() {
+                let mut piece_encodings = Vec::with_capacity(batch_docs);
+                piece_encodings.push(first);
+                for encoding in tokenized_iter.by_ref().take(batch_docs - 1) {
+                    piece_encodings.push(encoding);
+                }
+
+                batches.push(prepare_batch_from_tokenized_documents(
+                    &self.tokenizer,
+                    &self.config,
+                    piece_encodings,
+                    false,
+                    true,
+                )?);
+            }
+
+            return Ok(batches);
+        }
+
+        let mut items: Vec<(usize, TokenizedDocument)> =
+            prepared_lengths.into_iter().zip(tokenized).collect();
+        items.sort_by_key(|(prepared_len, _)| *prepared_len);
+
+        let shapes =
+            build_fixed_dynamic_shapes(self.batch_size.max(1), self.config.document_length);
+        let mut buckets: Vec<Vec<TokenizedDocument>> =
+            (0..shapes.len()).map(|_| Vec::new()).collect();
+
+        for (prepared_len, encoding) in items {
+            let bucket_idx = shapes
+                .iter()
+                .position(|shape| prepared_len <= shape.planned_len)
+                .unwrap_or(shapes.len().saturating_sub(1));
+            buckets[bucket_idx].push(encoding);
+        }
+
+        let mut batches = Vec::new();
+        for (shape, bucket_docs) in shapes.iter().zip(buckets) {
+            let docs_per_batch = shape.docs.max(1);
+            let mut bucket_iter = bucket_docs.into_iter();
+            while let Some(first) = bucket_iter.next() {
+                let mut piece_encodings = Vec::with_capacity(docs_per_batch);
+                piece_encodings.push(first);
+                for encoding in bucket_iter.by_ref().take(docs_per_batch - 1) {
+                    piece_encodings.push(encoding);
+                }
+                batches.push(prepare_batch_from_tokenized_documents(
+                    &self.tokenizer,
+                    &self.config,
+                    piece_encodings,
+                    false,
+                    true,
+                )?);
+            }
+        }
+
+        Ok(batches)
+    }
+
+    fn encode_prepared_documents(
+        &self,
+        prepared: PreparedDocumentBatch,
+    ) -> Result<Vec<Array2<f32>>> {
+        let session_idx =
+            self.next_session_idx.fetch_add(1, Ordering::Relaxed) % self.sessions.len().max(1);
+        let mut session = self.sessions[session_idx].lock().unwrap();
+        encode_prepared_batch_with_session(&mut session, &self.config, &self.skiplist_ids, prepared)
+    }
+
+    pub fn encode_prepared_document_batches(
+        &self,
+        prepared_batches: Vec<PreparedDocumentBatch>,
+    ) -> Result<Vec<Array2<f32>>> {
+        if prepared_batches.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if self.sessions.len() <= 1 || prepared_batches.len() == 1 {
+            let mut all_embeddings = Vec::new();
+            for prepared_batch in prepared_batches {
+                all_embeddings.extend(self.encode_prepared_documents(prepared_batch)?);
+            }
+            return Ok(all_embeddings);
+        }
+
+        let results: Vec<Result<Vec<Array2<f32>>>> = std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(prepared_batches.len());
+
+            for (i, prepared_batch) in prepared_batches.into_iter().enumerate() {
+                let session_idx = i % self.sessions.len();
+                let session_mutex = &self.sessions[session_idx];
+                let config = &self.config;
+                let skiplist_ids = &self.skiplist_ids;
+
+                handles.push(scope.spawn(move || {
+                    let mut session = session_mutex.lock().unwrap();
+                    encode_prepared_batch_with_session(
+                        &mut session,
+                        config,
+                        skiplist_ids,
+                        prepared_batch,
+                    )
+                }));
+            }
+
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect()
+        });
+
+        let mut all_embeddings = Vec::new();
+        for result in results {
+            all_embeddings.extend(result?);
+        }
+
+        Ok(all_embeddings)
+    }
+
+    /// Stream document embeddings chunk-by-chunk.
+    ///
+    /// The returned stream owns the worker threads. Dropping it early will stop
+    /// receiving new chunks and join the workers.
+    fn encode_documents_stream(
+        &self,
+        documents: Vec<String>,
+        pool_factor: Option<usize>,
+    ) -> Result<DocumentEmbeddingStream> {
+        let mut raw_stream = self.encode_documents_raw_stream(documents)?;
+        let (pooled_tx, pooled_rx) = mpsc::channel::<Result<DocumentEmbeddingChunk>>();
+        let handle = std::thread::Builder::new()
+            .name("next-plaid-stream-pool".to_string())
+            .spawn(move || {
+                for result in &mut raw_stream {
+                    let pooled = result.map(|chunk| DocumentEmbeddingChunk {
+                        start_offset: chunk.start_offset,
+                        embeddings: pool_document_embeddings(chunk.embeddings, pool_factor),
+                    });
+
+                    if pooled_tx.send(pooled).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("failed to spawn next-plaid stream pool thread");
+
+        Ok(DocumentEmbeddingStream {
+            receiver: pooled_rx,
+            handles: vec![handle],
+        })
+    }
+
+    /// Stream raw document embeddings chunk-by-chunk before pooling.
+    ///
+    /// This is the low-level stage boundary for callers that want to build
+    /// their own pipelines and run pooling separately.
+    fn encode_documents_raw_stream(
+        &self,
+        documents: Vec<String>,
+    ) -> Result<RawDocumentEmbeddingStream> {
+        if documents.is_empty() {
+            let (_tx, rx) = mpsc::channel();
+            return Ok(RawDocumentEmbeddingStream {
+                receiver: rx,
+                handles: Vec::new(),
+            });
+        }
+
+        let chunk_queue = Arc::new(Mutex::new(self.build_document_work_queue(documents)));
+        let (raw_tx, raw_rx) = mpsc::channel::<Result<RawDocumentEmbeddingChunk>>();
+
+        let mut handles = Vec::new();
+        for (session_idx, session_mutex) in self.sessions.iter().enumerate() {
+            let queue = Arc::clone(&chunk_queue);
+            let raw_sender = raw_tx.clone();
+            let session_mutex = Arc::clone(session_mutex);
+            let tokenizer = Arc::clone(&self.tokenizer);
+            let config = Arc::clone(&self.config);
+            let skiplist_ids = Arc::clone(&self.skiplist_ids);
+
+            handles.push(
+                std::thread::Builder::new()
+                    .name(format!("next-plaid-session-{session_idx}"))
+                    .spawn(move || loop {
+                        let work = {
+                            let mut guard = queue.lock().unwrap();
+                            guard.pop_front()
+                        };
+
+                        let Some((_chunk_index, start_offset, chunk_texts)) = work else {
+                            break;
+                        };
+
+                        let text_refs: Vec<&str> =
+                            chunk_texts.iter().map(|text| text.as_str()).collect();
+                        let result = {
+                            let mut session = session_mutex.lock().unwrap();
+                            encode_batch_with_session(
+                                &mut session,
+                                &tokenizer,
+                                &config,
+                                &skiplist_ids,
+                                &text_refs,
+                                false,
+                                true,
+                            )
+                            .map(|embeddings| {
+                                RawDocumentEmbeddingChunk {
+                                    start_offset,
+                                    embeddings,
+                                }
+                            })
+                        };
+
+                        if raw_sender.send(result).is_err() {
+                            break;
+                        }
+                    })
+                    .expect("failed to spawn next-plaid session worker"),
+            );
+        }
+        drop(raw_tx);
+
+        Ok(RawDocumentEmbeddingStream {
+            receiver: raw_rx,
+            handles,
+        })
     }
 
     /// Encode queries into ColBERT embeddings.
@@ -1028,6 +1406,57 @@ impl Colbert {
 
         Ok(all_embeddings)
     }
+
+    fn build_document_work_queue(
+        &self,
+        documents: Vec<String>,
+    ) -> VecDeque<(usize, usize, Vec<String>)> {
+        let mut queue = VecDeque::new();
+        let batch_size = self.batch_size.max(1);
+
+        for (chunk_index, chunk) in documents.chunks(batch_size).enumerate() {
+            queue.push_back((chunk_index, chunk_index * batch_size, chunk.to_vec()));
+        }
+
+        queue
+    }
+}
+
+/// Pool a batch of per-document embeddings.
+///
+/// This is exposed so callers can build explicit pipelines with separate
+/// encode and pool stages while keeping `encode_documents(...)` as a
+/// compatibility wrapper.
+pub fn pool_document_embeddings(
+    embeddings: Vec<Array2<f32>>,
+    pool_factor: Option<usize>,
+) -> Vec<Array2<f32>> {
+    match pool_factor {
+        Some(pf) if pf > 1 => embeddings
+            .into_par_iter()
+            .map(|emb| pool_embeddings_hierarchical(emb, pf, 1))
+            .collect(),
+        _ => embeddings,
+    }
+}
+
+fn tokenizer_thread_pool() -> &'static ThreadPool {
+    static POOL: OnceLock<ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let available = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4);
+        let threads = std::env::var("NEXT_PLAID_TOKENIZER_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .map(|v| v.max(1))
+            .unwrap_or_else(|| available.clamp(1, 4));
+        ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .thread_name(|idx| format!("next-plaid-tokenizer-{idx}"))
+            .build()
+            .expect("failed to build tokenizer thread pool")
+    })
 }
 
 // =============================================================================
@@ -1061,6 +1490,96 @@ fn select_onnx_file<P: AsRef<Path>>(model_dir: P, quantized: bool) -> Result<std
             )
         }
     }
+}
+
+fn preprocess_texts(config: &ColbertConfig, texts: &[&str]) -> Vec<String> {
+    if config.do_lower_case {
+        texts.iter().map(|t| t.trim().to_lowercase()).collect()
+    } else {
+        texts.iter().map(|t| t.trim().to_string()).collect()
+    }
+}
+
+fn tokenize_processed_texts(
+    tokenizer: &Tokenizer,
+    processed_texts: &[String],
+) -> Result<Vec<Encoding>> {
+    let texts_to_encode: Vec<&str> = processed_texts.iter().map(|s| s.as_str()).collect();
+    tokenizer_thread_pool()
+        .install(|| tokenizer.encode_batch(texts_to_encode, true))
+        .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))
+}
+
+fn tokenize_processed_texts_individually(
+    tokenizer: &Tokenizer,
+    processed_texts: &[String],
+) -> Result<Vec<TokenizedDocument>> {
+    let results = tokenizer_thread_pool().install(|| {
+        processed_texts
+            .into_par_iter()
+            .map(|text| {
+                let encoding = tokenizer
+                    .encode(text.as_str(), true)
+                    .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
+                let real_len = encoding
+                    .get_attention_mask()
+                    .iter()
+                    .take_while(|&&v| v != 0)
+                    .count()
+                    .max(1);
+                Ok(TokenizedDocument {
+                    ids: encoding.get_ids()[..real_len].to_vec(),
+                    type_ids: encoding.get_type_ids()[..real_len].to_vec(),
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    results.into_iter().collect()
+}
+
+fn round_up_len_for_planning(len: usize) -> usize {
+    if len <= 8 {
+        return len.max(1);
+    }
+    let quantum = 32;
+    len.div_ceil(quantum) * quantum
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FixedDynamicShape {
+    docs: usize,
+    planned_len: usize,
+}
+
+fn build_fixed_dynamic_shapes(batch_size: usize, document_length: usize) -> Vec<FixedDynamicShape> {
+    let total_budget = batch_size.max(1).saturating_mul(document_length.max(1));
+    let mut shapes = Vec::new();
+    let mut planned_len = round_up_len_for_planning(document_length.max(1));
+    let min_planned_len = 128.min(planned_len.max(1));
+
+    loop {
+        let docs = total_budget.checked_div(planned_len).unwrap_or(0).max(1);
+        if shapes
+            .last()
+            .map(|shape: &FixedDynamicShape| shape.planned_len != planned_len)
+            .unwrap_or(true)
+        {
+            shapes.push(FixedDynamicShape { docs, planned_len });
+        }
+
+        if planned_len <= min_planned_len {
+            break;
+        }
+
+        let next_len = round_up_len_for_planning((planned_len / 2).max(min_planned_len));
+        if next_len == planned_len {
+            break;
+        }
+        planned_len = next_len;
+    }
+
+    shapes.sort_by_key(|shape| shape.planned_len);
+    shapes
 }
 
 fn update_token_ids(config: &mut ColbertConfig, tokenizer: &Tokenizer) {
@@ -1111,6 +1630,54 @@ fn encode_batch_with_session(
         return Ok(Vec::new());
     }
 
+    let prepared = prepare_batch_for_session(tokenizer, config, texts, is_query, filter_skiplist)?;
+    encode_prepared_batch_with_session(session, config, skiplist_ids, prepared)
+}
+
+fn prepare_batch_for_session(
+    tokenizer: &Tokenizer,
+    config: &ColbertConfig,
+    texts: &[&str],
+    is_query: bool,
+    filter_skiplist: bool,
+) -> Result<PreparedDocumentBatch> {
+    if texts.is_empty() {
+        return Ok(PreparedDocumentBatch {
+            batch_size: 0,
+            batch_max_len: 0,
+            all_input_ids: Vec::new(),
+            all_attention_mask: Vec::new(),
+            all_token_type_ids: if config.uses_token_type_ids {
+                Some(Vec::new())
+            } else {
+                None
+            },
+            all_token_ids: Vec::new(),
+            original_lengths: Vec::new(),
+            is_query,
+            filter_skiplist,
+        });
+    }
+
+    let processed_texts = preprocess_texts(config, texts);
+    let batch_encodings = tokenize_processed_texts(tokenizer, &processed_texts)?;
+
+    prepare_batch_from_tokenizer_encodings(
+        tokenizer,
+        config,
+        batch_encodings,
+        is_query,
+        filter_skiplist,
+    )
+}
+
+fn prepare_batch_from_tokenized_documents(
+    tokenizer: &Tokenizer,
+    config: &ColbertConfig,
+    batch_docs: Vec<TokenizedDocument>,
+    is_query: bool,
+    filter_skiplist: bool,
+) -> Result<PreparedDocumentBatch> {
     let (prefix_str, prefix_token_id_opt, max_length) = if is_query {
         (
             &config.query_prefix,
@@ -1125,7 +1692,6 @@ fn encode_batch_with_session(
         )
     };
 
-    // Get the prefix token ID, either from config or by looking it up in the tokenizer
     let prefix_token_id: u32 = match prefix_token_id_opt {
         Some(id) => id,
         None => tokenizer.token_to_id(prefix_str).ok_or_else(|| {
@@ -1136,144 +1702,298 @@ fn encode_batch_with_session(
         })?,
     };
 
-    // Apply text preprocessing to match sentence-transformers behavior:
-    // 1. Strip leading/trailing whitespace
-    // 2. Lowercase if configured
-    let processed_texts: Vec<String> = if config.do_lower_case {
-        texts.iter().map(|t| t.trim().to_lowercase()).collect()
-    } else {
-        texts.iter().map(|t| t.trim().to_string()).collect()
-    };
-    let texts_to_encode: Vec<&str> = processed_texts.iter().map(|s| s.as_str()).collect();
-
-    // Tokenize texts WITHOUT the prefix first (matching PyLate's approach)
-    // PyLate tokenizes with max_length - 1 to reserve space for the prefix token
-    let batch_encodings = tokenizer
-        .encode_batch(texts_to_encode, true)
-        .map_err(|e| anyhow::anyhow!("Tokenization error: {}", e))?;
-
-    let mut encodings: Vec<BatchEncoding> = Vec::with_capacity(texts.len());
+    let truncate_limit = max_length.saturating_sub(1);
     let mut batch_max_len = 0usize;
+    for doc in &batch_docs {
+        let effective_len = if doc.ids.len() > truncate_limit {
+            max_length
+        } else {
+            doc.ids.len() + 1
+        };
+        batch_max_len = batch_max_len.max(effective_len);
+    }
+    if is_query && config.do_query_expansion {
+        batch_max_len = max_length;
+    }
 
-    // Truncate limit is max_length - 1 to leave room for prefix token insertion
-    let truncate_limit = max_length - 1;
+    let batch_size = batch_docs.len();
+    let default_input_id = if is_query && config.do_query_expansion {
+        config.mask_token_id as i64
+    } else {
+        config.pad_token_id as i64
+    };
+    let default_attention = if is_query && config.do_query_expansion {
+        1i64
+    } else {
+        0i64
+    };
+    let mut all_input_ids: Vec<i64> = vec![default_input_id; batch_size * batch_max_len];
+    let mut all_attention_mask: Vec<i64> = vec![default_attention; batch_size * batch_max_len];
+    let mut all_token_type_ids: Vec<i64> = vec![0; batch_size * batch_max_len];
+    let mut all_token_ids: Vec<Vec<u32>> = Vec::with_capacity(batch_size);
+    let mut original_lengths: Vec<usize> = Vec::with_capacity(batch_size);
 
-    for encoding in batch_encodings {
-        let token_ids: Vec<u32> = encoding.get_ids().to_vec();
-        let mut input_ids: Vec<i64> = token_ids.iter().map(|&x| x as i64).collect();
-        let mut attention_mask: Vec<i64> = encoding
-            .get_attention_mask()
-            .iter()
-            .map(|&x| x as i64)
-            .collect();
-        let mut token_type_ids: Vec<i64> =
-            encoding.get_type_ids().iter().map(|&x| x as i64).collect();
-        let mut token_ids_vec = token_ids;
+    for (row_idx, doc) in batch_docs.into_iter().enumerate() {
+        let row_start = row_idx * batch_max_len;
+        let real_len = doc.ids.len().max(1);
+        let (content_prefix_len, keep_sep) = if real_len > truncate_limit {
+            (truncate_limit.saturating_sub(1), true)
+        } else {
+            (real_len, false)
+        };
+        let final_len = if keep_sep { max_length } else { real_len + 1 };
+        original_lengths.push(final_len);
 
-        // Truncate to max_length - 1 to leave room for prefix token
-        // IMPORTANT: Preserve [SEP] token at the end when truncating
-        // PyLate truncates content but keeps [CLS] at start and [SEP] at end
-        if input_ids.len() > truncate_limit {
-            // Save the [SEP] token (last token)
-            let sep_token = input_ids[input_ids.len() - 1];
-            let sep_mask = attention_mask[attention_mask.len() - 1];
-            let sep_type = token_type_ids[token_type_ids.len() - 1];
-            let sep_token_id = token_ids_vec[token_ids_vec.len() - 1];
+        all_input_ids[row_start] = doc.ids[0] as i64;
+        all_attention_mask[row_start] = 1;
+        all_token_type_ids[row_start] = doc.type_ids[0] as i64;
 
-            // Truncate content (keeping room for [SEP])
-            input_ids.truncate(truncate_limit - 1);
-            attention_mask.truncate(truncate_limit - 1);
-            token_type_ids.truncate(truncate_limit - 1);
-            token_ids_vec.truncate(truncate_limit - 1);
+        all_input_ids[row_start + 1] = prefix_token_id as i64;
+        all_attention_mask[row_start + 1] = 1;
+        all_token_type_ids[row_start + 1] = 0;
 
-            // Re-add [SEP] at the end
-            input_ids.push(sep_token);
-            attention_mask.push(sep_mask);
-            token_type_ids.push(sep_type);
-            token_ids_vec.push(sep_token_id);
+        let mut token_ids_vec: Vec<u32> = Vec::with_capacity(final_len);
+        token_ids_vec.push(doc.ids[0]);
+        token_ids_vec.push(prefix_token_id);
+
+        let mut write_pos = row_start + 2;
+        for src_idx in 1..content_prefix_len {
+            all_input_ids[write_pos] = doc.ids[src_idx] as i64;
+            all_attention_mask[write_pos] = 1;
+            all_token_type_ids[write_pos] = doc.type_ids[src_idx] as i64;
+            token_ids_vec.push(doc.ids[src_idx]);
+            write_pos += 1;
         }
 
-        // Insert prefix token after [CLS] (position 1), matching PyLate's insert_prefix_token
-        // PyLate does: torch.cat([input_ids[:, :1], prefix_tensor, input_ids[:, 1:]], dim=1)
-        input_ids.insert(1, prefix_token_id as i64);
-        attention_mask.insert(1, 1);
-        token_type_ids.insert(1, 0);
-        token_ids_vec.insert(1, prefix_token_id);
+        if keep_sep {
+            let sep_idx = real_len - 1;
+            all_input_ids[write_pos] = doc.ids[sep_idx] as i64;
+            all_attention_mask[write_pos] = 1;
+            all_token_type_ids[write_pos] = doc.type_ids[sep_idx] as i64;
+            token_ids_vec.push(doc.ids[sep_idx]);
+        }
 
-        batch_max_len = batch_max_len.max(input_ids.len());
-        encodings.push((input_ids, attention_mask, token_type_ids, token_ids_vec));
+        all_token_ids.push(token_ids_vec);
+    }
+
+    Ok(PreparedDocumentBatch {
+        batch_size,
+        batch_max_len,
+        all_input_ids,
+        all_attention_mask,
+        all_token_type_ids: if config.uses_token_type_ids {
+            Some(all_token_type_ids)
+        } else {
+            None
+        },
+        all_token_ids,
+        original_lengths,
+        is_query,
+        filter_skiplist,
+    })
+}
+
+fn prepare_batch_from_tokenizer_encodings(
+    tokenizer: &Tokenizer,
+    config: &ColbertConfig,
+    batch_encodings: Vec<Encoding>,
+    is_query: bool,
+    filter_skiplist: bool,
+) -> Result<PreparedDocumentBatch> {
+    let (prefix_str, prefix_token_id_opt, max_length) = if is_query {
+        (
+            &config.query_prefix,
+            config.query_prefix_id,
+            config.query_length,
+        )
+    } else {
+        (
+            &config.document_prefix,
+            config.document_prefix_id,
+            config.document_length,
+        )
+    };
+
+    let prefix_token_id: u32 = match prefix_token_id_opt {
+        Some(id) => id,
+        None => tokenizer.token_to_id(prefix_str).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Prefix token '{}' not found in tokenizer vocabulary",
+                prefix_str
+            )
+        })?,
+    };
+
+    let mut batch_max_len = 0usize;
+
+    // Truncate limit is max_length - 1 to leave room for prefix token insertion.
+    // Keep this saturating so tiny synthetic probe lengths like 1 do not underflow.
+    let truncate_limit = max_length.saturating_sub(1);
+    let real_lengths: Vec<usize> = batch_encodings
+        .iter()
+        .map(|encoding| {
+            encoding
+                .get_attention_mask()
+                .iter()
+                .take_while(|&&v| v != 0)
+                .count()
+                .max(1)
+        })
+        .collect();
+
+    for &real_len in &real_lengths {
+        let effective_len = if real_len > truncate_limit {
+            max_length
+        } else {
+            real_len + 1
+        };
+        batch_max_len = batch_max_len.max(effective_len);
     }
 
     if is_query && config.do_query_expansion {
         batch_max_len = max_length;
     }
 
-    let batch_size = texts.len();
-    let mut all_input_ids: Vec<i64> = Vec::with_capacity(batch_size * batch_max_len);
-    let mut all_attention_mask: Vec<i64> = Vec::with_capacity(batch_size * batch_max_len);
-    let mut all_token_type_ids: Vec<i64> = Vec::with_capacity(batch_size * batch_max_len);
+    let batch_size = batch_encodings.len();
+    let default_input_id = if is_query && config.do_query_expansion {
+        config.mask_token_id as i64
+    } else {
+        config.pad_token_id as i64
+    };
+    let default_attention = if is_query && config.do_query_expansion {
+        1i64
+    } else {
+        0i64
+    };
+    let mut all_input_ids: Vec<i64> = vec![default_input_id; batch_size * batch_max_len];
+    let mut all_attention_mask: Vec<i64> = vec![default_attention; batch_size * batch_max_len];
+    let mut all_token_type_ids: Vec<i64> = vec![0; batch_size * batch_max_len];
     let mut all_token_ids: Vec<Vec<u32>> = Vec::with_capacity(batch_size);
     let mut original_lengths: Vec<usize> = Vec::with_capacity(batch_size);
 
-    for (mut input_ids, mut attention_mask, mut token_type_ids, mut token_ids) in encodings {
-        original_lengths.push(input_ids.len());
+    for (row_idx, (encoding, &real_len)) in
+        batch_encodings.into_iter().zip(&real_lengths).enumerate()
+    {
+        let row_start = row_idx * batch_max_len;
+        let ids = encoding.get_ids();
+        let masks = encoding.get_attention_mask();
+        let type_ids = encoding.get_type_ids();
 
-        while input_ids.len() < batch_max_len {
-            if is_query && config.do_query_expansion {
-                input_ids.push(config.mask_token_id as i64);
-                attention_mask.push(1);
-                token_ids.push(config.mask_token_id);
-            } else {
-                input_ids.push(config.pad_token_id as i64);
-                attention_mask.push(0);
-                token_ids.push(config.pad_token_id);
-            }
-            token_type_ids.push(0);
+        let (content_prefix_len, keep_sep) = if real_len > truncate_limit {
+            (truncate_limit.saturating_sub(1), true)
+        } else {
+            (real_len, false)
+        };
+        let final_len = if keep_sep { max_length } else { real_len + 1 };
+        original_lengths.push(final_len);
+
+        all_input_ids[row_start] = ids[0] as i64;
+        all_attention_mask[row_start] = masks[0] as i64;
+        all_token_type_ids[row_start] = type_ids[0] as i64;
+
+        all_input_ids[row_start + 1] = prefix_token_id as i64;
+        all_attention_mask[row_start + 1] = 1;
+        all_token_type_ids[row_start + 1] = 0;
+
+        let mut token_ids_vec: Vec<u32> = Vec::with_capacity(final_len);
+        token_ids_vec.push(ids[0]);
+        token_ids_vec.push(prefix_token_id);
+
+        let mut write_pos = row_start + 2;
+        for src_idx in 1..content_prefix_len {
+            all_input_ids[write_pos] = ids[src_idx] as i64;
+            all_attention_mask[write_pos] = masks[src_idx] as i64;
+            all_token_type_ids[write_pos] = type_ids[src_idx] as i64;
+            token_ids_vec.push(ids[src_idx]);
+            write_pos += 1;
         }
 
-        all_input_ids.extend(input_ids);
-        all_attention_mask.extend(attention_mask);
-        all_token_type_ids.extend(token_type_ids);
-        all_token_ids.push(token_ids);
+        if keep_sep {
+            let sep_idx = real_len - 1;
+            all_input_ids[write_pos] = ids[sep_idx] as i64;
+            all_attention_mask[write_pos] = masks[sep_idx] as i64;
+            all_token_type_ids[write_pos] = type_ids[sep_idx] as i64;
+            token_ids_vec.push(ids[sep_idx]);
+        }
+
+        all_token_ids.push(token_ids_vec);
+    }
+
+    Ok(PreparedDocumentBatch {
+        batch_size,
+        batch_max_len,
+        all_input_ids,
+        all_attention_mask,
+        all_token_type_ids: if config.uses_token_type_ids {
+            Some(all_token_type_ids)
+        } else {
+            None
+        },
+        all_token_ids,
+        original_lengths,
+        is_query,
+        filter_skiplist,
+    })
+}
+
+fn encode_prepared_batch_with_session(
+    session: &mut Session,
+    config: &ColbertConfig,
+    skiplist_ids: &HashSet<u32>,
+    prepared: PreparedDocumentBatch,
+) -> Result<Vec<Array2<f32>>> {
+    let PreparedDocumentBatch {
+        batch_size,
+        batch_max_len,
+        all_input_ids,
+        all_attention_mask,
+        all_token_type_ids,
+        all_token_ids,
+        original_lengths,
+        is_query,
+        filter_skiplist,
+    } = prepared;
+
+    if batch_size == 0 {
+        return Ok(Vec::new());
     }
 
     let input_ids_tensor = Tensor::from_array(([batch_size, batch_max_len], all_input_ids))?;
     let attention_mask_tensor =
-        Tensor::from_array(([batch_size, batch_max_len], all_attention_mask.clone()))?;
+        Tensor::from_array(([batch_size, batch_max_len], all_attention_mask))?;
 
-    let token_type_ids_tensor = if config.uses_token_type_ids {
-        Some(Tensor::from_array((
-            [batch_size, batch_max_len],
-            all_token_type_ids,
-        ))?)
-    } else {
-        None
-    };
+    let token_type_ids_tensor = all_token_type_ids
+        .map(|ids| Tensor::from_array(([batch_size, batch_max_len], ids)))
+        .transpose()?;
 
-    let outputs = if let Some(token_type_ids_tensor) = token_type_ids_tensor {
-        session.run(ort::inputs![
-            "input_ids" => input_ids_tensor,
-            "attention_mask" => attention_mask_tensor,
-            "token_type_ids" => token_type_ids_tensor,
-        ])?
-    } else {
-        session.run(ort::inputs![
-            "input_ids" => input_ids_tensor,
-            "attention_mask" => attention_mask_tensor,
-        ])?
-    };
+    let (shape_slice, output_owned): (Vec<i64>, Vec<f32>) =
+        if let Some(token_type_ids_tensor) = token_type_ids_tensor {
+            let outputs = session.run(ort::inputs![
+                "input_ids" => input_ids_tensor,
+                "attention_mask" => attention_mask_tensor,
+                "token_type_ids" => token_type_ids_tensor,
+            ])?;
+            let (output_shape, output_data) = outputs["output"]
+                .try_extract_tensor::<f32>()
+                .context("Failed to extract output tensor")?;
+            (output_shape.to_vec(), output_data.to_vec())
+        } else {
+            let outputs = session.run(ort::inputs![
+                "input_ids" => input_ids_tensor,
+                "attention_mask" => attention_mask_tensor,
+            ])?;
+            let (output_shape, output_data) = outputs["output"]
+                .try_extract_tensor::<f32>()
+                .context("Failed to extract output tensor")?;
+            (output_shape.to_vec(), output_data.to_vec())
+        };
 
-    let (output_shape, output_data) = outputs["output"]
-        .try_extract_tensor::<f32>()
-        .context("Failed to extract output tensor")?;
-
-    let shape_slice: Vec<i64> = output_shape.iter().copied().collect();
     let embedding_dim = shape_slice[2] as usize;
+    let output_data = &output_owned;
 
     let mut all_embeddings = Vec::with_capacity(batch_size);
     for i in 0..batch_size {
         let batch_offset = i * batch_max_len * embedding_dim;
-        let attention_offset = i * batch_max_len;
 
         if is_query && config.do_query_expansion {
             let end = batch_offset + batch_max_len * embedding_dim;
@@ -1286,20 +2006,13 @@ fn encode_batch_with_session(
 
             let valid_count = (0..orig_len)
                 .filter(|&j| {
-                    let mask = all_attention_mask[attention_offset + j];
                     let token_id = token_ids[j];
-                    mask != 0 && !(filter_skiplist && skiplist_ids.contains(&token_id))
+                    !(filter_skiplist && skiplist_ids.contains(&token_id))
                 })
                 .count();
 
             let mut flat: Vec<f32> = Vec::with_capacity(valid_count * embedding_dim);
-            for j in 0..orig_len {
-                let mask = all_attention_mask[attention_offset + j];
-                let token_id = token_ids[j];
-
-                if mask == 0 {
-                    continue;
-                }
+            for (j, &token_id) in token_ids.iter().enumerate().take(orig_len) {
                 if filter_skiplist && skiplist_ids.contains(&token_id) {
                     continue;
                 }
@@ -1354,38 +2067,37 @@ fn pool_embeddings_hierarchical(
         num_clusters as f64,
     );
 
-    let mut pooled_rows: Vec<Vec<f32>> = Vec::with_capacity(num_clusters + protected_tokens);
+    let mut cluster_sums = vec![vec![0.0f32; n_features]; num_clusters];
+    let mut cluster_counts = vec![0usize; num_clusters];
+
+    for (idx, &label) in labels.iter().enumerate() {
+        let cluster_idx = label.saturating_sub(1);
+        if cluster_idx >= num_clusters {
+            continue;
+        }
+
+        let row = to_pool.row(idx);
+        for (sum, &value) in cluster_sums[cluster_idx].iter_mut().zip(row.iter()) {
+            *sum += value;
+        }
+        cluster_counts[cluster_idx] += 1;
+    }
+
+    let mut output = Array2::<f32>::zeros((protected_tokens + num_clusters, n_features));
 
     for i in 0..protected_tokens {
-        pooled_rows.push(embeddings.row(i).to_vec());
+        output.row_mut(i).assign(&embeddings.row(i));
     }
 
-    for cluster_id in 1..=num_clusters {
-        let mut sum = vec![0.0f32; n_features];
-        let mut count = 0usize;
-
-        for (idx, &label) in labels.iter().enumerate() {
-            if label == cluster_id {
-                let row = to_pool.row(idx);
-                for (s, &v) in sum.iter_mut().zip(row.iter()) {
-                    *s += v;
-                }
-                count += 1;
-            }
-        }
-
-        if count > 0 {
-            for s in &mut sum {
-                *s /= count as f32;
-            }
-            pooled_rows.push(sum);
+    for cluster_idx in 0..num_clusters {
+        let count = cluster_counts[cluster_idx].max(1) as f32;
+        let mut row = output.row_mut(protected_tokens + cluster_idx);
+        for (dst, sum) in row.iter_mut().zip(cluster_sums[cluster_idx].iter()) {
+            *dst = *sum / count;
         }
     }
 
-    let n_pooled = pooled_rows.len();
-    let flat: Vec<f32> = pooled_rows.into_iter().flatten().collect();
-    Array2::from_shape_vec((n_pooled, n_features), flat)
-        .expect("Shape mismatch in pooled embeddings")
+    output
 }
 
 #[cfg(test)]

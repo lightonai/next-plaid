@@ -19,11 +19,11 @@ function greet($name) {
     let expected = "Function: greet
 Signature: function greet($name) {
 Parameters: $name
+File: test test.php
 Code:
 function greet($name) {
     return \"Hello, \" . $name . \"!\";
-}
-File: test test.php";
+}";
 
     assert_eq!(text, expected);
 }
@@ -50,11 +50,11 @@ function add($a, $b) {
 Signature: function add($a, $b) {
 Description: Calculates the sum of two numbers. @param int $a First number @param int $b Second number @return int Sum of a and b /
 Parameters: $a, $b
+File: test test.php
 Code:
 function add($a, $b) {
     return $a + $b;
-}
-File: test test.php";
+}";
 
     assert_eq!(text, expected);
 }
@@ -86,6 +86,7 @@ class Person {
         class_text,
         "Class: Person
 Signature: class Person {
+File: test test.php
 Code:
 class Person {
     private $name;
@@ -99,8 +100,7 @@ class Person {
     public function greet() {
         return \"Hello, I'm \" . $this->name;
     }
-}
-File: test test.php"
+}"
     );
 
     // Verify NO separate method units exist
@@ -129,11 +129,11 @@ function add(int $a, int $b): int {
     let expected = "Function: add
 Signature: function add(int $a, int $b): int {
 Parameters: $a, $b
+File: test test.php
 Code:
 function add(int $a, int $b): int {
     return $a + $b;
-}
-File: test test.php";
+}";
 
     assert_eq!(text, expected);
 }
@@ -157,13 +157,13 @@ class Utils {
         class_text,
         "Class: Utils
 Signature: class Utils {
+File: test test.php
 Code:
 class Utils {
     public static function helper(): string {
         return \"help\";
     }
-}
-File: test test.php"
+}"
     );
 
     // Verify NO separate method unit exists
@@ -191,12 +191,12 @@ interface Drawable {
         text,
         "Class: Drawable
 Signature: interface Drawable {
+File: test test.php
 Code:
 interface Drawable {
     public function draw(): void;
     public function getBounds(): array;
-}
-File: test test.php"
+}"
     );
 
     // Verify NO separate method units exist
@@ -226,11 +226,11 @@ function helper(): int {
 
     let expected = "Function: helper
 Signature: function helper(): int {
+File: test test.php
 Code:
 function helper(): int {
     return 42;
-}
-File: test test.php";
+}";
 
     assert_eq!(text, expected);
 }
@@ -254,13 +254,13 @@ trait Loggable {
         text,
         "Class: Loggable
 Signature: trait Loggable {
+File: test test.php
 Code:
 trait Loggable {
     public function log(string $message): void {
         echo $message;
     }
-}
-File: test test.php"
+}"
     );
 
     // Verify NO separate method unit exists
@@ -291,6 +291,7 @@ abstract class Shape {
         class_text,
         "Class: Shape
 Signature: abstract class Shape {
+File: test test.php
 Code:
 abstract class Shape {
     abstract public function area(): float;
@@ -298,8 +299,7 @@ abstract class Shape {
     public function describe(): string {
         return \"I am a shape\";
     }
-}
-File: test test.php"
+}"
     );
 
     // Verify NO separate method units exist
@@ -330,13 +330,13 @@ function getMultiplier(int $factor): callable {
     let expected = "Function: getMultiplier
 Signature: function getMultiplier(int $factor): callable {
 Parameters: $factor
+File: test test.php
 Code:
 function getMultiplier(int $factor): callable {
     return function(int $x) use ($factor): int {
         return $x * $factor;
     };
-}
-File: test test.php";
+}";
 
     assert_eq!(text, expected);
 }
@@ -359,11 +359,11 @@ function process(array $items): array {
 Signature: function process(array $items): array {
 Parameters: $items
 Calls: array_map
+File: test test.php
 Code:
 function process(array $items): array {
     return array_map(fn($x) => $x * 2, $items);
-}
-File: test test.php";
+}";
 
     assert_eq!(text, expected);
 }
@@ -392,13 +392,13 @@ class Dog extends Animal {
         animal_text,
         r#"Class: Animal
 Signature: class Animal {
+File: test test.php
 Code:
 class Animal {
     public function speak() {
         return "...";
     }
-}
-File: test test.php"#
+}"#
     );
     // Animal has no parent
     assert!(!animal_text.contains("Extends:"));
@@ -411,13 +411,13 @@ File: test test.php"#
         r#"Class: Dog
 Signature: class Dog extends Animal {
 Extends: Animal
+File: test test.php
 Code:
 class Dog extends Animal {
     public function speak() {
         return "Woof!";
     }
-}
-File: test test.php"#
+}"#
     );
 
     // Verify NO separate method units exist
@@ -445,11 +445,11 @@ function getToday(): string {
     let expected = r#"Function: getToday
 Signature: function getToday(): string {
 Uses: DateTime
+File: test test.php
 Code:
 function getToday(): string {
     $dt = new DateTime();
     return $dt->format('Y-m-d');
-}
-File: test test.php"#;
+}"#;
     assert_eq!(text, expected);
 }
