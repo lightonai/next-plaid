@@ -207,6 +207,14 @@ results = client.search(
 client.delete("docs", "id = ?", ["doc_1"])
 ```
 
+**Or via the CLI** (`pip install "next-plaid-client[cli]"`):
+
+```bash
+next-plaid index create docs
+next-plaid document add docs --text "hello world"
+next-plaid search docs "hello"
+```
+
 Once the server is running: [Swagger UI](http://localhost:8080/swagger-ui) · [OpenAPI spec](http://localhost:8080/api-docs/openapi.json)
 
 **More:** REST API reference, Docker Compose, environment variables → [next-plaid-api/README.md](next-plaid-api/README.md)

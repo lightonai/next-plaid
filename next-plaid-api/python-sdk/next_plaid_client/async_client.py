@@ -192,7 +192,9 @@ class AsyncNextPlaidClient(BaseNextPlaidClient):
     async def add(
         self,
         index_name: str,
-        documents: Union[List[str], List[Union[Document, Dict[str, List[List[float]]]]]],
+        documents: Union[
+            List[str], List[Union[Document, Dict[str, List[List[float]]]]]
+        ],
         metadata: Optional[List[Dict[str, Any]]] = None,
         pool_factor: Optional[int] = None,
     ) -> str:
@@ -249,7 +251,9 @@ class AsyncNextPlaidClient(BaseNextPlaidClient):
         else:
             # Embeddings input - use regular update endpoint
             payload = self._prepare_documents_payload(documents, metadata)  # type: ignore
-            return await self._request("POST", f"/indices/{index_name}/update", json=payload)
+            return await self._request(
+                "POST", f"/indices/{index_name}/update", json=payload
+            )
 
     async def delete(
         self,
@@ -291,7 +295,9 @@ class AsyncNextPlaidClient(BaseNextPlaidClient):
     async def search(
         self,
         index_name: str,
-        queries: Union[List[str], List[Union[Dict[str, List[List[float]]], List[List[float]]]]],
+        queries: Union[
+            List[str], List[Union[Dict[str, List[List[float]]], List[List[float]]]]
+        ],
         params: Optional[SearchParams] = None,
         filter_condition: Optional[str] = None,
         filter_parameters: Optional[List[Any]] = None,
@@ -351,12 +357,16 @@ class AsyncNextPlaidClient(BaseNextPlaidClient):
         # Hybrid/keyword search — use the unified /search endpoint directly
         if has_hybrid:
             if is_text and queries:
-                enc_payload: Dict[str, Any] = {"queries": queries, "input_type": "query"}
+                enc_payload: Dict[str, Any] = {"texts": queries, "input_type": "query"}
                 enc_data = await self._request("POST", "/encode", json=enc_payload)
                 emb_queries = [{"embeddings": emb} for emb in enc_data["embeddings"]]
                 payload: Dict[str, Any] = {"queries": emb_queries}
             elif not is_text and queries:
-                payload = {"queries": self._prepare_search_payload(queries, None, None)["queries"]}  # type: ignore
+                payload = {
+                    "queries": self._prepare_search_payload(queries, None, None)[
+                        "queries"
+                    ]
+                }  # type: ignore
             else:
                 payload = {}
 
@@ -374,7 +384,9 @@ class AsyncNextPlaidClient(BaseNextPlaidClient):
             if subset:
                 payload["subset"] = subset
 
-            data = await self._request("POST", f"/indices/{index_name}/search", json=payload)
+            data = await self._request(
+                "POST", f"/indices/{index_name}/search", json=payload
+            )
             return SearchResult.from_dict(data)
 
         if is_text:
@@ -399,7 +411,10 @@ class AsyncNextPlaidClient(BaseNextPlaidClient):
             # Embedding queries - use regular endpoints
             if has_filter:
                 payload = self._prepare_filtered_search_payload(
-                    queries, filter_condition, filter_parameters, params  # type: ignore
+                    queries,
+                    filter_condition,
+                    filter_parameters,
+                    params,  # type: ignore
                 )
                 endpoint = f"/indices/{index_name}/search/filtered"
             else:
@@ -439,7 +454,9 @@ class AsyncNextPlaidClient(BaseNextPlaidClient):
             if filter_parameters:
                 payload["filter_parameters"] = filter_parameters
 
-        data = await self._request("POST", f"/indices/{index_name}/search", json=payload)
+        data = await self._request(
+            "POST", f"/indices/{index_name}/search", json=payload
+        )
         return SearchResult.from_dict(data)
 
     # ==================== Metadata Management ====================

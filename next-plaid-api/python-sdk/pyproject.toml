@@ -28,7 +28,11 @@ classifiers = [
 dependencies = ["httpx>=0.24.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0", "pytest-asyncio>=0.21.0"]
+cli = ["click>=8.0.0"]
+dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0", "pytest-asyncio>=0.21.0", "click>=8.0.0"]
+
+[project.scripts]
+next-plaid = "next_plaid_client.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/lightonai/next-plaid"

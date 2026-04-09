@@ -196,7 +196,9 @@ class NextPlaidClient(BaseNextPlaidClient):
     def add(
         self,
         index_name: str,
-        documents: Union[List[str], List[Union[Document, Dict[str, List[List[float]]]]]],
+        documents: Union[
+            List[str], List[Union[Document, Dict[str, List[List[float]]]]]
+        ],
         metadata: Optional[List[Dict[str, Any]]] = None,
         pool_factor: Optional[int] = None,
     ) -> str:
@@ -295,7 +297,9 @@ class NextPlaidClient(BaseNextPlaidClient):
     def search(
         self,
         index_name: str,
-        queries: Union[List[str], List[Union[Dict[str, List[List[float]]], List[List[float]]]]],
+        queries: Union[
+            List[str], List[Union[Dict[str, List[List[float]]], List[List[float]]]]
+        ],
         params: Optional[SearchParams] = None,
         filter_condition: Optional[str] = None,
         filter_parameters: Optional[List[Any]] = None,
@@ -366,14 +370,18 @@ class NextPlaidClient(BaseNextPlaidClient):
             if is_text and queries:
                 # Encode text queries first, then send as embeddings + text_query
                 enc_payload: Dict[str, Any] = {
-                    "queries": queries,
+                    "texts": queries,
                     "input_type": "query",
                 }
                 enc_data = self._request("POST", "/encode", json=enc_payload)
                 emb_queries = [{"embeddings": emb} for emb in enc_data["embeddings"]]
                 payload: Dict[str, Any] = {"queries": emb_queries}
             elif not is_text and queries:
-                payload = {"queries": self._prepare_search_payload(queries, None, None)["queries"]}  # type: ignore
+                payload = {
+                    "queries": self._prepare_search_payload(queries, None, None)[
+                        "queries"
+                    ]
+                }  # type: ignore
             else:
                 payload = {}
 
@@ -416,7 +424,10 @@ class NextPlaidClient(BaseNextPlaidClient):
             # Embedding queries - use regular endpoints
             if has_filter:
                 payload = self._prepare_filtered_search_payload(
-                    queries, filter_condition, filter_parameters, params  # type: ignore
+                    queries,
+                    filter_condition,
+                    filter_parameters,
+                    params,  # type: ignore
                 )
                 endpoint = f"/indices/{index_name}/search/filtered"
             else:

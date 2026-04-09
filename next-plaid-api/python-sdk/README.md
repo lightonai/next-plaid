@@ -772,6 +772,175 @@ client.rerank(query=[[0.1, 0.2]], documents=[{"embeddings": [[...]]}])
 
 ---
 
+## CLI
+
+The package ships with a non-interactive CLI designed for scripts, pipelines, and AI coding agents.
+
+### Installation
+
+```bash
+pip install "next-plaid-client[cli]"
+```
+
+### Global Options
+
+```
+next-plaid [OPTIONS] COMMAND
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--url`, `-u` | `http://localhost:8080` | Server URL (env: `NEXT_PLAID_URL`) |
+| `--timeout`, `-t` | `30.0` | Request timeout in seconds |
+| `--header`, `-H` | — | Extra HTTP header (`Key: Value`), repeatable |
+| `--json` | off | Output raw JSON instead of human-readable text |
+
+Every command and subcommand has `--help` with runnable examples.
+
+### `health`
+
+```bash
+next-plaid health
+next-plaid health --json
+next-plaid -u http://remote:8080 health
+```
+
+### `index`
+
+```bash
+# Create
+next-plaid index create my_index
+next-plaid index create my_index --nbits 2 --max-documents 10000
+next-plaid index create code_index --fts-tokenizer trigram
+
+# Inspect
+next-plaid index list
+next-plaid index get my_index
+
+# Update config
+next-plaid index config my_index --max-documents 50000
+next-plaid index config my_index --max-documents 0   # remove limit
+
+# Delete (destructive — requires --yes or prompts)
+next-plaid index delete my_index --yes
+next-plaid index delete my_index --dry-run
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--nbits` | `4` | Quantization bits (`2` or `4`) |
+| `--batch-size` | `50000` | Documents per indexing batch |
+| `--seed` | — | Random seed for K-means |
+| `--max-documents` | — | Evict oldest when exceeded (`0` to remove limit) |
+| `--fts-tokenizer` | — | `unicode61` (words) or `trigram` (substrings/code) |
+
+### `document`
+
+```bash
+# Add — text arguments
+next-plaid document add my_index --text "Paris is the capital of France"
+next-plaid document add my_index --text "Doc 1" --text "Doc 2"
+
+# Add — from file
+next-plaid document add my_index --file texts.json        # ["text1", "text2"]
+next-plaid document add my_index --file embeddings.json   # [{"embeddings": [[...]]}]
+
+# Add — from stdin
+echo '["doc one", "doc two"]' | next-plaid document add my_index --stdin
+cat corpus.json | next-plaid document add my_index --stdin
+
+# Add — with metadata sidecar
+next-plaid document add my_index --text "Paris" --metadata-file meta.json  # [{"country": "France"}]
+
+# Delete by metadata condition
+next-plaid document delete my_index --condition "year < ?" --param 2020 --yes
+next-plaid document delete my_index --condition "id IN (?, ?)" --param 1 --param 2 --dry-run
+```
+
+### `search`
+
+```bash
+# Semantic
+next-plaid search my_index "What is the capital of France?"
+next-plaid search my_index "query one" "query two" --top-k 5
+
+# Keyword (FTS5 BM25)
+next-plaid search my_index --text-query "capital France"
+
+# Hybrid
+next-plaid search my_index "capital?" --text-query "capital France" --alpha 0.75 --fusion rrf
+
+# Metadata filter
+next-plaid search my_index "cities" --filter "country = ?" --filter-param France
+
+# Restrict to document subset
+next-plaid search my_index "query" --subset 1 --subset 2 --subset 5
+
+# From stdin
+echo '["query 1", "query 2"]' | next-plaid search my_index --stdin
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--top-k`, `-k` | `10` | Results per query |
+| `--n-ivf-probe` | — | IVF cells to probe (server default: 8) |
+| `--n-full-scores` | — | Re-ranking candidates (server default: 4096) |
+| `--centroid-threshold` | — | Centroid pruning threshold (`0` to disable) |
+| `--filter` | — | SQL WHERE filter on metadata |
+| `--filter-param` | — | Filter placeholder value, repeatable |
+| `--text-query` | — | FTS5 keyword query, repeatable |
+| `--alpha` | — | Hybrid balance: `0`=keyword, `1`=semantic (default: `0.75`) |
+| `--fusion` | — | `rrf` or `relative_score` |
+| `--subset` | — | Restrict to document IDs, repeatable |
+
+### `metadata`
+
+```bash
+next-plaid metadata list my_index
+next-plaid metadata count my_index
+next-plaid metadata check my_index --ids 1 --ids 2 --ids 3
+next-plaid metadata query my_index --condition "category = ?" --param science
+next-plaid metadata get my_index --ids 1 --ids 2
+next-plaid metadata get my_index --condition "score > ?" --param 0.9 --limit 10
+next-plaid metadata update my_index -c "status = ?" -p draft --set '{"status": "published"}' --yes
+```
+
+### `encode`
+
+```bash
+next-plaid encode "Hello world" "Another text"
+next-plaid encode --input-type query "What is AI?"
+echo '["text1", "text2"]' | next-plaid encode --stdin
+```
+
+### `rerank`
+
+```bash
+next-plaid rerank -q "capital of France" -d "Paris is in France" -d "Berlin is in Germany"
+next-plaid rerank -q "machine learning" --file docs.json
+echo '["doc1", "doc2"]' | next-plaid rerank -q "my query" --stdin
+```
+
+### Scripting and Agents
+
+The `--json` flag emits machine-readable JSON on every command:
+
+```bash
+# Extract document IDs from search results
+next-plaid --json search my_index "France capital" | jq '.results[0].document_ids'
+
+# Assert server is healthy before indexing
+next-plaid --json health | jq -e '.status == "healthy"'
+
+# Preview a destructive operation before running it
+next-plaid document delete my_index --condition "draft = ?" --param true --dry-run
+
+# Run against a remote server
+NEXT_PLAID_URL=http://my-server:8080 next-plaid search my_index "query"
+```
+
+---
+
 ## Project Structure
 
 ```
@@ -783,6 +952,7 @@ next-plaid-api/python-sdk/
 │   ├── _base.py                  # Base client logic
 │   ├── client.py                 # Synchronous client
 │   ├── async_client.py           # Async client
+│   ├── cli.py                    # CLI (next-plaid command)
 │   ├── models.py                 # Data models
 │   └── exceptions.py             # Exception classes
 └── tests/
@@ -796,6 +966,7 @@ next-plaid-api/python-sdk/
 | Package | Version | Purpose |
 |---------|---------|---------|
 | `httpx` | >= 0.24.0 | HTTP client (sync + async) |
+| `click` | >= 8.0.0 | CLI framework (optional, `pip install "next-plaid-client[cli]"`) |
 
 ### Development Dependencies
 

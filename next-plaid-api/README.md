@@ -518,6 +518,45 @@ await client.search("docs", ["query"])
 | `client.encode(texts, input_type, pool_factor)`                             | Encode texts                          |
 | `client.rerank(query, documents)`                                           | Rerank documents                      |
 
+### CLI
+
+```bash
+pip install "next-plaid-client[cli]"
+```
+
+Non-interactive CLI for scripts and agents. All commands accept `--url`/`--json` and have `--help` with examples.
+
+```bash
+# Health
+next-plaid health
+
+# Index management
+next-plaid index create my_index --nbits 4
+next-plaid index list
+next-plaid index get my_index
+
+# Documents
+next-plaid document add my_index --text "Paris is the capital of France"
+next-plaid document add my_index --file texts.json
+cat corpus.json | next-plaid document add my_index --stdin
+
+# Search (semantic, keyword, or hybrid)
+next-plaid search my_index "What is the capital of France?"
+next-plaid search my_index --text-query "capital France"
+next-plaid search my_index "capital?" --text-query "capital France" --alpha 0.75
+
+# Metadata filter
+next-plaid search my_index "France" --filter "country = ?" --filter-param France
+
+# Delete
+next-plaid document delete my_index --condition "year < ?" --param 2020 --yes
+
+# JSON output for scripting
+next-plaid --json search my_index "query" | jq '.results[0].document_ids'
+```
+
+Set `NEXT_PLAID_URL` to avoid repeating `--url`. See the [Python SDK README](python-sdk/README.md#cli) for full reference.
+
 ---
 
 ## Docker
