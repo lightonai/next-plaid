@@ -441,16 +441,16 @@ pub fn cmd_search(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Filter out text/config files if --code-only is enabled, then take top_k
-    let results: Vec<_> = if code_only {
+    // Filter out text/config files if --code-only is enabled
+    let filtered_results: Vec<_> = if code_only {
         all_results
             .into_iter()
             .filter(|r| !is_text_format(r.unit.language))
-            .take(top_k)
             .collect()
     } else {
-        all_results.into_iter().take(top_k).collect()
+        all_results
     };
+    let results: Vec<_> = filtered_results.into_iter().take(top_k).collect();
 
     // When -e is used without -F, automatically enable regex mode (ERE)
     let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
@@ -480,13 +480,63 @@ pub fn cmd_search(
             resolve_verbose()
         };
 
+        // Maximum characters of matching line content to show in compact mode
+        const COMPACT_LINE_MAX_CHARS: usize = 120;
+
         if !verbose {
-            // Non-verbose (compact) mode: show filepath:lines ordered by score
-            for result in &results {
-                let file_path = display_path(&result.unit.file, use_relative);
-                let start_line = result.unit.line;
-                let end_line = result.unit.end_line;
-                println!("{}:{}-{}", file_path, start_line, end_line);
+            let compact_matcher = text_pattern.map(|p| {
+                PatternMatcher::new(p, effective_extended_regexp, fixed_strings, word_regexp)
+            });
+
+            if let Some(ref matcher) = compact_matcher {
+                // Regex mode: print matching lines, capped at top_k total lines
+                let mut printed = 0usize;
+                let mut total_matches = 0usize;
+                for result in &results {
+                    let matching_lines = matcher.find_matches_in_unit(&result.unit);
+                    total_matches += matching_lines.len();
+                }
+
+                'outer: for result in &results {
+                    let file_path = display_path(&result.unit.file, use_relative);
+                    let matching_lines = matcher.find_matches_in_unit(&result.unit);
+                    for &match_line in &matching_lines {
+                        if printed >= top_k {
+                            break 'outer;
+                        }
+                        let line_content = result
+                            .unit
+                            .code
+                            .lines()
+                            .nth(match_line - result.unit.line)
+                            .unwrap_or("")
+                            .trim();
+                        let truncated: String =
+                            line_content.chars().take(COMPACT_LINE_MAX_CHARS).collect();
+                        let suffix = if line_content.chars().count() > COMPACT_LINE_MAX_CHARS {
+                            "..."
+                        } else {
+                            ""
+                        };
+                        println!("{}:{}:{}{}", file_path, match_line, truncated, suffix);
+                        printed += 1;
+                    }
+                }
+                if total_matches > top_k {
+                    eprintln!(
+                        "\n{} total matches, showing top {}. Use -k {} to see all.",
+                        total_matches, top_k, total_matches
+                    );
+                }
+            } else {
+                // Semantic-only mode: show filepath:start-end ordered by score
+                for result in &results {
+                    let file_path = display_path(&result.unit.file, use_relative);
+                    println!(
+                        "{}:{}-{}",
+                        file_path, result.unit.line, result.unit.end_line
+                    );
+                }
             }
         } else {
             // Verbose mode: full content grouped by file with syntax highlighting

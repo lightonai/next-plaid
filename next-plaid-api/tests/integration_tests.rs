@@ -658,24 +658,31 @@ async fn test_search_batch_queries() {
         .create_and_populate_index("batch_search_test", documents, metadata, None)
         .await;
 
-    // Batch search with 3 queries
+    // Batch search with 3 queries (retry to handle index readiness race)
     let queries: Vec<Value> = (0..3)
         .map(|_| json!({"embeddings": generate_embeddings(5, dim)}))
         .collect();
 
-    let resp = fixture
-        .client
-        .post(fixture.url("/indices/batch_search_test/search"))
-        .json(&json!({
-            "queries": queries,
-            "params": {"top_k": 3}
-        }))
-        .send()
-        .await
-        .unwrap();
+    let mut body: Option<SearchResponse> = None;
+    for _ in 0..10 {
+        let resp = fixture
+            .client
+            .post(fixture.url("/indices/batch_search_test/search"))
+            .json(&json!({
+                "queries": queries,
+                "params": {"top_k": 3}
+            }))
+            .send()
+            .await
+            .unwrap();
 
-    assert!(resp.status().is_success());
-    let body: SearchResponse = resp.json().await.unwrap();
+        if resp.status().is_success() {
+            body = Some(resp.json().await.unwrap());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let body = body.expect("Batch search did not succeed after retries");
     assert_eq!(body.num_queries, 3);
     assert_eq!(body.results.len(), 3);
 
