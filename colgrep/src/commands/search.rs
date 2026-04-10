@@ -316,16 +316,68 @@ pub fn resolve_relative_paths() -> bool {
 
 /// Format a path for display, using relative or absolute based on config.
 fn display_path(path: &Path, use_relative: bool) -> String {
+    let current_dir = std::env::current_dir().ok();
+    display_path_with_cwd(path, current_dir.as_deref(), use_relative)
+}
+
+fn display_path_with_cwd(path: &Path, cwd: Option<&Path>, use_relative: bool) -> String {
+    let normalized_path = normalize_windows_path(path);
+
     if use_relative {
-        if let Ok(cwd) = std::env::current_dir() {
-            return path
-                .strip_prefix(&cwd)
-                .unwrap_or(path)
+        if let Some(cwd) = cwd {
+            let normalized_cwd = normalize_windows_path(cwd);
+            return normalized_path
+                .strip_prefix(&normalized_cwd)
+                .unwrap_or(&normalized_path)
                 .display()
                 .to_string();
         }
     }
-    path.display().to_string()
+
+    normalized_path.display().to_string()
+}
+
+fn is_external_project_path(search_path: &Path, cwd: Option<&Path>) -> bool {
+    let Some(cwd) = cwd else {
+        return false;
+    };
+
+    let normalized_search_path = normalize_windows_path(search_path);
+    let normalized_cwd = normalize_windows_path(cwd);
+    !normalized_search_path.starts_with(&normalized_cwd)
+}
+
+fn normalize_windows_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+
+        let mut components = path.components();
+        match components.next() {
+            Some(Component::Prefix(prefix_component)) => match prefix_component.kind() {
+                Prefix::VerbatimDisk(drive) => {
+                    let mut normalized = PathBuf::from(format!("{}:\\", char::from(drive)));
+                    normalized.push(components.as_path());
+                    normalized
+                }
+                Prefix::VerbatimUNC(server, share) => {
+                    let mut normalized = PathBuf::from(format!(
+                        r"\\{}\{}",
+                        server.to_string_lossy(),
+                        share.to_string_lossy()
+                    ));
+                    normalized.push(components.as_path());
+                    normalized
+                }
+                _ => path.to_path_buf(),
+            },
+            _ => path.to_path_buf(),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
 }
 
 /// Resolve verbose: saved config > default (false)
@@ -879,9 +931,8 @@ fn search_single_path(
     // Check for parent index unless the resolved path is outside
     // the current directory (external project)
     let parent_info = {
-        let is_external_project = std::env::current_dir()
-            .map(|cwd| !search_path.starts_with(&cwd))
-            .unwrap_or(false);
+        let current_dir = std::env::current_dir().ok();
+        let is_external_project = is_external_project_path(&search_path, current_dir.as_deref());
 
         if is_external_project {
             None
@@ -945,14 +996,14 @@ fn search_single_path(
                     if let Some(ref info) = parent_info {
                         eprintln!(
                             "📂 Using index: {} (subdir: {}): indexed {} files\n",
-                            info.project_path.display(),
+                            display_path(&info.project_path, false),
                             info.relative_subdir.display(),
                             changes
                         );
                     } else {
                         eprintln!(
                             "📂 Using index: {}: indexed {} files\n",
-                            effective_root.display(),
+                            display_path(&effective_root, false),
                             changes
                         );
                     }
@@ -1444,6 +1495,7 @@ fn search_single_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     // Test resolve_top_k function
     #[test]
@@ -1625,6 +1677,56 @@ mod tests {
         assert_eq!(
             merge_query_with_pattern("pub fn", "pub async fn test"),
             "pub fn async test"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_display_path_uses_relative_output_for_verbatim_windows_paths() {
+        let temp_dir = tempdir().unwrap();
+        let canonical_root = std::fs::canonicalize(temp_dir.path()).unwrap();
+        let search_result_path = canonical_root.join("src").join("main.rs");
+        let display = display_path_with_cwd(&search_result_path, Some(temp_dir.path()), true);
+
+        assert_eq!(
+            display,
+            PathBuf::from("src").join("main.rs").display().to_string()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_display_path_strips_verbatim_windows_prefix_in_absolute_mode() {
+        let temp_dir = tempdir().unwrap();
+        let canonical_root = std::fs::canonicalize(temp_dir.path()).unwrap();
+        let search_result_path = canonical_root.join("src").join("main.rs");
+
+        let display = display_path(&search_result_path, false);
+
+        assert!(!display.starts_with(r"\\?\"));
+        assert!(display.ends_with(r"src\main.rs"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_is_external_project_path_ignores_windows_verbatim_prefixes() {
+        let temp_dir = tempdir().unwrap();
+        let canonical_root = std::fs::canonicalize(temp_dir.path()).unwrap();
+
+        assert!(!is_external_project_path(
+            &canonical_root,
+            Some(temp_dir.path())
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_normalize_windows_path_strips_verbatim_unc_prefix() {
+        let raw_path = PathBuf::from(r"\\?\UNC\server\share\repo\src\main.rs");
+
+        assert_eq!(
+            normalize_windows_path(&raw_path),
+            PathBuf::from(r"\\server\share\repo\src\main.rs")
         );
     }
 }
