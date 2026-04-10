@@ -3,13 +3,11 @@
   <p><b>NextPlaid</b> is a multi-vector search engine. <b>ColGREP</b> is semantic code search, built on it.</p>
 
   <p>
-    <a href="#colgrep"><b>ColGREP</b></a>
+    <a href="colgrep/README.md"><b>ColGREP</b></a>
     ·
-    <a href="#nextplaid"><b>NextPlaid</b></a>
+    <a href="next-plaid-api/README.md"><b>NextPlaid</b></a>
     ·
     <a href="#models"><b>Models</b></a>
-    ·
-    <a href="https://lightonai.github.io/next-plaid/"><b>Docs</b></a>
   </p>
 </div>
 
@@ -121,7 +119,7 @@ def fetch_with_retry(url: str, max_retries: int = 3) -> Response:
 
 This structured input gives the model richer signal than raw code alone.
 
-**More:** install variants, performance tuning, all flags and options → [colgrep/README.md](colgrep/README.md)
+**Documentation:** install variants, performance tuning, all flags and options → [ColGREP documentation](colgrep/README.md)
 
 ---
 
@@ -217,7 +215,7 @@ next-plaid search docs "hello"
 
 Once the server is running: [Swagger UI](http://localhost:8080/swagger-ui) · [OpenAPI spec](http://localhost:8080/api-docs/openapi.json)
 
-**More:** REST API reference, Docker Compose, environment variables → [next-plaid-api/README.md](next-plaid-api/README.md)
+**Documentation:** REST API reference, Docker Compose, environment variables → [NextPlaid documentation](next-plaid-api/README.md)
 
 ---
 
