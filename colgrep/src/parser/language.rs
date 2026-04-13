@@ -45,6 +45,7 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "vue" => Some(Language::Vue),
         "svelte" => Some(Language::Svelte),
         // Text/documentation formats
+        "qml" => Some(Language::Qml),
         "html" | "htm" => Some(Language::Html),
         "md" | "markdown" => Some(Language::Markdown),
         "txt" | "text" | "rst" => Some(Language::Text),
@@ -108,6 +109,7 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Sql => tree_sitter_sequel::LANGUAGE.into(),
         // Vue and Svelte use TypeScript parser for script blocks
         Language::Vue | Language::Svelte => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        Language::Qml => tree_sitter_qmljs::LANGUAGE.into(),
         // HTML uses tree-sitter-html
         Language::Html => tree_sitter_html::LANGUAGE.into(),
         // Text/config formats don't use tree-sitter - this should never be called
@@ -249,6 +251,7 @@ mod tests {
 
     #[test]
     fn test_detect_language_text() {
+        assert_eq!(detect_language(Path::new("shell.qml")), Some(Language::Qml));
         assert_eq!(
             detect_language(Path::new("README.md")),
             Some(Language::Markdown)
@@ -348,6 +351,7 @@ mod tests {
         assert!(!is_text_format(Language::Zig));
         assert!(!is_text_format(Language::Julia));
         assert!(!is_text_format(Language::Sql));
+        assert!(!is_text_format(Language::Qml));
         assert!(!is_text_format(Language::Vue));
         assert!(!is_text_format(Language::Svelte));
         assert!(!is_text_format(Language::Html));

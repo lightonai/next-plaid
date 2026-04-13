@@ -17,6 +17,7 @@ mod test_lua;
 mod test_ocaml;
 mod test_php;
 mod test_python;
+mod test_qml;
 mod test_ruby;
 mod test_rust;
 mod test_scala;

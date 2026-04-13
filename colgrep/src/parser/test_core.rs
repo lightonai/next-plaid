@@ -259,6 +259,7 @@ fn test_detect_language_markdown() {
 
 #[test]
 fn test_detect_language_text() {
+    assert_eq!(detect_language(Path::new("shell.qml")), Some(Language::Qml));
     assert_eq!(
         detect_language(Path::new("notes.txt")),
         Some(Language::Text)
@@ -424,9 +425,26 @@ fn test_is_text_format_false() {
     assert!(!is_text_format(Language::Elixir));
     assert!(!is_text_format(Language::Haskell));
     assert!(!is_text_format(Language::Ocaml));
+    assert!(!is_text_format(Language::Qml));
 }
 
 // ==================== extract_units tests ====================
+
+#[test]
+fn test_extract_qml_as_document() {
+    let source = r#"import Quickshell
+
+PanelWindow {
+    implicitHeight: 32
+}"#;
+    let units = extract_units(Path::new("shell.qml"), source, Language::Qml);
+
+    assert_eq!(units.len(), 1);
+    assert_eq!(units[0].language, Language::Qml);
+    assert_eq!(units[0].unit_type, UnitType::Document);
+    assert_eq!(units[0].line, 1);
+    assert_eq!(units[0].end_line, 5);
+}
 
 #[test]
 fn test_extract_python_function() {
