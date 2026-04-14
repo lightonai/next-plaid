@@ -274,6 +274,13 @@ pub fn resolve_model(cli_model: Option<&str>) -> String {
     DEFAULT_MODEL.to_string()
 }
 
+fn resolve_search_runtime_overrides(config: &Config) -> (Option<usize>, Option<usize>) {
+    (
+        config.configured_parallel_sessions(),
+        config.configured_batch_size(),
+    )
+}
+
 /// Resolve top_k: CLI arg > saved config > default
 pub fn resolve_top_k(cli_k: Option<usize>, default: usize) -> usize {
     if let Some(k) = cli_k {
@@ -921,8 +928,7 @@ fn search_single_path(
     let quantized = !config.use_fp32();
 
     // Resolve parallel sessions and batch size from config
-    let parallel_sessions = Some(config.get_parallel_sessions());
-    let batch_size = Some(config.get_batch_size());
+    let (parallel_sessions, batch_size) = resolve_search_runtime_overrides(&config);
 
     // Check if index already exists (suppress model output if so)
     let has_existing_index =
@@ -1537,6 +1543,44 @@ mod tests {
         let result = resolve_context_lines(None, 20);
         // Should be either 20 (default) or whatever is in config
         assert!(result <= 100); // sanity check
+    }
+
+    #[test]
+    fn test_resolve_search_runtime_overrides_preserves_explicit_values() {
+        let config = Config {
+            parallel_sessions: Some(4),
+            batch_size: Some(6),
+            ..Default::default()
+        };
+
+        let (parallel_sessions, batch_size) = resolve_search_runtime_overrides(&config);
+
+        assert_eq!(parallel_sessions, Some(4));
+        assert_eq!(batch_size, Some(6));
+    }
+
+    #[test]
+    fn test_resolve_search_runtime_overrides_defers_auto_defaults() {
+        let config = Config::default();
+
+        let (parallel_sessions, batch_size) = resolve_search_runtime_overrides(&config);
+
+        assert_eq!(parallel_sessions, None);
+        assert_eq!(batch_size, None);
+    }
+
+    #[test]
+    fn test_resolve_search_runtime_overrides_normalizes_values() {
+        let config = Config {
+            parallel_sessions: Some(0),
+            batch_size: Some(0),
+            ..Default::default()
+        };
+
+        let (parallel_sessions, batch_size) = resolve_search_runtime_overrides(&config);
+
+        assert_eq!(parallel_sessions, Some(1));
+        assert_eq!(batch_size, Some(1));
     }
 
     // Test strip_regex_for_semantic function

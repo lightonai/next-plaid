@@ -16,6 +16,18 @@ pub struct InitOptions<'a> {
     pub static_batch: bool,
 }
 
+fn resolve_index_runtime_overrides(
+    config: &Config,
+    cli_batch_size: Option<usize>,
+) -> (Option<usize>, Option<usize>) {
+    (
+        config.configured_parallel_sessions(),
+        cli_batch_size
+            .map(|batch_size| batch_size.max(1))
+            .or_else(|| config.configured_batch_size()),
+    )
+}
+
 pub fn cmd_init(path: &PathBuf, options: InitOptions<'_>) -> Result<()> {
     let path = std::fs::canonicalize(path)
         .map_err(|_| anyhow::anyhow!("Path does not exist: {}", path.display()))?;
@@ -29,12 +41,8 @@ pub fn cmd_init(path: &PathBuf, options: InitOptions<'_>) -> Result<()> {
 
     let config = Config::load().unwrap_or_default();
     let quantized = !config.use_fp32();
-    let parallel_sessions = Some(config.get_parallel_sessions());
-    let batch_size = Some(
-        options
-            .batch_size
-            .unwrap_or_else(|| config.get_batch_size()),
-    );
+    let (parallel_sessions, batch_size) =
+        resolve_index_runtime_overrides(&config, options.batch_size);
 
     // Check if index already exists
     let has_existing_index = index_exists(&path) || find_parent_index(&path)?.is_some();
@@ -80,4 +88,47 @@ pub fn cmd_init(path: &PathBuf, options: InitOptions<'_>) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_index_runtime_overrides_preserves_explicit_values() {
+        let config = Config {
+            parallel_sessions: Some(3),
+            batch_size: Some(7),
+            ..Default::default()
+        };
+
+        let (parallel_sessions, batch_size) = resolve_index_runtime_overrides(&config, Some(9));
+
+        assert_eq!(parallel_sessions, Some(3));
+        assert_eq!(batch_size, Some(9));
+    }
+
+    #[test]
+    fn test_resolve_index_runtime_overrides_defers_auto_defaults() {
+        let config = Config::default();
+
+        let (parallel_sessions, batch_size) = resolve_index_runtime_overrides(&config, None);
+
+        assert_eq!(parallel_sessions, None);
+        assert_eq!(batch_size, None);
+    }
+
+    #[test]
+    fn test_resolve_index_runtime_overrides_normalizes_values() {
+        let config = Config {
+            parallel_sessions: Some(0),
+            batch_size: Some(0),
+            ..Default::default()
+        };
+
+        let (parallel_sessions, batch_size) = resolve_index_runtime_overrides(&config, Some(0));
+
+        assert_eq!(parallel_sessions, Some(1));
+        assert_eq!(batch_size, Some(1));
+    }
 }
