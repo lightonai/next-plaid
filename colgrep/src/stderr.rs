@@ -67,11 +67,51 @@ impl SuppressStderr {
 }
 
 /// Execute a closure with stderr suppressed.
+///
+/// If the closure panics, the panic message and location are captured via a
+/// temporary panic hook and printed to the (restored) stderr before the panic
+/// is resumed. This prevents panics inside suppressed regions from becoming
+/// silent, while still letting the panic propagate up the stack normally.
+///
 /// If suppression fails, the closure runs with stderr unchanged.
 pub fn with_suppressed_stderr<F, T>(f: F) -> T
 where
     F: FnOnce() -> T,
 {
-    let _guard = SuppressStderr::new();
-    f()
+    use std::panic::{self, AssertUnwindSafe};
+    use std::sync::{Arc, Mutex};
+
+    // Buffer to capture panic info written during the suppressed region.
+    let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let captured_for_hook = Arc::clone(&captured);
+
+    let prev_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        let mut buf = format!("{}\n", info);
+        // Include a backtrace when requested so RUST_BACKTRACE still works.
+        let bt = std::backtrace::Backtrace::capture();
+        if bt.status() == std::backtrace::BacktraceStatus::Captured {
+            buf.push_str(&format!("stack backtrace:\n{}\n", bt));
+        }
+        if let Ok(mut slot) = captured_for_hook.lock() {
+            *slot = Some(buf);
+        }
+    }));
+
+    let guard = SuppressStderr::new();
+    let result = panic::catch_unwind(AssertUnwindSafe(f));
+    drop(guard);
+
+    // Restore the user's panic hook before doing anything else.
+    panic::set_hook(prev_hook);
+
+    match result {
+        Ok(value) => value,
+        Err(payload) => {
+            if let Some(msg) = captured.lock().ok().and_then(|mut s| s.take()) {
+                eprint!("{}", msg);
+            }
+            panic::resume_unwind(payload);
+        }
+    }
 }

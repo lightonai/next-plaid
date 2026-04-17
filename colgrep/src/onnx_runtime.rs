@@ -132,10 +132,19 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
     // 1. Check if already set
     if let Ok(path) = env::var("ORT_DYLIB_PATH") {
         let path = PathBuf::from(&path);
-        if path.exists() {
+        if path.exists() && is_valid_ort_dylib(&path) {
             pin_runtime_library(&path);
             return Ok(path);
         }
+        // Path from env is missing or can't be loaded (wrong arch, broken
+        // symlink, stale Homebrew formula, ...). Clear it so the search and
+        // download fallback below don't propagate the unusable value into
+        // `ort::setup_api`, where a failed dlopen turns into an .expect() panic.
+        eprintln!(
+            "⚠️  ORT_DYLIB_PATH={} is not a loadable ONNX Runtime dylib; ignoring.",
+            path.display()
+        );
+        env::remove_var("ORT_DYLIB_PATH");
     }
 
     // 2. Search common locations (skip for CUDA - we want our managed GPU version)
@@ -347,16 +356,46 @@ fn check_cudnn_available() -> bool {
     false
 }
 
+/// Try to dlopen `path` and confirm it exposes `OrtGetApiBase`.
+///
+/// This filters out candidates that pass `path.exists()` but would make
+/// `ort::setup_api` panic: wrong architecture (x86_64 dylib on aarch64, or
+/// vice versa), broken symlinks that resolve to something non-loadable,
+/// companion providers such as `libonnxruntime_providers_shared`, and
+/// stale Homebrew installs that fail code-signature validation.
+fn is_valid_ort_dylib(path: &Path) -> bool {
+    unsafe {
+        match libloading::Library::new(path) {
+            Ok(lib) => lib
+                .get::<unsafe extern "C" fn() -> *const std::ffi::c_void>(b"OrtGetApiBase\0")
+                .is_ok(),
+            Err(_) => false,
+        }
+    }
+}
+
 /// Search for ONNX Runtime in common locations
 #[cfg(not(feature = "cuda"))]
 fn find_onnx_runtime() -> Option<PathBuf> {
     let search_paths = get_search_paths();
+    let mut rejected: Vec<PathBuf> = Vec::new();
+
+    let try_candidate = |candidate: PathBuf, rejected: &mut Vec<PathBuf>| -> Option<PathBuf> {
+        if !candidate.exists() {
+            return None;
+        }
+        if is_valid_ort_dylib(&candidate) {
+            Some(candidate)
+        } else {
+            rejected.push(candidate);
+            None
+        }
+    };
 
     for base_path in search_paths {
         // Direct library file
-        let lib_path = base_path.join(ORT_LIB_NAME);
-        if lib_path.exists() {
-            return Some(lib_path);
+        if let Some(p) = try_candidate(base_path.join(ORT_LIB_NAME), &mut rejected) {
+            return Some(p);
         }
 
         // Versioned library (e.g., libonnxruntime.so.1.23.0 on Linux, libonnxruntime.1.20.1.dylib on macOS)
@@ -370,15 +409,43 @@ fn find_onnx_runtime() -> Option<PathBuf> {
                     || name_str.starts_with("libonnxruntime.dylib")
                     || (name_str.starts_with("libonnxruntime.") && name_str.ends_with(".dylib"))
                 {
-                    return Some(entry.path());
+                    if let Some(p) = try_candidate(entry.path(), &mut rejected) {
+                        return Some(p);
+                    }
                 }
             }
         }
 
         // Check lib subdirectory
-        let lib_subdir = base_path.join("lib").join(ORT_LIB_NAME);
-        if lib_subdir.exists() {
-            return Some(lib_subdir);
+        if let Some(p) = try_candidate(base_path.join("lib").join(ORT_LIB_NAME), &mut rejected) {
+            return Some(p);
+        }
+    }
+
+    if !rejected.is_empty() {
+        // Guard against repeat logging: `ensure_onnx_runtime` can be re-entered
+        // within a single process (tests, re-execs that restore the env, code
+        // paths that clear ORT_DYLIB_PATH), and once we've explained the
+        // rejection the user doesn't need to see it again.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+            let unique: Vec<&PathBuf> = rejected
+                .iter()
+                .filter(|p| {
+                    let canon = p.canonicalize().unwrap_or_else(|_| (*p).clone());
+                    seen.insert(canon)
+                })
+                .collect();
+            eprintln!(
+                "⚠️  Found {} ONNX Runtime candidate(s) that failed to load (wrong arch, broken \
+                 signature, or companion library); downloading a managed copy instead:",
+                unique.len()
+            );
+            for p in unique {
+                eprintln!("    - {}", p.display());
+            }
         }
     }
 
