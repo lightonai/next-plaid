@@ -423,21 +423,29 @@ fn find_onnx_runtime() -> Option<PathBuf> {
     }
 
     if !rejected.is_empty() {
-        let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-        let unique: Vec<&PathBuf> = rejected
-            .iter()
-            .filter(|p| {
-                let canon = p.canonicalize().unwrap_or_else(|_| (*p).clone());
-                seen.insert(canon)
-            })
-            .collect();
-        eprintln!(
-            "⚠️  Found {} ONNX Runtime candidate(s) that failed to load (wrong arch, broken \
-             signature, or companion library); downloading a managed copy instead:",
-            unique.len()
-        );
-        for p in unique {
-            eprintln!("    - {}", p.display());
+        // Guard against repeat logging: `ensure_onnx_runtime` can be re-entered
+        // within a single process (tests, re-execs that restore the env, code
+        // paths that clear ORT_DYLIB_PATH), and once we've explained the
+        // rejection the user doesn't need to see it again.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+            let unique: Vec<&PathBuf> = rejected
+                .iter()
+                .filter(|p| {
+                    let canon = p.canonicalize().unwrap_or_else(|_| (*p).clone());
+                    seen.insert(canon)
+                })
+                .collect();
+            eprintln!(
+                "⚠️  Found {} ONNX Runtime candidate(s) that failed to load (wrong arch, broken \
+                 signature, or companion library); downloading a managed copy instead:",
+                unique.len()
+            );
+            for p in unique {
+                eprintln!("    - {}", p.display());
+            }
         }
     }
 
