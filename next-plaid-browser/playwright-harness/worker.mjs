@@ -23,6 +23,10 @@ async function ensureRuntime() {
   await runtimeReady;
 }
 
+function hasFilterCondition(request) {
+  return typeof request.filter_condition === "string" && request.filter_condition.length > 0;
+}
+
 function validateSearchRequest(request) {
   const hasQueries = Array.isArray(request.queries) && request.queries.length > 0;
   const hasTextQuery = Array.isArray(request.text_query) && request.text_query.length > 0;
@@ -54,10 +58,6 @@ function validateSearchRequest(request) {
       `queries length (${request.queries.length}) must match text_query length (${request.text_query.length}) in hybrid mode`,
     );
   }
-
-  if (request.filter_condition || (request.filter_parameters?.length ?? 0) > 0) {
-    throw new Error("metadata filtering is not supported yet in the browser runtime");
-  }
 }
 
 function keywordResultsOrEmpty(name, queries, topK, subset) {
@@ -73,13 +73,28 @@ function metadataForDocumentIds(name, documentIds) {
   return keywordEngine.metadataForDocumentIds(name, documentIds);
 }
 
-function buildSemanticSearchRequest(name, request, topK) {
+function resolveSubset(name, request) {
+  if (hasFilterCondition(request)) {
+    return keywordEngine.filterIndex({
+      name,
+      condition: request.filter_condition,
+      parameters: request.filter_parameters ?? []
+    });
+  }
+
+  return request.subset ?? null;
+}
+
+function buildSemanticSearchRequest(name, request, topK, subset) {
   return {
     type: "search",
     name,
     request: {
       ...request,
+      subset,
       text_query: null,
+      filter_condition: null,
+      filter_parameters: null,
       params: {
         ...(request.params ?? {}),
         top_k: topK
@@ -125,6 +140,14 @@ function emptyKeywordResults(count) {
   }));
 }
 
+function executeSemanticSearch(name, request) {
+  validateSearchRequest(request);
+
+  const topK = request.params?.top_k ?? 10;
+  const subset = resolveSubset(name, request);
+  return runtimeCall(buildSemanticSearchRequest(name, request, topK, subset));
+}
+
 function executeKeywordOrHybridSearch(name, request) {
   validateSearchRequest(request);
 
@@ -132,13 +155,14 @@ function executeKeywordOrHybridSearch(name, request) {
   const textQueries = request.text_query ?? [];
   const topK = request.params?.top_k ?? 10;
   const fetchK = hasQueries ? topK * 3 : topK;
+  const subset = resolveSubset(name, request);
 
   const semanticResponse = hasQueries
-    ? runtimeCall(buildSemanticSearchRequest(name, request, fetchK))
+    ? runtimeCall(buildSemanticSearchRequest(name, request, fetchK, subset))
     : null;
 
   const keywordResponse =
-    keywordResultsOrEmpty(name, textQueries, fetchK, request.subset ?? null) ??
+    keywordResultsOrEmpty(name, textQueries, fetchK, subset) ??
     emptyKeywordResults(textQueries.length);
 
   const numQueries = hasQueries ? request.queries.length : textQueries.length;
@@ -175,8 +199,12 @@ async function handleRequest(request) {
     }
     case "search": {
       const hasTextQuery = Array.isArray(request.request?.text_query) && request.request.text_query.length > 0;
-      if (!hasTextQuery) {
+      const filterSearch = hasFilterCondition(request.request ?? {});
+      if (!hasTextQuery && !filterSearch) {
         return runtimeCall(request);
+      }
+      if (!hasTextQuery) {
+        return executeSemanticSearch(request.name, request.request);
       }
       return executeKeywordOrHybridSearch(request.name, request.request);
     }

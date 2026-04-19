@@ -115,6 +115,7 @@ So today’s browser workspace should be treated as:
     SQLite WASM FTS sidecar
   - answer browser-hosted hybrid requests by fusing semantic and keyword
     result lists with the native fusion primitives
+  - resolve native-style metadata filter conditions into document subsets
   - return native-shaped health and search responses
   - preserve document metadata in search results when metadata is loaded
 
@@ -124,7 +125,6 @@ browser runtime shell around that math:
 - OPFS-backed bundle installation and loading
 - manifest verification and active-version switching
 - the remaining native API surfaces that still need browser equivalents:
-  - metadata filter conditions
   - add / update / delete flows for the browser FTS sidecar
   - storage-backed startup and recovery instead of in-memory-only loading
 
@@ -152,7 +152,7 @@ The next implementation slice is now:
 1. OPFS-backed bundle loader
 2. install/verify/activate bundle lifecycle
 3. browser storage-backed startup and recovery flows
-4. metadata filters plus iterative add / update / delete on the FTS side
+4. iterative add / update / delete on the FTS side
 
 ## Quick start
 
@@ -205,12 +205,13 @@ path end to end across:
 - semantic search
 - keyword-only search
 - hybrid fusion
+- metadata-filtered subset search
 
 ## Next steps
 
 - implement OPFS-backed bundle loading and manifest/version handling
 - replace host-side bundle filesystem loading with worker/runtime glue
-- add metadata filters and iterative FTS mutation flows
+- add iterative FTS mutation flows
 - connect the current in-memory SQLite WASM keyword layer to storage-backed
   browser startup
 

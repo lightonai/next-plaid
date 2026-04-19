@@ -121,6 +121,57 @@ function hybridSearchRequest() {
   };
 }
 
+function filteredSemanticSearchRequest() {
+  return {
+    type: "search",
+    name: "demo-smoke",
+    request: {
+      queries: [
+        {
+          embeddings: [
+            [1.0, 0.0],
+            [0.7, 0.7]
+          ]
+        }
+      ],
+      params: {
+        top_k: 2,
+        n_ivf_probe: 2,
+        n_full_scores: 3,
+        centroid_score_threshold: null
+      },
+      subset: null,
+      text_query: null,
+      alpha: null,
+      fusion: null,
+      filter_condition: "topic = ?",
+      filter_parameters: ["metrics"]
+    }
+  };
+}
+
+function filteredKeywordSearchRequest() {
+  return {
+    type: "search",
+    name: "demo-smoke",
+    request: {
+      queries: null,
+      params: {
+        top_k: 2,
+        n_ivf_probe: null,
+        n_full_scores: null,
+        centroid_score_threshold: null
+      },
+      subset: null,
+      text_query: ["alpha OR gamma"],
+      alpha: null,
+      fusion: null,
+      filter_condition: "topic IN (?, ?)",
+      filter_parameters: ["history", "edge"]
+    }
+  };
+}
+
 function callWorker(worker, request) {
   const requestId = crypto.randomUUID();
 
@@ -154,8 +205,19 @@ async function main() {
     const semanticSearch = await callWorker(worker, semanticSearchRequest());
     const keywordSearch = await callWorker(worker, keywordSearchRequest());
     const hybridSearch = await callWorker(worker, hybridSearchRequest());
+    const filteredSemanticSearch = await callWorker(worker, filteredSemanticSearchRequest());
+    const filteredKeywordSearch = await callWorker(worker, filteredKeywordSearchRequest());
 
-    const result = { initialHealth, load, health, semanticSearch, keywordSearch, hybridSearch };
+    const result = {
+      initialHealth,
+      load,
+      health,
+      semanticSearch,
+      keywordSearch,
+      hybridSearch,
+      filteredSemanticSearch,
+      filteredKeywordSearch
+    };
     window.__NEXT_PLAID_SMOKE_RESULT__ = result;
     setStatus("ok", result);
   } catch (error) {

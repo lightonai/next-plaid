@@ -75,6 +75,7 @@ successfully for:
 - semantic search
 - keyword-only search
 - hybrid fusion
+- metadata-filtered subset search
 
 Primary smoke command:
 

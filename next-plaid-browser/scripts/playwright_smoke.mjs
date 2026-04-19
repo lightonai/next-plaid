@@ -173,12 +173,18 @@ async function runSmoke(browserName) {
     const semanticTopDocumentId = result.semanticSearch?.results?.[0]?.document_ids?.[0];
     const keywordTopDocumentId = result.keywordSearch?.results?.[0]?.document_ids?.[0];
     const hybridTopDocumentId = result.hybridSearch?.results?.[0]?.document_ids?.[0];
+    const filteredSemanticTopDocumentId =
+      result.filteredSemanticSearch?.results?.[0]?.document_ids?.[0];
+    const filteredKeywordDocumentIds =
+      result.filteredKeywordSearch?.results?.[0]?.document_ids ?? [];
     const loadedIndices = result.health?.loaded_indices;
 
     if (
       semanticTopDocumentId !== 0 ||
       keywordTopDocumentId !== 0 ||
       hybridTopDocumentId !== 1 ||
+      filteredSemanticTopDocumentId !== 1 ||
+      JSON.stringify(filteredKeywordDocumentIds) !== JSON.stringify([0, 2]) ||
       loadedIndices !== 1
     ) {
       throw new Error(`unexpected smoke result: ${JSON.stringify(result)}`);

@@ -112,11 +112,12 @@ Status:
   - native-shaped semantic search requests
   - keyword-only `text_query` search through a SQLite WASM FTS sidecar
   - browser-hosted hybrid search using the native fusion primitives
+  - metadata filter conditions resolved to browser-side subsets
   - native-shaped search results with metadata replay
 - native RRF and relative-score fusion are now ported into the browser kernel
   with host-side and browser-run parity coverage
-- remaining runtime work is now storage-backed loading, metadata filters, and
-  mutable FTS-sidecar operations such as add / update / delete
+- remaining runtime work is now storage-backed loading and mutable FTS-sidecar
+  operations such as add / update / delete
 
 ## Phase 4.5: Browser parity harness
 
@@ -168,6 +169,7 @@ Status:
   - worker-hosted semantic search
   - worker-hosted keyword-only search
   - worker-hosted hybrid fusion
+  - worker-hosted metadata-filtered subset search
   - screenshot capture for regression debugging
 
 ## Phase 5: Bundle install and storage orchestration
@@ -202,7 +204,6 @@ Status:
 - the direction is now fixed to a SQLite WASM sidecar for the browser keyword
   and hybrid query path
 - remaining work is:
-  - metadata filter parity
   - storage-backed persistence instead of in-memory-only FTS state
   - iterative add / update / delete support for the browser FTS side
 

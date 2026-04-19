@@ -73,6 +73,75 @@ test("keyword engine respects subset filtering", async () => {
   }
 });
 
+test("keyword engine resolves metadata filters like native subset selection", async () => {
+  const engine = await BrowserKeywordEngine.create();
+
+  try {
+    engine.loadIndex({
+      name: "filters-demo",
+      metadata: [
+        { name: "Alice", category: "A", score: 95, status: null },
+        { name: "Bob", category: "B", score: 87, status: "draft" },
+        { name: "Alicia", category: "A", score: 72, status: "published" }
+      ],
+      tokenizer: "unicode61"
+    });
+
+    assert.deepEqual(
+      engine.filterIndex({
+        name: "filters-demo",
+        condition: "category = ? AND score > ?",
+        parameters: ["A", 90]
+      }),
+      [0],
+    );
+
+    assert.deepEqual(
+      engine.filterIndex({
+        name: "filters-demo",
+        condition: "name REGEXP ?",
+        parameters: ["^Ali"]
+      }),
+      [0, 2],
+    );
+
+    assert.deepEqual(
+      engine.filterIndex({
+        name: "filters-demo",
+        condition: "status IS NULL",
+        parameters: []
+      }),
+      [0],
+    );
+  } finally {
+    engine.close();
+  }
+});
+
+test("keyword engine rejects unsafe metadata filters", async () => {
+  const engine = await BrowserKeywordEngine.create();
+
+  try {
+    engine.loadIndex({
+      name: "unsafe-filter-demo",
+      metadata: [{ name: "Alice" }],
+      tokenizer: "unicode61"
+    });
+
+    assert.throws(
+      () =>
+        engine.filterIndex({
+          name: "unsafe-filter-demo",
+          condition: "name = ?; DROP TABLE METADATA",
+          parameters: ["Alice"]
+        }),
+      /Semicolons are not allowed/,
+    );
+  } finally {
+    engine.close();
+  }
+});
+
 test("keyword engine supports trigram tokenizer substring search", async () => {
   const engine = await BrowserKeywordEngine.create();
 
