@@ -41,6 +41,34 @@ This means the browser version is aiming for a faithful query-time port with an
 explicit bundle loader, not a literal in-browser rebuild of the native mmap
 runtime.
 
+## What This Does Not Yet Cover
+
+The current browser work is about **query-time search execution**, not browser
+embedding generation.
+
+Right now, the browser workspace is proving that we can:
+
+- load browser-safe index artifacts
+- run the native-style search and rerank logic in Wasm
+- move toward a worker-hosted browser runtime
+
+It is **not yet** proving that the browser can import and run the actual ONNX
+embedding model.
+
+That encoder/model work is a later phase because it is a separate problem:
+
+- model format and runtime choice
+- browser-compatible inference engine
+- parity against native query embeddings
+- packaging and loading the model itself
+
+Until that phase lands, the mental model should be:
+
+- current work: browser search engine
+- later work: browser query encoder
+
+Those two pieces meet at the query embedding boundary.
+
 ## Fidelity status
 
 The browser kernel now includes a browser-safe reference port of the native
@@ -72,6 +100,8 @@ What is still not ported yet:
 - worker/runtime wiring that executes the full search path through wasm
 - a browser storage adapter that feeds those bundle artifacts into the runtime
   without host filesystem helpers
+- the browser-side encoder path for producing query embeddings from an ONNX or
+  equivalent model
 
 So today’s browser workspace should be treated as:
 

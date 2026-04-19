@@ -116,6 +116,9 @@ async function buildWasmHarness() {
 }
 
 async function ensurePlaywrightBrowser(installName) {
+  if (installName === "chrome") {
+    return;
+  }
   await runCommand("npx", ["playwright", "install", installName], workspaceRoot);
 }
 

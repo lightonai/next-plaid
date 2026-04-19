@@ -173,6 +173,13 @@ Goal:
 - build the browser-specific query encoder path separately from the native
   `next-plaid-onnx` crate
 
+What this phase means in practice:
+
+- choose the browser model runtime
+- package and load the browser-safe embedding model
+- generate query embeddings in-browser
+- prove parity against the native query embedding path
+
 Exit criteria:
 
 - exact model/runtime choice is fixed
