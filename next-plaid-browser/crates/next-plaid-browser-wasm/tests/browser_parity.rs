@@ -47,6 +47,7 @@ fn load_request(name: &str) -> WorkerLoadIndexRequest {
             None,
         ]),
         nbits: 2,
+        fts_tokenizer: "unicode61".into(),
         max_documents: None,
     }
 }

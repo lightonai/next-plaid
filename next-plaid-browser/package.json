@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:keyword": "node --test ./tests/*.test.mjs",
     "smoke:chromium": "node ./scripts/playwright_smoke.mjs chromium",
     "smoke:webkit": "node ./scripts/playwright_smoke.mjs webkit",
     "smoke:firefox": "node ./scripts/playwright_smoke.mjs firefox",
@@ -10,5 +11,8 @@
   },
   "devDependencies": {
     "playwright": "^1.54.0"
+  },
+  "dependencies": {
+    "@sqlite.org/sqlite-wasm": "^3.51.2-build9"
   }
 }

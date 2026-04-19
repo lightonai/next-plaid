@@ -3,12 +3,11 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdir, readFile } from "node:fs/promises";
-import { extname, join, normalize, resolve } from "node:path";
+import { extname, join, normalize, relative, resolve } from "node:path";
 import process from "node:process";
 import { chromium, firefox, webkit } from "playwright";
 
 const workspaceRoot = resolve(import.meta.dirname, "..");
-const harnessRoot = join(workspaceRoot, "playwright-harness");
 const outputRoot = join(workspaceRoot, "output", "playwright");
 
 const requestedBrowser = process.argv[2] ?? "chromium";
@@ -20,6 +19,12 @@ const mimeTypes = {
   ".mjs": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".wasm": "application/wasm",
+};
+
+const crossOriginHeaders = {
+  "cross-origin-opener-policy": "same-origin",
+  "cross-origin-embedder-policy": "require-corp",
+  "cross-origin-resource-policy": "same-origin",
 };
 
 function browserConfig(name) {
@@ -64,13 +69,28 @@ function runCommand(command, args, cwd) {
 }
 
 async function staticFileResponse(urlPath) {
-  const relativePath = urlPath === "/" ? "/index.html" : urlPath;
-  const normalized = normalize(relativePath).replace(/^(\.\.[/\\])+/, "");
-  const fullPath = join(harnessRoot, normalized);
+  if (urlPath === "/favicon.ico") {
+    return {
+      body: Buffer.alloc(0),
+      contentType: "image/x-icon",
+      statusCode: 204,
+    };
+  }
+
+  const relativePath = urlPath.endsWith("/") ? `${urlPath}index.html` : urlPath;
+  const normalized = normalize(relativePath).replace(/^[/\\]+/, "");
+  const fullPath = resolve(workspaceRoot, normalized);
+  const relativeToRoot = relative(workspaceRoot, fullPath);
+
+  if (relativeToRoot.startsWith("..") || relativeToRoot === "") {
+    throw new Error("path escapes workspace root");
+  }
+
   const body = await readFile(fullPath);
   return {
     body,
     contentType: mimeTypes[extname(fullPath)] ?? "application/octet-stream",
+    statusCode: 200,
   };
 }
 
@@ -78,11 +98,17 @@ function startHarnessServer() {
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
-      const { body, contentType } = await staticFileResponse(url.pathname);
-      response.writeHead(200, { "content-type": contentType });
+      const { body, contentType, statusCode } = await staticFileResponse(url.pathname);
+      response.writeHead(statusCode, {
+        "content-type": contentType,
+        ...crossOriginHeaders,
+      });
       response.end(body);
     } catch {
-      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.writeHead(404, {
+        "content-type": "text/plain; charset=utf-8",
+        ...crossOriginHeaders,
+      });
       response.end("not found");
     }
   });
@@ -93,7 +119,7 @@ function startHarnessServer() {
       if (address && typeof address === "object") {
         resolvePromise({
           server,
-          url: `http://127.0.0.1:${address.port}/`,
+          url: `http://127.0.0.1:${address.port}/playwright-harness/`,
         });
       }
     });
@@ -144,10 +170,17 @@ async function runSmoke(browserName) {
     await page.locator("#status[data-state='ok']").waitFor({ timeout: 15000 });
     const payload = await page.locator("#status").textContent();
     const result = JSON.parse(payload ?? "{}");
-    const topDocumentId = result.search?.results?.[0]?.document_ids?.[0];
+    const semanticTopDocumentId = result.semanticSearch?.results?.[0]?.document_ids?.[0];
+    const keywordTopDocumentId = result.keywordSearch?.results?.[0]?.document_ids?.[0];
+    const hybridTopDocumentId = result.hybridSearch?.results?.[0]?.document_ids?.[0];
     const loadedIndices = result.health?.loaded_indices;
 
-    if (topDocumentId !== 0 || loadedIndices !== 1) {
+    if (
+      semanticTopDocumentId !== 0 ||
+      keywordTopDocumentId !== 0 ||
+      hybridTopDocumentId !== 1 ||
+      loadedIndices !== 1
+    ) {
       throw new Error(`unexpected smoke result: ${JSON.stringify(result)}`);
     }
 

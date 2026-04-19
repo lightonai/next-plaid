@@ -6,6 +6,10 @@ fn default_nbits() -> usize {
     4
 }
 
+fn default_fts_tokenizer() -> String {
+    "unicode61".into()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MatrixPayload {
     pub values: Vec<f32>,
@@ -87,6 +91,8 @@ pub struct WorkerLoadIndexRequest {
     pub metadata: Option<Vec<Option<serde_json::Value>>>,
     #[serde(default = "default_nbits")]
     pub nbits: usize,
+    #[serde(default = "default_fts_tokenizer")]
+    pub fts_tokenizer: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_documents: Option<usize>,
 }
@@ -185,6 +191,31 @@ pub struct InlineSearchResponse {
     pub scores: Vec<f32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RankedResultsPayload {
+    pub document_ids: Vec<i64>,
+    pub scores: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FusionRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<RankedResultsPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyword: Option<RankedResultsPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fusion: Option<String>,
+    pub top_k: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FusionResponse {
+    pub document_ids: Vec<i64>,
+    pub scores: Vec<f32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidateBundleResponse {
     pub index_id: String,
@@ -201,6 +232,7 @@ pub enum RuntimeRequest {
     LoadIndex(WorkerLoadIndexRequest),
     Search(WorkerSearchRequest),
     InlineSearch(InlineSearchRequest),
+    Fuse(FusionRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -212,6 +244,7 @@ pub enum RuntimeResponse {
     IndexLoaded(WorkerLoadIndexResponse),
     SearchResults(SearchResponse),
     InlineSearchResults(InlineSearchResponse),
+    FusedResults(FusionResponse),
 }
 
 #[cfg(test)]
@@ -318,6 +351,27 @@ mod tests {
                 filter_condition: None,
                 filter_parameters: None,
             },
+        });
+
+        let json = serde_json::to_string(&request).unwrap();
+        let decoded: RuntimeRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn fusion_request_roundtrips() {
+        let request = RuntimeRequest::Fuse(FusionRequest {
+            semantic: Some(RankedResultsPayload {
+                document_ids: vec![1, 2],
+                scores: vec![0.8, 0.5],
+            }),
+            keyword: Some(RankedResultsPayload {
+                document_ids: vec![2, 3],
+                scores: vec![2.0, 1.0],
+            }),
+            alpha: Some(0.25),
+            fusion: Some("relative_score".into()),
+            top_k: 3,
         });
 
         let json = serde_json::to_string(&request).unwrap();

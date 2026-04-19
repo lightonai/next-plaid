@@ -110,12 +110,13 @@ Status:
   - health
   - named index load
   - native-shaped semantic search requests
+  - keyword-only `text_query` search through a SQLite WASM FTS sidecar
+  - browser-hosted hybrid search using the native fusion primitives
   - native-shaped search results with metadata replay
 - native RRF and relative-score fusion are now ported into the browser kernel
   with host-side and browser-run parity coverage
-- remaining runtime work is now storage-backed loading and the not-yet-ported
-  native API surfaces such as `text_query`, the SQLite-backed keyword engine,
-  and metadata filters
+- remaining runtime work is now storage-backed loading, metadata filters, and
+  mutable FTS-sidecar operations such as add / update / delete
 
 ## Phase 4.5: Browser parity harness
 
@@ -164,7 +165,9 @@ Status:
   - empty health
   - named index load
   - populated health
-  - worker-hosted search
+  - worker-hosted semantic search
+  - worker-hosted keyword-only search
+  - worker-hosted hybrid fusion
   - screenshot capture for regression debugging
 
 ## Phase 5: Bundle install and storage orchestration
@@ -193,6 +196,15 @@ Exit criteria:
 - explicit decision between:
   - JSON-only metadata path
   - SQLite WASM sidecar
+
+Status:
+
+- the direction is now fixed to a SQLite WASM sidecar for the browser keyword
+  and hybrid query path
+- remaining work is:
+  - metadata filter parity
+  - storage-backed persistence instead of in-memory-only FTS state
+  - iterative add / update / delete support for the browser FTS side
 
 ## Phase 7: Encoder path
 

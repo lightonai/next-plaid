@@ -111,6 +111,10 @@ So today’s browser workspace should be treated as:
 - an in-memory dedicated-worker runtime that can:
   - load named browser indices
   - answer native-shaped semantic search requests
+  - answer browser-hosted keyword-only `text_query` requests through a
+    SQLite WASM FTS sidecar
+  - answer browser-hosted hybrid requests by fusing semantic and keyword
+    result lists with the native fusion primitives
   - return native-shaped health and search responses
   - preserve document metadata in search results when metadata is loaded
 
@@ -120,10 +124,9 @@ browser runtime shell around that math:
 - OPFS-backed bundle installation and loading
 - manifest verification and active-version switching
 - the remaining native API surfaces that still need browser equivalents:
-  - `text_query`
   - metadata filter conditions
-  - the SQLite-backed keyword engine those surfaces depend on
-  - full worker-hosted hybrid execution once the browser keyword path exists
+  - add / update / delete flows for the browser FTS sidecar
+  - storage-backed startup and recovery instead of in-memory-only loading
 
 ## Current scope
 
@@ -149,7 +152,7 @@ The next implementation slice is now:
 1. OPFS-backed bundle loader
 2. install/verify/activate bundle lifecycle
 3. browser storage-backed startup and recovery flows
-4. the remaining native API surfaces around metadata and hybrid search
+4. metadata filters plus iterative add / update / delete on the FTS side
 
 ## Quick start
 
@@ -197,15 +200,19 @@ npm run smoke:chromium
 This is the first browser-runtime smoke layer. It builds the web Wasm bundle,
 serves a small harness page, launches a real browser with Playwright, and
 verifies that the browser can execute the dedicated-worker health/load/search
-path end to end.
+path end to end across:
+
+- semantic search
+- keyword-only search
+- hybrid fusion
 
 ## Next steps
 
 - implement OPFS-backed bundle loading and manifest/version handling
 - replace host-side bundle filesystem loading with worker/runtime glue
-- extend the worker runtime from semantic-only search toward the remaining
-  native API surface
-- decide whether browser metadata needs a SQLite sidecar in v1
+- add metadata filters and iterative FTS mutation flows
+- connect the current in-memory SQLite WASM keyword layer to storage-backed
+  browser startup
 
 ## Docs
 

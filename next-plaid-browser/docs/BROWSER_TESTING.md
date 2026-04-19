@@ -70,7 +70,11 @@ framework.
 The current smoke harness builds the Wasm crate for the web target, serves a
 small harness page, boots a dedicated module worker, and verifies that the page
 can load an index and execute the real worker-hosted Wasm request path
-successfully.
+successfully for:
+
+- semantic search
+- keyword-only search
+- hybrid fusion
 
 Primary smoke command:
 

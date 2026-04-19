@@ -31,16 +31,17 @@ function loadIndexRequest() {
       ]
     },
     metadata: [
-      { title: "doc-0" },
-      { title: "doc-1" },
-      null
+      { title: "alpha launch memo", topic: "edge" },
+      { title: "beta report summary", topic: "metrics" },
+      { title: "gamma archive note", topic: "history" }
     ],
     nbits: 2,
+    fts_tokenizer: "unicode61",
     max_documents: null
   };
 }
 
-function searchRequest() {
+function semanticSearchRequest() {
   return {
     type: "search",
     name: "demo-smoke",
@@ -63,6 +64,57 @@ function searchRequest() {
       text_query: null,
       alpha: null,
       fusion: null,
+      filter_condition: null,
+      filter_parameters: null
+    }
+  };
+}
+
+function keywordSearchRequest() {
+  return {
+    type: "search",
+    name: "demo-smoke",
+    request: {
+      queries: null,
+      params: {
+        top_k: 2,
+        n_ivf_probe: null,
+        n_full_scores: null,
+        centroid_score_threshold: null
+      },
+      subset: null,
+      text_query: ["alpha"],
+      alpha: null,
+      fusion: null,
+      filter_condition: null,
+      filter_parameters: null
+    }
+  };
+}
+
+function hybridSearchRequest() {
+  return {
+    type: "search",
+    name: "demo-smoke",
+    request: {
+      queries: [
+        {
+          embeddings: [
+            [0.0, 1.0],
+            [0.7, 0.7]
+          ]
+        }
+      ],
+      params: {
+        top_k: 2,
+        n_ivf_probe: 2,
+        n_full_scores: 3,
+        centroid_score_threshold: null
+      },
+      subset: null,
+      text_query: ["beta"],
+      alpha: 0.25,
+      fusion: "relative_score",
       filter_condition: null,
       filter_parameters: null
     }
@@ -99,9 +151,11 @@ async function main() {
     const initialHealth = await callWorker(worker, { type: "health" });
     const load = await callWorker(worker, loadIndexRequest());
     const health = await callWorker(worker, { type: "health" });
-    const search = await callWorker(worker, searchRequest());
+    const semanticSearch = await callWorker(worker, semanticSearchRequest());
+    const keywordSearch = await callWorker(worker, keywordSearchRequest());
+    const hybridSearch = await callWorker(worker, hybridSearchRequest());
 
-    const result = { initialHealth, load, health, search };
+    const result = { initialHealth, load, health, semanticSearch, keywordSearch, hybridSearch };
     window.__NEXT_PLAID_SMOKE_RESULT__ = result;
     setStatus("ok", result);
   } catch (error) {

@@ -4,14 +4,15 @@ use std::mem::size_of;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use next_plaid_browser_contract::{
-    HealthResponse, IndexSummary, InlineSearchParamsRequest, InlineSearchRequest,
-    InlineSearchResponse, MatrixPayload, QueryEmbeddingsPayload, QueryResultResponse,
-    RuntimeRequest, RuntimeResponse, ScoreResponse, SearchIndexPayload, SearchParamsRequest,
-    SearchRequest, SearchResponse, ValidateBundleResponse, WorkerLoadIndexRequest,
-    WorkerLoadIndexResponse, WorkerSearchRequest,
+    FusionRequest, FusionResponse, HealthResponse, IndexSummary, InlineSearchParamsRequest,
+    InlineSearchRequest, InlineSearchResponse, MatrixPayload, QueryEmbeddingsPayload,
+    QueryResultResponse, RankedResultsPayload, RuntimeRequest, RuntimeResponse, ScoreResponse,
+    SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse, ValidateBundleResponse,
+    WorkerLoadIndexRequest, WorkerLoadIndexResponse, WorkerSearchRequest,
 };
 use next_plaid_browser_kernel::{
-    score_documents, search_one, BrowserIndexView, MatrixView, SearchParameters, KERNEL_VERSION,
+    fuse_relative_score, fuse_rrf, score_documents, search_one, BrowserIndexView, MatrixView,
+    SearchParameters, KERNEL_VERSION,
 };
 use wasm_bindgen::prelude::*;
 
@@ -84,6 +85,7 @@ pub fn handle_runtime_request_json(request_json: &str) -> Result<String, JsError
         RuntimeRequest::InlineSearch(request) => {
             RuntimeResponse::InlineSearchResults(run_inline_search(request)?)
         }
+        RuntimeRequest::Fuse(request) => RuntimeResponse::FusedResults(fuse_results(request)?),
     };
 
     serde_json::to_string(&response).map_err(|err| JsError::new(&err.to_string()))
@@ -209,6 +211,84 @@ fn run_inline_search(request: InlineSearchRequest) -> Result<InlineSearchRespons
         passage_ids: result.passage_ids,
         scores: result.scores,
     })
+}
+
+fn fuse_results(request: FusionRequest) -> Result<FusionResponse, JsError> {
+    let alpha = request.alpha.unwrap_or(0.75);
+    if !(0.0..=1.0).contains(&alpha) {
+        return Err(JsError::new("alpha must be between 0.0 and 1.0"));
+    }
+
+    let fusion_mode = request.fusion.as_deref().unwrap_or("rrf");
+    if fusion_mode != "rrf" && fusion_mode != "relative_score" {
+        return Err(JsError::new("fusion must be `rrf` or `relative_score`"));
+    }
+
+    let semantic = request.semantic.as_ref();
+    let keyword = request.keyword.as_ref();
+    if semantic.is_none() && keyword.is_none() {
+        return Ok(FusionResponse {
+            document_ids: vec![],
+            scores: vec![],
+        });
+    }
+
+    if let Some(results) = semantic {
+        validate_ranked_results(results)?;
+    }
+    if let Some(results) = keyword {
+        validate_ranked_results(results)?;
+    }
+
+    let (document_ids, scores) = match (semantic, keyword) {
+        (Some(semantic), Some(keyword)) => match fusion_mode {
+            "relative_score" => fuse_relative_score(
+                &semantic.document_ids,
+                &semantic.scores,
+                &keyword.document_ids,
+                &keyword.scores,
+                alpha,
+                request.top_k,
+            ),
+            _ => fuse_rrf(
+                &semantic.document_ids,
+                &keyword.document_ids,
+                alpha,
+                request.top_k,
+            ),
+        },
+        (Some(semantic), None) => truncate_ranked_results(semantic, request.top_k),
+        (None, Some(keyword)) => truncate_ranked_results(keyword, request.top_k),
+        (None, None) => unreachable!(),
+    };
+
+    Ok(FusionResponse {
+        document_ids,
+        scores,
+    })
+}
+
+fn validate_ranked_results(results: &RankedResultsPayload) -> Result<(), JsError> {
+    if results.document_ids.len() != results.scores.len() {
+        return Err(JsError::new(
+            "document_ids and scores must have the same length",
+        ));
+    }
+    Ok(())
+}
+
+fn truncate_ranked_results(results: &RankedResultsPayload, top_k: usize) -> (Vec<i64>, Vec<f32>) {
+    let mut ranked: Vec<(i64, f32)> = results
+        .document_ids
+        .iter()
+        .copied()
+        .zip(results.scores.iter().copied())
+        .collect();
+    ranked.truncate(top_k);
+    (
+        ranked.iter().map(|&(document_id, _)| document_id).collect(),
+        ranked.iter().map(|&(_, score)| score).collect(),
+    )
 }
 
 fn validate_worker_search_request(request: &SearchRequest) -> Result<(), JsError> {
@@ -460,7 +540,8 @@ fn metadata_for_results(
 mod tests {
     use super::*;
     use next_plaid_browser_contract::{
-        ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, MetadataMode, RuntimeRequest,
+        ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, FusionRequest, MetadataMode,
+        RankedResultsPayload, RuntimeRequest,
     };
 
     fn sha() -> String {
@@ -563,6 +644,7 @@ mod tests {
                 None,
             ]),
             nbits: 2,
+            fts_tokenizer: "unicode61".into(),
             max_documents: None,
         }
     }
@@ -752,6 +834,34 @@ mod tests {
                     .document_ids
                     .iter()
                     .all(|document_id| matches!(document_id, 1 | 2)));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fusion_request_roundtrip() {
+        let request = RuntimeRequest::Fuse(FusionRequest {
+            semantic: Some(RankedResultsPayload {
+                document_ids: vec![10, 20, 30],
+                scores: vec![0.9, 0.5, 0.1],
+            }),
+            keyword: Some(RankedResultsPayload {
+                document_ids: vec![20, 10, 40],
+                scores: vec![3.0, 1.0, 2.0],
+            }),
+            alpha: Some(0.25),
+            fusion: Some("relative_score".into()),
+            top_k: 4,
+        });
+
+        let response =
+            handle_runtime_request_json(&serde_json::to_string(&request).unwrap()).unwrap();
+        let decoded: RuntimeResponse = serde_json::from_str(&response).unwrap();
+        match decoded {
+            RuntimeResponse::FusedResults(result) => {
+                assert_eq!(result.document_ids, vec![20, 40, 10, 30]);
+                assert_eq!(result.scores, vec![0.875, 0.375, 0.25, 0.0]);
             }
             other => panic!("unexpected response: {other:?}"),
         }
