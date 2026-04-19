@@ -103,6 +103,17 @@ Exit criteria:
 - worker is treated as the only live query runtime host
 - main thread orchestration is separated from hot-path search execution
 
+Status:
+
+- complete for the in-memory browser runtime shell
+- current worker contract supports:
+  - health
+  - named index load
+  - native-shaped semantic search requests
+  - native-shaped search results with metadata replay
+- remaining runtime work is now storage-backed loading and the not-yet-ported
+  native API surfaces such as `text_query`, hybrid fusion, and metadata filters
+
 ## Phase 4.5: Browser parity harness
 
 Goal:
@@ -119,11 +130,11 @@ Exit criteria:
 
 Status:
 
-- harness exists for the Wasm request path covering:
+- Chrome lane passes for the worker-backed parity path covering:
   - standard search
   - subset-filtered search
-  - batched centroid-probing search
-- remaining work is turning those lanes green across the target browsers
+  - batch query handling
+- remaining work is turning the Firefox and Safari lanes green
 
 ## Phase 4.75: Browser smoke harness
 
@@ -138,6 +149,17 @@ Exit criteria:
 - Playwright can launch the primary Chrome-family lane against that page
 - smoke output proves that the browser can execute a real search request
 - screenshots or equivalent artifacts are available for debugging failures
+
+Status:
+
+- complete for the Chrome lane
+- the smoke harness now proves:
+  - worker startup
+  - empty health
+  - named index load
+  - populated health
+  - worker-hosted search
+  - screenshot capture for regression debugging
 
 ## Phase 5: Bundle install and storage orchestration
 

@@ -5,7 +5,9 @@ pub use bundle::{
     ArtifactEntry, ArtifactKind, BundleManifest, BundleManifestError, CompressionKind, MetadataMode,
 };
 pub use protocol::{
-    HealthResponse, MatrixPayload, RuntimeRequest, RuntimeResponse, ScoreRequest, ScoreResponse,
-    SearchIndexPayload, SearchParametersPayload, SearchRequest, SearchResponse,
-    ValidateBundleResponse,
+    HealthResponse, IndexSummary, InlineSearchParamsRequest, InlineSearchRequest,
+    InlineSearchResponse, MatrixPayload, ModelHealthInfo, QueryEmbeddingsPayload,
+    QueryResultResponse, RuntimeRequest, RuntimeResponse, ScoreRequest, ScoreResponse,
+    SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse, ValidateBundleResponse,
+    WorkerLoadIndexRequest, WorkerLoadIndexResponse, WorkerSearchRequest,
 };

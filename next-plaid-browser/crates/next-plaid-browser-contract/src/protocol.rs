@@ -2,11 +2,150 @@ use serde::{Deserialize, Serialize};
 
 use crate::bundle::BundleManifest;
 
+fn default_nbits() -> usize {
+    4
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MatrixPayload {
     pub values: Vec<f32>,
     pub rows: usize,
     pub dim: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueryEmbeddingsPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embeddings: Option<Vec<Vec<f32>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embeddings_b64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<[usize; 2]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SearchParamsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_ivf_probe: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_full_scores: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub centroid_score_threshold: Option<Option<f32>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueryResultResponse {
+    pub query_id: usize,
+    pub document_ids: Vec<i64>,
+    pub scores: Vec<f32>,
+    pub metadata: Vec<Option<serde_json::Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchResponse {
+    pub results: Vec<QueryResultResponse>,
+    pub num_queries: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queries: Option<Vec<QueryEmbeddingsPayload>>,
+    #[serde(default)]
+    pub params: SearchParamsRequest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subset: Option<Vec<i64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_query: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fusion: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_condition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_parameters: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchIndexPayload {
+    pub centroids: MatrixPayload,
+    pub ivf_doc_ids: Vec<i64>,
+    pub ivf_lengths: Vec<i32>,
+    pub doc_offsets: Vec<usize>,
+    pub doc_codes: Vec<i64>,
+    pub doc_values: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkerLoadIndexRequest {
+    pub name: String,
+    pub index: SearchIndexPayload,
+    #[serde(default)]
+    pub metadata: Option<Vec<Option<serde_json::Value>>>,
+    #[serde(default = "default_nbits")]
+    pub nbits: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_documents: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkerLoadIndexResponse {
+    pub name: String,
+    pub summary: IndexSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkerSearchRequest {
+    pub name: String,
+    pub request: SearchRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IndexSummary {
+    pub name: String,
+    pub num_documents: usize,
+    pub num_embeddings: usize,
+    pub num_partitions: usize,
+    pub dimension: usize,
+    pub nbits: usize,
+    pub avg_doclen: f64,
+    pub has_metadata: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_documents: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelHealthInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub path: String,
+    pub quantized: bool,
+    pub embedding_dim: usize,
+    pub batch_size: usize,
+    pub num_sessions: usize,
+    pub query_prefix: String,
+    pub document_prefix: String,
+    pub query_length: usize,
+    pub document_length: usize,
+    pub do_query_expansion: bool,
+    pub uses_token_type_ids: bool,
+    pub mask_token_id: u32,
+    pub pad_token_id: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HealthResponse {
+    pub status: String,
+    pub version: String,
+    pub loaded_indices: usize,
+    pub index_dir: String,
+    pub memory_usage_bytes: u64,
+    pub indices: Vec<IndexSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelHealthInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -22,7 +161,7 @@ pub struct ScoreResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SearchParametersPayload {
+pub struct InlineSearchParamsRequest {
     pub batch_size: usize,
     pub n_full_scores: usize,
     pub top_k: usize,
@@ -32,25 +171,15 @@ pub struct SearchParametersPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SearchIndexPayload {
-    pub centroids: MatrixPayload,
-    pub ivf_doc_ids: Vec<i64>,
-    pub ivf_lengths: Vec<i32>,
-    pub doc_offsets: Vec<usize>,
-    pub doc_codes: Vec<i64>,
-    pub doc_values: Vec<f32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SearchRequest {
+pub struct InlineSearchRequest {
     pub index: SearchIndexPayload,
     pub query: MatrixPayload,
-    pub params: SearchParametersPayload,
+    pub params: InlineSearchParamsRequest,
     pub subset_doc_ids: Option<Vec<i64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SearchResponse {
+pub struct InlineSearchResponse {
     pub query_id: usize,
     pub passage_ids: Vec<i64>,
     pub scores: Vec<f32>,
@@ -63,19 +192,15 @@ pub struct ValidateBundleResponse {
     pub artifact_count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HealthResponse {
-    pub status: String,
-    pub kernel_version: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeRequest {
     Health,
     ValidateBundle { manifest: BundleManifest },
     Score(ScoreRequest),
-    Search(SearchRequest),
+    LoadIndex(WorkerLoadIndexRequest),
+    Search(WorkerSearchRequest),
+    InlineSearch(InlineSearchRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -84,7 +209,9 @@ pub enum RuntimeResponse {
     Health(HealthResponse),
     BundleValidated(ValidateBundleResponse),
     Scores(ScoreResponse),
+    IndexLoaded(WorkerLoadIndexResponse),
     SearchResults(SearchResponse),
+    InlineSearchResults(InlineSearchResponse),
 }
 
 #[cfg(test)]
@@ -162,6 +289,36 @@ mod tests {
                 ],
             },
         };
+
+        let json = serde_json::to_string(&request).unwrap();
+        let decoded: RuntimeRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn worker_search_request_roundtrips() {
+        let request = RuntimeRequest::Search(WorkerSearchRequest {
+            name: "demo".into(),
+            request: SearchRequest {
+                queries: Some(vec![QueryEmbeddingsPayload {
+                    embeddings: Some(vec![vec![1.0, 0.0], vec![0.7, 0.7]]),
+                    embeddings_b64: None,
+                    shape: None,
+                }]),
+                params: SearchParamsRequest {
+                    top_k: Some(3),
+                    n_ivf_probe: Some(2),
+                    n_full_scores: Some(5),
+                    centroid_score_threshold: None,
+                },
+                subset: Some(vec![0, 1]),
+                text_query: None,
+                alpha: None,
+                fusion: None,
+                filter_condition: None,
+                filter_parameters: None,
+            },
+        });
 
         let json = serde_json::to_string(&request).unwrap();
         let decoded: RuntimeRequest = serde_json::from_str(&json).unwrap();

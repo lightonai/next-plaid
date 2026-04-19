@@ -1,5 +1,3 @@
-import init, { handle_runtime_request_json } from "./pkg/next_plaid_browser_wasm.js";
-
 const statusNode = document.getElementById("status");
 
 function setStatus(state, value) {
@@ -8,9 +6,10 @@ function setStatus(state, value) {
     typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
-function searchRequest() {
+function loadIndexRequest() {
   return {
-    type: "search",
+    type: "load_index",
+    name: "demo-smoke",
     index: {
       centroids: {
         values: [
@@ -31,42 +30,86 @@ function searchRequest() {
         0.7, 0.7, 0.7, 0.7
       ]
     },
-    query: {
-      values: [
-        1.0, 0.0,
-        0.7, 0.7
-      ],
-      rows: 2,
-      dim: 2
-    },
-    params: {
-      batch_size: 2000,
-      n_full_scores: 3,
-      top_k: 2,
-      n_ivf_probe: 2,
-      centroid_batch_size: 100000,
-      centroid_score_threshold: null
-    },
-    subset_doc_ids: null
+    metadata: [
+      { title: "doc-0" },
+      { title: "doc-1" },
+      null
+    ],
+    nbits: 2,
+    max_documents: null
   };
 }
 
-async function main() {
-  try {
-    await init();
-    const responseJson = handle_runtime_request_json(
-      JSON.stringify(searchRequest()),
-    );
-    const response = JSON.parse(responseJson);
-    if (response.type !== "search_results") {
-      throw new Error(`unexpected response type: ${response.type}`);
+function searchRequest() {
+  return {
+    type: "search",
+    name: "demo-smoke",
+    request: {
+      queries: [
+        {
+          embeddings: [
+            [1.0, 0.0],
+            [0.7, 0.7]
+          ]
+        }
+      ],
+      params: {
+        top_k: 2,
+        n_ivf_probe: 2,
+        n_full_scores: 3,
+        centroid_score_threshold: null
+      },
+      subset: null,
+      text_query: null,
+      alpha: null,
+      fusion: null,
+      filter_condition: null,
+      filter_parameters: null
     }
-    window.__NEXT_PLAID_SMOKE_RESULT__ = response;
-    setStatus("ok", response);
+  };
+}
+
+function callWorker(worker, request) {
+  const requestId = crypto.randomUUID();
+
+  return new Promise((resolve, reject) => {
+    const handleMessage = (event) => {
+      if (event.data?.requestId !== requestId) {
+        return;
+      }
+
+      worker.removeEventListener("message", handleMessage);
+      const { ok, response, error } = event.data;
+      if (ok) {
+        resolve(response);
+      } else {
+        reject(new Error(error));
+      }
+    };
+
+    worker.addEventListener("message", handleMessage);
+    worker.postMessage({ requestId, request });
+  });
+}
+
+async function main() {
+  const worker = new Worker("./worker.mjs", { type: "module" });
+
+  try {
+    const initialHealth = await callWorker(worker, { type: "health" });
+    const load = await callWorker(worker, loadIndexRequest());
+    const health = await callWorker(worker, { type: "health" });
+    const search = await callWorker(worker, searchRequest());
+
+    const result = { initialHealth, load, health, search };
+    window.__NEXT_PLAID_SMOKE_RESULT__ = result;
+    setStatus("ok", result);
   } catch (error) {
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
     window.__NEXT_PLAID_SMOKE_ERROR__ = message;
     setStatus("error", message);
+  } finally {
+    worker.terminate();
   }
 }
 

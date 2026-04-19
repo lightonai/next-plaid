@@ -97,7 +97,6 @@ What is direct today:
 What is still not ported yet:
 
 - the native BLAS/SIMD optimized `maxsim_score` implementation itself
-- worker/runtime wiring that executes the full search path through wasm
 - a browser storage adapter that feeds those bundle artifacts into the runtime
   without host filesystem helpers
 - the browser-side encoder path for producing query embeddings from an ONNX or
@@ -108,15 +107,21 @@ So today’s browser workspace should be treated as:
 - a verified browser build scaffold
 - a faithful reference port of native query-time ranking logic, including
   bundle-backed exact rerank logic
-- not yet a full browser worker/runtime integration
+- an in-memory dedicated-worker runtime that can:
+  - load named browser indices
+  - answer native-shaped semantic search requests
+  - return native-shaped health and search responses
+  - preserve document metadata in search results when metadata is loaded
 
 The most important remaining gap is no longer the ranking math. It is the
 browser runtime shell around that math:
 
-- browser-run parity in real browsers
-- worker wiring
 - OPFS-backed bundle installation and loading
 - manifest verification and active-version switching
+- the remaining native API surfaces that still need browser equivalents:
+  - `text_query`
+  - hybrid fusion parameters
+  - metadata filter conditions
 
 ## Current scope
 
@@ -139,10 +144,10 @@ Phase 0.75 adds:
 
 The next implementation slice is now:
 
-1. browser-run parity tests
-2. dedicated-worker runtime shell
-3. OPFS-backed bundle loader
-4. install/verify/activate bundle lifecycle
+1. OPFS-backed bundle loader
+2. install/verify/activate bundle lifecycle
+3. browser storage-backed startup and recovery flows
+4. the remaining native API surfaces around metadata and hybrid search
 
 ## Quick start
 
@@ -189,14 +194,15 @@ npm run smoke:chromium
 
 This is the first browser-runtime smoke layer. It builds the web Wasm bundle,
 serves a small harness page, launches a real browser with Playwright, and
-verifies that the browser can execute the search request path end to end.
+verifies that the browser can execute the dedicated-worker health/load/search
+path end to end.
 
 ## Next steps
 
-- wire the reference search path through the wasm boundary
-- run the parity fixture set in Chrome / Firefox / Safari
 - implement OPFS-backed bundle loading and manifest/version handling
 - replace host-side bundle filesystem loading with worker/runtime glue
+- extend the worker runtime from semantic-only search toward the remaining
+  native API surface
 - decide whether browser metadata needs a SQLite sidecar in v1
 
 ## Docs

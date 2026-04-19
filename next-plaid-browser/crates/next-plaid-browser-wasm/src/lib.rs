@@ -1,11 +1,35 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::mem::size_of;
+
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use next_plaid_browser_contract::{
-    HealthResponse, RuntimeRequest, RuntimeResponse, ScoreResponse, SearchParametersPayload,
-    SearchResponse, ValidateBundleResponse,
+    HealthResponse, IndexSummary, InlineSearchParamsRequest, InlineSearchRequest,
+    InlineSearchResponse, MatrixPayload, QueryEmbeddingsPayload, QueryResultResponse,
+    RuntimeRequest, RuntimeResponse, ScoreResponse, SearchIndexPayload, SearchParamsRequest,
+    SearchRequest, SearchResponse, ValidateBundleResponse, WorkerLoadIndexRequest,
+    WorkerLoadIndexResponse, WorkerSearchRequest,
 };
 use next_plaid_browser_kernel::{
     score_documents, search_one, BrowserIndexView, MatrixView, SearchParameters, KERNEL_VERSION,
 };
 use wasm_bindgen::prelude::*;
+
+const BROWSER_INDEX_DIR: &str = "browser://memory";
+const DEFAULT_BATCH_SIZE: usize = 2000;
+const DEFAULT_CENTROID_BATCH_SIZE: usize = 100_000;
+
+#[derive(Debug, Clone)]
+struct LoadedIndex {
+    payload: SearchIndexPayload,
+    metadata: Option<Vec<Option<serde_json::Value>>>,
+    summary: IndexSummary,
+    memory_usage_bytes: u64,
+}
+
+thread_local! {
+    static LOADED_INDICES: RefCell<HashMap<String, LoadedIndex>> = RefCell::new(HashMap::new());
+}
 
 #[wasm_bindgen]
 pub fn maxsim_scores(
@@ -22,15 +46,19 @@ pub fn maxsim_scores(
 }
 
 #[wasm_bindgen]
+pub fn reset_runtime_state() {
+    LOADED_INDICES.with(|indices| {
+        indices.borrow_mut().clear();
+    });
+}
+
+#[wasm_bindgen]
 pub fn handle_runtime_request_json(request_json: &str) -> Result<String, JsError> {
     let request: RuntimeRequest =
         serde_json::from_str(request_json).map_err(|err| JsError::new(&err.to_string()))?;
 
     let response = match request {
-        RuntimeRequest::Health => RuntimeResponse::Health(HealthResponse {
-            status: "ok".into(),
-            kernel_version: KERNEL_VERSION.into(),
-        }),
+        RuntimeRequest::Health => RuntimeResponse::Health(runtime_health()),
         RuntimeRequest::ValidateBundle { manifest } => {
             manifest
                 .validate()
@@ -49,40 +77,261 @@ pub fn handle_runtime_request_json(request_json: &str) -> Result<String, JsError
                 .map_err(|err| JsError::new(&err.to_string()))?;
             RuntimeResponse::Scores(ScoreResponse { scores })
         }
+        RuntimeRequest::LoadIndex(request) => RuntimeResponse::IndexLoaded(load_index(request)?),
         RuntimeRequest::Search(request) => {
-            let query =
-                MatrixView::new(&request.query.values, request.query.rows, request.query.dim)
-                    .map_err(|err| JsError::new(&err.to_string()))?;
-            let centroids = MatrixView::new(
-                &request.index.centroids.values,
-                request.index.centroids.rows,
-                request.index.centroids.dim,
-            )
-            .map_err(|err| JsError::new(&err.to_string()))?;
-            let index = BrowserIndexView::new(
-                centroids,
-                &request.index.ivf_doc_ids,
-                &request.index.ivf_lengths,
-                &request.index.doc_offsets,
-                &request.index.doc_codes,
-                &request.index.doc_values,
-            )
-            .map_err(|err| JsError::new(&err.to_string()))?;
-            let params = kernel_search_parameters(&request.params);
-            let result = search_one(index, query, &params, request.subset_doc_ids.as_deref())
-                .map_err(|err| JsError::new(&err.to_string()))?;
-            RuntimeResponse::SearchResults(SearchResponse {
-                query_id: result.query_id,
-                passage_ids: result.passage_ids,
-                scores: result.scores,
-            })
+            RuntimeResponse::SearchResults(search_loaded_index(request)?)
+        }
+        RuntimeRequest::InlineSearch(request) => {
+            RuntimeResponse::InlineSearchResults(run_inline_search(request)?)
         }
     };
 
     serde_json::to_string(&response).map_err(|err| JsError::new(&err.to_string()))
 }
 
-fn kernel_search_parameters(payload: &SearchParametersPayload) -> SearchParameters {
+fn runtime_health() -> HealthResponse {
+    LOADED_INDICES.with(|indices| {
+        let indices = indices.borrow();
+        let mut summaries: Vec<IndexSummary> = indices
+            .values()
+            .map(|loaded| loaded.summary.clone())
+            .collect();
+        summaries.sort_by(|left, right| left.name.cmp(&right.name));
+        let memory_usage_bytes = indices
+            .values()
+            .map(|loaded| loaded.memory_usage_bytes)
+            .sum();
+
+        HealthResponse {
+            status: "healthy".into(),
+            version: KERNEL_VERSION.into(),
+            loaded_indices: summaries.len(),
+            index_dir: BROWSER_INDEX_DIR.into(),
+            memory_usage_bytes,
+            indices: summaries,
+            model: None,
+        }
+    })
+}
+
+fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse, JsError> {
+    validate_search_index_payload(&request.index)?;
+
+    let summary = build_index_summary(&request)?;
+    let memory_usage_bytes = index_memory_usage_bytes(&request.index, request.metadata.as_deref())?;
+    let name = request.name.clone();
+
+    if let Some(metadata) = &request.metadata {
+        if metadata.len() != summary.num_documents {
+            return Err(JsError::new(&format!(
+                "metadata length {} does not match document count {}",
+                metadata.len(),
+                summary.num_documents,
+            )));
+        }
+    }
+
+    LOADED_INDICES.with(|indices| {
+        indices.borrow_mut().insert(
+            name.clone(),
+            LoadedIndex {
+                payload: request.index,
+                metadata: request.metadata,
+                summary: summary.clone(),
+                memory_usage_bytes,
+            },
+        );
+    });
+
+    Ok(WorkerLoadIndexResponse { name, summary })
+}
+
+fn search_loaded_index(request: WorkerSearchRequest) -> Result<SearchResponse, JsError> {
+    validate_worker_search_request(&request.request)?;
+
+    let queries = request
+        .request
+        .queries
+        .as_ref()
+        .ok_or_else(|| JsError::new("semantic search requires `queries`"))?;
+
+    LOADED_INDICES.with(|indices| {
+        let indices = indices.borrow();
+        let loaded = indices
+            .get(&request.name)
+            .ok_or_else(|| JsError::new(&format!("index '{}' is not loaded", request.name)))?;
+        let index = browser_index_view(&loaded.payload)?;
+        let params = worker_search_parameters(&request.request.params);
+        let subset = request.request.subset.as_deref();
+        let mut results = Vec::with_capacity(queries.len());
+
+        for (query_id, query_payload) in queries.iter().enumerate() {
+            let query_payload = query_payload_to_matrix_payload(query_payload)?;
+            if query_payload.dim != loaded.summary.dimension {
+                return Err(JsError::new(&format!(
+                    "query dimension {} does not match index dimension {}",
+                    query_payload.dim, loaded.summary.dimension,
+                )));
+            }
+
+            let query =
+                MatrixView::new(&query_payload.values, query_payload.rows, query_payload.dim)
+                    .map_err(|err| JsError::new(&err.to_string()))?;
+
+            let result = search_one(index, query, &params, subset)
+                .map_err(|err| JsError::new(&err.to_string()))?;
+
+            results.push(QueryResultResponse {
+                query_id,
+                metadata: metadata_for_results(loaded.metadata.as_deref(), &result.passage_ids),
+                document_ids: result.passage_ids,
+                scores: result.scores,
+            });
+        }
+
+        Ok(SearchResponse {
+            num_queries: results.len(),
+            results,
+        })
+    })
+}
+
+fn run_inline_search(request: InlineSearchRequest) -> Result<InlineSearchResponse, JsError> {
+    let query = MatrixView::new(&request.query.values, request.query.rows, request.query.dim)
+        .map_err(|err| JsError::new(&err.to_string()))?;
+    let index = browser_index_view(&request.index)?;
+    let params = inline_search_parameters(&request.params);
+    let result = search_one(index, query, &params, request.subset_doc_ids.as_deref())
+        .map_err(|err| JsError::new(&err.to_string()))?;
+
+    Ok(InlineSearchResponse {
+        query_id: result.query_id,
+        passage_ids: result.passage_ids,
+        scores: result.scores,
+    })
+}
+
+fn validate_worker_search_request(request: &SearchRequest) -> Result<(), JsError> {
+    let has_queries = request
+        .queries
+        .as_ref()
+        .map(|queries| !queries.is_empty())
+        .unwrap_or(false);
+    let has_text_query = request
+        .text_query
+        .as_ref()
+        .map(|queries| !queries.is_empty())
+        .unwrap_or(false);
+    let has_filter_condition = request.filter_condition.is_some();
+    let has_filter_parameters = request
+        .filter_parameters
+        .as_ref()
+        .map(|parameters| !parameters.is_empty())
+        .unwrap_or(false);
+
+    if !has_queries && !has_text_query {
+        return Err(JsError::new(
+            "At least one of `queries` or `text_query` must be provided",
+        ));
+    }
+
+    if has_text_query {
+        return Err(JsError::new(
+            "text_query is not supported yet in the browser runtime",
+        ));
+    }
+
+    if has_filter_condition || has_filter_parameters {
+        return Err(JsError::new(
+            "metadata filtering is not supported yet in the browser runtime",
+        ));
+    }
+
+    if request.alpha.is_some() || request.fusion.is_some() {
+        return Err(JsError::new(
+            "hybrid search parameters are not supported yet in the browser runtime",
+        ));
+    }
+
+    Ok(())
+}
+
+fn build_index_summary(request: &WorkerLoadIndexRequest) -> Result<IndexSummary, JsError> {
+    let doc_offsets = &request.index.doc_offsets;
+    let num_documents = doc_offsets
+        .len()
+        .checked_sub(1)
+        .ok_or_else(|| JsError::new("doc_offsets must contain at least one entry"))?;
+    let num_embeddings = *doc_offsets
+        .last()
+        .ok_or_else(|| JsError::new("doc_offsets must contain at least one entry"))?;
+    let num_partitions = request.index.centroids.rows;
+    let dimension = request.index.centroids.dim;
+    let avg_doclen = if num_documents == 0 {
+        0.0
+    } else {
+        num_embeddings as f64 / num_documents as f64
+    };
+
+    Ok(IndexSummary {
+        name: request.name.clone(),
+        num_documents,
+        num_embeddings,
+        num_partitions,
+        dimension,
+        nbits: request.nbits,
+        avg_doclen,
+        has_metadata: request.metadata.is_some(),
+        max_documents: request.max_documents,
+    })
+}
+
+fn index_memory_usage_bytes(
+    index: &SearchIndexPayload,
+    metadata: Option<&[Option<serde_json::Value>]>,
+) -> Result<u64, JsError> {
+    let mut total = 0u64;
+
+    total += slice_bytes::<f32>(&index.centroids.values)?;
+    total += slice_bytes::<i64>(&index.ivf_doc_ids)?;
+    total += slice_bytes::<i32>(&index.ivf_lengths)?;
+    total += slice_bytes::<usize>(&index.doc_offsets)?;
+    total += slice_bytes::<i64>(&index.doc_codes)?;
+    total += slice_bytes::<f32>(&index.doc_values)?;
+
+    if let Some(metadata) = metadata {
+        let metadata_bytes = metadata.iter().try_fold(0u64, |acc, value| {
+            let bytes = serde_json::to_vec(value)
+                .map_err(|err| JsError::new(&format!("failed to size metadata: {err}")))?;
+            acc.checked_add(bytes.len() as u64)
+                .ok_or_else(|| JsError::new("metadata byte count overflow"))
+        })?;
+        total = total
+            .checked_add(metadata_bytes)
+            .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    }
+
+    Ok(total)
+}
+
+fn slice_bytes<T>(values: &[T]) -> Result<u64, JsError> {
+    (values.len() as u64)
+        .checked_mul(size_of::<T>() as u64)
+        .ok_or_else(|| JsError::new("index byte count overflow"))
+}
+
+fn worker_search_parameters(payload: &SearchParamsRequest) -> SearchParameters {
+    SearchParameters {
+        batch_size: DEFAULT_BATCH_SIZE,
+        n_full_scores: payload.n_full_scores.unwrap_or(4096),
+        top_k: payload.top_k.unwrap_or(10),
+        n_ivf_probe: payload.n_ivf_probe.unwrap_or(8),
+        centroid_batch_size: DEFAULT_CENTROID_BATCH_SIZE,
+        centroid_score_threshold: payload.centroid_score_threshold.unwrap_or_default(),
+    }
+}
+
+fn inline_search_parameters(payload: &InlineSearchParamsRequest) -> SearchParameters {
     SearchParameters {
         batch_size: payload.batch_size,
         n_full_scores: payload.n_full_scores,
@@ -93,12 +342,121 @@ fn kernel_search_parameters(payload: &SearchParametersPayload) -> SearchParamete
     }
 }
 
+fn browser_index_view(index: &SearchIndexPayload) -> Result<BrowserIndexView<'_>, JsError> {
+    let centroids = matrix_view(&index.centroids)?;
+    BrowserIndexView::new(
+        centroids,
+        &index.ivf_doc_ids,
+        &index.ivf_lengths,
+        &index.doc_offsets,
+        &index.doc_codes,
+        &index.doc_values,
+    )
+    .map_err(|err| JsError::new(&err.to_string()))
+}
+
+fn validate_search_index_payload(index: &SearchIndexPayload) -> Result<(), JsError> {
+    let _ = browser_index_view(index)?;
+    Ok(())
+}
+
+fn matrix_view(payload: &MatrixPayload) -> Result<MatrixView<'_>, JsError> {
+    MatrixView::new(&payload.values, payload.rows, payload.dim)
+        .map_err(|err| JsError::new(&err.to_string()))
+}
+
+fn query_payload_to_matrix_payload(
+    query: &QueryEmbeddingsPayload,
+) -> Result<MatrixPayload, JsError> {
+    if let (Some(embeddings_b64), Some(shape)) = (&query.embeddings_b64, query.shape) {
+        return Ok(MatrixPayload {
+            values: decode_b64_embeddings(embeddings_b64, shape)?,
+            rows: shape[0],
+            dim: shape[1],
+        });
+    }
+
+    let embeddings = query.embeddings.as_ref().ok_or_else(|| {
+        JsError::new("Must provide either `embeddings` or `embeddings_b64` + `shape`")
+    })?;
+
+    if embeddings.is_empty() {
+        return Err(JsError::new("Empty query embeddings"));
+    }
+
+    let dim = embeddings[0].len();
+    if dim == 0 {
+        return Err(JsError::new("Zero dimension query embeddings"));
+    }
+
+    for (row_index, row) in embeddings.iter().enumerate() {
+        if row.len() != dim {
+            return Err(JsError::new(&format!(
+                "Inconsistent query embedding dimension at row {}: expected {}, got {}",
+                row_index,
+                dim,
+                row.len(),
+            )));
+        }
+    }
+
+    let values = embeddings.iter().flatten().copied().collect();
+    Ok(MatrixPayload {
+        values,
+        rows: embeddings.len(),
+        dim,
+    })
+}
+
+fn decode_b64_embeddings(b64: &str, shape: [usize; 2]) -> Result<Vec<f32>, JsError> {
+    let bytes = STANDARD
+        .decode(b64)
+        .map_err(|err| JsError::new(&format!("Invalid base64: {err}")))?;
+    let expected = shape[0]
+        .checked_mul(shape[1])
+        .and_then(|count| count.checked_mul(size_of::<f32>()))
+        .ok_or_else(|| JsError::new("query shape overflow"))?;
+
+    if bytes.len() != expected {
+        return Err(JsError::new(&format!(
+            "Expected {} bytes for shape {:?}, got {}",
+            expected,
+            shape,
+            bytes.len()
+        )));
+    }
+
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect())
+}
+
+fn metadata_for_results(
+    metadata: Option<&[Option<serde_json::Value>]>,
+    document_ids: &[i64],
+) -> Vec<Option<serde_json::Value>> {
+    let Some(metadata) = metadata else {
+        return vec![None; document_ids.len()];
+    };
+
+    document_ids
+        .iter()
+        .map(|document_id| {
+            usize::try_from(*document_id)
+                .ok()
+                .and_then(|index| metadata.get(index))
+                .cloned()
+                .flatten()
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use next_plaid_browser_contract::{
-        ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, MatrixPayload, MetadataMode,
-        RuntimeRequest, SearchIndexPayload, SearchRequest,
+        ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, MetadataMode, RuntimeRequest,
     };
 
     fn sha() -> String {
@@ -168,60 +526,84 @@ mod tests {
         }
     }
 
-    fn search_request(
-        centroid_batch_size: usize,
-        subset_doc_ids: Option<Vec<i64>>,
-    ) -> SearchRequest {
-        SearchRequest {
-            index: SearchIndexPayload {
-                centroids: MatrixPayload {
-                    values: vec![
-                        1.0, 0.0, //
-                        0.0, 1.0, //
-                        0.7, 0.7,
-                    ],
-                    rows: 3,
-                    dim: 2,
-                },
-                ivf_doc_ids: vec![0, 2, 1, 2, 0, 1, 2],
-                ivf_lengths: vec![2, 2, 3],
-                doc_offsets: vec![0, 2, 4, 6],
-                doc_codes: vec![0, 2, 1, 2, 2, 2],
-                doc_values: vec![
-                    1.0, 0.0, 0.7, 0.7, //
-                    0.0, 1.0, 0.7, 0.7, //
-                    0.7, 0.7, 0.7, 0.7,
-                ],
-            },
-            query: MatrixPayload {
+    fn demo_index() -> SearchIndexPayload {
+        SearchIndexPayload {
+            centroids: MatrixPayload {
                 values: vec![
                     1.0, 0.0, //
+                    0.0, 1.0, //
                     0.7, 0.7,
                 ],
-                rows: 2,
+                rows: 3,
                 dim: 2,
             },
-            params: SearchParametersPayload {
-                batch_size: 2000,
-                n_full_scores: 3,
-                top_k: 2,
-                n_ivf_probe: 2,
-                centroid_batch_size,
-                centroid_score_threshold: None,
+            ivf_doc_ids: vec![0, 2, 1, 2, 0, 1, 2],
+            ivf_lengths: vec![2, 2, 3],
+            doc_offsets: vec![0, 2, 4, 6],
+            doc_codes: vec![0, 2, 1, 2, 2, 2],
+            doc_values: vec![
+                1.0, 0.0, 0.7, 0.7, //
+                0.0, 1.0, 0.7, 0.7, //
+                0.7, 0.7, 0.7, 0.7,
+            ],
+        }
+    }
+
+    fn load_index_request(name: &str) -> WorkerLoadIndexRequest {
+        WorkerLoadIndexRequest {
+            name: name.into(),
+            index: demo_index(),
+            metadata: Some(vec![
+                Some(serde_json::json!({"title": "doc-0"})),
+                Some(serde_json::json!({"title": "doc-1"})),
+                None,
+            ]),
+            nbits: 2,
+            max_documents: None,
+        }
+    }
+
+    fn worker_search_request(
+        name: &str,
+        top_k: usize,
+        subset: Option<Vec<i64>>,
+    ) -> WorkerSearchRequest {
+        WorkerSearchRequest {
+            name: name.into(),
+            request: SearchRequest {
+                queries: Some(vec![QueryEmbeddingsPayload {
+                    embeddings: Some(vec![vec![1.0, 0.0], vec![0.7, 0.7]]),
+                    embeddings_b64: None,
+                    shape: None,
+                }]),
+                params: SearchParamsRequest {
+                    top_k: Some(top_k),
+                    n_ivf_probe: Some(2),
+                    n_full_scores: Some(3),
+                    centroid_score_threshold: None,
+                },
+                subset,
+                text_query: None,
+                alpha: None,
+                fusion: None,
+                filter_condition: None,
+                filter_parameters: None,
             },
-            subset_doc_ids,
         }
     }
 
     #[test]
     fn health_request_roundtrip() {
+        reset_runtime_state();
+
         let request = serde_json::to_string(&RuntimeRequest::Health).unwrap();
         let response = handle_runtime_request_json(&request).unwrap();
         let decoded: RuntimeResponse = serde_json::from_str(&response).unwrap();
         match decoded {
             RuntimeResponse::Health(health) => {
-                assert_eq!(health.status, "ok");
-                assert_eq!(health.kernel_version, KERNEL_VERSION);
+                assert_eq!(health.status, "healthy");
+                assert_eq!(health.version, KERNEL_VERSION);
+                assert_eq!(health.loaded_indices, 0);
             }
             other => panic!("unexpected response: {other:?}"),
         }
@@ -276,19 +658,113 @@ mod tests {
     }
 
     #[test]
-    fn search_request_roundtrip() {
+    fn load_index_request_roundtrip() {
+        reset_runtime_state();
+
         let request =
-            serde_json::to_string(&RuntimeRequest::Search(search_request(100_000, None))).unwrap();
+            serde_json::to_string(&RuntimeRequest::LoadIndex(load_index_request("demo"))).unwrap();
+
+        let response = handle_runtime_request_json(&request).unwrap();
+        let decoded: RuntimeResponse = serde_json::from_str(&response).unwrap();
+        match decoded {
+            RuntimeResponse::IndexLoaded(loaded) => {
+                assert_eq!(loaded.name, "demo");
+                assert_eq!(loaded.summary.num_documents, 3);
+                assert_eq!(loaded.summary.num_embeddings, 6);
+                assert_eq!(loaded.summary.num_partitions, 3);
+                assert!(loaded.summary.has_metadata);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_search_request_roundtrip() {
+        reset_runtime_state();
+
+        let load_request =
+            serde_json::to_string(&RuntimeRequest::LoadIndex(load_index_request("demo"))).unwrap();
+        handle_runtime_request_json(&load_request).unwrap();
+
+        let request = serde_json::to_string(&RuntimeRequest::Search(worker_search_request(
+            "demo", 2, None,
+        )))
+        .unwrap();
 
         let response = handle_runtime_request_json(&request).unwrap();
         let decoded: RuntimeResponse = serde_json::from_str(&response).unwrap();
         match decoded {
             RuntimeResponse::SearchResults(result) => {
+                assert_eq!(result.num_queries, 1);
+                assert_eq!(result.results[0].query_id, 0);
+                assert_eq!(result.results[0].document_ids[0], 0);
+                assert_eq!(
+                    result.results[0].metadata[0],
+                    Some(serde_json::json!({"title": "doc-0"}))
+                );
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_search_respects_subset() {
+        reset_runtime_state();
+
+        let load_request =
+            serde_json::to_string(&RuntimeRequest::LoadIndex(load_index_request("demo"))).unwrap();
+        handle_runtime_request_json(&load_request).unwrap();
+
+        let request = serde_json::to_string(&RuntimeRequest::Search(worker_search_request(
+            "demo",
+            2,
+            Some(vec![1, 2]),
+        )))
+        .unwrap();
+
+        let response = handle_runtime_request_json(&request).unwrap();
+        let decoded: RuntimeResponse = serde_json::from_str(&response).unwrap();
+        match decoded {
+            RuntimeResponse::SearchResults(result) => {
+                assert!(result.results[0]
+                    .document_ids
+                    .iter()
+                    .all(|document_id| matches!(document_id, 1 | 2)));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inline_search_request_roundtrip() {
+        let request = serde_json::to_string(&RuntimeRequest::InlineSearch(InlineSearchRequest {
+            index: demo_index(),
+            query: MatrixPayload {
+                values: vec![
+                    1.0, 0.0, //
+                    0.7, 0.7,
+                ],
+                rows: 2,
+                dim: 2,
+            },
+            params: InlineSearchParamsRequest {
+                batch_size: 2000,
+                n_full_scores: 3,
+                top_k: 2,
+                n_ivf_probe: 2,
+                centroid_batch_size: 100_000,
+                centroid_score_threshold: None,
+            },
+            subset_doc_ids: None,
+        }))
+        .unwrap();
+
+        let response = handle_runtime_request_json(&request).unwrap();
+        let decoded: RuntimeResponse = serde_json::from_str(&response).unwrap();
+        match decoded {
+            RuntimeResponse::InlineSearchResults(result) => {
                 assert_eq!(result.query_id, 0);
-                assert_eq!(result.passage_ids.len(), 2);
                 assert_eq!(result.passage_ids[0], 0);
-                assert_eq!(result.scores.len(), 2);
-                assert!(result.scores[0] >= result.scores[1]);
             }
             other => panic!("unexpected response: {other:?}"),
         }

@@ -144,8 +144,10 @@ async function runSmoke(browserName) {
     await page.locator("#status[data-state='ok']").waitFor({ timeout: 15000 });
     const payload = await page.locator("#status").textContent();
     const result = JSON.parse(payload ?? "{}");
+    const topDocumentId = result.search?.results?.[0]?.document_ids?.[0];
+    const loadedIndices = result.health?.loaded_indices;
 
-    if (!Array.isArray(result.passage_ids) || result.passage_ids[0] !== 0) {
+    if (topDocumentId !== 0 || loadedIndices !== 1) {
       throw new Error(`unexpected smoke result: ${JSON.stringify(result)}`);
     }
 

@@ -9,6 +9,7 @@ authors.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+base64 = { workspace = true }
 next-plaid-browser-contract = { path = "../next-plaid-browser-contract" }
 next-plaid-browser-kernel = { path = "../next-plaid-browser-kernel" }
 serde_json = { workspace = true }
