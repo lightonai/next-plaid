@@ -1,0 +1,67 @@
+{
+  "format_version": 1,
+  "index_id": "demo-bundle",
+  "build_id": "build-demo-001",
+  "embedding_dim": 4,
+  "nbits": 2,
+  "document_count": 2,
+  "metadata_mode": "inline_json",
+  "artifacts": [
+    {
+      "kind": "centroids",
+      "path": "artifacts/centroids.bin",
+      "byte_size": 32,
+      "sha256": "897e18340a4460ac64e74158e64b6e4ea94adbb72b80dad3140d09d0af793d7c",
+      "compression": "none"
+    },
+    {
+      "kind": "ivf",
+      "path": "artifacts/ivf.bin",
+      "byte_size": 16,
+      "sha256": "9d34149fbd1fe777eb238799054c8cbfbce372255f219f8740838def9bfd02db",
+      "compression": "none"
+    },
+    {
+      "kind": "ivf_lengths",
+      "path": "artifacts/ivf_lengths.bin",
+      "byte_size": 8,
+      "sha256": "64ed86b909d6d0502b64b28db0ea1272ffb358e20e9b1d88b63ccb07fa900cf5",
+      "compression": "none"
+    },
+    {
+      "kind": "doc_lengths",
+      "path": "artifacts/doc_lengths.json",
+      "byte_size": 6,
+      "sha256": "9bd5ef172cfe02cc1ff3d784f8847ece4329a99b8d6a042ccfb0b4c524a67996",
+      "compression": "none"
+    },
+    {
+      "kind": "merged_codes",
+      "path": "artifacts/merged_codes.bin",
+      "byte_size": 32,
+      "sha256": "b64c0d4ec2af5aba75d0e38754bd4da29669e6bd54220441f3710964fdb4ece3",
+      "compression": "none"
+    },
+    {
+      "kind": "merged_residuals",
+      "path": "artifacts/merged_residuals.bin",
+      "byte_size": 4,
+      "sha256": "cecf6d28e6df1be0528256ec3cec1d325b1df8535f38fe05b007d310fd337528",
+      "compression": "none"
+    },
+    {
+      "kind": "bucket_weights",
+      "path": "artifacts/bucket_weights.bin",
+      "byte_size": 16,
+      "sha256": "85ef2eed294bd87160bd14e1f7b9450817c5ee801399030efd4fde23d006163b",
+      "compression": "none"
+    },
+    {
+      "kind": "metadata_json",
+      "path": "artifacts/metadata.json",
+      "byte_size": 64,
+      "sha256": "9266fd254d89bae2f1060fd63e81e8a7500732ba6014566d3ad1e2014965fc98",
+      "compression": "none"
+    }
+  ]
+}

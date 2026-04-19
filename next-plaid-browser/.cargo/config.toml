@@ -1,0 +1,9 @@
+[build]
+target-dir = "target"
+
+[target.wasm32-unknown-unknown]
+rustflags = [
+    "-C",
+    "opt-level=2",
+]
+

@@ -1,0 +1,16 @@
+[package]
+name = "next-plaid-browser-loader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+next-plaid-browser-contract = { path = "../next-plaid-browser-contract" }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.20"
+
