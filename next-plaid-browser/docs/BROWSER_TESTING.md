@@ -24,6 +24,7 @@ Use `wasm-bindgen-test` through `wasm-pack test` for:
 - the worker-owned semantic search contract, because the current browser parity
   tests now load a named index and search it through the native-shaped runtime
   request path
+- browser-run fusion fixtures for RRF and relative-score behavior
 
 Recommended order of attention:
 

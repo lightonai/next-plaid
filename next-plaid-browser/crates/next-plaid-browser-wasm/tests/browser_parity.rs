@@ -239,3 +239,35 @@ fn browser_worker_search_matches_kernel_batch_query_path() {
     assert_eq!(runtime.results[0].query_id, 0);
     assert_eq!(runtime.results[1].query_id, 1);
 }
+
+#[wasm_bindgen_test]
+fn browser_worker_search_rejects_invalid_alpha() {
+    reset_runtime_state();
+    load_demo_index("demo-invalid-alpha");
+
+    let mut request = worker_search_request(
+        "demo-invalid-alpha",
+        vec![vec![vec![1.0, 0.0], vec![0.7, 0.7]]],
+        None,
+    );
+    request.request.alpha = Some(1.5);
+
+    let request_json = serde_json::to_string(&RuntimeRequest::Search(request)).unwrap();
+    assert!(handle_runtime_request_json(&request_json).is_err());
+}
+
+#[wasm_bindgen_test]
+fn browser_worker_search_rejects_invalid_fusion_mode() {
+    reset_runtime_state();
+    load_demo_index("demo-invalid-fusion");
+
+    let mut request = worker_search_request(
+        "demo-invalid-fusion",
+        vec![vec![vec![1.0, 0.0], vec![0.7, 0.7]]],
+        None,
+    );
+    request.request.fusion = Some("bogus".into());
+
+    let request_json = serde_json::to_string(&RuntimeRequest::Search(request)).unwrap();
+    assert!(handle_runtime_request_json(&request_json).is_err());
+}

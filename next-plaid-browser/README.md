@@ -85,6 +85,7 @@ What is direct today:
   - exact rerank
   - subset filtering
 - the native low-memory batched centroid-probing path
+- the native RRF and relative-score fusion primitives
 - browser-safe exact reconstruction from compressed bundle artifacts:
   - merged codes
   - packed residuals
@@ -120,8 +121,9 @@ browser runtime shell around that math:
 - manifest verification and active-version switching
 - the remaining native API surfaces that still need browser equivalents:
   - `text_query`
-  - hybrid fusion parameters
   - metadata filter conditions
+  - the SQLite-backed keyword engine those surfaces depend on
+  - full worker-hosted hybrid execution once the browser keyword path exists
 
 ## Current scope
 

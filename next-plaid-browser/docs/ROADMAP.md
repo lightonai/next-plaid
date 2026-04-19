@@ -111,8 +111,11 @@ Status:
   - named index load
   - native-shaped semantic search requests
   - native-shaped search results with metadata replay
+- native RRF and relative-score fusion are now ported into the browser kernel
+  with host-side and browser-run parity coverage
 - remaining runtime work is now storage-backed loading and the not-yet-ported
-  native API surfaces such as `text_query`, hybrid fusion, and metadata filters
+  native API surfaces such as `text_query`, the SQLite-backed keyword engine,
+  and metadata filters
 
 ## Phase 4.5: Browser parity harness
 
@@ -134,6 +137,9 @@ Status:
   - standard search
   - subset-filtered search
   - batch query handling
+- Chrome lane also passes for the browser fusion fixtures covering:
+  - RRF
+  - relative-score fusion
 - remaining work is turning the Firefox and Safari lanes green
 
 ## Phase 4.75: Browser smoke harness

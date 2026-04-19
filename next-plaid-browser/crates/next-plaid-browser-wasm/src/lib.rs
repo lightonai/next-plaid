@@ -228,11 +228,21 @@ fn validate_worker_search_request(request: &SearchRequest) -> Result<(), JsError
         .as_ref()
         .map(|parameters| !parameters.is_empty())
         .unwrap_or(false);
+    let alpha = request.alpha.unwrap_or(0.75);
+    let fusion_mode = request.fusion.as_deref().unwrap_or("rrf");
 
     if !has_queries && !has_text_query {
         return Err(JsError::new(
             "At least one of `queries` or `text_query` must be provided",
         ));
+    }
+
+    if !(0.0..=1.0).contains(&alpha) {
+        return Err(JsError::new("alpha must be between 0.0 and 1.0"));
+    }
+
+    if fusion_mode != "rrf" && fusion_mode != "relative_score" {
+        return Err(JsError::new("fusion must be `rrf` or `relative_score`"));
     }
 
     if has_text_query {
@@ -244,12 +254,6 @@ fn validate_worker_search_request(request: &SearchRequest) -> Result<(), JsError
     if has_filter_condition || has_filter_parameters {
         return Err(JsError::new(
             "metadata filtering is not supported yet in the browser runtime",
-        ));
-    }
-
-    if request.alpha.is_some() || request.fusion.is_some() {
-        return Err(JsError::new(
-            "hybrid search parameters are not supported yet in the browser runtime",
         ));
     }
 
@@ -705,6 +709,24 @@ mod tests {
             }
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    #[test]
+    fn worker_search_allows_hybrid_fields_without_keyword_path() {
+        reset_runtime_state();
+
+        let load_request =
+            serde_json::to_string(&RuntimeRequest::LoadIndex(load_index_request("demo"))).unwrap();
+        handle_runtime_request_json(&load_request).unwrap();
+
+        let mut request = worker_search_request("demo", 2, None);
+        request.request.alpha = Some(0.25);
+        request.request.fusion = Some("relative_score".into());
+
+        let response = handle_runtime_request_json(
+            &serde_json::to_string(&RuntimeRequest::Search(request)).unwrap(),
+        );
+        assert!(response.is_ok());
     }
 
     #[test]
