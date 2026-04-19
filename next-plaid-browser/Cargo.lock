@@ -617,6 +617,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "next-plaid-browser-sqlite-spike"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+]
+
+[[package]]
 name = "next-plaid-browser-wasm"
 version = "0.1.0"
 dependencies = [

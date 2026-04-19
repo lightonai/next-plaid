@@ -3,6 +3,7 @@ members = [
     "crates/next-plaid-browser-contract",
     "crates/next-plaid-browser-kernel",
     "crates/next-plaid-browser-loader",
+    "crates/next-plaid-browser-sqlite-spike",
     "crates/next-plaid-browser-wasm",
 ]
 resolver = "2"
@@ -15,6 +16,7 @@ authors = ["Pooks + Codex"]
 
 [workspace.dependencies]
 base64 = "0.22"
+rusqlite = "0.38"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
