@@ -6,5 +6,6 @@ pub use bundle::{
 };
 pub use protocol::{
     HealthResponse, MatrixPayload, RuntimeRequest, RuntimeResponse, ScoreRequest, ScoreResponse,
+    SearchIndexPayload, SearchParametersPayload, SearchRequest, SearchResponse,
     ValidateBundleResponse,
 };

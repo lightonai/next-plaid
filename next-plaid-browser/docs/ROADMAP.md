@@ -117,6 +117,14 @@ Exit criteria:
 - Firefox lane passes
 - Safari lane passes or has explicit documented exceptions
 
+Status:
+
+- harness exists for the Wasm request path covering:
+  - standard search
+  - subset-filtered search
+  - batched centroid-probing search
+- remaining work is turning those lanes green across the target browsers
+
 ## Phase 5: Bundle install and storage orchestration
 
 Goal:

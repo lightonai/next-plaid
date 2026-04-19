@@ -21,6 +21,41 @@ pub struct ScoreResponse {
     pub scores: Vec<f32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchParametersPayload {
+    pub batch_size: usize,
+    pub n_full_scores: usize,
+    pub top_k: usize,
+    pub n_ivf_probe: usize,
+    pub centroid_batch_size: usize,
+    pub centroid_score_threshold: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchIndexPayload {
+    pub centroids: MatrixPayload,
+    pub ivf_doc_ids: Vec<i64>,
+    pub ivf_lengths: Vec<i32>,
+    pub doc_offsets: Vec<usize>,
+    pub doc_codes: Vec<i64>,
+    pub doc_values: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchRequest {
+    pub index: SearchIndexPayload,
+    pub query: MatrixPayload,
+    pub params: SearchParametersPayload,
+    pub subset_doc_ids: Option<Vec<i64>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchResponse {
+    pub query_id: usize,
+    pub passage_ids: Vec<i64>,
+    pub scores: Vec<f32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidateBundleResponse {
     pub index_id: String,
@@ -40,6 +75,7 @@ pub enum RuntimeRequest {
     Health,
     ValidateBundle { manifest: BundleManifest },
     Score(ScoreRequest),
+    Search(SearchRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -48,6 +84,7 @@ pub enum RuntimeResponse {
     Health(HealthResponse),
     BundleValidated(ValidateBundleResponse),
     Scores(ScoreResponse),
+    SearchResults(SearchResponse),
 }
 
 #[cfg(test)]

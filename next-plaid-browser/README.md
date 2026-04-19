@@ -132,6 +132,16 @@ If the local machine does not already have a `rustup`-managed toolchain with the
 `wasm32-unknown-unknown` target installed, the script tells you exactly what is
 missing and how to install it.
 
+### Browser parity check
+
+```bash
+./next-plaid-browser/scripts/test_browser_parity.sh safari
+```
+
+This runs the `wasm-bindgen-test` browser lane for the Wasm crate using the
+rustup-managed toolchain path, which avoids the mixed Homebrew-vs-rustup issue
+that can break `wasm-pack` in this repo.
+
 ## Next steps
 
 - wire the reference search path through the wasm boundary

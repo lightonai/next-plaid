@@ -1,7 +1,10 @@
 use next_plaid_browser_contract::{
-    HealthResponse, RuntimeRequest, RuntimeResponse, ScoreResponse, ValidateBundleResponse,
+    HealthResponse, RuntimeRequest, RuntimeResponse, ScoreResponse, SearchParametersPayload,
+    SearchResponse, ValidateBundleResponse,
 };
-use next_plaid_browser_kernel::{score_documents, MatrixView, KERNEL_VERSION};
+use next_plaid_browser_kernel::{
+    score_documents, search_one, BrowserIndexView, MatrixView, SearchParameters, KERNEL_VERSION,
+};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -46,9 +49,48 @@ pub fn handle_runtime_request_json(request_json: &str) -> Result<String, JsError
                 .map_err(|err| JsError::new(&err.to_string()))?;
             RuntimeResponse::Scores(ScoreResponse { scores })
         }
+        RuntimeRequest::Search(request) => {
+            let query =
+                MatrixView::new(&request.query.values, request.query.rows, request.query.dim)
+                    .map_err(|err| JsError::new(&err.to_string()))?;
+            let centroids = MatrixView::new(
+                &request.index.centroids.values,
+                request.index.centroids.rows,
+                request.index.centroids.dim,
+            )
+            .map_err(|err| JsError::new(&err.to_string()))?;
+            let index = BrowserIndexView::new(
+                centroids,
+                &request.index.ivf_doc_ids,
+                &request.index.ivf_lengths,
+                &request.index.doc_offsets,
+                &request.index.doc_codes,
+                &request.index.doc_values,
+            )
+            .map_err(|err| JsError::new(&err.to_string()))?;
+            let params = kernel_search_parameters(&request.params);
+            let result = search_one(index, query, &params, request.subset_doc_ids.as_deref())
+                .map_err(|err| JsError::new(&err.to_string()))?;
+            RuntimeResponse::SearchResults(SearchResponse {
+                query_id: result.query_id,
+                passage_ids: result.passage_ids,
+                scores: result.scores,
+            })
+        }
     };
 
     serde_json::to_string(&response).map_err(|err| JsError::new(&err.to_string()))
+}
+
+fn kernel_search_parameters(payload: &SearchParametersPayload) -> SearchParameters {
+    SearchParameters {
+        batch_size: payload.batch_size,
+        n_full_scores: payload.n_full_scores,
+        top_k: payload.top_k,
+        n_ivf_probe: payload.n_ivf_probe,
+        centroid_batch_size: payload.centroid_batch_size,
+        centroid_score_threshold: payload.centroid_score_threshold,
+    }
 }
 
 #[cfg(test)]
@@ -56,7 +98,7 @@ mod tests {
     use super::*;
     use next_plaid_browser_contract::{
         ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, MatrixPayload, MetadataMode,
-        RuntimeRequest,
+        RuntimeRequest, SearchIndexPayload, SearchRequest,
     };
 
     fn sha() -> String {
@@ -126,6 +168,51 @@ mod tests {
         }
     }
 
+    fn search_request(
+        centroid_batch_size: usize,
+        subset_doc_ids: Option<Vec<i64>>,
+    ) -> SearchRequest {
+        SearchRequest {
+            index: SearchIndexPayload {
+                centroids: MatrixPayload {
+                    values: vec![
+                        1.0, 0.0, //
+                        0.0, 1.0, //
+                        0.7, 0.7,
+                    ],
+                    rows: 3,
+                    dim: 2,
+                },
+                ivf_doc_ids: vec![0, 2, 1, 2, 0, 1, 2],
+                ivf_lengths: vec![2, 2, 3],
+                doc_offsets: vec![0, 2, 4, 6],
+                doc_codes: vec![0, 2, 1, 2, 2, 2],
+                doc_values: vec![
+                    1.0, 0.0, 0.7, 0.7, //
+                    0.0, 1.0, 0.7, 0.7, //
+                    0.7, 0.7, 0.7, 0.7,
+                ],
+            },
+            query: MatrixPayload {
+                values: vec![
+                    1.0, 0.0, //
+                    0.7, 0.7,
+                ],
+                rows: 2,
+                dim: 2,
+            },
+            params: SearchParametersPayload {
+                batch_size: 2000,
+                n_full_scores: 3,
+                top_k: 2,
+                n_ivf_probe: 2,
+                centroid_batch_size,
+                centroid_score_threshold: None,
+            },
+            subset_doc_ids,
+        }
+    }
+
     #[test]
     fn health_request_roundtrip() {
         let request = serde_json::to_string(&RuntimeRequest::Health).unwrap();
@@ -183,6 +270,25 @@ mod tests {
                 assert_eq!(scores.scores.len(), 2);
                 assert!((scores.scores[0] - 2.0).abs() < 1e-6);
                 assert!((scores.scores[1] - 2.0).abs() < 1e-6);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn search_request_roundtrip() {
+        let request =
+            serde_json::to_string(&RuntimeRequest::Search(search_request(100_000, None))).unwrap();
+
+        let response = handle_runtime_request_json(&request).unwrap();
+        let decoded: RuntimeResponse = serde_json::from_str(&response).unwrap();
+        match decoded {
+            RuntimeResponse::SearchResults(result) => {
+                assert_eq!(result.query_id, 0);
+                assert_eq!(result.passage_ids.len(), 2);
+                assert_eq!(result.passage_ids[0], 0);
+                assert_eq!(result.scores.len(), 2);
+                assert!(result.scores[0] >= result.scores[1]);
             }
             other => panic!("unexpected response: {other:?}"),
         }
