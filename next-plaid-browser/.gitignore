@@ -1,2 +1,4 @@
 /target
-
+/node_modules
+/playwright-harness/pkg
+/output/playwright

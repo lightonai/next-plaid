@@ -125,6 +125,20 @@ Status:
   - batched centroid-probing search
 - remaining work is turning those lanes green across the target browsers
 
+## Phase 4.75: Browser smoke harness
+
+Goal:
+
+- verify that a real browser page can boot the web Wasm bundle and execute the
+  request path outside the pure Rust test harness
+
+Exit criteria:
+
+- a browser smoke page exists
+- Playwright can launch the primary Chrome-family lane against that page
+- smoke output proves that the browser can execute a real search request
+- screenshots or equivalent artifacts are available for debugging failures
+
 ## Phase 5: Bundle install and storage orchestration
 
 Goal:

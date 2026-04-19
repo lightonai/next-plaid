@@ -7,8 +7,9 @@ workspace_root="$(cd "$script_dir/.." && pwd)"
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
-browser="${1:-safari}"
+browser="${1:-chrome}"
 headless="${BROWSER_HEADLESS:-1}"
+shift || true
 
 if ! command -v wasm-pack >/dev/null 2>&1; then
   echo "wasm-pack is required. Install it with: cargo install wasm-pack --locked" >&2
@@ -21,6 +22,24 @@ args=()
 if [[ "$headless" == "1" ]]; then
   args+=(--headless)
 fi
-args+=("--$browser" "crates/next-plaid-browser-wasm")
+
+case "$browser" in
+  chrome|firefox|safari)
+    args+=("--$browser")
+    ;;
+  all)
+    args+=(--chrome --firefox --safari)
+    ;;
+  *)
+    echo "usage: $0 [chrome|firefox|safari|all] [cargo-test-args...]" >&2
+    exit 1
+    ;;
+esac
+
+args+=("crates/next-plaid-browser-wasm")
+
+if [[ "$#" -gt 0 ]]; then
+  exec wasm-pack test "${args[@]}" -- "$@"
+fi
 
 exec wasm-pack test "${args[@]}"

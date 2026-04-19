@@ -135,12 +135,31 @@ missing and how to install it.
 ### Browser parity check
 
 ```bash
-./next-plaid-browser/scripts/test_browser_parity.sh safari
+./next-plaid-browser/scripts/test_browser_parity.sh chrome
 ```
 
 This runs the `wasm-bindgen-test` browser lane for the Wasm crate using the
 rustup-managed toolchain path, which avoids the mixed Homebrew-vs-rustup issue
 that can break `wasm-pack` in this repo.
+
+Other parity lanes:
+
+```bash
+./next-plaid-browser/scripts/test_browser_parity.sh safari
+./next-plaid-browser/scripts/test_browser_parity.sh all
+```
+
+### Browser smoke check
+
+```bash
+cd next-plaid-browser
+npm install
+npm run smoke:chromium
+```
+
+This is the first browser-runtime smoke layer. It builds the web Wasm bundle,
+serves a small harness page, launches a real browser with Playwright, and
+verifies that the browser can execute the search request path end to end.
 
 ## Next steps
 
@@ -153,6 +172,7 @@ that can break `wasm-pack` in this repo.
 ## Docs
 
 - [Architecture](./docs/ARCHITECTURE.md)
+- [Browser Testing](./docs/BROWSER_TESTING.md)
 - [Roadmap](./docs/ROADMAP.md)
 - [Browser Runtime Decisions](./docs/BROWSER_RUNTIME_DECISIONS.md)
 - [Browser Runtime Research](./docs/BROWSER_RUNTIME_TRACK_2.md)

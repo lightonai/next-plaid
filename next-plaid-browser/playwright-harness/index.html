@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Next Plaid Browser Smoke Harness</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+        background: #f5f2ea;
+        color: #1f1b16;
+      }
+
+      body {
+        margin: 0;
+        padding: 32px;
+      }
+
+      main {
+        max-width: 960px;
+      }
+
+      h1 {
+        font-size: 24px;
+        margin: 0 0 12px;
+      }
+
+      p {
+        margin: 0 0 20px;
+      }
+
+      pre {
+        background: #fffaf0;
+        border: 1px solid #d8ccb8;
+        border-radius: 12px;
+        overflow: auto;
+        padding: 16px;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Next Plaid Browser Smoke Harness</h1>
+      <p>Builds the web Wasm module and exercises the browser-facing search request path.</p>
+      <pre id="status" data-state="loading">loading</pre>
+    </main>
+    <script type="module" src="./app.mjs"></script>
+  </body>
+</html>

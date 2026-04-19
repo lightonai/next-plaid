@@ -1,0 +1,14 @@
+{
+  "name": "next-plaid-browser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "smoke:chromium": "node ./scripts/playwright_smoke.mjs chromium",
+    "smoke:webkit": "node ./scripts/playwright_smoke.mjs webkit",
+    "smoke:firefox": "node ./scripts/playwright_smoke.mjs firefox",
+    "smoke:chrome": "node ./scripts/playwright_smoke.mjs chrome"
+  },
+  "devDependencies": {
+    "playwright": "^1.54.0"
+  }
+}
