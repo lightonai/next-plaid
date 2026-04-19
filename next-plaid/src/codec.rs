@@ -19,6 +19,16 @@ fn max_nearest_centroid_memory() -> usize {
         .unwrap_or(DEFAULT_MAX_NEAREST_CENTROID_MEMORY)
 }
 
+#[inline]
+fn cmp_f32_for_max(a: &f32, b: &f32) -> std::cmp::Ordering {
+    match (a.is_finite(), b.is_finite()) {
+        (true, true) => a.total_cmp(b),
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => std::cmp::Ordering::Equal,
+    }
+}
+
 /// Storage backend for centroids, supporting both owned arrays and memory-mapped files.
 ///
 /// This enum enables `ResidualCodec` to work with centroids stored either:
@@ -321,7 +331,7 @@ impl ResidualCodec {
                     .map(|row| {
                         row.iter()
                             .enumerate()
-                            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                            .max_by(|(_, a), (_, b)| cmp_f32_for_max(a, b))
                             .map(|(idx, _)| idx)
                             .unwrap_or(0)
                     })
@@ -717,5 +727,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_compress_into_codes_ignores_nan_scores_when_finite_choices_exist() {
+        let centroids = Array2::from_shape_vec(
+            (3, 2),
+            vec![
+                f32::NAN,
+                0.0, //
+                1.0,
+                0.0, //
+                0.0,
+                1.0, //
+            ],
+        )
+        .unwrap();
+        let avg_residual = Array1::zeros(2);
+        let codec = ResidualCodec::new(2, centroids, avg_residual, None, None).unwrap();
+        let embeddings = Array2::from_shape_vec((1, 2), vec![1.0, 0.0]).unwrap();
+
+        let codes = codec.compress_into_codes_cpu(&embeddings);
+        assert_eq!(codes[0], 1);
     }
 }

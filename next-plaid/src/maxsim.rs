@@ -19,6 +19,21 @@
 use ndarray::{ArrayView2, Axis};
 use rayon::prelude::*;
 
+#[inline]
+fn cmp_f32_for_max(a: &f32, b: &f32) -> std::cmp::Ordering {
+    match (a.is_finite(), b.is_finite()) {
+        (true, true) => a.total_cmp(b),
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => std::cmp::Ordering::Equal,
+    }
+}
+
+#[inline]
+fn is_score_better(candidate: f32, current: f32) -> bool {
+    cmp_f32_for_max(&candidate, &current).is_gt()
+}
+
 // ============================================================================
 // SIMD Module - Platform-specific fast max/argmax
 // Adapted from https://github.com/lightonai/maxsim-cpu
@@ -31,11 +46,20 @@ mod simd {
     #[cfg(target_arch = "aarch64")]
     use std::arch::aarch64::*;
 
+    #[inline]
+    fn has_non_finite(slice: &[f32]) -> bool {
+        slice.iter().any(|value| !value.is_finite())
+    }
+
     /// Scalar fallback for max - used when SIMD is unavailable or slice is small.
     #[inline]
     #[allow(dead_code)] // Used conditionally on x86_64 without AVX2
     fn scalar_max(slice: &[f32]) -> f32 {
-        slice.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+        slice
+            .iter()
+            .copied()
+            .max_by(crate::maxsim::cmp_f32_for_max)
+            .unwrap_or(f32::NEG_INFINITY)
     }
 
     /// Scalar fallback for argmax - used when SIMD is unavailable or slice is small.
@@ -45,7 +69,7 @@ mod simd {
         slice
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .max_by(|(_, a), (_, b)| crate::maxsim::cmp_f32_for_max(a, b))
             .map(|(idx, _)| idx)
             .unwrap_or(0)
     }
@@ -111,7 +135,13 @@ mod simd {
 
             // Handle remaining elements
             for &val in &slice[i..] {
-                result = result.max(val);
+                if crate::maxsim::is_score_better(val, result) {
+                    result = val;
+                }
+            }
+
+            if !result.is_finite() || has_non_finite(slice) {
+                return scalar_max(slice);
             }
 
             result
@@ -123,7 +153,7 @@ mod simd {
     #[inline]
     pub fn simd_max(slice: &[f32]) -> f32 {
         if slice.len() < 4 {
-            return slice.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            return scalar_max(slice);
         }
 
         unsafe {
@@ -169,7 +199,13 @@ mod simd {
 
             // Handle remaining elements
             for &val in &slice[i..] {
-                result = result.max(val);
+                if crate::maxsim::is_score_better(val, result) {
+                    result = val;
+                }
+            }
+
+            if !result.is_finite() || has_non_finite(slice) {
+                return scalar_max(slice);
             }
 
             result
@@ -249,7 +285,7 @@ pub fn maxsim_score(query: &ArrayView2<f32>, doc: &ArrayView2<f32>) -> f32 {
     for q_idx in 0..q_len {
         let row = scores.row(q_idx);
         let max_sim = simd::simd_max(row.as_slice().unwrap());
-        if max_sim > f32::NEG_INFINITY {
+        if max_sim.is_finite() {
             total += max_sim;
         }
     }
@@ -266,11 +302,11 @@ fn maxsim_score_simple(query: &ArrayView2<f32>, doc: &ArrayView2<f32>) -> f32 {
         let mut max_sim = f32::NEG_INFINITY;
         for d_row in doc.axis_iter(Axis(0)) {
             let sim: f32 = q_row.dot(&d_row);
-            if sim > max_sim {
+            if is_score_better(sim, max_sim) {
                 max_sim = sim;
             }
         }
-        if max_sim > f32::NEG_INFINITY {
+        if max_sim.is_finite() {
             total += max_sim;
         }
     }
@@ -311,7 +347,7 @@ pub fn assign_to_centroids(
                 let mut best_score = f32::NEG_INFINITY;
                 for (idx, centroid) in centroids.axis_iter(Axis(0)).enumerate() {
                     let score: f32 = emb.iter().zip(centroid.iter()).map(|(a, b)| a * b).sum();
-                    if score > best_score {
+                    if is_score_better(score, best_score) {
                         best_score = score;
                         best_idx = idx;
                     }
@@ -394,6 +430,17 @@ mod tests {
     }
 
     #[test]
+    fn test_simd_max_ignores_non_finite_when_finite_values_exist() {
+        let data = vec![1.0, 2.0, 3.0, f32::NAN, 4.0, 5.0, 6.0, 7.0];
+        let max = simd::simd_max(&data);
+        assert_eq!(max, 7.0);
+
+        let data_with_infinity = vec![1.0, 2.0, 3.0, f32::INFINITY, 4.0, 5.0, 6.0, 7.0];
+        let max_with_infinity = simd::simd_max(&data_with_infinity);
+        assert_eq!(max_with_infinity, 7.0);
+    }
+
+    #[test]
     fn test_assign_to_centroids() {
         // 3 centroids in 4D space
         let centroids = Array2::from_shape_vec(
@@ -439,5 +486,23 @@ mod tests {
 
         let data3: Vec<f32> = (0..100).rev().map(|i| i as f32).collect();
         assert_eq!(simd::simd_argmax(&data3), 0);
+    }
+
+    #[test]
+    fn test_simd_argmax_ignores_nan_when_finite_values_exist() {
+        let data: Vec<f32> = vec![1.0, f32::NAN, 0.5];
+        assert_eq!(simd::simd_argmax(&data), 0);
+    }
+
+    #[test]
+    fn test_maxsim_score_ignores_non_finite_row_entries_when_finite_max_exists() {
+        let query = Array2::from_shape_vec((16, 2), vec![1.0, 0.0].repeat(16)).unwrap();
+        let mut doc_data = vec![0.5, 0.0].repeat(15);
+        doc_data.extend([f32::NAN, 0.0]);
+        let doc = Array2::from_shape_vec((16, 2), doc_data).unwrap();
+
+        let score = maxsim_score(&query.view(), &doc.view());
+
+        assert!((score - 8.0).abs() < 1e-5);
     }
 }

@@ -1,6 +1,6 @@
 //! Search functionality for PLAID
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use ndarray::Array1;
@@ -103,9 +103,32 @@ impl PartialOrd for OrdF32 {
 
 impl Ord for OrdF32 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0
-            .partial_cmp(&other.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        cmp_score_ascending(self.0, other.0)
+    }
+}
+
+fn cmp_score_ascending(a: f32, b: f32) -> Ordering {
+    match (a.is_finite(), b.is_finite()) {
+        (true, true) => a.total_cmp(&b),
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => Ordering::Equal,
+    }
+}
+
+fn cmp_score_descending(a: f32, b: f32) -> Ordering {
+    cmp_score_ascending(b, a)
+}
+
+fn is_score_better(candidate: f32, current: f32) -> bool {
+    cmp_score_ascending(candidate, current).is_gt()
+}
+
+fn max_score(a: f32, b: f32) -> f32 {
+    if is_score_better(b, a) {
+        b
+    } else {
+        a
     }
 }
 
@@ -160,15 +183,15 @@ fn ivf_probe_batched(
                         heap.push(entry);
                         max_scores
                             .entry(global_c)
-                            .and_modify(|s| *s = s.max(score))
+                            .and_modify(|s| *s = max_score(*s, score))
                             .or_insert(score);
                     } else if let Some(&(Reverse(OrdF32(min_score)), _)) = heap.peek() {
-                        if score > min_score {
+                        if is_score_better(score, min_score) {
                             heap.pop();
                             heap.push(entry);
                             max_scores
                                 .entry(global_c)
-                                .and_modify(|s| *s = s.max(score))
+                                .and_modify(|s| *s = max_score(*s, score))
                                 .or_insert(score);
                         }
                     }
@@ -193,7 +216,7 @@ fn ivf_probe_batched(
                 if final_heaps[q_idx].len() < n_probe {
                     final_heaps[q_idx].push(entry);
                 } else if let Some(&(Reverse(OrdF32(min_score)), _)) = final_heaps[q_idx].peek() {
-                    if score > min_score {
+                    if is_score_better(score, min_score) {
                         final_heaps[q_idx].pop();
                         final_heaps[q_idx].push(entry);
                     }
@@ -381,9 +404,8 @@ pub fn search_one_mmap(
             // (but not sorted among themselves - which is fine since we use a HashSet)
             let n_probe = effective_n_ivf_probe.min(centroid_scores.len());
             if centroid_scores.len() > n_probe {
-                centroid_scores.select_nth_unstable_by(n_probe - 1, |a, b| {
-                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-                });
+                centroid_scores
+                    .select_nth_unstable_by(n_probe - 1, |a, b| cmp_score_descending(a.1, b.1));
             }
 
             for (c, _) in centroid_scores.iter().take(n_probe) {
@@ -396,7 +418,7 @@ pub fn search_one_mmap(
             selected_centroids.retain(|&c| {
                 let max_score: f32 = (0..num_query_tokens)
                     .map(|q_idx| query_centroid_scores[[q_idx, c]])
-                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                    .max_by(|a, b| cmp_score_ascending(*a, *b))
                     .unwrap_or(f32::NEG_INFINITY);
                 max_score >= threshold
             });
@@ -435,7 +457,7 @@ pub fn search_one_mmap(
         .collect();
 
     // Sort by approximate score and take top candidates
-    approx_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    approx_scores.sort_by(|a, b| cmp_score_descending(a.1, b.1));
     let top_candidates: Vec<i64> = approx_scores
         .iter()
         .take(params.n_full_scores)
@@ -471,7 +493,7 @@ pub fn search_one_mmap(
         .collect();
 
     // Sort by exact score
-    exact_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    exact_scores.sort_by(|a, b| cmp_score_descending(a.1, b.1));
 
     // Return top-k results
     let result_count = params.top_k.min(exact_scores.len());
@@ -559,7 +581,7 @@ fn search_one_mmap_batched(
         .collect();
 
     // Sort by approximate score and take top candidates
-    approx_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    approx_scores.sort_by(|a, b| cmp_score_descending(a.1, b.1));
     let top_candidates: Vec<i64> = approx_scores
         .iter()
         .take(params.n_full_scores)
@@ -595,7 +617,7 @@ fn search_one_mmap_batched(
         .collect();
 
     // Sort by exact score
-    exact_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    exact_scores.sort_by(|a, b| cmp_score_descending(a.1, b.1));
 
     // Return top-k results
     let result_count = params.top_k.min(exact_scores.len());
@@ -690,5 +712,32 @@ mod tests {
         assert_eq!(params.top_k, 10);
         assert_eq!(params.n_ivf_probe, 8);
         assert_eq!(params.centroid_score_threshold, Some(0.4));
+    }
+
+    #[test]
+    fn test_cmp_score_descending_places_non_finite_scores_last() {
+        let mut scores = vec![1.0f32, f32::INFINITY, 0.5, f32::NAN];
+        scores.sort_by(|a, b| cmp_score_descending(*a, *b));
+
+        assert_eq!(scores[0], 1.0);
+        assert_eq!(scores[1], 0.5);
+        assert!(!scores[2].is_finite());
+        assert!(!scores[3].is_finite());
+    }
+
+    #[test]
+    fn test_score_replacement_treats_finite_values_as_better_than_non_finite() {
+        assert!(is_score_better(1.0, f32::NAN));
+        assert!(is_score_better(1.0, f32::INFINITY));
+        assert!(!is_score_better(f32::NAN, 1.0));
+        assert!(!is_score_better(f32::INFINITY, 1.0));
+    }
+
+    #[test]
+    fn test_max_score_keeps_finite_value_over_non_finite_value() {
+        assert_eq!(max_score(f32::NAN, 1.0), 1.0);
+        assert_eq!(max_score(1.0, f32::NAN), 1.0);
+        assert_eq!(max_score(f32::INFINITY, 1.0), 1.0);
+        assert_eq!(max_score(1.0, f32::INFINITY), 1.0);
     }
 }
