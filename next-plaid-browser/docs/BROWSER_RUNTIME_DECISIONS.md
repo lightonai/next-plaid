@@ -146,13 +146,19 @@ factor.
 
 ## Immediate implementation slice
 
-The next concrete work should be:
+The storage-backed slice has now moved from planning into implementation:
 
-1. wire browser-run parity tests around the current Rust kernel
-2. add the dedicated-worker browser runtime shell
-3. add OPFS-backed bundle installation and loading
-4. add manifest verification and atomic active-version switching
-5. keep the first browser runtime single-threaded
+1. browser bundles install into OPFS
+2. IndexedDB records the active bundle pointer
+3. the Wasm runtime can reopen that active bundle and load it into the worker
+4. browser-run tests and smoke coverage now exercise install -> reload -> search
+
+The next concrete work after this is:
+
+1. harden recovery when the recorded active bundle has been evicted
+2. add rollback and cleanup policy for superseded bundles
+3. move hot-path worker reads toward `FileSystemSyncAccessHandle`
+4. keep the first browser runtime single-threaded
 
 ## Supporting research
 

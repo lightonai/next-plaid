@@ -187,6 +187,21 @@ Exit criteria:
 - active bundle switching is atomic
 - runtime can start cleanly when the expected bundle has been evicted
 
+Status:
+
+- first storage-backed browser slice is now implemented for the Chrome lane:
+  - OPFS-backed bundle file installation
+  - IndexedDB-backed active bundle pointer
+  - storage-backed runtime reopen of the active bundle
+  - browser-run install/reload coverage in `wasm-bindgen-test`
+  - Playwright smoke coverage for install, reload, and stored-bundle search
+- remaining work is the operational hardening around that first path:
+  - resume / partial download behavior
+  - rollback bundle retention and cleanup
+  - eviction recovery cleanup behavior
+  - optional IndexedDB artifact fallback
+  - `FileSystemSyncAccessHandle` optimization for the worker hot path
+
 ## Phase 6: Metadata and filter story
 
 Goal:

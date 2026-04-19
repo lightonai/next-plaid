@@ -41,6 +41,45 @@ function loadIndexRequest() {
   };
 }
 
+async function installStoredBundleRequest() {
+  const manifest = await fetch("../fixtures/demo-bundle/manifest.json").then((response) => response.json());
+  const artifacts = await Promise.all(
+    manifest.artifacts.map(async (artifact) => {
+      const bytes = new Uint8Array(
+        await fetch(`../fixtures/demo-bundle/${artifact.path}`).then((response) => response.arrayBuffer())
+      );
+      let binary = "";
+      for (const byte of bytes) {
+        binary += String.fromCharCode(byte);
+      }
+      return {
+        kind: artifact.kind,
+        bytes_b64: btoa(binary)
+      };
+    })
+  );
+
+  return {
+    type: "install_bundle",
+    manifest: {
+      ...manifest,
+      index_id: "demo-stored-bundle",
+      build_id: "build-demo-stored-001"
+    },
+    artifacts,
+    activate: true
+  };
+}
+
+function loadStoredBundleRequest() {
+  return {
+    type: "load_stored_bundle",
+    index_id: "demo-stored-bundle",
+    name: "stored-demo",
+    fts_tokenizer: "unicode61"
+  };
+}
+
 function semanticSearchRequest() {
   return {
     type: "search",
@@ -172,6 +211,50 @@ function filteredKeywordSearchRequest() {
   };
 }
 
+function storedKeywordSearchRequest() {
+  return {
+    type: "search",
+    name: "stored-demo",
+    request: {
+      queries: null,
+      params: {
+        top_k: 2,
+        n_ivf_probe: null,
+        n_full_scores: null,
+        centroid_score_threshold: null
+      },
+      subset: null,
+      text_query: ["alpha"],
+      alpha: null,
+      fusion: null,
+      filter_condition: null,
+      filter_parameters: null
+    }
+  };
+}
+
+function storedFilteredKeywordSearchRequest() {
+  return {
+    type: "search",
+    name: "stored-demo",
+    request: {
+      queries: null,
+      params: {
+        top_k: 2,
+        n_ivf_probe: null,
+        n_full_scores: null,
+        centroid_score_threshold: null
+      },
+      subset: null,
+      text_query: ["beta"],
+      alpha: null,
+      fusion: null,
+      filter_condition: "title = ?",
+      filter_parameters: ["beta"]
+    }
+  };
+}
+
 function callWorker(worker, request) {
   const requestId = crypto.randomUUID();
 
@@ -197,19 +280,33 @@ function callWorker(worker, request) {
 
 async function main() {
   const worker = new Worker("./worker.mjs", { type: "module" });
+  let reloadWorker = null;
 
   try {
     const initialHealth = await callWorker(worker, { type: "health" });
-    const load = await callWorker(worker, loadIndexRequest());
-    const health = await callWorker(worker, { type: "health" });
-    const semanticSearch = await callWorker(worker, semanticSearchRequest());
-    const keywordSearch = await callWorker(worker, keywordSearchRequest());
-    const hybridSearch = await callWorker(worker, hybridSearchRequest());
-    const filteredSemanticSearch = await callWorker(worker, filteredSemanticSearchRequest());
-    const filteredKeywordSearch = await callWorker(worker, filteredKeywordSearchRequest());
+    const installBundle = await callWorker(worker, await installStoredBundleRequest());
+    worker.terminate();
+
+    reloadWorker = new Worker("./worker.mjs", { type: "module" });
+    const reloadedInitialHealth = await callWorker(reloadWorker, { type: "health" });
+    const loadStoredBundle = await callWorker(reloadWorker, loadStoredBundleRequest());
+    const storedKeywordSearch = await callWorker(reloadWorker, storedKeywordSearchRequest());
+    const storedFilteredKeywordSearch = await callWorker(reloadWorker, storedFilteredKeywordSearchRequest());
+    const load = await callWorker(reloadWorker, loadIndexRequest());
+    const health = await callWorker(reloadWorker, { type: "health" });
+    const semanticSearch = await callWorker(reloadWorker, semanticSearchRequest());
+    const keywordSearch = await callWorker(reloadWorker, keywordSearchRequest());
+    const hybridSearch = await callWorker(reloadWorker, hybridSearchRequest());
+    const filteredSemanticSearch = await callWorker(reloadWorker, filteredSemanticSearchRequest());
+    const filteredKeywordSearch = await callWorker(reloadWorker, filteredKeywordSearchRequest());
 
     const result = {
       initialHealth,
+      installBundle,
+      reloadedInitialHealth,
+      loadStoredBundle,
+      storedKeywordSearch,
+      storedFilteredKeywordSearch,
       load,
       health,
       semanticSearch,
@@ -226,6 +323,7 @@ async function main() {
     setStatus("error", message);
   } finally {
     worker.terminate();
+    reloadWorker?.terminate();
   }
 }
 

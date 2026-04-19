@@ -175,6 +175,12 @@ async function runSmoke(browserName) {
     await page.locator("#status[data-state='ok']").waitFor({ timeout: 15000 });
     const payload = await page.locator("#status").textContent();
     const result = JSON.parse(payload ?? "{}");
+    const installActivated = result.installBundle?.activated;
+    const reloadedInitialIndices = result.reloadedInitialHealth?.loaded_indices;
+    const storedLoadedDocuments = result.loadStoredBundle?.summary?.num_documents;
+    const storedKeywordTopDocumentId = result.storedKeywordSearch?.results?.[0]?.document_ids?.[0];
+    const storedFilteredKeywordTopDocumentId =
+      result.storedFilteredKeywordSearch?.results?.[0]?.document_ids?.[0];
     const semanticTopDocumentId = result.semanticSearch?.results?.[0]?.document_ids?.[0];
     const keywordTopDocumentId = result.keywordSearch?.results?.[0]?.document_ids?.[0];
     const hybridTopDocumentId = result.hybridSearch?.results?.[0]?.document_ids?.[0];
@@ -185,12 +191,17 @@ async function runSmoke(browserName) {
     const loadedIndices = result.health?.loaded_indices;
 
     if (
+      installActivated !== true ||
+      reloadedInitialIndices !== 0 ||
+      storedLoadedDocuments !== 2 ||
+      storedKeywordTopDocumentId !== 0 ||
+      storedFilteredKeywordTopDocumentId !== 1 ||
       semanticTopDocumentId !== 0 ||
       keywordTopDocumentId !== 0 ||
       hybridTopDocumentId !== 1 ||
       filteredSemanticTopDocumentId !== 1 ||
       JSON.stringify(filteredKeywordDocumentIds) !== JSON.stringify([0, 2]) ||
-      loadedIndices !== 1
+      loadedIndices !== 2
     ) {
       throw new Error(`unexpected smoke result: ${JSON.stringify(result)}`);
     }

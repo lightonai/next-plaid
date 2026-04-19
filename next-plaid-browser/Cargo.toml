@@ -3,6 +3,7 @@ members = [
     "crates/next-plaid-browser-contract",
     "crates/next-plaid-browser-kernel",
     "crates/next-plaid-browser-loader",
+    "crates/next-plaid-browser-storage",
     "crates/next-plaid-browser-sqlite-spike",
     "crates/next-plaid-browser-wasm",
 ]
@@ -22,6 +23,7 @@ serde_json = "1.0"
 sha2 = "0.10"
 thiserror = "2.0"
 wasm-bindgen = "0.2.105"
+wasm-bindgen-futures = "0.4.55"
 wasm-bindgen-test = "0.3.55"
 
 [profile.release]

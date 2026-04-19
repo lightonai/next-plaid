@@ -5,16 +5,19 @@ use std::mem::size_of;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use keyword_runtime::KeywordIndex;
 use next_plaid_browser_contract::{
-    FusionRequest, FusionResponse, HealthResponse, IndexSummary, InlineSearchParamsRequest,
-    InlineSearchRequest, InlineSearchResponse, MatrixPayload, QueryEmbeddingsPayload,
-    QueryResultResponse, RankedResultsPayload, RuntimeRequest, RuntimeResponse, ScoreResponse,
-    SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse, ValidateBundleResponse,
-    WorkerLoadIndexRequest, WorkerLoadIndexResponse, WorkerSearchRequest,
+    BundleInstalledResponse, FusionRequest, FusionResponse, HealthResponse, IndexSummary,
+    InlineSearchParamsRequest, InlineSearchRequest, InlineSearchResponse, InstallBundleRequest,
+    LoadStoredBundleRequest, MatrixPayload, QueryEmbeddingsPayload, QueryResultResponse,
+    RankedResultsPayload, RuntimeRequest, RuntimeResponse, ScoreResponse, SearchIndexPayload,
+    SearchParamsRequest, SearchRequest, SearchResponse, StorageRequest, StorageResponse,
+    StoredBundleLoadedResponse, ValidateBundleResponse, WorkerLoadIndexRequest,
+    WorkerLoadIndexResponse, WorkerSearchRequest,
 };
 use next_plaid_browser_kernel::{
-    fuse_relative_score, fuse_rrf, score_documents, search_one, BrowserIndexView, MatrixView,
-    SearchParameters, KERNEL_VERSION,
+    fuse_relative_score, fuse_rrf, score_documents, search_one, search_one_compressed,
+    BrowserIndexView, CompressedBrowserIndexView, MatrixView, SearchParameters, KERNEL_VERSION,
 };
+use next_plaid_browser_storage::{install_bundle_from_bytes, load_active_bundle};
 use wasm_bindgen::prelude::*;
 
 mod keyword_runtime;
@@ -25,11 +28,17 @@ const DEFAULT_CENTROID_BATCH_SIZE: usize = 100_000;
 
 #[derive(Debug)]
 struct LoadedIndex {
-    payload: SearchIndexPayload,
+    payload: LoadedIndexPayload,
     metadata: Option<Vec<Option<serde_json::Value>>>,
     keyword_index: Option<KeywordIndex>,
     summary: IndexSummary,
     memory_usage_bytes: u64,
+}
+
+#[derive(Debug)]
+enum LoadedIndexPayload {
+    Dense(SearchIndexPayload),
+    Compressed(next_plaid_browser_storage::StoredBrowserBundle),
 }
 
 thread_local! {
@@ -95,6 +104,23 @@ pub fn handle_runtime_request_json(request_json: &str) -> Result<String, JsError
     serde_json::to_string(&response).map_err(|err| JsError::new(&err.to_string()))
 }
 
+#[wasm_bindgen]
+pub async fn handle_storage_request_json(request_json: String) -> Result<String, JsError> {
+    let request: StorageRequest =
+        serde_json::from_str(&request_json).map_err(|err| JsError::new(&err.to_string()))?;
+
+    let response = match request {
+        StorageRequest::InstallBundle(request) => {
+            StorageResponse::BundleInstalled(install_browser_bundle(request).await?)
+        }
+        StorageRequest::LoadStoredBundle(request) => {
+            StorageResponse::StoredBundleLoaded(load_stored_browser_bundle(request).await?)
+        }
+    };
+
+    serde_json::to_string(&response).map_err(|err| JsError::new(&err.to_string()))
+}
+
 fn runtime_health() -> HealthResponse {
     LOADED_INDICES.with(|indices| {
         let indices = indices.borrow();
@@ -117,6 +143,42 @@ fn runtime_health() -> HealthResponse {
             indices: summaries,
             model: None,
         }
+    })
+}
+
+async fn install_browser_bundle(
+    request: InstallBundleRequest,
+) -> Result<BundleInstalledResponse, JsError> {
+    let mut artifact_bytes = HashMap::new();
+    for artifact in request.artifacts {
+        let bytes = STANDARD
+            .decode(&artifact.bytes_b64)
+            .map_err(|err| JsError::new(&format!("invalid base64 artifact bytes: {err}")))?;
+        artifact_bytes.insert(artifact.kind, bytes);
+    }
+
+    install_bundle_from_bytes(&request.manifest, artifact_bytes, request.activate)
+        .await
+        .map_err(|err| JsError::new(&err.to_string()))
+}
+
+async fn load_stored_browser_bundle(
+    request: LoadStoredBundleRequest,
+) -> Result<StoredBundleLoadedResponse, JsError> {
+    let stored = load_active_bundle(&request.index_id)
+        .await
+        .map_err(|err| JsError::new(&err.to_string()))?;
+    let build_id = stored.manifest.build_id.clone();
+
+    let name = request.name.clone();
+    let summary =
+        load_compressed_bundle_into_runtime(name.clone(), stored, &request.fts_tokenizer)?;
+
+    Ok(StoredBundleLoadedResponse {
+        index_id: request.index_id,
+        build_id,
+        name,
+        summary,
     })
 }
 
@@ -148,7 +210,7 @@ fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse
         indices.borrow_mut().insert(
             name.clone(),
             LoadedIndex {
-                payload: request.index,
+                payload: LoadedIndexPayload::Dense(request.index),
                 metadata: request.metadata,
                 keyword_index,
                 summary: summary.clone(),
@@ -158,6 +220,43 @@ fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse
     });
 
     Ok(WorkerLoadIndexResponse { name, summary })
+}
+
+fn load_compressed_bundle_into_runtime(
+    name: String,
+    stored: next_plaid_browser_storage::StoredBrowserBundle,
+    fts_tokenizer: &str,
+) -> Result<IndexSummary, JsError> {
+    let manifest = stored.manifest.clone();
+    let metadata = stored.metadata.clone();
+    let keyword_index = metadata
+        .as_ref()
+        .map(|metadata| KeywordIndex::new(metadata, fts_tokenizer))
+        .transpose()
+        .map_err(|err| JsError::new(&err))?;
+    let memory_usage_bytes =
+        compressed_index_memory_usage_bytes(&stored.search_artifacts, metadata.as_deref())?;
+    let summary = build_compressed_index_summary(
+        &name,
+        &manifest,
+        &stored.search_artifacts,
+        metadata.as_deref(),
+    )?;
+
+    LOADED_INDICES.with(|indices| {
+        indices.borrow_mut().insert(
+            name,
+            LoadedIndex {
+                payload: LoadedIndexPayload::Compressed(stored),
+                metadata,
+                keyword_index,
+                summary: summary.clone(),
+                memory_usage_bytes,
+            },
+        );
+    });
+
+    Ok(summary)
 }
 
 fn search_loaded_index(request: WorkerSearchRequest) -> Result<SearchResponse, JsError> {
@@ -266,7 +365,6 @@ fn semantic_ranked_results(
     top_k: usize,
     subset: Option<&[i64]>,
 ) -> Result<Vec<RankedResultsPayload>, JsError> {
-    let index = browser_index_view(&loaded.payload)?;
     let mut search_params = worker_search_parameters(params);
     search_params.top_k = top_k;
 
@@ -282,8 +380,18 @@ fn semantic_ranked_results(
 
         let query = MatrixView::new(&query_payload.values, query_payload.rows, query_payload.dim)
             .map_err(|err| JsError::new(&err.to_string()))?;
-        let result = search_one(index, query, &search_params, subset)
-            .map_err(|err| JsError::new(&err.to_string()))?;
+        let result = match &loaded.payload {
+            LoadedIndexPayload::Dense(index_payload) => {
+                let index = browser_index_view(index_payload)?;
+                search_one(index, query, &search_params, subset)
+                    .map_err(|err| JsError::new(&err.to_string()))?
+            }
+            LoadedIndexPayload::Compressed(stored) => {
+                let index = compressed_browser_index_view(&stored.search_artifacts)?;
+                search_one_compressed(index, query, &search_params, subset)
+                    .map_err(|err| JsError::new(&err.to_string()))?
+            }
+        };
 
         results.push(RankedResultsPayload {
             document_ids: result.passage_ids,
@@ -535,6 +643,37 @@ fn build_index_summary(request: &WorkerLoadIndexRequest) -> Result<IndexSummary,
     })
 }
 
+fn build_compressed_index_summary(
+    name: &str,
+    manifest: &next_plaid_browser_contract::BundleManifest,
+    search: &next_plaid_browser_loader::LoadedSearchArtifacts,
+    metadata: Option<&[Option<serde_json::Value>]>,
+) -> Result<IndexSummary, JsError> {
+    let num_documents = manifest.document_count;
+    let num_embeddings = *search
+        .doc_offsets
+        .last()
+        .ok_or_else(|| JsError::new("doc_offsets must contain at least one entry"))?;
+    let num_partitions = search.centroids.len() / search.embedding_dim;
+    let avg_doclen = if num_documents == 0 {
+        0.0
+    } else {
+        num_embeddings as f64 / num_documents as f64
+    };
+
+    Ok(IndexSummary {
+        name: name.into(),
+        num_documents,
+        num_embeddings,
+        num_partitions,
+        dimension: manifest.embedding_dim,
+        nbits: manifest.nbits,
+        avg_doclen,
+        has_metadata: metadata.is_some(),
+        max_documents: None,
+    })
+}
+
 fn index_memory_usage_bytes(
     index: &SearchIndexPayload,
     metadata: Option<&[Option<serde_json::Value>]>,
@@ -547,6 +686,37 @@ fn index_memory_usage_bytes(
     total += slice_bytes::<usize>(&index.doc_offsets)?;
     total += slice_bytes::<i64>(&index.doc_codes)?;
     total += slice_bytes::<f32>(&index.doc_values)?;
+
+    if let Some(metadata) = metadata {
+        let metadata_bytes = metadata.iter().try_fold(0u64, |acc, value| {
+            let bytes = serde_json::to_vec(value)
+                .map_err(|err| JsError::new(&format!("failed to size metadata: {err}")))?;
+            acc.checked_add(bytes.len() as u64)
+                .ok_or_else(|| JsError::new("metadata byte count overflow"))
+        })?;
+        total = total
+            .checked_add(metadata_bytes)
+            .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    }
+
+    Ok(total)
+}
+
+fn compressed_index_memory_usage_bytes(
+    search: &next_plaid_browser_loader::LoadedSearchArtifacts,
+    metadata: Option<&[Option<serde_json::Value>]>,
+) -> Result<u64, JsError> {
+    let mut total = 0u64;
+    total += slice_bytes::<f32>(&search.centroids)?;
+    total += slice_bytes::<i64>(&search.ivf)?;
+    total += slice_bytes::<i32>(&search.ivf_lengths)?;
+    total += slice_bytes::<usize>(&search.doc_lengths)?;
+    total += slice_bytes::<usize>(&search.doc_offsets)?;
+    total += slice_bytes::<i64>(&search.merged_codes)?;
+    total = total
+        .checked_add(search.merged_residuals.len() as u64)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    total += slice_bytes::<f32>(&search.bucket_weights)?;
 
     if let Some(metadata) = metadata {
         let metadata_bytes = metadata.iter().try_fold(0u64, |acc, value| {
@@ -600,6 +770,26 @@ fn browser_index_view(index: &SearchIndexPayload) -> Result<BrowserIndexView<'_>
         &index.doc_offsets,
         &index.doc_codes,
         &index.doc_values,
+    )
+    .map_err(|err| JsError::new(&err.to_string()))
+}
+
+fn compressed_browser_index_view(
+    search: &next_plaid_browser_loader::LoadedSearchArtifacts,
+) -> Result<CompressedBrowserIndexView<'_>, JsError> {
+    let rows = search.centroids.len() / search.embedding_dim;
+    let centroids = MatrixView::new(&search.centroids, rows, search.embedding_dim)
+        .map_err(|err| JsError::new(&err.to_string()))?;
+
+    CompressedBrowserIndexView::new(
+        centroids,
+        search.nbits,
+        &search.bucket_weights,
+        &search.ivf,
+        &search.ivf_lengths,
+        &search.doc_offsets,
+        &search.merged_codes,
+        &search.merged_residuals,
     )
     .map_err(|err| JsError::new(&err.to_string()))
 }

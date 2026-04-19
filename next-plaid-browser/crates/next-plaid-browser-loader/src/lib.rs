@@ -33,6 +33,8 @@ pub struct LoadedSearchArtifacts {
     pub bucket_weights: Vec<f32>,
 }
 
+pub type ArtifactBytesMap = HashMap<ArtifactKind, Vec<u8>>;
+
 impl LoadedBundle {
     pub fn root_dir(&self) -> &Path {
         &self.root_dir
@@ -55,121 +57,28 @@ impl LoadedBundle {
     }
 
     pub fn read_inline_metadata_json(&self) -> Result<Value, BundleLoaderError> {
-        if self.manifest.metadata_mode != MetadataMode::InlineJson {
-            return Err(BundleLoaderError::InlineMetadataUnavailable);
-        }
-        let bytes = self.read_artifact_bytes(ArtifactKind::MetadataJson)?;
-        serde_json::from_slice(&bytes).map_err(BundleLoaderError::MetadataJsonParse)
+        let mut artifact_bytes = ArtifactBytesMap::new();
+        artifact_bytes.insert(
+            ArtifactKind::MetadataJson,
+            self.read_artifact_bytes(ArtifactKind::MetadataJson)?,
+        );
+        parse_inline_metadata_json(&self.manifest, &artifact_bytes)
     }
 
     pub fn read_search_artifacts(&self) -> Result<LoadedSearchArtifacts, BundleLoaderError> {
-        let centroids = parse_f32_le(
+        let mut artifact_bytes = ArtifactBytesMap::new();
+        for kind in [
             ArtifactKind::Centroids,
-            &self.read_artifact_bytes(ArtifactKind::Centroids)?,
-        )?;
-        let ivf = parse_i64_le(
             ArtifactKind::Ivf,
-            &self.read_artifact_bytes(ArtifactKind::Ivf)?,
-        )?;
-        let ivf_lengths = parse_i32_le(
             ArtifactKind::IvfLengths,
-            &self.read_artifact_bytes(ArtifactKind::IvfLengths)?,
-        )?;
-        let doc_lengths = parse_doc_lengths(&self.read_artifact_bytes(ArtifactKind::DocLengths)?)?;
-        let merged_codes = parse_i64_le(
+            ArtifactKind::DocLengths,
             ArtifactKind::MergedCodes,
-            &self.read_artifact_bytes(ArtifactKind::MergedCodes)?,
-        )?;
-        let merged_residuals = self.read_artifact_bytes(ArtifactKind::MergedResiduals)?;
-        let bucket_weights = parse_f32_le(
+            ArtifactKind::MergedResiduals,
             ArtifactKind::BucketWeights,
-            &self.read_artifact_bytes(ArtifactKind::BucketWeights)?,
-        )?;
-
-        if doc_lengths.len() != self.manifest.document_count {
-            return Err(BundleLoaderError::SearchArtifactMismatch(format!(
-                "document_count mismatch: manifest={} doc_lengths={}",
-                self.manifest.document_count,
-                doc_lengths.len()
-            )));
+        ] {
+            artifact_bytes.insert(kind, self.read_artifact_bytes(kind)?);
         }
-
-        if centroids.len() % self.manifest.embedding_dim != 0 {
-            return Err(BundleLoaderError::SearchArtifactMismatch(format!(
-                "centroids length {} is not divisible by embedding_dim {}",
-                centroids.len(),
-                self.manifest.embedding_dim
-            )));
-        }
-
-        let mut total_ivf = 0usize;
-        for &value in &ivf_lengths {
-            let length = usize::try_from(value).map_err(|_| {
-                BundleLoaderError::SearchArtifactMismatch(format!(
-                    "ivf_lengths contains a negative value: {value}"
-                ))
-            })?;
-            total_ivf = total_ivf.checked_add(length).ok_or_else(|| {
-                BundleLoaderError::SearchArtifactMismatch(
-                    "ivf_lengths overflowed while summing lengths".into(),
-                )
-            })?;
-        }
-        if total_ivf != ivf.len() {
-            return Err(BundleLoaderError::SearchArtifactMismatch(format!(
-                "ivf length mismatch: summed ivf_lengths={} ivf_entries={}",
-                total_ivf,
-                ivf.len()
-            )));
-        }
-
-        let total_tokens: usize = doc_lengths.iter().sum();
-        if merged_codes.len() != total_tokens {
-            return Err(BundleLoaderError::SearchArtifactMismatch(format!(
-                "merged_codes length mismatch: expected {} tokens, found {}",
-                total_tokens,
-                merged_codes.len()
-            )));
-        }
-
-        let packed_dim = self.manifest.embedding_dim * self.manifest.nbits / 8;
-        if merged_residuals.len() != total_tokens * packed_dim {
-            return Err(BundleLoaderError::SearchArtifactMismatch(format!(
-                "merged_residuals length mismatch: expected {} bytes, found {}",
-                total_tokens * packed_dim,
-                merged_residuals.len()
-            )));
-        }
-
-        if bucket_weights.len() != (1usize << self.manifest.nbits) {
-            return Err(BundleLoaderError::SearchArtifactMismatch(format!(
-                "bucket_weights length mismatch: expected {}, found {}",
-                1usize << self.manifest.nbits,
-                bucket_weights.len()
-            )));
-        }
-
-        let mut doc_offsets = Vec::with_capacity(doc_lengths.len() + 1);
-        doc_offsets.push(0);
-        let mut current = 0usize;
-        for &doc_length in &doc_lengths {
-            current += doc_length;
-            doc_offsets.push(current);
-        }
-
-        Ok(LoadedSearchArtifacts {
-            embedding_dim: self.manifest.embedding_dim,
-            nbits: self.manifest.nbits,
-            document_count: self.manifest.document_count,
-            centroids,
-            ivf,
-            ivf_lengths,
-            doc_lengths,
-            doc_offsets,
-            merged_codes,
-            merged_residuals,
-            bucket_weights,
-        })
+        parse_search_artifacts(&self.manifest, &artifact_bytes)
     }
 }
 
@@ -221,6 +130,181 @@ pub enum BundleLoaderError {
 
 pub fn manifest_path(root_dir: impl AsRef<Path>) -> PathBuf {
     root_dir.as_ref().join(MANIFEST_FILE_NAME)
+}
+
+pub fn verify_artifact_bytes(
+    manifest: &BundleManifest,
+    artifact_bytes: &ArtifactBytesMap,
+) -> Result<(), BundleLoaderError> {
+    manifest.validate()?;
+
+    for artifact in &manifest.artifacts {
+        let bytes = artifact_bytes
+            .get(&artifact.kind)
+            .ok_or(BundleLoaderError::MissingArtifact(artifact.kind))?;
+        if bytes.len() as u64 != artifact.byte_size {
+            return Err(BundleLoaderError::ArtifactSizeMismatch {
+                kind: artifact.kind,
+                expected: artifact.byte_size,
+                actual: bytes.len() as u64,
+            });
+        }
+        let actual_digest = sha256_hex(bytes);
+        if actual_digest != artifact.sha256 {
+            return Err(BundleLoaderError::ArtifactDigestMismatch {
+                kind: artifact.kind,
+                expected: artifact.sha256.clone(),
+                actual: actual_digest,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+pub fn parse_inline_metadata_json(
+    manifest: &BundleManifest,
+    artifact_bytes: &ArtifactBytesMap,
+) -> Result<Value, BundleLoaderError> {
+    if manifest.metadata_mode != MetadataMode::InlineJson {
+        return Err(BundleLoaderError::InlineMetadataUnavailable);
+    }
+    let bytes = artifact_bytes.get(&ArtifactKind::MetadataJson).ok_or(
+        BundleLoaderError::MissingArtifact(ArtifactKind::MetadataJson),
+    )?;
+    serde_json::from_slice(bytes).map_err(BundleLoaderError::MetadataJsonParse)
+}
+
+pub fn parse_search_artifacts(
+    manifest: &BundleManifest,
+    artifact_bytes: &ArtifactBytesMap,
+) -> Result<LoadedSearchArtifacts, BundleLoaderError> {
+    let centroids = parse_f32_le(
+        ArtifactKind::Centroids,
+        artifact_bytes
+            .get(&ArtifactKind::Centroids)
+            .ok_or(BundleLoaderError::MissingArtifact(ArtifactKind::Centroids))?,
+    )?;
+    let ivf = parse_i64_le(
+        ArtifactKind::Ivf,
+        artifact_bytes
+            .get(&ArtifactKind::Ivf)
+            .ok_or(BundleLoaderError::MissingArtifact(ArtifactKind::Ivf))?,
+    )?;
+    let ivf_lengths = parse_i32_le(
+        ArtifactKind::IvfLengths,
+        artifact_bytes
+            .get(&ArtifactKind::IvfLengths)
+            .ok_or(BundleLoaderError::MissingArtifact(ArtifactKind::IvfLengths))?,
+    )?;
+    let doc_lengths = parse_doc_lengths(
+        artifact_bytes
+            .get(&ArtifactKind::DocLengths)
+            .ok_or(BundleLoaderError::MissingArtifact(ArtifactKind::DocLengths))?,
+    )?;
+    let merged_codes = parse_i64_le(
+        ArtifactKind::MergedCodes,
+        artifact_bytes.get(&ArtifactKind::MergedCodes).ok_or(
+            BundleLoaderError::MissingArtifact(ArtifactKind::MergedCodes),
+        )?,
+    )?;
+    let merged_residuals = artifact_bytes
+        .get(&ArtifactKind::MergedResiduals)
+        .ok_or(BundleLoaderError::MissingArtifact(
+            ArtifactKind::MergedResiduals,
+        ))?
+        .clone();
+    let bucket_weights = parse_f32_le(
+        ArtifactKind::BucketWeights,
+        artifact_bytes.get(&ArtifactKind::BucketWeights).ok_or(
+            BundleLoaderError::MissingArtifact(ArtifactKind::BucketWeights),
+        )?,
+    )?;
+
+    if doc_lengths.len() != manifest.document_count {
+        return Err(BundleLoaderError::SearchArtifactMismatch(format!(
+            "document_count mismatch: manifest={} doc_lengths={}",
+            manifest.document_count,
+            doc_lengths.len()
+        )));
+    }
+
+    if centroids.len() % manifest.embedding_dim != 0 {
+        return Err(BundleLoaderError::SearchArtifactMismatch(format!(
+            "centroids length {} is not divisible by embedding_dim {}",
+            centroids.len(),
+            manifest.embedding_dim
+        )));
+    }
+
+    let mut total_ivf = 0usize;
+    for &value in &ivf_lengths {
+        let length = usize::try_from(value).map_err(|_| {
+            BundleLoaderError::SearchArtifactMismatch(format!(
+                "ivf_lengths contains a negative value: {value}"
+            ))
+        })?;
+        total_ivf = total_ivf.checked_add(length).ok_or_else(|| {
+            BundleLoaderError::SearchArtifactMismatch(
+                "ivf_lengths overflowed while summing lengths".into(),
+            )
+        })?;
+    }
+    if total_ivf != ivf.len() {
+        return Err(BundleLoaderError::SearchArtifactMismatch(format!(
+            "ivf length mismatch: summed ivf_lengths={} ivf_entries={}",
+            total_ivf,
+            ivf.len()
+        )));
+    }
+
+    let total_tokens: usize = doc_lengths.iter().sum();
+    if merged_codes.len() != total_tokens {
+        return Err(BundleLoaderError::SearchArtifactMismatch(format!(
+            "merged_codes length mismatch: expected {} tokens, found {}",
+            total_tokens,
+            merged_codes.len()
+        )));
+    }
+
+    let packed_dim = manifest.embedding_dim * manifest.nbits / 8;
+    if merged_residuals.len() != total_tokens * packed_dim {
+        return Err(BundleLoaderError::SearchArtifactMismatch(format!(
+            "merged_residuals length mismatch: expected {} bytes, found {}",
+            total_tokens * packed_dim,
+            merged_residuals.len()
+        )));
+    }
+
+    if bucket_weights.len() != (1usize << manifest.nbits) {
+        return Err(BundleLoaderError::SearchArtifactMismatch(format!(
+            "bucket_weights length mismatch: expected {}, found {}",
+            1usize << manifest.nbits,
+            bucket_weights.len()
+        )));
+    }
+
+    let mut doc_offsets = Vec::with_capacity(doc_lengths.len() + 1);
+    doc_offsets.push(0);
+    let mut current = 0usize;
+    for &doc_length in &doc_lengths {
+        current += doc_length;
+        doc_offsets.push(current);
+    }
+
+    Ok(LoadedSearchArtifacts {
+        embedding_dim: manifest.embedding_dim,
+        nbits: manifest.nbits,
+        document_count: manifest.document_count,
+        centroids,
+        ivf,
+        ivf_lengths,
+        doc_lengths,
+        doc_offsets,
+        merged_codes,
+        merged_residuals,
+        bucket_weights,
+    })
 }
 
 pub fn load_bundle_from_dir(root_dir: impl AsRef<Path>) -> Result<LoadedBundle, BundleLoaderError> {
@@ -289,7 +373,7 @@ pub fn load_bundle_from_dir(root_dir: impl AsRef<Path>) -> Result<LoadedBundle, 
     })
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut output = String::with_capacity(digest.len() * 2);
     for byte in digest {

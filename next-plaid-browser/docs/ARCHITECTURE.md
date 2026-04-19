@@ -69,11 +69,15 @@ filesystem I/O because its job is to:
 It is not the final browser storage adapter. That comes later, once OPFS or
 another browser storage layer is wired in.
 
-### Future crates
+### Additional crates
 
-Expected additions once development starts:
+Current browser-runtime support crates now include:
 
-- `next-plaid-browser-storage` for OPFS / IndexedDB bundle installation
+- `next-plaid-browser-storage` for OPFS / IndexedDB bundle installation and
+  active-bundle reopen
+
+Still-expected additions:
+
 - `next-plaid-browser-worker` for worker messaging / orchestration
 - `next-plaid-browser-eval` for parity and benchmark fixtures
 

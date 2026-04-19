@@ -1,9 +1,11 @@
 import init, {
+  handle_storage_request_json,
   handle_runtime_request_json,
   reset_runtime_state
 } from "./pkg/next_plaid_browser_wasm.js";
 
 let runtimeReady;
+const storageRequestTypes = new Set(["install_bundle", "load_stored_bundle"]);
 
 async function ensureRuntime() {
   if (!runtimeReady) {
@@ -17,7 +19,9 @@ async function ensureRuntime() {
 
 async function handleRequest(request) {
   await ensureRuntime();
-  const responseJson = handle_runtime_request_json(JSON.stringify(request));
+  const responseJson = storageRequestTypes.has(request?.type)
+    ? await handle_storage_request_json(JSON.stringify(request))
+    : handle_runtime_request_json(JSON.stringify(request));
   return JSON.parse(responseJson);
 }
 

@@ -628,16 +628,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "next-plaid-browser-storage"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "next-plaid-browser-contract",
+ "next-plaid-browser-loader",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "next-plaid-browser-wasm"
 version = "0.1.0"
 dependencies = [
  "base64",
  "next-plaid-browser-contract",
  "next-plaid-browser-kernel",
+ "next-plaid-browser-loader",
+ "next-plaid-browser-storage",
  "regex",
  "rusqlite",
  "serde_json",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
 ]
 
@@ -1310,6 +1328,16 @@ dependencies = [
  "hashbrown 0.15.5",
  "indexmap",
  "semver",
+]
+
+[[package]]
+name = "web-sys"
+version = "0.3.95"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f2dfbb17949fa2088e5d39408c48368947b86f7834484e87b73de55bc14d97d"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]

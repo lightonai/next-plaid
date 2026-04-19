@@ -1,12 +1,16 @@
 #![cfg(target_arch = "wasm32")]
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use next_plaid_browser_contract::{
-    MatrixPayload, QueryEmbeddingsPayload, QueryResultResponse, RuntimeRequest, RuntimeResponse,
-    SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse, WorkerLoadIndexRequest,
-    WorkerSearchRequest,
+    ArtifactKind, BundleArtifactBytesPayload, BundleManifest, InstallBundleRequest,
+    LoadStoredBundleRequest, MatrixPayload, QueryEmbeddingsPayload, QueryResultResponse,
+    RuntimeRequest, RuntimeResponse, SearchIndexPayload, SearchParamsRequest, SearchRequest,
+    SearchResponse, StorageRequest, StorageResponse, WorkerLoadIndexRequest, WorkerSearchRequest,
 };
 use next_plaid_browser_kernel::{search_one, BrowserIndexView, MatrixView, SearchParameters};
-use next_plaid_browser_wasm::{handle_runtime_request_json, reset_runtime_state};
+use next_plaid_browser_wasm::{
+    handle_runtime_request_json, handle_storage_request_json, reset_runtime_state,
+};
 use wasm_bindgen_test::*;
 
 const DEFAULT_BATCH_SIZE: usize = 2000;
@@ -250,6 +254,72 @@ fn load_demo_index(name: &str) {
     }
 }
 
+async fn storage_response(request: StorageRequest) -> StorageResponse {
+    let request_json = serde_json::to_string(&request).unwrap();
+    let response_json = handle_storage_request_json(request_json).await.unwrap();
+    serde_json::from_str(&response_json).unwrap()
+}
+
+fn storage_manifest(index_id: &str, build_id: &str) -> BundleManifest {
+    let mut manifest: BundleManifest =
+        serde_json::from_str(include_str!("../../../fixtures/demo-bundle/manifest.json")).unwrap();
+    manifest.index_id = index_id.into();
+    manifest.build_id = build_id.into();
+    manifest
+}
+
+fn storage_artifacts() -> Vec<BundleArtifactBytesPayload> {
+    vec![
+        (
+            ArtifactKind::Centroids,
+            include_bytes!("../../../fixtures/demo-bundle/artifacts/centroids.bin").as_slice(),
+        ),
+        (
+            ArtifactKind::Ivf,
+            include_bytes!("../../../fixtures/demo-bundle/artifacts/ivf.bin").as_slice(),
+        ),
+        (
+            ArtifactKind::IvfLengths,
+            include_bytes!("../../../fixtures/demo-bundle/artifacts/ivf_lengths.bin").as_slice(),
+        ),
+        (
+            ArtifactKind::DocLengths,
+            include_bytes!("../../../fixtures/demo-bundle/artifacts/doc_lengths.json").as_slice(),
+        ),
+        (
+            ArtifactKind::MergedCodes,
+            include_bytes!("../../../fixtures/demo-bundle/artifacts/merged_codes.bin").as_slice(),
+        ),
+        (
+            ArtifactKind::MergedResiduals,
+            include_bytes!("../../../fixtures/demo-bundle/artifacts/merged_residuals.bin")
+                .as_slice(),
+        ),
+        (
+            ArtifactKind::BucketWeights,
+            include_bytes!("../../../fixtures/demo-bundle/artifacts/bucket_weights.bin").as_slice(),
+        ),
+        (
+            ArtifactKind::MetadataJson,
+            include_bytes!("../../../fixtures/demo-bundle/artifacts/metadata.json").as_slice(),
+        ),
+    ]
+    .into_iter()
+    .map(|(kind, bytes)| BundleArtifactBytesPayload {
+        kind,
+        bytes_b64: STANDARD.encode(bytes),
+    })
+    .collect()
+}
+
+fn storage_install_request(index_id: &str, build_id: &str) -> StorageRequest {
+    StorageRequest::InstallBundle(InstallBundleRequest {
+        manifest: storage_manifest(index_id, build_id),
+        artifacts: storage_artifacts(),
+        activate: true,
+    })
+}
+
 #[wasm_bindgen_test]
 fn browser_worker_search_matches_kernel_standard_path() {
     reset_runtime_state();
@@ -380,6 +450,47 @@ fn browser_worker_search_supports_filtered_keyword_queries() {
 
     let runtime = runtime_result(&filtered_keyword_request("demo-filtered-keyword"));
     assert_eq!(runtime.results[0].document_ids, vec![0, 2]);
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_install_and_reload_roundtrip() {
+    reset_runtime_state();
+    let index_id = "stored-demo-roundtrip";
+    let build_id = "build-storage-roundtrip-001";
+
+    let install = storage_response(storage_install_request(index_id, build_id)).await;
+    match install {
+        StorageResponse::BundleInstalled(result) => {
+            assert_eq!(result.index_id, index_id);
+            assert!(result.activated);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    reset_runtime_state();
+    let load = storage_response(StorageRequest::LoadStoredBundle(LoadStoredBundleRequest {
+        index_id: index_id.into(),
+        name: "stored-demo".into(),
+        fts_tokenizer: "unicode61".into(),
+    }))
+    .await;
+    match load {
+        StorageResponse::StoredBundleLoaded(result) => {
+            assert_eq!(result.index_id, index_id);
+            assert_eq!(result.name, "stored-demo");
+            assert_eq!(result.summary.num_documents, 2);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    let keyword = runtime_result(&keyword_search_request("stored-demo", &["alpha"]));
+    assert_eq!(keyword.results[0].document_ids, vec![0]);
+
+    let mut filtered = keyword_search_request("stored-demo", &["beta"]);
+    filtered.request.filter_condition = Some("title = ?".into());
+    filtered.request.filter_parameters = Some(vec![serde_json::json!("beta")]);
+    let filtered_response = runtime_result(&filtered);
+    assert_eq!(filtered_response.results[0].document_ids, vec![1]);
 }
 
 #[wasm_bindgen_test]

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::bundle::BundleManifest;
+use crate::bundle::{ArtifactKind, BundleManifest};
 
 fn default_nbits() -> usize {
     4
@@ -223,6 +223,44 @@ pub struct ValidateBundleResponse {
     pub artifact_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleArtifactBytesPayload {
+    pub kind: ArtifactKind,
+    pub bytes_b64: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InstallBundleRequest {
+    pub manifest: BundleManifest,
+    pub artifacts: Vec<BundleArtifactBytesPayload>,
+    #[serde(default = "default_true")]
+    pub activate: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleInstalledResponse {
+    pub index_id: String,
+    pub build_id: String,
+    pub artifact_count: usize,
+    pub activated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoadStoredBundleRequest {
+    pub index_id: String,
+    pub name: String,
+    #[serde(default = "default_fts_tokenizer")]
+    pub fts_tokenizer: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoredBundleLoadedResponse {
+    pub index_id: String,
+    pub build_id: String,
+    pub name: String,
+    pub summary: IndexSummary,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeRequest {
@@ -237,6 +275,13 @@ pub enum RuntimeRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+pub enum StorageRequest {
+    InstallBundle(InstallBundleRequest),
+    LoadStoredBundle(LoadStoredBundleRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeResponse {
     Health(HealthResponse),
     BundleValidated(ValidateBundleResponse),
@@ -245,6 +290,17 @@ pub enum RuntimeResponse {
     SearchResults(SearchResponse),
     InlineSearchResults(InlineSearchResponse),
     FusedResults(FusionResponse),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StorageResponse {
+    BundleInstalled(BundleInstalledResponse),
+    StoredBundleLoaded(StoredBundleLoadedResponse),
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -376,6 +432,88 @@ mod tests {
 
         let json = serde_json::to_string(&request).unwrap();
         let decoded: RuntimeRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn storage_request_roundtrips() {
+        let request = StorageRequest::InstallBundle(InstallBundleRequest {
+            manifest: BundleManifest {
+                format_version: 1,
+                index_id: "demo".into(),
+                build_id: "build".into(),
+                embedding_dim: 64,
+                nbits: 2,
+                document_count: 2,
+                metadata_mode: MetadataMode::InlineJson,
+                artifacts: vec![
+                    ArtifactEntry {
+                        kind: ArtifactKind::Centroids,
+                        path: "centroids.npy".into(),
+                        byte_size: 1,
+                        sha256: sha(),
+                        compression: CompressionKind::None,
+                    },
+                    ArtifactEntry {
+                        kind: ArtifactKind::Ivf,
+                        path: "ivf.npy".into(),
+                        byte_size: 1,
+                        sha256: sha(),
+                        compression: CompressionKind::None,
+                    },
+                    ArtifactEntry {
+                        kind: ArtifactKind::IvfLengths,
+                        path: "ivf_lengths.npy".into(),
+                        byte_size: 1,
+                        sha256: sha(),
+                        compression: CompressionKind::None,
+                    },
+                    ArtifactEntry {
+                        kind: ArtifactKind::DocLengths,
+                        path: "doclens.json".into(),
+                        byte_size: 1,
+                        sha256: sha(),
+                        compression: CompressionKind::None,
+                    },
+                    ArtifactEntry {
+                        kind: ArtifactKind::MergedCodes,
+                        path: "merged_codes.npy".into(),
+                        byte_size: 1,
+                        sha256: sha(),
+                        compression: CompressionKind::None,
+                    },
+                    ArtifactEntry {
+                        kind: ArtifactKind::MergedResiduals,
+                        path: "merged_residuals.npy".into(),
+                        byte_size: 1,
+                        sha256: sha(),
+                        compression: CompressionKind::None,
+                    },
+                    ArtifactEntry {
+                        kind: ArtifactKind::BucketWeights,
+                        path: "bucket_weights.npy".into(),
+                        byte_size: 1,
+                        sha256: sha(),
+                        compression: CompressionKind::None,
+                    },
+                    ArtifactEntry {
+                        kind: ArtifactKind::MetadataJson,
+                        path: "metadata.json".into(),
+                        byte_size: 1,
+                        sha256: sha(),
+                        compression: CompressionKind::None,
+                    },
+                ],
+            },
+            artifacts: vec![BundleArtifactBytesPayload {
+                kind: ArtifactKind::Centroids,
+                bytes_b64: "AQ==".into(),
+            }],
+            activate: true,
+        });
+
+        let json = serde_json::to_string(&request).unwrap();
+        let decoded: StorageRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, request);
     }
 }

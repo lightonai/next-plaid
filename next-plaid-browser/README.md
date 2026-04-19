@@ -8,6 +8,8 @@ It is intentionally narrower than the native workspace:
 - `next-plaid-browser-contract` fixes the bundle format and worker message shapes.
 - `next-plaid-browser-kernel` holds browser-safe late-interaction search logic.
 - `next-plaid-browser-loader` verifies and loads read-only bundles in host tests.
+- `next-plaid-browser-storage` installs and reopens browser bundles through
+  OPFS + IndexedDB state.
 - `next-plaid-browser-wasm` exposes that logic as a `wasm32`-compilable module.
 - `docs/` records the architecture boundary and the staged implementation plan.
 - `scripts/prove_wasm32.sh` is the first hard gate: it must produce a real
@@ -122,11 +124,11 @@ So today’s browser workspace should be treated as:
 The most important remaining gap is no longer the ranking math. It is the
 browser runtime shell around that math:
 
-- OPFS-backed bundle installation and loading
-- manifest verification and active-version switching
+- storage-backed startup and recovery hardening
+- manifest verification, rollback, and cleanup policy
 - the remaining native API surfaces that still need browser equivalents:
   - add / update / delete flows for the browser FTS sidecar
-  - storage-backed startup and recovery instead of in-memory-only loading
+  - persistent FTS-sidecar storage instead of in-memory-only keyword state
 
 ## Current scope
 
@@ -149,9 +151,9 @@ Phase 0.75 adds:
 
 The next implementation slice is now:
 
-1. OPFS-backed bundle loader
-2. install/verify/activate bundle lifecycle
-3. browser storage-backed startup and recovery flows
+1. storage-backed startup and recovery hardening
+2. rollback / cleanup behavior for superseded bundles
+3. SyncAccessHandle optimization for worker-side bundle reads
 4. iterative add / update / delete on the FTS side
 
 ## Quick start
@@ -210,7 +212,7 @@ path end to end across:
 ## Next steps
 
 - implement OPFS-backed bundle loading and manifest/version handling
-- replace host-side bundle filesystem loading with worker/runtime glue
+- harden the new OPFS + IndexedDB runtime path for recovery and cleanup
 - add iterative FTS mutation flows
 - connect the current in-memory SQLite WASM keyword layer to storage-backed
   browser startup
