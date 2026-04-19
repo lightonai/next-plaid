@@ -3,6 +3,7 @@
 //! This module defines the JSON structures used for API communication.
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -862,7 +863,10 @@ pub fn decode_b64_embeddings(b64: &str, shape: [usize; 2]) -> Result<Vec<f32>, S
     let bytes = STANDARD
         .decode(b64)
         .map_err(|e| format!("Invalid base64: {}", e))?;
-    let expected = shape[0] * shape[1] * 4;
+    let expected: usize = shape[0]
+        .checked_mul(shape[1])
+        .and_then(|elements| elements.checked_mul(std::mem::size_of::<f32>()))
+        .ok_or_else(|| format!("Shape {:?} exceeds supported embedding size", shape))?;
     if bytes.len() != expected {
         return Err(format!(
             "Expected {} bytes for shape {:?}, got {}",
@@ -875,7 +879,75 @@ pub fn decode_b64_embeddings(b64: &str, shape: [usize; 2]) -> Result<Vec<f32>, S
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
+    if let Some((index, value)) = floats
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        return Err(format!(
+            "Embedding contains non-finite value at flat index {}: {}",
+            index, value
+        ));
+    }
     Ok(floats)
+}
+
+fn validate_embedding_shape(shape: [usize; 2], label: &str) -> Result<(), String> {
+    if shape[0] == 0 {
+        return Err(format!("Empty {} embeddings", label));
+    }
+    if shape[1] == 0 {
+        return Err(format!("Zero dimension {} embeddings", label));
+    }
+    Ok(())
+}
+
+/// Convert base64-encoded embeddings into ndarray with shape and finite-value validation.
+pub fn decode_b64_embeddings_to_array2(
+    b64: &str,
+    shape: [usize; 2],
+    label: &str,
+) -> Result<Array2<f32>, String> {
+    validate_embedding_shape(shape, label)?;
+    let floats: Vec<f32> = decode_b64_embeddings(b64, shape)?;
+    Array2::from_shape_vec((shape[0], shape[1]), floats)
+        .map_err(|error| format!("Failed to create {} array: {}", label, error))
+}
+
+/// Convert JSON embeddings into ndarray with shape and finite-value validation.
+pub fn json_embeddings_to_array2(
+    embeddings: &[Vec<f32>],
+    label: &str,
+    singular_label: &str,
+) -> Result<Array2<f32>, String> {
+    let rows: usize = embeddings.len();
+    validate_embedding_shape([rows, embeddings.first().map_or(0, Vec::len)], label)?;
+    let cols: usize = embeddings[0].len();
+
+    for (row_index, row) in embeddings.iter().enumerate() {
+        if row.len() != cols {
+            return Err(format!(
+                "Inconsistent {} embedding dimension at row {}: expected {}, got {}",
+                label,
+                row_index,
+                cols,
+                row.len()
+            ));
+        }
+        for (column_index, value) in row.iter().enumerate() {
+            if !value.is_finite() {
+                return Err(format!(
+                    "{} embedding contains non-finite value at row {}, col {}",
+                    singular_label, row_index, column_index
+                ));
+            }
+        }
+    }
+
+    let flat: Vec<f32> = embeddings.iter().flatten().copied().collect();
+    Array2::from_shape_vec((rows, cols), flat)
+        .map_err(|error| format!("Failed to create {} array: {}", label, error))
 }
 
 /// Encode f32 embeddings as base64 little-endian.
@@ -906,4 +978,45 @@ pub struct ErrorResponse {
     /// Optional additional details
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_b64_embeddings_rejects_non_finite_values() {
+        let bytes: Vec<u8> = [1.0f32, f32::NAN]
+            .into_iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let encoded: String = STANDARD.encode(bytes);
+
+        let error: String =
+            decode_b64_embeddings(&encoded, [1, 2]).expect_err("non-finite must fail");
+
+        assert!(error.contains("non-finite"), "{error}");
+        assert!(error.contains("flat index 1"), "{error}");
+    }
+
+    #[test]
+    fn decode_b64_embeddings_to_array2_rejects_empty_shape() {
+        let error: String = decode_b64_embeddings_to_array2("", [0, 4], "query")
+            .expect_err("empty shape must fail");
+        assert!(error.contains("Empty query embeddings"), "{error}");
+    }
+
+    #[test]
+    fn decode_b64_embeddings_to_array2_rejects_zero_dimension_shape() {
+        let error: String = decode_b64_embeddings_to_array2("", [2, 0], "query")
+            .expect_err("zero dimension must fail");
+        assert!(error.contains("Zero dimension query embeddings"), "{error}");
+    }
+
+    #[test]
+    fn json_embeddings_to_array2_rejects_zero_dimension_rows() {
+        let error: String = json_embeddings_to_array2(&[Vec::new()], "query", "Query")
+            .expect_err("zero dimension must fail");
+        assert!(error.contains("Zero dimension query embeddings"), "{error}");
+    }
 }
