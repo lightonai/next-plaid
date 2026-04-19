@@ -12,6 +12,8 @@ crate-type = ["cdylib", "rlib"]
 base64 = { workspace = true }
 next-plaid-browser-contract = { path = "../next-plaid-browser-contract" }
 next-plaid-browser-kernel = { path = "../next-plaid-browser-kernel" }
+regex = "1.12"
+rusqlite = { workspace = true, features = ["functions"] }
 serde_json = { workspace = true }
 wasm-bindgen = { workspace = true }
 

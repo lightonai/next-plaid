@@ -132,21 +132,17 @@ This spike did not yet prove:
 
 Those are the next focused slices.
 
-## Recommendation
+## Follow-up Status
 
-Proceed with a real port of:
+This recommendation has now been executed in the browser runtime:
 
-- `runtime/keyword_engine.mjs`
+- keyword search, hybrid fusion orchestration, and metadata filter subset resolution now run inside `crates/next-plaid-browser-wasm`
+- the worker harness is now a thin Wasm message bridge
+- the old JS-side `runtime/keyword_engine.mjs` implementation has been removed
+- the Wasm build scripts now automatically use Homebrew LLVM `clang` when it is available
 
-into a Rust browser-side SQLite crate using `rusqlite`, while preserving:
+The remaining follow-up work from this spike is narrower:
 
-- the current query behavior
-- BM25 ranking semantics
-- subset filtering
-- future room for metadata filtering and mutation flows
-
-At the same time, formalize the Wasm build environment:
-
-- rustup-managed cargo/rustc
-- `wasm32-unknown-unknown` target installed
-- Homebrew LLVM `clang` wired in for `sqlite-wasm-rs`
+- persistent browser storage through `sqlite-wasm-vfs` with OPFS or IndexedDB
+- add / update / delete mutation flows for the browser FTS state
+- Rust-generated TypeScript bindings for the public browser contract

@@ -46,6 +46,11 @@ fi
 # about the installed targets.
 export PATH="$(dirname "$CARGO"):$PATH"
 
+LLVM_CLANG="/opt/homebrew/opt/llvm/bin/clang"
+if [[ -x "$LLVM_CLANG" ]]; then
+  export CC_wasm32_unknown_unknown="$LLVM_CLANG"
+fi
+
 "$RUSTUP" target add "$TARGET" >/dev/null
 
 "$CARGO" build \

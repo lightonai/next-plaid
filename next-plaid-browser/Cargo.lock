@@ -634,6 +634,8 @@ dependencies = [
  "base64",
  "next-plaid-browser-contract",
  "next-plaid-browser-kernel",
+ "regex",
+ "rusqlite",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-test",

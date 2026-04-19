@@ -7,6 +7,11 @@ workspace_root="$(cd "$script_dir/.." && pwd)"
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
+LLVM_CLANG="/opt/homebrew/opt/llvm/bin/clang"
+if [[ -x "$LLVM_CLANG" ]]; then
+  export CC_wasm32_unknown_unknown="$LLVM_CLANG"
+fi
+
 browser="${1:-chrome}"
 headless="${BROWSER_HEADLESS:-1}"
 shift || true

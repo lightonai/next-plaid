@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::mem::size_of;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use keyword_runtime::KeywordIndex;
 use next_plaid_browser_contract::{
     FusionRequest, FusionResponse, HealthResponse, IndexSummary, InlineSearchParamsRequest,
     InlineSearchRequest, InlineSearchResponse, MatrixPayload, QueryEmbeddingsPayload,
@@ -16,14 +17,17 @@ use next_plaid_browser_kernel::{
 };
 use wasm_bindgen::prelude::*;
 
+mod keyword_runtime;
+
 const BROWSER_INDEX_DIR: &str = "browser://memory";
 const DEFAULT_BATCH_SIZE: usize = 2000;
 const DEFAULT_CENTROID_BATCH_SIZE: usize = 100_000;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct LoadedIndex {
     payload: SearchIndexPayload,
     metadata: Option<Vec<Option<serde_json::Value>>>,
+    keyword_index: Option<KeywordIndex>,
     summary: IndexSummary,
     memory_usage_bytes: u64,
 }
@@ -133,12 +137,20 @@ fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse
         }
     }
 
+    let keyword_index = request
+        .metadata
+        .as_ref()
+        .map(|metadata| KeywordIndex::new(metadata, &request.fts_tokenizer))
+        .transpose()
+        .map_err(|err| JsError::new(&err))?;
+
     LOADED_INDICES.with(|indices| {
         indices.borrow_mut().insert(
             name.clone(),
             LoadedIndex {
                 payload: request.index,
                 metadata: request.metadata,
+                keyword_index,
                 summary: summary.clone(),
                 memory_usage_bytes,
             },
@@ -151,51 +163,189 @@ fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse
 fn search_loaded_index(request: WorkerSearchRequest) -> Result<SearchResponse, JsError> {
     validate_worker_search_request(&request.request)?;
 
-    let queries = request
-        .request
-        .queries
-        .as_ref()
-        .ok_or_else(|| JsError::new("semantic search requires `queries`"))?;
-
     LOADED_INDICES.with(|indices| {
         let indices = indices.borrow();
         let loaded = indices
             .get(&request.name)
             .ok_or_else(|| JsError::new(&format!("index '{}' is not loaded", request.name)))?;
-        let index = browser_index_view(&loaded.payload)?;
-        let params = worker_search_parameters(&request.request.params);
-        let subset = request.request.subset.as_deref();
-        let mut results = Vec::with_capacity(queries.len());
+        let subset = resolve_subset(loaded, &request.request)?;
+        let top_k = request.request.params.top_k.unwrap_or(10);
+        let has_queries = has_semantic_queries(&request.request);
+        let has_text_query = has_text_queries(&request.request);
 
-        for (query_id, query_payload) in queries.iter().enumerate() {
-            let query_payload = query_payload_to_matrix_payload(query_payload)?;
-            if query_payload.dim != loaded.summary.dimension {
-                return Err(JsError::new(&format!(
-                    "query dimension {} does not match index dimension {}",
-                    query_payload.dim, loaded.summary.dimension,
-                )));
+        if has_queries && has_text_query {
+            let queries = request.request.queries.as_deref().unwrap_or(&[]);
+            let text_queries = request.request.text_query.as_deref().unwrap_or(&[]);
+            let fetch_k = top_k.saturating_mul(3);
+            let semantic_results = semantic_ranked_results(
+                loaded,
+                queries,
+                &request.request.params,
+                fetch_k,
+                subset.as_deref(),
+            )?;
+            let keyword_results =
+                keyword_ranked_results(loaded, text_queries, fetch_k, subset.as_deref())?;
+
+            let mut results = Vec::with_capacity(queries.len());
+            for (query_id, (semantic, keyword)) in semantic_results
+                .iter()
+                .zip(keyword_results.iter())
+                .enumerate()
+            {
+                let fused = fuse_results(FusionRequest {
+                    semantic: Some(semantic.clone()),
+                    keyword: Some(keyword.clone()),
+                    alpha: request.request.alpha,
+                    fusion: request.request.fusion.clone(),
+                    top_k,
+                })?;
+
+                results.push(QueryResultResponse {
+                    query_id,
+                    metadata: metadata_for_results(loaded.metadata.as_deref(), &fused.document_ids),
+                    document_ids: fused.document_ids,
+                    scores: fused.scores,
+                });
             }
 
-            let query =
-                MatrixView::new(&query_payload.values, query_payload.rows, query_payload.dim)
-                    .map_err(|err| JsError::new(&err.to_string()))?;
-
-            let result = search_one(index, query, &params, subset)
-                .map_err(|err| JsError::new(&err.to_string()))?;
-
-            results.push(QueryResultResponse {
-                query_id,
-                metadata: metadata_for_results(loaded.metadata.as_deref(), &result.passage_ids),
-                document_ids: result.passage_ids,
-                scores: result.scores,
+            return Ok(SearchResponse {
+                num_queries: results.len(),
+                results,
             });
         }
 
-        Ok(SearchResponse {
-            num_queries: results.len(),
-            results,
-        })
+        if has_queries {
+            let queries = request.request.queries.as_deref().unwrap_or(&[]);
+            let ranked_results = semantic_ranked_results(
+                loaded,
+                queries,
+                &request.request.params,
+                top_k,
+                subset.as_deref(),
+            )?;
+            return Ok(search_response_from_ranked_results(
+                loaded.metadata.as_deref(),
+                ranked_results,
+            ));
+        }
+
+        let text_queries = request.request.text_query.as_deref().unwrap_or(&[]);
+        let ranked_results =
+            keyword_ranked_results(loaded, text_queries, top_k, subset.as_deref())?;
+        Ok(search_response_from_ranked_results(
+            loaded.metadata.as_deref(),
+            ranked_results,
+        ))
     })
+}
+
+fn resolve_subset(
+    loaded: &LoadedIndex,
+    request: &SearchRequest,
+) -> Result<Option<Vec<i64>>, JsError> {
+    if has_filter_condition(request) {
+        let keyword_index = loaded.keyword_index.as_ref().ok_or_else(|| {
+            JsError::new("metadata filtering requires metadata to be loaded for this index")
+        })?;
+        let condition = request.filter_condition.as_deref().unwrap_or_default();
+        let parameters: &[serde_json::Value] = request.filter_parameters.as_deref().unwrap_or(&[]);
+        let subset = keyword_index
+            .filter_document_ids(condition, parameters)
+            .map_err(|err| JsError::new(&err))?;
+        return Ok(Some(subset));
+    }
+
+    Ok(request.subset.clone())
+}
+
+fn semantic_ranked_results(
+    loaded: &LoadedIndex,
+    queries: &[QueryEmbeddingsPayload],
+    params: &SearchParamsRequest,
+    top_k: usize,
+    subset: Option<&[i64]>,
+) -> Result<Vec<RankedResultsPayload>, JsError> {
+    let index = browser_index_view(&loaded.payload)?;
+    let mut search_params = worker_search_parameters(params);
+    search_params.top_k = top_k;
+
+    let mut results = Vec::with_capacity(queries.len());
+    for query_payload in queries {
+        let query_payload = query_payload_to_matrix_payload(query_payload)?;
+        if query_payload.dim != loaded.summary.dimension {
+            return Err(JsError::new(&format!(
+                "query dimension {} does not match index dimension {}",
+                query_payload.dim, loaded.summary.dimension,
+            )));
+        }
+
+        let query = MatrixView::new(&query_payload.values, query_payload.rows, query_payload.dim)
+            .map_err(|err| JsError::new(&err.to_string()))?;
+        let result = search_one(index, query, &search_params, subset)
+            .map_err(|err| JsError::new(&err.to_string()))?;
+
+        results.push(RankedResultsPayload {
+            document_ids: result.passage_ids,
+            scores: result.scores,
+        });
+    }
+
+    Ok(results)
+}
+
+fn keyword_ranked_results(
+    loaded: &LoadedIndex,
+    text_queries: &[String],
+    top_k: usize,
+    subset: Option<&[i64]>,
+) -> Result<Vec<RankedResultsPayload>, JsError> {
+    let Some(keyword_index) = loaded.keyword_index.as_ref() else {
+        return Ok(empty_ranked_results(text_queries.len()));
+    };
+
+    keyword_index
+        .search_many(text_queries, top_k, subset)
+        .map_err(|err| JsError::new(&err))
+        .map(|results| {
+            results
+                .into_iter()
+                .map(|result| RankedResultsPayload {
+                    document_ids: result.document_ids,
+                    scores: result.scores,
+                })
+                .collect()
+        })
+}
+
+fn empty_ranked_results(count: usize) -> Vec<RankedResultsPayload> {
+    (0..count)
+        .map(|_| RankedResultsPayload {
+            document_ids: vec![],
+            scores: vec![],
+        })
+        .collect()
+}
+
+fn search_response_from_ranked_results(
+    metadata: Option<&[Option<serde_json::Value>]>,
+    ranked_results: Vec<RankedResultsPayload>,
+) -> SearchResponse {
+    let results = ranked_results
+        .into_iter()
+        .enumerate()
+        .map(|(query_id, ranked)| QueryResultResponse {
+            query_id,
+            metadata: metadata_for_results(metadata, &ranked.document_ids),
+            document_ids: ranked.document_ids,
+            scores: ranked.scores,
+        })
+        .collect::<Vec<_>>();
+
+    SearchResponse {
+        num_queries: results.len(),
+        results,
+    }
 }
 
 fn run_inline_search(request: InlineSearchRequest) -> Result<InlineSearchResponse, JsError> {
@@ -292,22 +442,8 @@ fn truncate_ranked_results(results: &RankedResultsPayload, top_k: usize) -> (Vec
 }
 
 fn validate_worker_search_request(request: &SearchRequest) -> Result<(), JsError> {
-    let has_queries = request
-        .queries
-        .as_ref()
-        .map(|queries| !queries.is_empty())
-        .unwrap_or(false);
-    let has_text_query = request
-        .text_query
-        .as_ref()
-        .map(|queries| !queries.is_empty())
-        .unwrap_or(false);
-    let has_filter_condition = request.filter_condition.is_some();
-    let has_filter_parameters = request
-        .filter_parameters
-        .as_ref()
-        .map(|parameters| !parameters.is_empty())
-        .unwrap_or(false);
+    let has_queries = has_semantic_queries(request);
+    let has_text_query = has_text_queries(request);
     let alpha = request.alpha.unwrap_or(0.75);
     let fusion_mode = request.fusion.as_deref().unwrap_or("rrf");
 
@@ -325,19 +461,48 @@ fn validate_worker_search_request(request: &SearchRequest) -> Result<(), JsError
         return Err(JsError::new("fusion must be `rrf` or `relative_score`"));
     }
 
-    if has_text_query {
+    if has_queries && has_text_query && request.queries.as_ref().map_or(0, Vec::len) != 1 {
         return Err(JsError::new(
-            "text_query is not supported yet in the browser runtime",
+            "Hybrid search requires exactly 1 query embedding (text_query can only fuse with one semantic query)",
         ));
     }
 
-    if has_filter_condition || has_filter_parameters {
+    if has_queries
+        && has_text_query
+        && request.queries.as_ref().map_or(0, Vec::len)
+            != request.text_query.as_ref().map_or(0, Vec::len)
+    {
         return Err(JsError::new(
-            "metadata filtering is not supported yet in the browser runtime",
+            "queries length must match text_query length in hybrid mode",
         ));
     }
 
     Ok(())
+}
+
+fn has_semantic_queries(request: &SearchRequest) -> bool {
+    request
+        .queries
+        .as_ref()
+        .map(|queries| !queries.is_empty())
+        .unwrap_or(false)
+}
+
+fn has_text_queries(request: &SearchRequest) -> bool {
+    request
+        .text_query
+        .as_ref()
+        .map(|queries| !queries.is_empty())
+        .unwrap_or(false)
+}
+
+fn has_filter_condition(request: &SearchRequest) -> bool {
+    request
+        .filter_condition
+        .as_deref()
+        .map(str::trim)
+        .map(|condition| !condition.is_empty())
+        .unwrap_or(false)
 }
 
 fn build_index_summary(request: &WorkerLoadIndexRequest) -> Result<IndexSummary, JsError> {
@@ -649,6 +814,21 @@ mod tests {
         }
     }
 
+    fn load_search_demo_request(name: &str) -> WorkerLoadIndexRequest {
+        WorkerLoadIndexRequest {
+            name: name.into(),
+            index: demo_index(),
+            metadata: Some(vec![
+                Some(serde_json::json!({"title": "alpha launch memo", "topic": "edge"})),
+                Some(serde_json::json!({"title": "beta report summary", "topic": "metrics"})),
+                Some(serde_json::json!({"title": "gamma archive note", "topic": "history"})),
+            ]),
+            nbits: 2,
+            fts_tokenizer: "unicode61".into(),
+            max_documents: None,
+        }
+    }
+
     fn worker_search_request(
         name: &str,
         top_k: usize,
@@ -676,6 +856,86 @@ mod tests {
                 filter_parameters: None,
             },
         }
+    }
+
+    fn runtime_search_response(request: WorkerSearchRequest) -> SearchResponse {
+        let response = handle_runtime_request_json(
+            &serde_json::to_string(&RuntimeRequest::Search(request)).unwrap(),
+        )
+        .unwrap();
+        let decoded: RuntimeResponse = serde_json::from_str(&response).unwrap();
+        match decoded {
+            RuntimeResponse::SearchResults(result) => result,
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
+    fn keyword_search_request(name: &str, text_queries: &[&str]) -> WorkerSearchRequest {
+        WorkerSearchRequest {
+            name: name.into(),
+            request: SearchRequest {
+                queries: None,
+                params: SearchParamsRequest {
+                    top_k: Some(2),
+                    n_ivf_probe: None,
+                    n_full_scores: None,
+                    centroid_score_threshold: None,
+                },
+                subset: None,
+                text_query: Some(
+                    text_queries
+                        .iter()
+                        .map(|query| (*query).to_string())
+                        .collect(),
+                ),
+                alpha: None,
+                fusion: None,
+                filter_condition: None,
+                filter_parameters: None,
+            },
+        }
+    }
+
+    fn hybrid_search_request(name: &str) -> WorkerSearchRequest {
+        WorkerSearchRequest {
+            name: name.into(),
+            request: SearchRequest {
+                queries: Some(vec![QueryEmbeddingsPayload {
+                    embeddings: Some(vec![vec![0.0, 1.0], vec![0.7, 0.7]]),
+                    embeddings_b64: None,
+                    shape: None,
+                }]),
+                params: SearchParamsRequest {
+                    top_k: Some(2),
+                    n_ivf_probe: Some(2),
+                    n_full_scores: Some(3),
+                    centroid_score_threshold: None,
+                },
+                subset: None,
+                text_query: Some(vec!["beta".into()]),
+                alpha: Some(0.25),
+                fusion: Some("relative_score".into()),
+                filter_condition: None,
+                filter_parameters: None,
+            },
+        }
+    }
+
+    fn filtered_semantic_request(name: &str) -> WorkerSearchRequest {
+        let mut request = worker_search_request(name, 2, None);
+        request.request.filter_condition = Some("topic = ?".into());
+        request.request.filter_parameters = Some(vec![serde_json::json!("metrics")]);
+        request
+    }
+
+    fn filtered_keyword_request(name: &str) -> WorkerSearchRequest {
+        let mut request = keyword_search_request(name, &["alpha OR gamma"]);
+        request.request.filter_condition = Some("topic IN (?, ?)".into());
+        request.request.filter_parameters = Some(vec![
+            serde_json::json!("history"),
+            serde_json::json!("edge"),
+        ]);
+        request
     }
 
     #[test]
@@ -837,6 +1097,75 @@ mod tests {
             }
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    #[test]
+    fn worker_search_supports_keyword_only_queries() {
+        reset_runtime_state();
+        handle_runtime_request_json(
+            &serde_json::to_string(&RuntimeRequest::LoadIndex(load_search_demo_request(
+                "demo-keyword",
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let response = runtime_search_response(keyword_search_request("demo-keyword", &["alpha"]));
+        assert_eq!(response.num_queries, 1);
+        assert_eq!(response.results[0].document_ids, vec![0]);
+        assert_eq!(
+            response.results[0].metadata[0],
+            Some(serde_json::json!({"title": "alpha launch memo", "topic": "edge"}))
+        );
+    }
+
+    #[test]
+    fn worker_search_supports_hybrid_queries() {
+        reset_runtime_state();
+        handle_runtime_request_json(
+            &serde_json::to_string(&RuntimeRequest::LoadIndex(load_search_demo_request(
+                "demo-hybrid",
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let response = runtime_search_response(hybrid_search_request("demo-hybrid"));
+        assert_eq!(response.num_queries, 1);
+        assert_eq!(response.results[0].document_ids[0], 1);
+    }
+
+    #[test]
+    fn worker_search_filter_condition_overrides_subset() {
+        reset_runtime_state();
+        handle_runtime_request_json(
+            &serde_json::to_string(&RuntimeRequest::LoadIndex(load_search_demo_request(
+                "demo-filter-override",
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut request = filtered_semantic_request("demo-filter-override");
+        request.request.subset = Some(vec![0]);
+
+        let response = runtime_search_response(request);
+        assert_eq!(response.results[0].document_ids, vec![1]);
+    }
+
+    #[test]
+    fn worker_search_supports_filtered_keyword_queries() {
+        reset_runtime_state();
+        handle_runtime_request_json(
+            &serde_json::to_string(&RuntimeRequest::LoadIndex(load_search_demo_request(
+                "demo-filtered-keyword",
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let response = runtime_search_response(filtered_keyword_request("demo-filtered-keyword"));
+        assert_eq!(response.results[0].document_ids, vec![0, 2]);
     }
 
     #[test]

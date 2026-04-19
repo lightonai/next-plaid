@@ -42,9 +42,9 @@ fn load_request(name: &str) -> WorkerLoadIndexRequest {
         name: name.into(),
         index: demo_index(),
         metadata: Some(vec![
-            Some(serde_json::json!({"title": "doc-0"})),
-            Some(serde_json::json!({"title": "doc-1"})),
-            None,
+            Some(serde_json::json!({"title": "alpha launch memo", "topic": "edge"})),
+            Some(serde_json::json!({"title": "beta report summary", "topic": "metrics"})),
+            Some(serde_json::json!({"title": "gamma archive note", "topic": "history"})),
         ]),
         nbits: 2,
         fts_tokenizer: "unicode61".into(),
@@ -86,6 +86,74 @@ fn worker_search_request(
     }
 }
 
+fn keyword_search_request(name: &str, text_queries: &[&str]) -> WorkerSearchRequest {
+    WorkerSearchRequest {
+        name: name.into(),
+        request: SearchRequest {
+            queries: None,
+            params: SearchParamsRequest {
+                top_k: Some(2),
+                n_ivf_probe: None,
+                n_full_scores: None,
+                centroid_score_threshold: None,
+            },
+            subset: None,
+            text_query: Some(
+                text_queries
+                    .iter()
+                    .map(|query| (*query).to_string())
+                    .collect(),
+            ),
+            alpha: None,
+            fusion: None,
+            filter_condition: None,
+            filter_parameters: None,
+        },
+    }
+}
+
+fn hybrid_search_request(name: &str) -> WorkerSearchRequest {
+    WorkerSearchRequest {
+        name: name.into(),
+        request: SearchRequest {
+            queries: Some(vec![QueryEmbeddingsPayload {
+                embeddings: Some(vec![vec![0.0, 1.0], vec![0.7, 0.7]]),
+                embeddings_b64: None,
+                shape: None,
+            }]),
+            params: SearchParamsRequest {
+                top_k: Some(2),
+                n_ivf_probe: Some(2),
+                n_full_scores: Some(3),
+                centroid_score_threshold: None,
+            },
+            subset: None,
+            text_query: Some(vec!["beta".into()]),
+            alpha: Some(0.25),
+            fusion: Some("relative_score".into()),
+            filter_condition: None,
+            filter_parameters: None,
+        },
+    }
+}
+
+fn filtered_semantic_request(name: &str) -> WorkerSearchRequest {
+    let mut request = worker_search_request(name, vec![vec![vec![1.0, 0.0], vec![0.7, 0.7]]], None);
+    request.request.filter_condition = Some("topic = ?".into());
+    request.request.filter_parameters = Some(vec![serde_json::json!("metrics")]);
+    request
+}
+
+fn filtered_keyword_request(name: &str) -> WorkerSearchRequest {
+    let mut request = keyword_search_request(name, &["alpha OR gamma"]);
+    request.request.filter_condition = Some("topic IN (?, ?)".into());
+    request.request.filter_parameters = Some(vec![
+        serde_json::json!("history"),
+        serde_json::json!("edge"),
+    ]);
+    request
+}
+
 fn direct_kernel_result(request: &WorkerSearchRequest) -> SearchResponse {
     let index = demo_index();
     let centroids = MatrixView::new(
@@ -116,9 +184,9 @@ fn direct_kernel_result(request: &WorkerSearchRequest) -> SearchResponse {
             .unwrap_or_default(),
     };
     let metadata = vec![
-        Some(serde_json::json!({"title": "doc-0"})),
-        Some(serde_json::json!({"title": "doc-1"})),
-        None,
+        Some(serde_json::json!({"title": "alpha launch memo", "topic": "edge"})),
+        Some(serde_json::json!({"title": "beta report summary", "topic": "metrics"})),
+        Some(serde_json::json!({"title": "gamma archive note", "topic": "history"})),
     ];
 
     let results = request
@@ -268,6 +336,86 @@ fn browser_worker_search_rejects_invalid_fusion_mode() {
         None,
     );
     request.request.fusion = Some("bogus".into());
+
+    let request_json = serde_json::to_string(&RuntimeRequest::Search(request)).unwrap();
+    assert!(handle_runtime_request_json(&request_json).is_err());
+}
+
+#[wasm_bindgen_test]
+fn browser_worker_search_supports_keyword_only_queries() {
+    reset_runtime_state();
+    load_demo_index("demo-keyword");
+
+    let runtime = runtime_result(&keyword_search_request("demo-keyword", &["alpha"]));
+    assert_eq!(runtime.num_queries, 1);
+    assert_eq!(runtime.results[0].document_ids, vec![0]);
+}
+
+#[wasm_bindgen_test]
+fn browser_worker_search_supports_hybrid_queries() {
+    reset_runtime_state();
+    load_demo_index("demo-hybrid");
+
+    let runtime = runtime_result(&hybrid_search_request("demo-hybrid"));
+    assert_eq!(runtime.num_queries, 1);
+    assert_eq!(runtime.results[0].document_ids[0], 1);
+}
+
+#[wasm_bindgen_test]
+fn browser_worker_search_filter_condition_overrides_subset() {
+    reset_runtime_state();
+    load_demo_index("demo-filter-override");
+
+    let mut request = filtered_semantic_request("demo-filter-override");
+    request.request.subset = Some(vec![0]);
+
+    let runtime = runtime_result(&request);
+    assert_eq!(runtime.results[0].document_ids, vec![1]);
+}
+
+#[wasm_bindgen_test]
+fn browser_worker_search_supports_filtered_keyword_queries() {
+    reset_runtime_state();
+    load_demo_index("demo-filtered-keyword");
+
+    let runtime = runtime_result(&filtered_keyword_request("demo-filtered-keyword"));
+    assert_eq!(runtime.results[0].document_ids, vec![0, 2]);
+}
+
+#[wasm_bindgen_test]
+fn browser_worker_search_rejects_hybrid_query_count_mismatch() {
+    reset_runtime_state();
+    load_demo_index("demo-hybrid-invalid");
+
+    let request = WorkerSearchRequest {
+        name: "demo-hybrid-invalid".into(),
+        request: SearchRequest {
+            queries: Some(vec![
+                QueryEmbeddingsPayload {
+                    embeddings: Some(vec![vec![1.0, 0.0], vec![0.7, 0.7]]),
+                    embeddings_b64: None,
+                    shape: None,
+                },
+                QueryEmbeddingsPayload {
+                    embeddings: Some(vec![vec![0.0, 1.0], vec![0.7, 0.7]]),
+                    embeddings_b64: None,
+                    shape: None,
+                },
+            ]),
+            params: SearchParamsRequest {
+                top_k: Some(2),
+                n_ivf_probe: Some(2),
+                n_full_scores: Some(3),
+                centroid_score_threshold: None,
+            },
+            subset: None,
+            text_query: Some(vec!["beta".into()]),
+            alpha: Some(0.25),
+            fusion: Some("relative_score".into()),
+            filter_condition: None,
+            filter_parameters: None,
+        },
+    };
 
     let request_json = serde_json::to_string(&RuntimeRequest::Search(request)).unwrap();
     assert!(handle_runtime_request_json(&request_json).is_err());

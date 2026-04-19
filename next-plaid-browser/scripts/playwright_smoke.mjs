@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
+import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { extname, join, normalize, relative, resolve } from "node:path";
 import process from "node:process";
@@ -12,6 +13,7 @@ const outputRoot = join(workspaceRoot, "output", "playwright");
 
 const requestedBrowser = process.argv[2] ?? "chromium";
 const headless = process.env.PLAYWRIGHT_HEADLESS !== "0";
+const llvmClang = "/opt/homebrew/opt/llvm/bin/clang";
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -53,6 +55,9 @@ function runCommand(command, args, cwd) {
       env: {
         ...process.env,
         PATH: `${process.env.HOME}/.cargo/bin:${process.env.PATH}`,
+        ...(existsSync(llvmClang)
+          ? { CC_wasm32_unknown_unknown: process.env.CC_wasm32_unknown_unknown ?? llvmClang }
+          : {}),
       },
       stdio: "inherit",
     });
