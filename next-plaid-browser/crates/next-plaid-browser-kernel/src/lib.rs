@@ -1074,8 +1074,8 @@ where
     }
 }
 
-pub fn search_one(
-    index: BrowserIndexView<'_>,
+fn dispatch_search<'a, V: IndexView<'a>>(
+    index: V,
     query: MatrixView<'_>,
     params: &SearchParameters,
     subset: Option<&[i64]>,
@@ -1094,24 +1094,22 @@ pub fn search_one(
     })
 }
 
+pub fn search_one(
+    index: BrowserIndexView<'_>,
+    query: MatrixView<'_>,
+    params: &SearchParameters,
+    subset: Option<&[i64]>,
+) -> Result<QueryResult, KernelError> {
+    dispatch_search(index, query, params, subset)
+}
+
 pub fn search_one_compressed(
     index: CompressedBrowserIndexView<'_>,
     query: MatrixView<'_>,
     params: &SearchParameters,
     subset: Option<&[i64]>,
 ) -> Result<QueryResult, KernelError> {
-    if query.dim() != index.centroids().dim() {
-        return Err(KernelError::ShapeMismatch);
-    }
-
-    let use_batched =
-        params.centroid_batch_size > 0 && index.centroids().rows() > params.centroid_batch_size;
-
-    Ok(if use_batched {
-        search_one_batched(index, query, params, subset)
-    } else {
-        search_one_standard(index, query, params, subset)
-    })
+    dispatch_search(index, query, params, subset)
 }
 
 #[cfg(test)]
