@@ -840,8 +840,8 @@ fn ivf_probe_batched(
     selected.into_iter().collect()
 }
 
-fn search_one_standard(
-    index: BrowserIndexView<'_>,
+fn search_one_standard<'a, V: IndexView<'a>>(
+    index: V,
     query: MatrixView<'_>,
     params: &SearchParameters,
     subset: Option<&[i64]>,
@@ -1094,125 +1094,6 @@ pub fn search_one(
     })
 }
 
-fn search_one_standard_compressed(
-    index: CompressedBrowserIndexView<'_>,
-    query: MatrixView<'_>,
-    params: &SearchParameters,
-    subset: Option<&[i64]>,
-) -> QueryResult {
-    let num_centroids = index.centroids().rows();
-    let num_query_tokens = query.rows();
-    let query_centroid_scores = dense_query_centroid_scores(query, index.centroids());
-
-    let eligible_centroids: Option<HashSet<usize>> = subset.map(|subset_docs| {
-        let mut centroids = HashSet::new();
-        for &doc_id in subset_docs {
-            let doc_index = doc_id as usize;
-            if let Some(codes) = index.doc_codes(doc_index) {
-                for &code in codes {
-                    centroids.insert(code as usize);
-                }
-            }
-        }
-        centroids
-    });
-
-    let effective_n_ivf_probe = match (&eligible_centroids, subset) {
-        (Some(eligible), Some(subset_docs)) if !eligible.is_empty() => {
-            let num_docs = index.document_count();
-            let subset_len = subset_docs.len();
-            let scaled = if subset_len > 0 {
-                (params.n_ivf_probe as u64 * num_docs as u64 / subset_len as u64) as usize
-            } else {
-                params.n_ivf_probe
-            };
-            scaled.max(params.n_ivf_probe).min(eligible.len())
-        }
-        _ => params.n_ivf_probe,
-    };
-
-    let cells_to_probe = {
-        let mut selected_centroids = HashSet::new();
-
-        for q_idx in 0..num_query_tokens {
-            let mut centroid_scores: Vec<(usize, f32)> = match &eligible_centroids {
-                Some(eligible) => eligible
-                    .iter()
-                    .map(|&centroid_index| {
-                        (
-                            centroid_index,
-                            dense_score_at(
-                                &query_centroid_scores,
-                                num_centroids,
-                                q_idx,
-                                centroid_index,
-                            ),
-                        )
-                    })
-                    .collect(),
-                None => (0..num_centroids)
-                    .map(|centroid_index| {
-                        (
-                            centroid_index,
-                            dense_score_at(
-                                &query_centroid_scores,
-                                num_centroids,
-                                q_idx,
-                                centroid_index,
-                            ),
-                        )
-                    })
-                    .collect(),
-            };
-
-            let n_probe = effective_n_ivf_probe.min(centroid_scores.len());
-            if n_probe == 0 {
-                continue;
-            }
-
-            if centroid_scores.len() > n_probe {
-                centroid_scores.select_nth_unstable_by(n_probe - 1, |lhs, rhs| {
-                    rhs.1
-                        .total_cmp(&lhs.1)
-                });
-            }
-
-            for (centroid_index, _) in centroid_scores.iter().take(n_probe) {
-                selected_centroids.insert(*centroid_index);
-            }
-        }
-
-        if let Some(threshold) = params.centroid_score_threshold {
-            selected_centroids.retain(|&centroid_index| {
-                let max_score = (0..num_query_tokens)
-                    .map(|q_idx| {
-                        dense_score_at(&query_centroid_scores, num_centroids, q_idx, centroid_index)
-                    })
-                    .max_by(|lhs, rhs| lhs.total_cmp(rhs))
-                    .unwrap_or(f32::NEG_INFINITY);
-                max_score >= threshold
-            });
-        }
-
-        selected_centroids.into_iter().collect::<Vec<_>>()
-    };
-
-    let mut candidates = index.get_candidates(&cells_to_probe);
-    if let Some(subset_docs) = subset {
-        let subset_set: HashSet<i64> = subset_docs.iter().copied().collect();
-        candidates.retain(|candidate| subset_set.contains(candidate));
-    }
-
-    rank_candidates(index, query, params, candidates, |doc_codes| {
-        approximate_score_dense(
-            &query_centroid_scores,
-            num_query_tokens,
-            num_centroids,
-            doc_codes,
-        )
-    })
-}
-
 fn search_one_batched_compressed(
     index: CompressedBrowserIndexView<'_>,
     query: MatrixView<'_>,
@@ -1265,7 +1146,7 @@ pub fn search_one_compressed(
     Ok(if use_batched {
         search_one_batched_compressed(index, query, params, subset)
     } else {
-        search_one_standard_compressed(index, query, params, subset)
+        search_one_standard(index, query, params, subset)
     })
 }
 
