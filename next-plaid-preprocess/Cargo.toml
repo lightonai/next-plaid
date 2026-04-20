@@ -1,0 +1,19 @@
+[package]
+name = "next-plaid-preprocess"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[features]
+default = ["native"]
+native = ["tokenizers/onig"]
+wasm = ["tokenizers/unstable_wasm"]
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokenizers = { version = "=0.21.1", default-features = false }
