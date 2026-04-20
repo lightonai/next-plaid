@@ -853,7 +853,9 @@ fn search_one_standard<'a, V: IndexView<'a>>(
     let eligible_centroids: Option<HashSet<usize>> = subset.map(|subset_docs| {
         let mut centroids = HashSet::new();
         for &doc_id in subset_docs {
-            let doc_index = doc_id as usize;
+            let Ok(doc_index) = usize::try_from(doc_id) else {
+                continue;
+            };
             if let Some(codes) = index.doc_codes(doc_index) {
                 for &code in codes {
                     centroids.insert(code as usize);
@@ -982,7 +984,10 @@ fn search_one_batched<'a, V: IndexView<'a>>(
     }
 
     for &doc_id in &candidates {
-        if let Some(codes) = index.doc_codes(doc_id as usize) {
+        let Ok(doc_index) = usize::try_from(doc_id) else {
+            continue;
+        };
+        if let Some(codes) = index.doc_codes(doc_index) {
             for &code in codes {
                 unique_centroids.insert(code as usize);
             }
@@ -1017,7 +1022,10 @@ where
     let mut approx_scores = candidates
         .iter()
         .map(|&doc_id| {
-            let doc_codes = index.doc_codes(doc_id as usize).unwrap_or(&[]);
+            let doc_codes = usize::try_from(doc_id)
+                .ok()
+                .and_then(|id| index.doc_codes(id))
+                .unwrap_or(&[]);
             (doc_id, approximate_score(doc_codes))
         })
         .collect::<Vec<_>>();
@@ -1047,8 +1055,9 @@ where
     let mut exact_scores = to_rerank
         .iter()
         .filter_map(|&doc_id| {
-            index
-                .exact_score(query, doc_id as usize)
+            usize::try_from(doc_id)
+                .ok()
+                .and_then(|id| index.exact_score(query, id))
                 .map(|score| (doc_id, score))
         })
         .collect::<Vec<_>>();
