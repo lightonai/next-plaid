@@ -2,10 +2,11 @@
 
 Written: 2026-04-20
 Starting point: `741632b`
-Status: proposed immediate next slice
+Status: executed, see companion report
 Companion docs:
 - `2026-04-20-rust-preprocessor-architecture-sketch.md`
 - `2026-04-20-browser-embedding-parity-plan.md`
+- `2026-04-20-s0-tokenizer-wasm-compile-report.md`
 
 ## Why this slice exists
 
