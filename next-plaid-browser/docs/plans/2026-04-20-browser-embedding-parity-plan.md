@@ -284,6 +284,9 @@ Goal:
 - harden the existing search/runtime/storage boundary so the encoder can plug
   into it without creating silent quality regressions or opaque failure modes
 
+First implementation slice plan:
+- `2026-04-20-slice-10-seam-hardening-foundation.md`
+
 Deliverables:
 - typed error on the runtime wire
 - `schema_version` in runtime health and envelope-level compatibility checking
