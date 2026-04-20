@@ -24,6 +24,7 @@ use wasm_bindgen::prelude::*;
 mod convert;
 mod keyword_runtime;
 mod memory;
+mod validation;
 
 #[derive(Debug, Error)]
 pub(crate) enum WasmError {
@@ -342,7 +343,7 @@ fn load_compressed_bundle_into_runtime(
 }
 
 fn search_loaded_index(request: WorkerSearchRequest) -> Result<SearchResponse, WasmError> {
-    validate_worker_search_request(&request.request)?;
+    validation::validate_worker_search_request(&request.request)?;
 
     LOADED_INDICES.with(|indices| {
         let indices = indices.borrow();
@@ -351,8 +352,8 @@ fn search_loaded_index(request: WorkerSearchRequest) -> Result<SearchResponse, W
             .ok_or_else(|| WasmError::IndexNotLoaded(request.name.clone()))?;
         let subset = resolve_subset(loaded, &request.request)?;
         let top_k = request.request.params.top_k.unwrap_or(10);
-        let has_queries = has_semantic_queries(&request.request);
-        let has_text_query = has_text_queries(&request.request);
+        let has_queries = validation::has_semantic_queries(&request.request);
+        let has_text_query = validation::has_text_queries(&request.request);
 
         if has_queries && has_text_query {
             let queries = request.request.queries.as_deref().unwrap_or(&[]);
@@ -425,7 +426,7 @@ fn resolve_subset(
     loaded: &LoadedIndex,
     request: &SearchRequest,
 ) -> Result<Option<Vec<i64>>, WasmError> {
-    if has_filter_condition(request) {
+    if validation::has_filter_condition(request) {
         let keyword_index = loaded.keyword_index.as_ref().ok_or_else(|| {
             WasmError::InvalidRequest(
                 "metadata filtering requires metadata to be loaded for this index".into(),
@@ -570,10 +571,10 @@ fn fuse_results(request: FusionRequest) -> Result<FusionResponse, WasmError> {
     }
 
     if let Some(results) = semantic {
-        validate_ranked_results(results)?;
+        validation::validate_ranked_results(results)?;
     }
     if let Some(results) = keyword {
-        validate_ranked_results(results)?;
+        validation::validate_ranked_results(results)?;
     }
 
     let (document_ids, scores) = match (semantic, keyword) {
@@ -604,15 +605,6 @@ fn fuse_results(request: FusionRequest) -> Result<FusionResponse, WasmError> {
     })
 }
 
-fn validate_ranked_results(results: &RankedResultsPayload) -> Result<(), WasmError> {
-    if results.document_ids.len() != results.scores.len() {
-        return Err(WasmError::InvalidRequest(
-            "document_ids and scores must have the same length".into(),
-        ));
-    }
-    Ok(())
-}
-
 fn truncate_ranked_results(results: &RankedResultsPayload, top_k: usize) -> (Vec<i64>, Vec<f32>) {
     let mut ranked: Vec<(i64, f32)> = results
         .document_ids
@@ -625,74 +617,6 @@ fn truncate_ranked_results(results: &RankedResultsPayload, top_k: usize) -> (Vec
         ranked.iter().map(|&(document_id, _)| document_id).collect(),
         ranked.iter().map(|&(_, score)| score).collect(),
     )
-}
-
-fn validate_worker_search_request(request: &SearchRequest) -> Result<(), WasmError> {
-    let has_queries = has_semantic_queries(request);
-    let has_text_query = has_text_queries(request);
-    let alpha = request.alpha.unwrap_or(0.75);
-    let fusion_mode = request.fusion.as_deref().unwrap_or("rrf");
-
-    if !has_queries && !has_text_query {
-        return Err(WasmError::InvalidRequest(
-            "At least one of `queries` or `text_query` must be provided".into(),
-        ));
-    }
-
-    if !(0.0..=1.0).contains(&alpha) {
-        return Err(WasmError::InvalidRequest(
-            "alpha must be between 0.0 and 1.0".into(),
-        ));
-    }
-
-    if fusion_mode != "rrf" && fusion_mode != "relative_score" {
-        return Err(WasmError::InvalidRequest(
-            "fusion must be `rrf` or `relative_score`".into(),
-        ));
-    }
-
-    if has_queries && has_text_query && request.queries.as_ref().map_or(0, Vec::len) != 1 {
-        return Err(WasmError::InvalidRequest(
-            "Hybrid search requires exactly 1 query embedding (text_query can only fuse with one semantic query)".into(),
-        ));
-    }
-
-    if has_queries
-        && has_text_query
-        && request.queries.as_ref().map_or(0, Vec::len)
-            != request.text_query.as_ref().map_or(0, Vec::len)
-    {
-        return Err(WasmError::InvalidRequest(
-            "queries length must match text_query length in hybrid mode".into(),
-        ));
-    }
-
-    Ok(())
-}
-
-fn has_semantic_queries(request: &SearchRequest) -> bool {
-    request
-        .queries
-        .as_ref()
-        .map(|queries| !queries.is_empty())
-        .unwrap_or(false)
-}
-
-fn has_text_queries(request: &SearchRequest) -> bool {
-    request
-        .text_query
-        .as_ref()
-        .map(|queries| !queries.is_empty())
-        .unwrap_or(false)
-}
-
-fn has_filter_condition(request: &SearchRequest) -> bool {
-    request
-        .filter_condition
-        .as_deref()
-        .map(str::trim)
-        .map(|condition| !condition.is_empty())
-        .unwrap_or(false)
 }
 
 fn build_index_summary(request: &WorkerLoadIndexRequest) -> Result<IndexSummary, WasmError> {
