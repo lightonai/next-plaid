@@ -79,11 +79,11 @@ pub enum FtsTokenizer {
 }
 
 impl FtsTokenizer {
-    pub fn from_request_str(tokenizer: &str) -> Result<Self, String> {
+    pub fn from_request_str(tokenizer: &str) -> Result<Self, KeywordError> {
         match tokenizer {
             "unicode61" => Ok(Self::Unicode61),
             "trigram" => Ok(Self::Trigram),
-            other => Err(format!("unsupported FTS tokenizer: {other}")),
+            other => Err(KeywordError::UnsupportedTokenizer(other.to_string())),
         }
     }
 
@@ -138,33 +138,31 @@ enum Token {
 }
 
 impl KeywordIndex {
-    pub fn new(metadata: &[Option<Value>], tokenizer: &str) -> Result<Self, String> {
+    pub fn new(metadata: &[Option<Value>], tokenizer: &str) -> Result<Self, KeywordError> {
         let tokenizer = FtsTokenizer::from_request_str(tokenizer)?;
         let schema = collect_metadata_schema(metadata)?;
-        let mut conn = Connection::open_in_memory().map_err(sql_err)?;
+        let mut conn = Connection::open_in_memory()?;
         install_regexp_function(&conn)?;
         ensure_tables(&conn, &schema, &tokenizer)?;
         insert_metadata(&mut conn, metadata, &schema)?;
         Ok(Self { conn })
     }
 
-    pub fn memory_usage_bytes(&self) -> Result<u64, String> {
+    pub fn memory_usage_bytes(&self) -> Result<u64, KeywordError> {
         let page_size: i64 = self
             .conn
-            .pragma_query_value(Some("main"), "page_size", |row| row.get(0))
-            .map_err(sql_err)?;
+            .pragma_query_value(Some("main"), "page_size", |row| row.get(0))?;
         let page_count: i64 = self
             .conn
-            .pragma_query_value(Some("main"), "page_count", |row| row.get(0))
-            .map_err(sql_err)?;
-        let page_size =
-            u64::try_from(page_size).map_err(|_| "negative SQLite page_size".to_string())?;
-        let page_count =
-            u64::try_from(page_count).map_err(|_| "negative SQLite page_count".to_string())?;
+            .pragma_query_value(Some("main"), "page_count", |row| row.get(0))?;
+        let page_size = u64::try_from(page_size)
+            .map_err(|_| KeywordError::NegativePragmaValue { what: "page_size" })?;
+        let page_count = u64::try_from(page_count)
+            .map_err(|_| KeywordError::NegativePragmaValue { what: "page_count" })?;
 
         page_size
             .checked_mul(page_count)
-            .ok_or_else(|| "keyword runtime byte count overflow".to_string())
+            .ok_or(KeywordError::MemoryCountOverflow)
     }
 
     pub fn search_many(
@@ -172,7 +170,7 @@ impl KeywordIndex {
         queries: &[String],
         top_k: usize,
         subset: Option<&[i64]>,
-    ) -> Result<Vec<RankedResults>, String> {
+    ) -> Result<Vec<RankedResults>, KeywordError> {
         queries
             .iter()
             .map(|query| search_one(&self.conn, query, top_k, subset))
@@ -183,7 +181,7 @@ impl KeywordIndex {
         &self,
         condition: &str,
         parameters: &[Value],
-    ) -> Result<Vec<i64>, String> {
+    ) -> Result<Vec<i64>, KeywordError> {
         let valid_columns = get_schema_columns(&self.conn)?;
         validate_condition(condition, &valid_columns)?;
 
@@ -192,16 +190,17 @@ impl KeywordIndex {
             SUBSET_COLUMN, METADATA_TABLE, condition
         );
 
-        let params: Vec<Box<dyn ToSql>> = parameters.iter().map(json_to_sql_value).collect();
+        let params: Vec<Box<dyn ToSql>> = parameters
+            .iter()
+            .map(json_to_sql_value)
+            .collect::<Result<_, _>>()?;
         let param_refs: Vec<&dyn ToSql> = params.iter().map(|value| value.as_ref()).collect();
-        let mut statement = self.conn.prepare(&query).map_err(sql_err)?;
-        let rows = statement
-            .query_map(params_from_iter(param_refs), |row| row.get::<_, i64>(0))
-            .map_err(sql_err)?;
+        let mut statement = self.conn.prepare(&query)?;
+        let rows = statement.query_map(params_from_iter(param_refs), |row| row.get::<_, i64>(0))?;
 
         let mut document_ids = Vec::new();
         for row in rows {
-            document_ids.push(row.map_err(sql_err)?);
+            document_ids.push(row?);
         }
 
         Ok(document_ids)
@@ -239,7 +238,7 @@ fn collect_text_parts(value: &Value, parts: &mut Vec<String>) {
     }
 }
 
-fn install_regexp_function(conn: &Connection) -> Result<(), String> {
+fn install_regexp_function(conn: &Connection) -> Result<(), KeywordError> {
     conn.create_scalar_function(
         "regexp",
         2,
@@ -260,15 +259,15 @@ fn install_regexp_function(conn: &Connection) -> Result<(), String> {
                 .map_err(|error| SqlError::UserFunctionError(error.into()))?;
             Ok(compiled.is_match(text))
         },
-    )
-    .map_err(sql_err)
+    )?;
+    Ok(())
 }
 
 fn ensure_tables(
     conn: &Connection,
     schema: &MetadataSchema,
     tokenizer: &FtsTokenizer,
-) -> Result<(), String> {
+) -> Result<(), KeywordError> {
     conn.execute_batch(&format!(
         r#"
         CREATE TABLE IF NOT EXISTS "{FTS_CONFIG_TABLE}" (
@@ -294,8 +293,7 @@ fn ensure_tables(
         "#,
         tokenizer = tokenizer.fts5_tokenize_value(),
         metadata_columns = build_metadata_columns_sql(schema),
-    ))
-    .map_err(sql_err)?;
+    ))?;
 
     conn.execute(
         &format!(
@@ -303,8 +301,7 @@ fn ensure_tables(
             FTS_CONFIG_TABLE
         ),
         [tokenizer.fts5_tokenize_value()],
-    )
-    .map_err(sql_err)?;
+    )?;
 
     Ok(())
 }
@@ -326,46 +323,39 @@ fn insert_metadata(
     conn: &mut Connection,
     metadata: &[Option<Value>],
     schema: &MetadataSchema,
-) -> Result<(), String> {
-    let transaction = conn.transaction().map_err(sql_err)?;
-    let mut fts_statement = transaction
-        .prepare(&format!(
-            "INSERT INTO \"{}\"(rowid, \"{}\") VALUES (?1, ?2)",
-            FTS_TABLE, FTS_CONTENT_COLUMN
-        ))
-        .map_err(sql_err)?;
-    let mut metadata_statement = transaction
-        .prepare(&build_insert_metadata_sql(schema))
-        .map_err(sql_err)?;
+) -> Result<(), KeywordError> {
+    let transaction = conn.transaction()?;
+    let mut fts_statement = transaction.prepare(&format!(
+        "INSERT INTO \"{}\"(rowid, \"{}\") VALUES (?1, ?2)",
+        FTS_TABLE, FTS_CONTENT_COLUMN
+    ))?;
+    let mut metadata_statement = transaction.prepare(&build_insert_metadata_sql(schema))?;
 
     for (document_id, value) in metadata.iter().enumerate() {
         let document_id =
-            i64::try_from(document_id).map_err(|_| "document id overflow".to_string())?;
+            i64::try_from(document_id).map_err(|_| KeywordError::DocumentIdOverflow)?;
 
-        fts_statement
-            .execute([
-                &document_id as &dyn ToSql,
-                &metadata_to_text(value.as_ref()),
-            ])
-            .map_err(sql_err)?;
+        fts_statement.execute([
+            &document_id as &dyn ToSql,
+            &metadata_to_text(value.as_ref()),
+        ])?;
 
         let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(document_id)];
         let metadata_object = value.as_ref().and_then(Value::as_object);
         for column_name in &schema.columns {
             values.push(json_to_sql(
                 metadata_object.and_then(|object| object.get(column_name)),
-            ));
+            )?);
         }
 
         let params: Vec<&dyn ToSql> = values.iter().map(|value| value.as_ref()).collect();
-        metadata_statement
-            .execute(params_from_iter(params))
-            .map_err(sql_err)?;
+        metadata_statement.execute(params_from_iter(params))?;
     }
 
     drop(metadata_statement);
     drop(fts_statement);
-    transaction.commit().map_err(sql_err)
+    transaction.commit()?;
+    Ok(())
 }
 
 fn build_insert_metadata_sql(schema: &MetadataSchema) -> String {
@@ -391,7 +381,7 @@ fn search_one(
     query: &str,
     top_k: usize,
     subset: Option<&[i64]>,
-) -> Result<RankedResults, String> {
+) -> Result<RankedResults, KeywordError> {
     if query.is_empty() {
         return Ok(RankedResults {
             document_ids: vec![],
@@ -440,17 +430,15 @@ fn search_one(
     };
 
     let param_refs: Vec<&dyn ToSql> = params.iter().map(|value| value.as_ref()).collect();
-    let mut statement = conn.prepare(&sql).map_err(sql_err)?;
-    let rows = statement
-        .query_map(params_from_iter(param_refs), |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, f32>(1)?))
-        })
-        .map_err(sql_err)?;
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(param_refs), |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, f32>(1)?))
+    })?;
 
     let mut document_ids = Vec::new();
     let mut scores = Vec::new();
     for row in rows {
-        let (document_id, score) = row.map_err(sql_err)?;
+        let (document_id, score) = row?;
         document_ids.push(document_id);
         scores.push(score);
     }
@@ -465,7 +453,7 @@ fn search_one(
     })
 }
 
-fn collect_metadata_schema(metadata: &[Option<Value>]) -> Result<MetadataSchema, String> {
+fn collect_metadata_schema(metadata: &[Option<Value>]) -> Result<MetadataSchema, KeywordError> {
     let mut columns = Vec::new();
     let mut column_types = HashMap::new();
     let mut seen_columns = HashSet::new();
@@ -477,10 +465,10 @@ fn collect_metadata_schema(metadata: &[Option<Value>]) -> Result<MetadataSchema,
 
         for (column_name, value) in object {
             if !is_valid_column_name(column_name) {
-                return Err(format!(
-                    "Invalid metadata column '{}'. Column names must start with a letter or underscore and only contain letters, digits, or underscores.",
-                    column_name
-                ));
+                return Err(KeywordError::InvalidMetadataColumn {
+                    column: column_name.clone(),
+                    reason: "must start with a letter or underscore and only contain letters, digits, or underscores",
+                });
             }
 
             if seen_columns.insert(column_name.clone()) {
@@ -527,15 +515,15 @@ fn infer_sql_type(value: &Value) -> &'static str {
     }
 }
 
-fn json_to_sql(value: Option<&Value>) -> Box<dyn ToSql> {
+fn json_to_sql(value: Option<&Value>) -> Result<Box<dyn ToSql>, KeywordError> {
     match value {
         Some(value) => json_to_sql_value(value),
-        None => Box::new(None::<String>),
+        None => Ok(Box::new(None::<String>)),
     }
 }
 
-fn json_to_sql_value(value: &Value) -> Box<dyn ToSql> {
-    match value {
+fn json_to_sql_value(value: &Value) -> Result<Box<dyn ToSql>, KeywordError> {
+    Ok(match value {
         Value::Null => Box::new(None::<String>),
         Value::Bool(value) => Box::new(if *value { 1i64 } else { 0i64 }),
         Value::Number(number) => {
@@ -550,8 +538,8 @@ fn json_to_sql_value(value: &Value) -> Box<dyn ToSql> {
             }
         }
         Value::String(value) => Box::new(value.clone()),
-        Value::Array(_) | Value::Object(_) => Box::new(serde_json::to_string(value).unwrap()),
-    }
+        Value::Array(_) | Value::Object(_) => Box::new(serde_json::to_string(value)?),
+    })
 }
 
 fn make_temp_table_name(prefix: &str) -> String {
@@ -569,7 +557,7 @@ fn make_temp_table_name(prefix: &str) -> String {
 
 type InClause = (String, Vec<Box<dyn ToSql>>, Option<String>);
 
-fn build_in_clause(conn: &Connection, ids: &[i64]) -> Result<InClause, String> {
+fn build_in_clause(conn: &Connection, ids: &[i64]) -> Result<InClause, KeywordError> {
     if ids.len() <= SQLITE_PARAM_LIMIT {
         let placeholders: Vec<&str> = std::iter::repeat_n("?", ids.len()).collect();
         let sql = format!("IN ({})", placeholders.join(", "));
@@ -587,17 +575,14 @@ fn build_in_clause(conn: &Connection, ids: &[i64]) -> Result<InClause, String> {
             table_name
         ),
         [],
-    )
-    .map_err(sql_err)?;
+    )?;
 
-    let mut insert = conn
-        .prepare(&format!(
-            "INSERT OR IGNORE INTO \"{}\"(id) VALUES (?1)",
-            table_name
-        ))
-        .map_err(sql_err)?;
+    let mut insert = conn.prepare(&format!(
+        "INSERT OR IGNORE INTO \"{}\"(id) VALUES (?1)",
+        table_name
+    ))?;
     for id in ids {
-        insert.execute([id]).map_err(sql_err)?;
+        insert.execute([id])?;
     }
 
     Ok((
@@ -611,46 +596,39 @@ fn drop_temp_table(conn: &Connection, table_name: &str) {
     let _ = conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", table_name), []);
 }
 
-fn get_schema_columns(conn: &Connection) -> Result<HashSet<String>, String> {
-    let mut statement = conn
-        .prepare(&format!("PRAGMA table_info(\"{}\")", METADATA_TABLE))
-        .map_err(sql_err)?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(sql_err)?;
+fn get_schema_columns(conn: &Connection) -> Result<HashSet<String>, KeywordError> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info(\"{}\")", METADATA_TABLE))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
 
     let mut columns = HashSet::new();
     for row in rows {
-        columns.insert(row.map_err(sql_err)?);
+        columns.insert(row?);
     }
     Ok(columns)
 }
 
-fn quick_safety_check(condition: &str) -> Result<(), String> {
+fn quick_safety_check(condition: &str) -> Result<(), KeywordError> {
     let upper = condition.to_uppercase();
 
     if condition.contains("--") || condition.contains("/*") || condition.contains("*/") {
-        return Err("SQL comments are not allowed in conditions".into());
+        return Err(KeywordError::SqlCommentsNotAllowed);
     }
 
     if condition.contains(';') {
-        return Err("Semicolons are not allowed in conditions".into());
+        return Err(KeywordError::SqlSemicolonNotAllowed);
     }
 
     for keyword in DANGEROUS_KEYWORDS {
-        let pattern = Regex::new(&format!(r"\b{}\b", keyword)).map_err(regex_err)?;
+        let pattern = Regex::new(&format!(r"\b{}\b", keyword))?;
         if pattern.is_match(&upper) {
-            return Err(format!(
-                "SQL keyword '{}' is not allowed in conditions",
-                keyword
-            ));
+            return Err(KeywordError::SqlKeywordNotAllowed((*keyword).to_string()));
         }
     }
 
     Ok(())
 }
 
-fn tokenize(input: &str) -> Result<Vec<Token>, String> {
+fn tokenize(input: &str) -> Result<Vec<Token>, KeywordError> {
     let chars: Vec<char> = input.chars().collect();
     let mut tokens = Vec::new();
     let mut position = 0;
@@ -760,7 +738,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             }
 
             if position >= chars.len() {
-                return Err("Unterminated quoted identifier".into());
+                return Err(KeywordError::UnterminatedQuotedIdentifier);
             }
 
             let word: String = chars[start..position].iter().collect();
@@ -769,10 +747,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             continue;
         }
 
-        return Err(format!(
-            "Unexpected character '{}' in condition",
-            chars[position]
-        ));
+        return Err(KeywordError::UnexpectedCharacter(chars[position]));
     }
 
     tokens.push(Token::Eof);
@@ -804,31 +779,30 @@ impl<'a> ConditionValidator<'a> {
         }
     }
 
-    fn expect(&mut self, expected: &Token) -> Result<(), String> {
+    fn expect(&mut self, expected: &Token) -> Result<(), KeywordError> {
         if self.current() == expected {
             self.advance();
             Ok(())
         } else {
-            Err(format!(
-                "Expected {:?}, found {:?}",
-                expected,
-                self.current()
-            ))
+            Err(KeywordError::ConditionParseError {
+                expected: token_label(expected),
+                found: format!("{:?}", self.current()),
+            })
         }
     }
 
-    fn validate(&mut self) -> Result<(), String> {
+    fn validate(&mut self) -> Result<(), KeywordError> {
         self.parse_expr()?;
         if *self.current() != Token::Eof {
-            return Err(format!(
-                "Unexpected token {:?} after expression",
+            return Err(KeywordError::UnexpectedTrailingToken(format!(
+                "{:?}",
                 self.current()
-            ));
+            )));
         }
         Ok(())
     }
 
-    fn parse_expr(&mut self) -> Result<(), String> {
+    fn parse_expr(&mut self) -> Result<(), KeywordError> {
         self.parse_and_expr()?;
         while *self.current() == Token::Or {
             self.advance();
@@ -837,7 +811,7 @@ impl<'a> ConditionValidator<'a> {
         Ok(())
     }
 
-    fn parse_and_expr(&mut self) -> Result<(), String> {
+    fn parse_and_expr(&mut self) -> Result<(), KeywordError> {
         self.parse_unary_expr()?;
         while *self.current() == Token::And {
             self.advance();
@@ -846,14 +820,14 @@ impl<'a> ConditionValidator<'a> {
         Ok(())
     }
 
-    fn parse_unary_expr(&mut self) -> Result<(), String> {
+    fn parse_unary_expr(&mut self) -> Result<(), KeywordError> {
         if *self.current() == Token::Not {
             self.advance();
         }
         self.parse_primary_expr()
     }
 
-    fn parse_primary_expr(&mut self) -> Result<(), String> {
+    fn parse_primary_expr(&mut self) -> Result<(), KeywordError> {
         if *self.current() == Token::LParen {
             self.advance();
             self.parse_expr()?;
@@ -863,7 +837,12 @@ impl<'a> ConditionValidator<'a> {
 
         let column_name = match self.current().clone() {
             Token::Identifier(name) => name,
-            other => return Err(format!("Expected column name, found {:?}", other)),
+            other => {
+                return Err(KeywordError::ConditionParseError {
+                    expected: "column name",
+                    found: format!("{:?}", other),
+                })
+            }
         };
 
         let column_name_lower = column_name.to_lowercase();
@@ -872,7 +851,7 @@ impl<'a> ConditionValidator<'a> {
             .iter()
             .any(|column| column.to_lowercase() == column_name_lower);
         if !valid {
-            return Err(format!("Unknown column '{}' in condition", column_name));
+            return Err(KeywordError::UnknownColumn(column_name));
         }
         self.advance();
 
@@ -906,10 +885,10 @@ impl<'a> ConditionValidator<'a> {
                         self.expect(&Token::Placeholder)?;
                     }
                     other => {
-                        return Err(format!(
-                            "Expected BETWEEN, IN, LIKE, or REGEXP after NOT, found {:?}",
-                            other
-                        ))
+                        return Err(KeywordError::ConditionParseError {
+                            expected: "BETWEEN, IN, LIKE, or REGEXP after NOT",
+                            found: format!("{:?}", other),
+                        })
                     }
                 }
             }
@@ -936,17 +915,17 @@ impl<'a> ConditionValidator<'a> {
                 self.expect(&Token::Placeholder)?;
             }
             other => {
-                return Err(format!(
-                    "Expected operator after column name, found {:?}",
-                    other
-                ))
+                return Err(KeywordError::ConditionParseError {
+                    expected: "operator after column name",
+                    found: format!("{:?}", other),
+                })
             }
         }
 
         Ok(())
     }
 
-    fn parse_in_list(&mut self) -> Result<(), String> {
+    fn parse_in_list(&mut self) -> Result<(), KeywordError> {
         self.expect(&Token::LParen)?;
         self.expect(&Token::Placeholder)?;
         while *self.current() == Token::Comma {
@@ -957,13 +936,42 @@ impl<'a> ConditionValidator<'a> {
     }
 }
 
+fn token_label(token: &Token) -> &'static str {
+    match token {
+        Token::Identifier(_) => "identifier",
+        Token::Placeholder => "placeholder",
+        Token::Eq => "=",
+        Token::Ne => "!=",
+        Token::Lt => "<",
+        Token::Le => "<=",
+        Token::Gt => ">",
+        Token::Ge => ">=",
+        Token::Like => "LIKE",
+        Token::Regexp => "REGEXP",
+        Token::Between => "BETWEEN",
+        Token::In => "IN",
+        Token::And => "AND",
+        Token::Or => "OR",
+        Token::Not => "NOT",
+        Token::Is => "IS",
+        Token::Null => "NULL",
+        Token::LParen => "(",
+        Token::RParen => ")",
+        Token::Comma => ",",
+        Token::Eof => "end of input",
+    }
+}
+
 fn is_numeric_equality(condition: &str) -> bool {
     Regex::new(r"^(\d+)\s*=\s*(\d+)$")
         .map(|regex| regex.is_match(condition.trim()))
         .unwrap_or(false)
 }
 
-fn validate_condition(condition: &str, valid_columns: &HashSet<String>) -> Result<(), String> {
+fn validate_condition(
+    condition: &str,
+    valid_columns: &HashSet<String>,
+) -> Result<(), KeywordError> {
     if is_numeric_equality(condition) {
         return Ok(());
     }
@@ -972,14 +980,6 @@ fn validate_condition(condition: &str, valid_columns: &HashSet<String>) -> Resul
     let tokens = tokenize(condition)?;
     let mut validator = ConditionValidator::new(&tokens, valid_columns);
     validator.validate()
-}
-
-fn sql_err(error: impl std::fmt::Display) -> String {
-    error.to_string()
-}
-
-fn regex_err(error: impl std::fmt::Display) -> String {
-    error.to_string()
 }
 
 #[cfg(test)]
@@ -1126,34 +1126,45 @@ mod tests {
     fn keyword_index_rejects_unsafe_metadata_filters() {
         let index = KeywordIndex::new(&demo_metadata(), "unicode61").unwrap();
 
-        assert!(index
-            .filter_document_ids("name = ?; DROP TABLE METADATA", &[json!("Alice")])
-            .unwrap_err()
-            .contains("Semicolons"));
-        assert!(index
-            .filter_document_ids("name = ? -- comment", &[json!("Alice")])
-            .unwrap_err()
-            .contains("comments"));
+        assert!(matches!(
+            index
+                .filter_document_ids("name = ?; DROP TABLE METADATA", &[json!("Alice")])
+                .unwrap_err(),
+            KeywordError::SqlSemicolonNotAllowed
+        ));
+        assert!(matches!(
+            index
+                .filter_document_ids("name = ? -- comment", &[json!("Alice")])
+                .unwrap_err(),
+            KeywordError::SqlCommentsNotAllowed
+        ));
         let error = index
             .filter_document_ids("name = ? UNION SELECT * FROM users", &[json!("Alice")])
             .unwrap_err();
-        assert!(error.contains("UNION") || error.contains("SELECT"));
-        assert!(index
-            .filter_document_ids("unknown_column = ?", &[json!("Alice")])
-            .unwrap_err()
-            .contains("Unknown column"));
-        assert!(index
-            .filter_document_ids("name = 'Alice'", &[])
-            .unwrap_err()
-            .contains("Unexpected character"));
-        assert!(index
-            .filter_document_ids("name =", &[])
-            .unwrap_err()
-            .contains("Expected Placeholder"));
+        assert!(matches!(error, KeywordError::SqlKeywordNotAllowed(ref kw) if kw == "UNION" || kw == "SELECT"));
+        assert!(matches!(
+            index
+                .filter_document_ids("unknown_column = ?", &[json!("Alice")])
+                .unwrap_err(),
+            KeywordError::UnknownColumn(_)
+        ));
+        assert!(matches!(
+            index
+                .filter_document_ids("name = 'Alice'", &[])
+                .unwrap_err(),
+            KeywordError::UnexpectedCharacter(_)
+        ));
+        assert!(matches!(
+            index.filter_document_ids("name =", &[]).unwrap_err(),
+            KeywordError::ConditionParseError { expected: "placeholder", .. }
+        ));
         let error = index
             .filter_document_ids("LENGTH(name) > ?", &[json!(3)])
             .unwrap_err();
-        assert!(error.contains("Unknown column") || error.contains("Expected operator"));
+        assert!(matches!(
+            error,
+            KeywordError::UnknownColumn(_) | KeywordError::ConditionParseError { .. }
+        ));
     }
 
     #[test]

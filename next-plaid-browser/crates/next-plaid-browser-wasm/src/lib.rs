@@ -216,7 +216,7 @@ fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse
         .as_ref()
         .map(|metadata| KeywordIndex::new(metadata, &request.fts_tokenizer))
         .transpose()
-        .map_err(|err| JsError::new(&err))?;
+        .map_err(|err| JsError::new(&err.to_string()))?;
     let memory_usage_breakdown = index_memory_usage_breakdown(
         &request.index,
         request.metadata.as_deref(),
@@ -250,7 +250,7 @@ fn load_compressed_bundle_into_runtime(
         .as_ref()
         .map(|metadata| KeywordIndex::new(metadata, fts_tokenizer))
         .transpose()
-        .map_err(|err| JsError::new(&err))?;
+        .map_err(|err| JsError::new(&err.to_string()))?;
     let memory_usage_breakdown = compressed_index_memory_usage_breakdown(
         &stored.search_artifacts,
         metadata.as_deref(),
@@ -371,7 +371,7 @@ fn resolve_subset(
         let parameters: &[serde_json::Value] = request.filter_parameters.as_deref().unwrap_or(&[]);
         let subset = keyword_index
             .filter_document_ids(condition, parameters)
-            .map_err(|err| JsError::new(&err))?;
+            .map_err(|err| JsError::new(&err.to_string()))?;
         return Ok(Some(subset));
     }
 
@@ -434,7 +434,7 @@ fn keyword_ranked_results(
 
     keyword_index
         .search_many(text_queries, top_k, subset)
-        .map_err(|err| JsError::new(&err))
+        .map_err(|err| JsError::new(&err.to_string()))
         .map(|results| {
             results
                 .into_iter()
@@ -804,7 +804,7 @@ fn keyword_runtime_usage_bytes(keyword_index: Option<&KeywordIndex>) -> Result<u
         .map(|keyword_index| {
             keyword_index
                 .memory_usage_bytes()
-                .map_err(|err| JsError::new(&err))
+                .map_err(|err| JsError::new(&err.to_string()))
         })
         .transpose()
         .map(|bytes| bytes.unwrap_or(0))
