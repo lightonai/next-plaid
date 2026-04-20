@@ -97,7 +97,7 @@ pub struct IndexConfigStored {
 }
 
 fn default_start_from_scratch() -> usize {
-    999
+    next_plaid::default_start_from_scratch()
 }
 
 fn default_fts_tokenizer() -> String {

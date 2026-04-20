@@ -74,7 +74,7 @@ pub struct IndexConfig {
 }
 
 fn default_start_from_scratch() -> usize {
-    999
+    crate::default_start_from_scratch()
 }
 
 fn default_kmeans_niters() -> usize {
@@ -94,7 +94,7 @@ impl Default for IndexConfig {
             kmeans_niters: 4,
             max_points_per_centroid: 256,
             n_samples_kmeans: None,
-            start_from_scratch: 999,
+            start_from_scratch: crate::default_start_from_scratch(),
             force_cpu: false,
             fts_tokenizer: crate::text_search::FtsTokenizer::default(),
         }
@@ -1722,6 +1722,10 @@ mod tests {
         assert_eq!(config.nbits, 4);
         assert_eq!(config.batch_size, 50_000);
         assert_eq!(config.seed, Some(42));
+        assert_eq!(
+            config.start_from_scratch,
+            crate::default_start_from_scratch()
+        );
     }
 
     #[test]
