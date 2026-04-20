@@ -72,6 +72,8 @@ small harness page, boots a dedicated module worker, and verifies that the page
 can load an index and execute the real worker-hosted Wasm request path
 successfully for:
 
+- stored-bundle semantic search after install and reload
+- stored-bundle hybrid search after install and reload
 - semantic search
 - keyword-only search
 - hybrid fusion

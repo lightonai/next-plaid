@@ -233,6 +233,62 @@ function storedKeywordSearchRequest() {
   };
 }
 
+function storedSemanticSearchRequest() {
+  return {
+    type: "search",
+    name: "stored-demo",
+    request: {
+      queries: [
+        {
+          embeddings: [
+            [1.0, 0.0, 0.0, 0.0]
+          ]
+        }
+      ],
+      params: {
+        top_k: 2,
+        n_ivf_probe: 2,
+        n_full_scores: 2,
+        centroid_score_threshold: null
+      },
+      subset: null,
+      text_query: null,
+      alpha: null,
+      fusion: null,
+      filter_condition: null,
+      filter_parameters: null
+    }
+  };
+}
+
+function storedHybridSearchRequest() {
+  return {
+    type: "search",
+    name: "stored-demo",
+    request: {
+      queries: [
+        {
+          embeddings: [
+            [0.0, 1.0, 0.0, 0.0]
+          ]
+        }
+      ],
+      params: {
+        top_k: 2,
+        n_ivf_probe: 2,
+        n_full_scores: 2,
+        centroid_score_threshold: null
+      },
+      subset: null,
+      text_query: ["beta"],
+      alpha: 0.25,
+      fusion: "relative_score",
+      filter_condition: null,
+      filter_parameters: null
+    }
+  };
+}
+
 function storedFilteredKeywordSearchRequest() {
   return {
     type: "search",
@@ -290,7 +346,9 @@ async function main() {
     reloadWorker = new Worker("./worker.mjs", { type: "module" });
     const reloadedInitialHealth = await callWorker(reloadWorker, { type: "health" });
     const loadStoredBundle = await callWorker(reloadWorker, loadStoredBundleRequest());
+    const storedSemanticSearch = await callWorker(reloadWorker, storedSemanticSearchRequest());
     const storedKeywordSearch = await callWorker(reloadWorker, storedKeywordSearchRequest());
+    const storedHybridSearch = await callWorker(reloadWorker, storedHybridSearchRequest());
     const storedFilteredKeywordSearch = await callWorker(reloadWorker, storedFilteredKeywordSearchRequest());
     const load = await callWorker(reloadWorker, loadIndexRequest());
     const health = await callWorker(reloadWorker, { type: "health" });
@@ -305,7 +363,9 @@ async function main() {
       installBundle,
       reloadedInitialHealth,
       loadStoredBundle,
+      storedSemanticSearch,
       storedKeywordSearch,
+      storedHybridSearch,
       storedFilteredKeywordSearch,
       load,
       health,

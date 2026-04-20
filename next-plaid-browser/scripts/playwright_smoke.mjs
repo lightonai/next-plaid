@@ -178,7 +178,9 @@ async function runSmoke(browserName) {
     const installActivated = result.installBundle?.activated;
     const reloadedInitialIndices = result.reloadedInitialHealth?.loaded_indices;
     const storedLoadedDocuments = result.loadStoredBundle?.summary?.num_documents;
+    const storedSemanticTopDocumentId = result.storedSemanticSearch?.results?.[0]?.document_ids?.[0];
     const storedKeywordTopDocumentId = result.storedKeywordSearch?.results?.[0]?.document_ids?.[0];
+    const storedHybridTopDocumentId = result.storedHybridSearch?.results?.[0]?.document_ids?.[0];
     const storedFilteredKeywordTopDocumentId =
       result.storedFilteredKeywordSearch?.results?.[0]?.document_ids?.[0];
     const semanticTopDocumentId = result.semanticSearch?.results?.[0]?.document_ids?.[0];
@@ -194,7 +196,9 @@ async function runSmoke(browserName) {
       installActivated !== true ||
       reloadedInitialIndices !== 0 ||
       storedLoadedDocuments !== 2 ||
+      storedSemanticTopDocumentId !== 0 ||
       storedKeywordTopDocumentId !== 0 ||
+      storedHybridTopDocumentId !== 1 ||
       storedFilteredKeywordTopDocumentId !== 1 ||
       semanticTopDocumentId !== 0 ||
       keywordTopDocumentId !== 0 ||

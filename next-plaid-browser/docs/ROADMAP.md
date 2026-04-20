@@ -165,6 +165,8 @@ Status:
   - worker startup
   - empty health
   - named index load
+  - stored-bundle semantic search after reload
+  - stored-bundle hybrid search after reload
   - populated health
   - worker-hosted semantic search
   - worker-hosted keyword-only search

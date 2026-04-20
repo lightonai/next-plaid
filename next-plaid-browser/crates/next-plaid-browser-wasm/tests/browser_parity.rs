@@ -159,6 +159,69 @@ fn filtered_keyword_request(name: &str) -> WorkerSearchRequest {
     request
 }
 
+fn stored_semantic_search_request(name: &str) -> WorkerSearchRequest {
+    WorkerSearchRequest {
+        name: name.into(),
+        request: SearchRequest {
+            queries: Some(vec![QueryEmbeddingsPayload {
+                embeddings: Some(vec![vec![1.0, 0.0, 0.0, 0.0]]),
+                embeddings_b64: None,
+                shape: None,
+            }]),
+            params: SearchParamsRequest {
+                top_k: Some(2),
+                n_ivf_probe: Some(2),
+                n_full_scores: Some(2),
+                centroid_score_threshold: None,
+            },
+            subset: None,
+            text_query: None,
+            alpha: None,
+            fusion: None,
+            filter_condition: None,
+            filter_parameters: None,
+        },
+    }
+}
+
+fn stored_subset_semantic_search_request(name: &str) -> WorkerSearchRequest {
+    let mut request = stored_semantic_search_request(name);
+    request.request.subset = Some(vec![1]);
+    request
+}
+
+fn stored_filtered_semantic_search_request(name: &str) -> WorkerSearchRequest {
+    let mut request = stored_semantic_search_request(name);
+    request.request.filter_condition = Some("title = ?".into());
+    request.request.filter_parameters = Some(vec![serde_json::json!("beta")]);
+    request
+}
+
+fn stored_hybrid_search_request(name: &str) -> WorkerSearchRequest {
+    WorkerSearchRequest {
+        name: name.into(),
+        request: SearchRequest {
+            queries: Some(vec![QueryEmbeddingsPayload {
+                embeddings: Some(vec![vec![0.0, 1.0, 0.0, 0.0]]),
+                embeddings_b64: None,
+                shape: None,
+            }]),
+            params: SearchParamsRequest {
+                top_k: Some(2),
+                n_ivf_probe: Some(2),
+                n_full_scores: Some(2),
+                centroid_score_threshold: None,
+            },
+            subset: None,
+            text_query: Some(vec!["beta".into()]),
+            alpha: Some(0.25),
+            fusion: Some("relative_score".into()),
+            filter_condition: None,
+            filter_parameters: None,
+        },
+    }
+}
+
 fn direct_kernel_result(request: &WorkerSearchRequest) -> SearchResponse {
     let index = demo_index();
     let centroids = MatrixView::new(
@@ -548,11 +611,23 @@ async fn browser_storage_install_and_reload_roundtrip() {
     let keyword = runtime_result(&keyword_search_request("stored-demo", &["alpha"]));
     assert_eq!(keyword.results[0].document_ids, vec![0]);
 
+    let semantic = runtime_result(&stored_semantic_search_request("stored-demo"));
+    assert_eq!(semantic.results[0].document_ids[0], 0);
+
+    let subset_semantic = runtime_result(&stored_subset_semantic_search_request("stored-demo"));
+    assert_eq!(subset_semantic.results[0].document_ids, vec![1]);
+
     let mut filtered = keyword_search_request("stored-demo", &["beta"]);
     filtered.request.filter_condition = Some("title = ?".into());
     filtered.request.filter_parameters = Some(vec![serde_json::json!("beta")]);
     let filtered_response = runtime_result(&filtered);
     assert_eq!(filtered_response.results[0].document_ids, vec![1]);
+
+    let filtered_semantic = runtime_result(&stored_filtered_semantic_search_request("stored-demo"));
+    assert_eq!(filtered_semantic.results[0].document_ids, vec![1]);
+
+    let hybrid = runtime_result(&stored_hybrid_search_request("stored-demo"));
+    assert_eq!(hybrid.results[0].document_ids[0], 1);
 }
 
 #[wasm_bindgen_test]
