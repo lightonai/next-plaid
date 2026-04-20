@@ -3,6 +3,8 @@
 Written: 2026-04-20
 Starting point: `42dfc02`
 Status: active working plan
+Companion implementation handoff:
+`2026-04-20-browser-embedding-handoff.md`
 
 ## Why this file exists
 
@@ -16,6 +18,9 @@ implementation spreads.
 
 This plan should be updated as decisions are made. When a question is resolved,
 do not leave the answer only in chat history. Record the decision here.
+The companion handoff document is the deeper lifecycle-and-seams audit. This
+plan is the execution baseline and must carry every decision that implementation
+depends on.
 
 ## Current boundary
 
@@ -91,6 +96,12 @@ them.
     worker loading and CSP behavior simpler. Self-hosting is the default
     project decision unless a later slice proves a CDN path is operationally
     cleaner.
+
+11. Do seam hardening before encoder implementation.
+    The encoder crosses too many unstable boundaries today. A pre-encoder slice
+    must land first so typed errors, schema evolution, encoder-to-index
+    compatibility checks, and protocol drift checks are in place before model
+    code starts spreading.
 
 ## What must remain faithful to native behavior
 
@@ -266,6 +277,69 @@ The search worker owns:
 This separation is intentionally strict.
 
 ## Proposed implementation phases
+
+### Phase -1: seam hardening
+
+Goal:
+- harden the existing search/runtime/storage boundary so the encoder can plug
+  into it without creating silent quality regressions or opaque failure modes
+
+Deliverables:
+- typed error on the runtime wire
+- `schema_version` in runtime health and envelope-level compatibility checking
+- encoder-to-index compatibility fields on bundle manifests and query embedding
+  payloads
+- NaN/Inf rejection before search results leave the worker
+- wasm panic hook installed
+- optional timing breakdowns on search responses
+- hand-written `protocol.ts` mirror plus a Rust-to-TS drift test fixture
+
+Acceptance:
+- search worker can reject bad embeddings as typed request errors rather than
+  relying on string parsing or silent wrong answers
+- app layer can distinguish protocol mismatch, encoder mismatch, and runtime
+  failure programmatically
+- protocol drift becomes test-detectable
+
+Required seam-hardening work:
+
+1. Typed errors on the wire.
+   Continue the typed-error direction from Slice 8 across the JSON boundary.
+   Well-formed requests that fail should produce a typed error payload, not only
+   a collapsed `JsError.message`.
+
+2. Schema versioning.
+   Add a schema version field to runtime health at minimum, and make response
+   compatibility checkable by the caller.
+
+3. Encoder-to-index binding.
+   Bundle manifests must carry encoder identity and normalization state.
+   Query embedding payloads must carry matching encoder identity, build, layout,
+   dtype, dimension, and normalization fields so search can reject mismatched
+   embeddings at request time.
+
+4. Score sanity guard.
+   Search results must reject NaN and Infinity before leaving the worker.
+
+5. Panic visibility.
+   Install `console_error_panic_hook` in the wasm startup path.
+
+6. Timing visibility.
+   Add optional timing breakdowns to search responses so parity and performance
+   investigations can see where time is going.
+
+7. Protocol drift test.
+   Maintain a TypeScript mirror of the protocol and back it with a Rust
+   round-trip fixture test until code generation is introduced.
+
+Locked interface work to draft before encoder code ships:
+
+1. `WorkerRequest<T, P>` / `WorkerResponse<T>` envelope on the TypeScript side.
+2. `EncoderBackend` interface that hides ORT-Web details from callers.
+3. Extended `BundleManifest`.
+4. Extended `QueryEmbeddingsPayload`.
+5. `ErrorCode` enum.
+6. `OnnxConfig` TypeScript parser that mirrors native config semantics.
 
 ### Phase 0: architecture spike
 
