@@ -4,6 +4,61 @@ use std::sync::Arc;
 use regex::{Regex, RegexBuilder};
 use rusqlite::{functions::FunctionFlags, params_from_iter, Connection, Error as SqlError, ToSql};
 use serde_json::Value;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub(crate) enum KeywordError {
+    #[error("unsupported FTS tokenizer: {0}")]
+    UnsupportedTokenizer(String),
+
+    #[error("invalid metadata column '{column}': {reason}")]
+    InvalidMetadataColumn { column: String, reason: &'static str },
+
+    #[error("document id overflow while inserting into the keyword index")]
+    DocumentIdOverflow,
+
+    #[error("keyword runtime byte count overflow")]
+    MemoryCountOverflow,
+
+    #[error("SQLite returned a negative {what}")]
+    NegativePragmaValue { what: &'static str },
+
+    #[error("SQL comments are not allowed in conditions")]
+    SqlCommentsNotAllowed,
+
+    #[error("semicolons are not allowed in conditions")]
+    SqlSemicolonNotAllowed,
+
+    #[error("SQL keyword '{0}' is not allowed in conditions")]
+    SqlKeywordNotAllowed(String),
+
+    #[error("unexpected character '{0}' in condition")]
+    UnexpectedCharacter(char),
+
+    #[error("unterminated quoted identifier in condition")]
+    UnterminatedQuotedIdentifier,
+
+    #[error("unknown column '{0}' in condition")]
+    UnknownColumn(String),
+
+    #[error("condition parser expected {expected}, found {found}")]
+    ConditionParseError {
+        expected: &'static str,
+        found: String,
+    },
+
+    #[error("unexpected token after expression: {0}")]
+    UnexpectedTrailingToken(String),
+
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+
+    #[error("regex error: {0}")]
+    Regex(#[from] regex::Error),
+
+    #[error("serde_json error while materializing metadata: {0}")]
+    Json(#[from] serde_json::Error),
+}
 
 const METADATA_TABLE: &str = "METADATA";
 const SUBSET_COLUMN: &str = "_subset_";
