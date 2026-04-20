@@ -4,6 +4,9 @@
 #![allow(missing_crate_level_docs)]
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use indexed_db_futures::database::Database;
+use indexed_db_futures::prelude::*;
+use js_sys::{Function, Object, Promise, Reflect};
 use next_plaid_browser_contract::{
     ArtifactEntry, ArtifactKind, BundleArtifactBytesPayload, BundleManifest, CompressionKind,
     FtsTokenizer, FusionMode, HealthResponse, InstallBundleRequest, LoadStoredBundleRequest,
@@ -15,10 +18,16 @@ use next_plaid_browser_kernel::{search_one, BrowserIndexView, MatrixView, Search
 use next_plaid_browser_wasm::{
     handle_runtime_request_json, handle_storage_request_json, reset_runtime_state,
 };
+use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::*;
 
 const DEFAULT_BATCH_SIZE: usize = 2000;
 const DEFAULT_CENTROID_BATCH_SIZE: usize = 100_000;
+const BROWSER_STORAGE_INDEXED_DB_NAME: &str = "next-plaid-browser";
+const BROWSER_STORAGE_INDEXED_DB_STORE: &str = "runtime_state";
+const BROWSER_STORAGE_ACTIVE_BUNDLE_PREFIX: &str = "active_bundle:";
+const BROWSER_STORAGE_OPFS_ROOT_DIR: &str = "next-plaid-browser-bundles";
 
 wasm_bindgen_test_configure!(run_in_browser);
 
@@ -406,6 +415,14 @@ fn storage_install_request(index_id: &str, build_id: &str) -> StorageRequest {
     })
 }
 
+fn storage_load_request(index_id: &str, name: &str) -> StorageRequest {
+    StorageRequest::LoadStoredBundle(LoadStoredBundleRequest {
+        index_id: index_id.into(),
+        name: name.into(),
+        fts_tokenizer: FtsTokenizer::Unicode61,
+    })
+}
+
 fn sqlite_sidecar_storage_install_request(index_id: &str, build_id: &str) -> StorageRequest {
     let mut manifest = storage_manifest(index_id, build_id);
     let metadata_json_entry = manifest
@@ -456,6 +473,98 @@ fn compressed_storage_install_request(index_id: &str, build_id: &str) -> Storage
         artifacts: storage_artifacts(),
         activate: true,
     })
+}
+
+async fn active_bundle_record(index_id: &str) -> Option<serde_json::Value> {
+    let db = Database::open(BROWSER_STORAGE_INDEXED_DB_NAME)
+        .await
+        .unwrap();
+    let tx = db
+        .transaction(BROWSER_STORAGE_INDEXED_DB_STORE)
+        .build()
+        .unwrap();
+    let store = tx.object_store(BROWSER_STORAGE_INDEXED_DB_STORE).unwrap();
+    store
+        .get(format!("{BROWSER_STORAGE_ACTIVE_BUNDLE_PREFIX}{index_id}"))
+        .serde()
+        .unwrap()
+        .await
+        .unwrap()
+}
+
+async fn remove_active_bundle_storage(index_id: &str) {
+    let record = active_bundle_record(index_id)
+        .await
+        .expect("active bundle pointer should exist");
+    let storage_key = record
+        .get("storage_key")
+        .and_then(|value| value.as_str())
+        .or_else(|| record.get("build_id").and_then(|value| value.as_str()))
+        .expect("active bundle pointer should include build identity");
+
+    let root = opfs_root().await;
+    let runtime_root = get_directory_handle(&root, BROWSER_STORAGE_OPFS_ROOT_DIR, false).await;
+    let index_dir = get_directory_handle(&runtime_root, index_id, false).await;
+    remove_entry(&index_dir, storage_key, true).await;
+}
+
+async fn opfs_root() -> JsValue {
+    let global = js_sys::global();
+    let navigator = Reflect::get(&global, &JsValue::from_str("navigator")).unwrap();
+    let storage = Reflect::get(&navigator, &JsValue::from_str("storage")).unwrap();
+    let promise = call_method0(&storage, "getDirectory");
+    await_promise(promise).await
+}
+
+async fn get_directory_handle(parent: &JsValue, name: &str, create: bool) -> JsValue {
+    let options = Object::new();
+    Reflect::set(
+        &options,
+        &JsValue::from_str("create"),
+        &JsValue::from_bool(create),
+    )
+    .unwrap();
+    let promise = call_method2(
+        parent,
+        "getDirectoryHandle",
+        &JsValue::from_str(name),
+        &options.into(),
+    );
+    await_promise(promise).await
+}
+
+async fn remove_entry(parent: &JsValue, name: &str, recursive: bool) {
+    let options = Object::new();
+    Reflect::set(
+        &options,
+        &JsValue::from_str("recursive"),
+        &JsValue::from_bool(recursive),
+    )
+    .unwrap();
+    let promise = call_method2(
+        parent,
+        "removeEntry",
+        &JsValue::from_str(name),
+        &options.into(),
+    );
+    await_promise(promise).await;
+}
+
+async fn await_promise(value: JsValue) -> JsValue {
+    let promise = value.dyn_into::<Promise>().unwrap();
+    JsFuture::from(promise).await.unwrap()
+}
+
+fn call_method0(target: &JsValue, name: &str) -> JsValue {
+    let method = Reflect::get(target, &JsValue::from_str(name)).unwrap();
+    let function = method.dyn_into::<Function>().unwrap();
+    function.call0(target).unwrap()
+}
+
+fn call_method2(target: &JsValue, name: &str, arg1: &JsValue, arg2: &JsValue) -> JsValue {
+    let method = Reflect::get(target, &JsValue::from_str(name)).unwrap();
+    let function = method.dyn_into::<Function>().unwrap();
+    function.call2(target, arg1, arg2).unwrap()
 }
 
 #[wasm_bindgen_test]
@@ -606,12 +715,7 @@ async fn browser_storage_install_and_reload_roundtrip() {
     }
 
     reset_runtime_state();
-    let load = storage_response(StorageRequest::LoadStoredBundle(LoadStoredBundleRequest {
-        index_id: index_id.into(),
-        name: "stored-demo".into(),
-        fts_tokenizer: FtsTokenizer::Unicode61,
-    }))
-    .await;
+    let load = storage_response(storage_load_request(index_id, "stored-demo")).await;
     match load {
         StorageResponse::StoredBundleLoaded(result) => {
             assert_eq!(result.index_id, index_id);
@@ -685,14 +789,32 @@ async fn browser_storage_rejects_compressed_artifact_install() {
 async fn browser_storage_rejects_loading_missing_active_bundle() {
     reset_runtime_state();
 
-    let error = storage_error_message(StorageRequest::LoadStoredBundle(LoadStoredBundleRequest {
-        index_id: "missing-demo".into(),
-        name: "missing-demo".into(),
-        fts_tokenizer: FtsTokenizer::Unicode61,
-    }))
-    .await;
+    let error = storage_error_message(storage_load_request("missing-demo", "missing-demo")).await;
 
     assert!(error.contains("no active stored bundle"));
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_clears_stale_active_bundle_pointer() {
+    reset_runtime_state();
+    let index_id = "stored-demo-stale-pointer";
+    let build_id = "build-storage-stale-pointer-001";
+
+    let install = storage_response(storage_install_request(index_id, build_id)).await;
+    match install {
+        StorageResponse::BundleInstalled(result) => assert!(result.activated),
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    assert!(active_bundle_record(index_id).await.is_some());
+    remove_active_bundle_storage(index_id).await;
+
+    let error = storage_error_message(storage_load_request(index_id, "stale-demo")).await;
+    assert!(error.contains("no active stored bundle"));
+    assert!(active_bundle_record(index_id).await.is_none());
+
+    let retry_error = storage_error_message(storage_load_request(index_id, "stale-demo")).await;
+    assert!(retry_error.contains("no active stored bundle"));
 }
 
 #[wasm_bindgen_test]

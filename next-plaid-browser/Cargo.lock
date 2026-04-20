@@ -804,6 +804,8 @@ name = "next-plaid-browser-wasm"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "indexed_db_futures",
+ "js-sys",
  "next-plaid-browser-contract",
  "next-plaid-browser-kernel",
  "next-plaid-browser-loader",

@@ -36,6 +36,9 @@ pub enum BrowserStorageError {
     /// A browser API returned an opaque JavaScript failure.
     #[error("browser storage API error: {0}")]
     Js(String),
+    /// A persisted OPFS directory or file expected by the active pointer no longer exists.
+    #[error("browser storage entry no longer exists: {0}")]
+    StorageEntryNotFound(String),
     /// OPFS is unavailable in the current browser environment.
     #[error("browser storage does not expose navigator.storage.getDirectory()")]
     MissingOpfs,
@@ -82,6 +85,30 @@ use serde::{Deserialize, Serialize};
 struct ActiveBundleRecord {
     index_id: String,
     build_id: String,
+    storage_key: Option<String>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ActiveBundleRecord {
+    fn installed(index_id: &str, build_id: &str) -> Self {
+        Self {
+            index_id: index_id.to_string(),
+            build_id: build_id.to_string(),
+            storage_key: None,
+        }
+    }
+
+    fn staged(index_id: &str, build_id: &str, storage_key: String) -> Self {
+        Self {
+            index_id: index_id.to_string(),
+            build_id: build_id.to_string(),
+            storage_key: Some(storage_key),
+        }
+    }
+
+    fn storage_key(&self) -> &str {
+        self.storage_key.as_deref().unwrap_or(&self.build_id)
+    }
 }
 
 /// Installs one browser bundle from in-memory artifact bytes.
@@ -193,7 +220,18 @@ mod wasm {
         validate_storage_manifest_support(manifest)?;
         verify_artifact_bytes(manifest, &artifact_bytes)?;
 
-        let bundle_dir = ensure_bundle_directory(&manifest.index_id, &manifest.build_id).await?;
+        let staged_record = if activate {
+            ActiveBundleRecord::staged(
+                &manifest.index_id,
+                &manifest.build_id,
+                staged_storage_key(&manifest.build_id),
+            )
+        } else {
+            ActiveBundleRecord::installed(&manifest.index_id, &manifest.build_id)
+        };
+
+        let bundle_dir =
+            ensure_bundle_directory(&manifest.index_id, staged_record.storage_key()).await?;
         write_bytes_file(
             &bundle_dir,
             MANIFEST_FILE_NAME,
@@ -208,13 +246,28 @@ mod wasm {
             write_relative_file(&bundle_dir, &artifact.path, bytes).await?;
         }
 
+        if let Err(error) = load_bundle_from_record(&staged_record).await {
+            let _ = delete_bundle_directory(&manifest.index_id, staged_record.storage_key()).await;
+            return Err(error);
+        }
+
         if activate {
-            let db = open_indexed_db().await?;
-            let record = ActiveBundleRecord {
-                index_id: manifest.index_id.clone(),
-                build_id: manifest.build_id.clone(),
+            let db = match open_indexed_db().await {
+                Ok(db) => db,
+                Err(error) => {
+                    let _ =
+                        delete_bundle_directory(&manifest.index_id, staged_record.storage_key())
+                            .await;
+                    return Err(error);
+                }
             };
-            put_runtime_state(&db, &active_bundle_key(&manifest.index_id), &record).await?;
+            if let Err(error) =
+                put_runtime_state(&db, &active_bundle_key(&manifest.index_id), &staged_record).await
+            {
+                let _ =
+                    delete_bundle_directory(&manifest.index_id, staged_record.storage_key()).await;
+                return Err(error);
+            }
         }
 
         Ok(BundleInstalledResponse {
@@ -229,11 +282,45 @@ mod wasm {
         index_id: &str,
     ) -> Result<StoredBrowserBundle, BrowserStorageError> {
         let db = open_indexed_db().await?;
-        let record = get_runtime_state(&db, &active_bundle_key(index_id))
+        let active_key = active_bundle_key(index_id);
+        let record = get_runtime_state(&db, &active_key)
             .await?
             .ok_or_else(|| BrowserStorageError::MissingActiveBundle(index_id.to_string()))?;
+        match load_bundle_from_record(&record).await {
+            Ok(bundle) => Ok(bundle),
+            Err(BrowserStorageError::StorageEntryNotFound(_)) => {
+                clear_runtime_state(&db, &active_key).await?;
+                Err(BrowserStorageError::MissingActiveBundle(
+                    index_id.to_string(),
+                ))
+            }
+            Err(error) => Err(error),
+        }
+    }
 
-        let bundle_dir = get_bundle_directory(&record.index_id, &record.build_id, false).await?;
+    async fn ensure_bundle_directory(
+        index_id: &str,
+        storage_key: &str,
+    ) -> Result<JsValue, BrowserStorageError> {
+        get_bundle_directory(index_id, storage_key, true).await
+    }
+
+    async fn get_bundle_directory(
+        index_id: &str,
+        storage_key: &str,
+        create: bool,
+    ) -> Result<JsValue, BrowserStorageError> {
+        let root = opfs_root().await?;
+        let runtime_root = get_directory_handle(&root, OPFS_ROOT_DIR, create).await?;
+        let index_dir = get_directory_handle(&runtime_root, index_id, create).await?;
+        get_directory_handle(&index_dir, storage_key, create).await
+    }
+
+    async fn load_bundle_from_record(
+        record: &ActiveBundleRecord,
+    ) -> Result<StoredBrowserBundle, BrowserStorageError> {
+        let bundle_dir =
+            get_bundle_directory(&record.index_id, record.storage_key(), false).await?;
         let manifest_bytes = read_bytes_file(&bundle_dir, MANIFEST_FILE_NAME).await?;
         let manifest: BundleManifest = serde_json::from_slice(&manifest_bytes)?;
         manifest.validate().map_err(BundleLoaderError::from)?;
@@ -267,24 +354,6 @@ mod wasm {
             search_artifacts,
             metadata,
         })
-    }
-
-    async fn ensure_bundle_directory(
-        index_id: &str,
-        build_id: &str,
-    ) -> Result<JsValue, BrowserStorageError> {
-        get_bundle_directory(index_id, build_id, true).await
-    }
-
-    async fn get_bundle_directory(
-        index_id: &str,
-        build_id: &str,
-        create: bool,
-    ) -> Result<JsValue, BrowserStorageError> {
-        let root = opfs_root().await?;
-        let runtime_root = get_directory_handle(&root, OPFS_ROOT_DIR, create).await?;
-        let index_dir = get_directory_handle(&runtime_root, index_id, create).await?;
-        get_directory_handle(&index_dir, build_id, create).await
     }
 
     async fn opfs_root() -> Result<JsValue, BrowserStorageError> {
@@ -398,6 +467,23 @@ mod wasm {
         await_promise(promise).await
     }
 
+    async fn remove_entry(
+        parent: &JsValue,
+        name: &str,
+        recursive: bool,
+    ) -> Result<(), BrowserStorageError> {
+        let options = Object::new();
+        Reflect::set(
+            &options,
+            &JsValue::from_str("recursive"),
+            &JsValue::from_bool(recursive),
+        )
+        .map_err(js_error_value)?;
+        let promise = call_method2(parent, "removeEntry", &JsValue::from_str(name), &options)?;
+        await_promise(promise).await?;
+        Ok(())
+    }
+
     async fn get_file_handle(
         parent: &JsValue,
         name: &str,
@@ -431,6 +517,16 @@ mod wasm {
             })
             .await
             .map_err(|error| BrowserStorageError::Js(error.to_string()))
+    }
+
+    async fn delete_bundle_directory(
+        index_id: &str,
+        storage_key: &str,
+    ) -> Result<(), BrowserStorageError> {
+        let root = opfs_root().await?;
+        let runtime_root = get_directory_handle(&root, OPFS_ROOT_DIR, false).await?;
+        let index_dir = get_directory_handle(&runtime_root, index_id, false).await?;
+        remove_entry(&index_dir, storage_key, true).await
     }
 
     async fn put_runtime_state(
@@ -476,8 +572,33 @@ mod wasm {
             .map_err(indexed_db_error)
     }
 
+    async fn clear_runtime_state(db: &Database, key: &str) -> Result<(), BrowserStorageError> {
+        let tx = db
+            .transaction(INDEXED_DB_STORE)
+            .with_mode(TransactionMode::Readwrite)
+            .build()
+            .map_err(indexed_db_error)?;
+        let store = tx
+            .object_store(INDEXED_DB_STORE)
+            .map_err(indexed_db_error)?;
+        store
+            .delete(key.to_string())
+            .primitive()
+            .map_err(indexed_db_error)?
+            .await
+            .map_err(indexed_db_error)?;
+        tx.commit().await.map_err(indexed_db_error)?;
+        Ok(())
+    }
+
     fn active_bundle_key(index_id: &str) -> String {
         format!("{ACTIVE_BUNDLE_PREFIX}{index_id}")
+    }
+
+    fn staged_storage_key(build_id: &str) -> String {
+        let timestamp_ms = js_sys::Date::now() as u64;
+        let nonce = (js_sys::Math::random() * 1_000_000_000.0) as u64;
+        format!("{build_id}--install-{timestamp_ms}-{nonce}")
     }
 
     async fn await_promise(value: JsValue) -> Result<JsValue, BrowserStorageError> {
@@ -513,6 +634,16 @@ mod wasm {
     }
 
     fn js_error_value(value: JsValue) -> BrowserStorageError {
+        if let Ok(exception) = value.clone().dyn_into::<web_sys::DomException>() {
+            if exception.name() == "NotFoundError" {
+                let message = exception.message();
+                return BrowserStorageError::StorageEntryNotFound(if message.is_empty() {
+                    "browser storage entry not found".to_string()
+                } else {
+                    message
+                });
+            }
+        }
         let message = value
             .as_string()
             .or_else(|| {
