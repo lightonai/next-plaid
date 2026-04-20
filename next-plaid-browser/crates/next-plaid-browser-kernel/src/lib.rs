@@ -112,6 +112,26 @@ pub struct CompressedBrowserIndexView<'a> {
     all_packed_residuals: &'a [u8],
 }
 
+/// Shared read-only view over a browser search index.
+///
+/// Abstracts how the dense and compressed index representations answer the
+/// queries the scoring flow needs:
+///
+/// - centroid lookup
+/// - document count
+/// - per-document centroid-code lookup
+/// - candidate gathering from probed centroids
+/// - exact scoring for a single document
+///
+/// Internal to the kernel; not meant to be implemented outside this crate.
+pub(crate) trait IndexView<'a>: Copy {
+    fn centroids(&self) -> MatrixView<'a>;
+    fn document_count(&self) -> usize;
+    fn doc_codes(&self, doc_id: usize) -> Option<&'a [i64]>;
+    fn get_candidates(&self, centroid_indices: &[usize]) -> Vec<i64>;
+    fn exact_score(&self, query: MatrixView<'_>, doc_id: usize) -> Option<f32>;
+}
+
 impl<'a> BrowserIndexView<'a> {
     pub fn new(
         centroids: MatrixView<'a>,
@@ -205,6 +225,29 @@ impl<'a> BrowserIndexView<'a> {
         candidates.sort_unstable();
         candidates.dedup();
         candidates
+    }
+}
+
+impl<'a> IndexView<'a> for BrowserIndexView<'a> {
+    fn centroids(&self) -> MatrixView<'a> {
+        self.centroids
+    }
+
+    fn document_count(&self) -> usize {
+        BrowserIndexView::document_count(self)
+    }
+
+    fn doc_codes(&self, doc_id: usize) -> Option<&'a [i64]> {
+        BrowserIndexView::doc_codes(self, doc_id)
+    }
+
+    fn get_candidates(&self, centroid_indices: &[usize]) -> Vec<i64> {
+        BrowserIndexView::get_candidates(self, centroid_indices)
+    }
+
+    fn exact_score(&self, query: MatrixView<'_>, doc_id: usize) -> Option<f32> {
+        let document = self.document(doc_id)?;
+        Some(maxsim_score(query, document))
     }
 }
 
@@ -328,6 +371,28 @@ impl<'a> CompressedBrowserIndexView<'a> {
         .ok()?;
         let document = MatrixView::new(&values, codes.len(), self.centroids.dim()).ok()?;
         Some(maxsim_score(query, document))
+    }
+}
+
+impl<'a> IndexView<'a> for CompressedBrowserIndexView<'a> {
+    fn centroids(&self) -> MatrixView<'a> {
+        self.centroids
+    }
+
+    fn document_count(&self) -> usize {
+        CompressedBrowserIndexView::document_count(self)
+    }
+
+    fn doc_codes(&self, doc_id: usize) -> Option<&'a [i64]> {
+        CompressedBrowserIndexView::doc_codes(self, doc_id)
+    }
+
+    fn get_candidates(&self, centroid_indices: &[usize]) -> Vec<i64> {
+        CompressedBrowserIndexView::get_candidates(self, centroid_indices)
+    }
+
+    fn exact_score(&self, query: MatrixView<'_>, doc_id: usize) -> Option<f32> {
+        CompressedBrowserIndexView::exact_score(self, query, doc_id)
     }
 }
 
