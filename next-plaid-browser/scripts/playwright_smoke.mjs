@@ -146,6 +146,10 @@ async function buildWasmHarness() {
   );
 }
 
+async function buildBrowserHarness() {
+  await runCommand("node", ["./scripts/build_browser_harness.mjs"], workspaceRoot);
+}
+
 async function ensurePlaywrightBrowser(installName) {
   if (installName === "chrome") {
     return;
@@ -157,6 +161,7 @@ async function runSmoke(browserName) {
   const { installName, launcher, launchOptions } = browserConfig(browserName);
 
   await mkdir(outputRoot, { recursive: true });
+  await buildBrowserHarness();
   await buildWasmHarness();
   await ensurePlaywrightBrowser(installName);
 
@@ -190,6 +195,14 @@ async function runSmoke(browserName) {
       result.filteredSemanticSearch?.results?.[0]?.document_ids?.[0];
     const filteredKeywordDocumentIds =
       result.filteredKeywordSearch?.results?.[0]?.document_ids ?? [];
+    const encodedQueryTopDocumentId = result.encodedSearch?.results?.[0]?.document_ids?.[0];
+    const encodedQueryLayout = result.encodedQuery?.encoded?.payload?.layout;
+    const encodedQueryEncoderId = result.encodedQuery?.encoded?.payload?.encoder?.encoder_id;
+    const encoderBackend = result.encoderInit?.capabilities?.backend;
+    const encoderState = result.encoderHealth?.state;
+    const encoderEventStages = Array.isArray(result.encoderInitEvents)
+      ? result.encoderInitEvents.map((event) => event?.stage)
+      : [];
     const loadedIndices = result.health?.loaded_indices;
     const initialMemoryUsageBytes = result.initialHealth?.memory_usage_bytes;
     const finalMemoryUsageBytes = result.health?.memory_usage_bytes;
@@ -210,7 +223,16 @@ async function runSmoke(browserName) {
       hybridTopDocumentId !== 1 ||
       filteredSemanticTopDocumentId !== 1 ||
       JSON.stringify(filteredKeywordDocumentIds) !== JSON.stringify([0, 2]) ||
-      loadedIndices !== 2 ||
+      encodedQueryTopDocumentId !== 0 ||
+      encodedQueryLayout !== "padded_query_length" ||
+      encodedQueryEncoderId !== "tiny-encoder-proof" ||
+      encoderBackend !== "wasm" ||
+      encoderState !== "ready" ||
+      !encoderEventStages.includes("fetch_start") ||
+      !encoderEventStages.includes("session_create_complete") ||
+      !encoderEventStages.includes("warmup_complete") ||
+      !encoderEventStages.includes("ready") ||
+      loadedIndices !== 3 ||
       initialMemoryUsageBytes !== 0 ||
       !(finalMemoryUsageBytes > 0) ||
       !(indexBytes > 0) ||

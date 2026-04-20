@@ -1,4 +1,8 @@
 /target
 /node_modules
 /playwright-harness/pkg
+/playwright-harness/app.js
+/playwright-harness/encoder-worker.js
+/playwright-harness/ort
+/crates/next-plaid-browser-contract/bindings
 /output/playwright

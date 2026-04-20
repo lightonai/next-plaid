@@ -1,4 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize};
+use ts_rs::TS;
 
 use crate::bundle::{ArtifactKind, BundleManifest, EncoderIdentity};
 
@@ -23,7 +24,7 @@ where
 }
 
 /// Supported SQLite FTS5 tokenizers exposed by the browser runtime wire API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 pub enum FtsTokenizer {
     /// SQLite's default Unicode-aware tokenizer.
     #[default]
@@ -46,7 +47,7 @@ impl FtsTokenizer {
 }
 
 /// Supported fusion algorithms for combining semantic and keyword scores.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 pub enum FusionMode {
     /// Reciprocal-rank fusion.
     #[default]
@@ -58,7 +59,7 @@ pub enum FusionMode {
 }
 
 /// Dense matrix payload serialized as flat row-major values.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct MatrixPayload {
     /// Flat row-major values buffer.
     pub values: Vec<f32>,
@@ -69,7 +70,7 @@ pub struct MatrixPayload {
 }
 
 /// Public runtime/storage error codes exposed on the browser wire contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     /// Request shape or invariants were invalid.
@@ -97,7 +98,7 @@ pub enum ErrorCode {
 }
 
 /// Typed error payload returned by runtime requests.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct RuntimeErrorResponse {
     /// Stable machine-readable error code.
     pub code: ErrorCode,
@@ -105,11 +106,12 @@ pub struct RuntimeErrorResponse {
     pub message: String,
     /// Optional structured context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "unknown | null")]
     pub context: Option<serde_json::Value>,
 }
 
 /// Typed error payload returned by storage requests.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct StorageErrorResponse {
     /// Stable machine-readable error code.
     pub code: ErrorCode,
@@ -117,11 +119,12 @@ pub struct StorageErrorResponse {
     pub message: String,
     /// Optional structured context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "unknown | null")]
     pub context: Option<serde_json::Value>,
 }
 
 /// Binary dtype for query embeddings sent across the browser wire contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum EmbeddingDtype {
     /// Little-endian 32-bit floats.
@@ -129,7 +132,7 @@ pub enum EmbeddingDtype {
 }
 
 /// Logical layout of a query embedding payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum EmbeddingLayout {
     /// Payload contains only the real token rows.
@@ -139,7 +142,7 @@ pub enum EmbeddingLayout {
 }
 
 /// Query embeddings encoded either inline or as base64 bytes plus shape metadata.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct QueryEmbeddingsPayload {
     /// Encoder identity expected by the search runtime.
     pub encoder: EncoderIdentity,
@@ -159,7 +162,7 @@ pub struct QueryEmbeddingsPayload {
 }
 
 /// Search tuning parameters sent over the browser runtime wire.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 pub struct SearchParamsRequest {
     /// Maximum number of ranked hits to return per query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -183,20 +186,22 @@ pub struct SearchParamsRequest {
 }
 
 /// Ranked results for one query in the browser wire format.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct QueryResultResponse {
     /// Zero-based query position within the request batch.
     pub query_id: usize,
     /// Ranked document ids.
+    #[ts(type = "number[]")]
     pub document_ids: Vec<i64>,
     /// Scores aligned with `document_ids`.
     pub scores: Vec<f32>,
     /// Metadata rows replayed for each ranked document.
+    #[ts(type = "(unknown | null)[]")]
     pub metadata: Vec<Option<serde_json::Value>>,
 }
 
 /// Search response for a batched request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct SearchResponse {
     /// Per-query ranked outputs.
     pub results: Vec<QueryResultResponse>,
@@ -208,7 +213,7 @@ pub struct SearchResponse {
 }
 
 /// Request-level timing emitted by successful runtime searches.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct SearchTimingBreakdown {
     /// Total request time in microseconds.
     pub total_us: u64,
@@ -230,7 +235,7 @@ pub struct SearchTimingBreakdown {
 }
 
 /// Unified semantic, keyword, and hybrid search request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct SearchRequest {
     /// Semantic query embeddings, when semantic retrieval is requested.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,6 +245,7 @@ pub struct SearchRequest {
     pub params: SearchParamsRequest,
     /// Explicit document-id subset to search within.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number[] | null")]
     pub subset: Option<Vec<i64>>,
     /// Keyword queries for FTS-only or hybrid retrieval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -255,28 +261,31 @@ pub struct SearchRequest {
     pub filter_condition: Option<String>,
     /// Parameters bound into `filter_condition` placeholders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "unknown[] | null")]
     pub filter_parameters: Option<Vec<serde_json::Value>>,
 }
 
 /// Dense search index payload delivered directly over the wire.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct SearchIndexPayload {
     /// Centroid matrix for the index.
     pub centroids: MatrixPayload,
     /// Flattened IVF posting-list document ids.
+    #[ts(type = "number[]")]
     pub ivf_doc_ids: Vec<i64>,
     /// Posting-list lengths per centroid.
     pub ivf_lengths: Vec<i32>,
     /// Per-document token offsets into `doc_codes` and `doc_values`.
     pub doc_offsets: Vec<usize>,
     /// Flattened centroid-assignment codes for every token.
+    #[ts(type = "number[]")]
     pub doc_codes: Vec<i64>,
     /// Flattened dense document token vectors.
     pub doc_values: Vec<f32>,
 }
 
 /// Request to load one in-memory index into the browser runtime.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct WorkerLoadIndexRequest {
     /// Runtime-local name for the loaded index.
     pub name: String,
@@ -286,6 +295,7 @@ pub struct WorkerLoadIndexRequest {
     pub encoder: EncoderIdentity,
     /// Optional metadata rows aligned with the document ids.
     #[serde(default)]
+    #[ts(type = "(unknown | null)[] | null")]
     pub metadata: Option<Vec<Option<serde_json::Value>>>,
     /// Residual quantization bit-width.
     #[serde(default = "default_nbits")]
@@ -299,7 +309,7 @@ pub struct WorkerLoadIndexRequest {
 }
 
 /// Response returned after an index is loaded into the runtime.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct WorkerLoadIndexResponse {
     /// Runtime-local name of the loaded index.
     pub name: String,
@@ -308,7 +318,7 @@ pub struct WorkerLoadIndexResponse {
 }
 
 /// Request to search one named runtime index.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct WorkerSearchRequest {
     /// Runtime-local name of the index to search.
     pub name: String,
@@ -317,7 +327,7 @@ pub struct WorkerSearchRequest {
 }
 
 /// Summary information reported for a loaded index.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct IndexSummary {
     /// Runtime-local name of the index.
     pub name: String,
@@ -341,7 +351,7 @@ pub struct IndexSummary {
 }
 
 /// Health details for the configured embedding model, when present.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ModelHealthInfo {
     /// Human-readable model name, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -375,7 +385,7 @@ pub struct ModelHealthInfo {
 }
 
 /// Breakdown of memory retained by the browser runtime.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 pub struct MemoryUsageBreakdown {
     /// Bytes retained by dense or compressed index payloads.
     #[serde(default)]
@@ -389,7 +399,7 @@ pub struct MemoryUsageBreakdown {
 }
 
 /// Health response for the browser runtime.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct HealthResponse {
     /// Overall runtime status string.
     pub status: String,
@@ -414,7 +424,7 @@ pub struct HealthResponse {
 }
 
 /// Request to score one query against one packed document batch.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ScoreRequest {
     /// Query matrix to score.
     pub query: MatrixPayload,
@@ -425,14 +435,14 @@ pub struct ScoreRequest {
 }
 
 /// Response for a direct score request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ScoreResponse {
     /// Scores for each input document.
     pub scores: Vec<f32>,
 }
 
 /// Inline search parameters for one-off searches that do not use the runtime cache.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct InlineSearchParamsRequest {
     /// Query batch size for the scoring loop.
     pub batch_size: usize,
@@ -449,7 +459,7 @@ pub struct InlineSearchParamsRequest {
 }
 
 /// Search request that carries the full index payload inline.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct InlineSearchRequest {
     /// Dense index payload to search.
     pub index: SearchIndexPayload,
@@ -458,31 +468,34 @@ pub struct InlineSearchRequest {
     /// Search tuning parameters.
     pub params: InlineSearchParamsRequest,
     /// Optional subset of document ids to restrict scoring to.
+    #[ts(type = "number[] | null")]
     pub subset_doc_ids: Option<Vec<i64>>,
 }
 
 /// Response for an inline one-off search request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct InlineSearchResponse {
     /// Query id for this response.
     pub query_id: usize,
     /// Ranked passage ids.
+    #[ts(type = "number[]")]
     pub passage_ids: Vec<i64>,
     /// Scores aligned with `passage_ids`.
     pub scores: Vec<f32>,
 }
 
 /// Ranked result list used as an input to fusion.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct RankedResultsPayload {
     /// Ranked document ids.
+    #[ts(type = "number[]")]
     pub document_ids: Vec<i64>,
     /// Scores aligned with `document_ids`.
     pub scores: Vec<f32>,
 }
 
 /// Request to fuse semantic and keyword result lists.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct FusionRequest {
     /// Semantic ranked results, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -501,16 +514,17 @@ pub struct FusionRequest {
 }
 
 /// Response for a fusion request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct FusionResponse {
     /// Ranked fused document ids.
+    #[ts(type = "number[]")]
     pub document_ids: Vec<i64>,
     /// Scores aligned with `document_ids`.
     pub scores: Vec<f32>,
 }
 
 /// Response returned after validating a bundle manifest.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ValidateBundleResponse {
     /// Logical index id from the manifest.
     pub index_id: String,
@@ -521,7 +535,7 @@ pub struct ValidateBundleResponse {
 }
 
 /// Raw artifact bytes attached to an install request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct BundleArtifactBytesPayload {
     /// Artifact kind described by this payload.
     pub kind: ArtifactKind,
@@ -530,7 +544,7 @@ pub struct BundleArtifactBytesPayload {
 }
 
 /// Request to install a browser bundle into persistent storage.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct InstallBundleRequest {
     /// Manifest describing the bundle.
     pub manifest: BundleManifest,
@@ -542,7 +556,7 @@ pub struct InstallBundleRequest {
 }
 
 /// Response returned after bundle installation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct BundleInstalledResponse {
     /// Logical index id for the installed bundle.
     pub index_id: String,
@@ -555,7 +569,7 @@ pub struct BundleInstalledResponse {
 }
 
 /// Request to reopen the active stored bundle for one logical index id.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct LoadStoredBundleRequest {
     /// Logical index id whose active bundle should be reopened.
     pub index_id: String,
@@ -567,7 +581,7 @@ pub struct LoadStoredBundleRequest {
 }
 
 /// Response returned after loading a stored bundle into the runtime.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct StoredBundleLoadedResponse {
     /// Logical index id for the stored bundle.
     pub index_id: String,
@@ -580,7 +594,7 @@ pub struct StoredBundleLoadedResponse {
 }
 
 /// Top-level runtime request envelope.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeRequest {
     /// Request current runtime health information.
@@ -603,7 +617,7 @@ pub enum RuntimeRequest {
 }
 
 /// Top-level persistent-storage request envelope.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StorageRequest {
     /// Install a bundle into browser storage.
@@ -613,7 +627,7 @@ pub enum StorageRequest {
 }
 
 /// Top-level runtime response envelope.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RuntimeResponse {
     /// Runtime health response.
@@ -635,7 +649,7 @@ pub enum RuntimeResponse {
 }
 
 /// Top-level persistent-storage response envelope.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StorageResponse {
     /// Typed storage failure for a well-formed request.

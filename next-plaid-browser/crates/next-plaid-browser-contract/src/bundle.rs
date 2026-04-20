@@ -3,12 +3,13 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use ts_rs::TS;
 
 /// Exact bundle format version understood by the browser runtime.
 pub const SUPPORTED_BUNDLE_FORMAT_VERSION: u32 = 2;
 
 /// Artifact kinds that make up a browser-deliverable search bundle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
     /// Dense centroid matrix bytes.
@@ -56,7 +57,7 @@ impl fmt::Display for ArtifactKind {
 }
 
 /// Encoder identity attached to bundles, loaded indices, and query payloads.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 pub struct EncoderIdentity {
     /// Stable logical encoder id.
     pub encoder_id: String,
@@ -69,7 +70,7 @@ pub struct EncoderIdentity {
 }
 
 /// Compression applied to an artifact entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum CompressionKind {
     /// The artifact bytes are stored uncompressed.
@@ -82,7 +83,7 @@ pub enum CompressionKind {
 }
 
 /// Metadata representation used by a browser bundle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum MetadataMode {
     /// No metadata artifact is included.
@@ -94,7 +95,7 @@ pub enum MetadataMode {
 }
 
 /// Manifest entry describing one named artifact file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ArtifactEntry {
     /// The artifact's logical kind.
     pub kind: ArtifactKind,
@@ -110,7 +111,7 @@ pub struct ArtifactEntry {
 }
 
 /// Top-level manifest for a browser-search bundle.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct BundleManifest {
     /// Exact schema version for the bundle format.
     pub format_version: u32,
