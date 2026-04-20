@@ -12,7 +12,10 @@ pub(crate) enum KeywordError {
     UnsupportedTokenizer(String),
 
     #[error("invalid metadata column '{column}': {reason}")]
-    InvalidMetadataColumn { column: String, reason: &'static str },
+    InvalidMetadataColumn {
+        column: String,
+        reason: &'static str,
+    },
 
     #[error("document id overflow while inserting into the keyword index")]
     DocumentIdOverflow,
@@ -95,6 +98,7 @@ pub struct KeywordIndex {
 }
 
 impl KeywordIndex {
+    /// Builds an in-memory SQLite metadata and FTS index for browser search.
     pub fn new(metadata: &[Option<Value>], tokenizer: &str) -> Result<Self, KeywordError> {
         let tokenizer = FtsTokenizer::from_request_str(tokenizer)?;
         let schema = schema::collect_metadata_schema(metadata)?;
@@ -134,6 +138,13 @@ impl KeywordIndex {
             .collect()
     }
 
+    /// Resolves document ids matching the supported metadata-filter grammar.
+    ///
+    /// The accepted grammar is intentionally narrow. It supports column
+    /// identifiers, placeholders, boolean composition, and a small set of SQL
+    /// comparison operators used by the native filter surface. Literal SQL
+    /// snippets, comments, and unsupported functions are rejected before the
+    /// query reaches SQLite.
     pub fn filter_document_ids(
         &self,
         condition: &str,
@@ -165,7 +176,6 @@ impl KeywordIndex {
         Ok(document_ids)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -326,7 +336,9 @@ mod tests {
         let error = index
             .filter_document_ids("name = ? UNION SELECT * FROM users", &[json!("Alice")])
             .unwrap_err();
-        assert!(matches!(error, KeywordError::SqlKeywordNotAllowed(ref kw) if kw == "UNION" || kw == "SELECT"));
+        assert!(
+            matches!(error, KeywordError::SqlKeywordNotAllowed(ref kw) if kw == "UNION" || kw == "SELECT")
+        );
         assert!(matches!(
             index
                 .filter_document_ids("unknown_column = ?", &[json!("Alice")])
@@ -341,7 +353,10 @@ mod tests {
         ));
         assert!(matches!(
             index.filter_document_ids("name =", &[]).unwrap_err(),
-            KeywordError::ConditionParseError { expected: "placeholder", .. }
+            KeywordError::ConditionParseError {
+                expected: "placeholder",
+                ..
+            }
         ));
         let error = index
             .filter_document_ids("LENGTH(name) > ?", &[json!(3)])

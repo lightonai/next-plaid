@@ -9,8 +9,8 @@ use next_plaid_browser_contract::{
     WorkerSearchRequest,
 };
 use next_plaid_browser_kernel::{
-    fuse_relative_score, fuse_rrf, search_one, search_one_compressed, MatrixView,
-    SearchParameters, KERNEL_VERSION,
+    fuse_relative_score, fuse_rrf, search_one, search_one_compressed, MatrixView, SearchParameters,
+    KERNEL_VERSION,
 };
 
 use crate::convert;
@@ -172,7 +172,9 @@ pub(crate) fn load_compressed_bundle_into_runtime(
     Ok(summary)
 }
 
-pub(crate) fn search_loaded_index(request: WorkerSearchRequest) -> Result<SearchResponse, WasmError> {
+pub(crate) fn search_loaded_index(
+    request: WorkerSearchRequest,
+) -> Result<SearchResponse, WasmError> {
     validation::validate_worker_search_request(&request.request)?;
 
     LOADED_INDICES.with(|indices| {
@@ -291,8 +293,7 @@ fn semantic_ranked_results(
             });
         }
 
-        let query =
-            MatrixView::new(&query_payload.values, query_payload.rows, query_payload.dim)?;
+        let query = MatrixView::new(&query_payload.values, query_payload.rows, query_payload.dim)?;
         let result = match &loaded.payload {
             LoadedIndexPayload::Dense(index_payload) => {
                 let index = convert::browser_index_view(index_payload)?;
@@ -488,7 +489,10 @@ pub(crate) fn build_compressed_index_summary(
     metadata: Option<&[Option<serde_json::Value>]>,
 ) -> Result<IndexSummary, WasmError> {
     let num_documents = manifest.document_count;
-    let num_embeddings = *search.doc_offsets.last().ok_or(WasmError::EmptyDocOffsets)?;
+    let num_embeddings = *search
+        .doc_offsets
+        .last()
+        .ok_or(WasmError::EmptyDocOffsets)?;
     let num_partitions = search.centroids.len() / search.embedding_dim;
     let avg_doclen = if num_documents == 0 {
         0.0

@@ -1,15 +1,24 @@
+//! Small SQLite Wasm probe used to confirm baseline FTS support in-browser.
+
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
+/// Result payload returned by the SQLite probe harness.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SqliteSpikeProbe {
+    /// SQLite version reported by the in-memory connection.
     pub sqlite_version: String,
+    /// Ranked document ids returned by the keyword probe.
     pub keyword_document_ids: Vec<i64>,
+    /// Scores aligned with `keyword_document_ids`.
     pub keyword_scores: Vec<f32>,
+    /// Ranked document ids returned by the filtered probe.
     pub filtered_document_ids: Vec<i64>,
 }
 
+/// Runs a small in-memory SQLite FTS probe and returns its results.
+#[must_use = "SQLite initialization and query errors are only visible if the result is checked"]
 pub fn run_sqlite_spike_probe() -> rusqlite::Result<SqliteSpikeProbe> {
     let conn = Connection::open_in_memory()?;
 
@@ -71,6 +80,8 @@ pub fn run_sqlite_spike_probe() -> rusqlite::Result<SqliteSpikeProbe> {
 }
 
 #[wasm_bindgen]
+/// Runs the SQLite spike probe and serializes the result as JSON.
+#[must_use = "probe errors are only visible if the result is checked"]
 pub fn sqlite_spike_probe_json() -> Result<String, JsError> {
     let probe = run_sqlite_spike_probe().map_err(|error| JsError::new(&error.to_string()))?;
     serde_json::to_string(&probe).map_err(|error| JsError::new(&error.to_string()))

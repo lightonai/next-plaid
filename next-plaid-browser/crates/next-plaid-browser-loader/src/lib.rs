@@ -1,3 +1,5 @@
+//! Bundle loading and artifact parsing for the browser runtime.
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,6 +13,7 @@ use thiserror::Error;
 
 const MANIFEST_FILE_NAME: &str = "manifest.json";
 
+/// Loaded bundle rooted at a local directory on disk.
 #[derive(Debug, Clone)]
 pub struct LoadedBundle {
     root_dir: PathBuf,
@@ -18,36 +21,57 @@ pub struct LoadedBundle {
     artifact_paths: HashMap<ArtifactKind, PathBuf>,
 }
 
+/// Parsed search artifacts extracted from a browser bundle.
 #[derive(Debug, Clone)]
 pub struct LoadedSearchArtifacts {
+    /// Embedding dimension shared by centroids and token vectors.
     pub embedding_dim: usize,
+    /// Residual quantization bit-width.
     pub nbits: usize,
+    /// Number of documents represented by the artifact set.
     pub document_count: usize,
+    /// Dense centroid matrix values.
     pub centroids: Vec<f32>,
+    /// Flattened IVF posting-list document ids.
     pub ivf: Vec<i64>,
+    /// IVF posting-list lengths per centroid.
     pub ivf_lengths: Vec<i32>,
+    /// Token counts per document.
     pub doc_lengths: Vec<usize>,
+    /// Prefix-summed token offsets per document.
     pub doc_offsets: Vec<usize>,
+    /// Flattened centroid-assignment codes for every token.
     pub merged_codes: Vec<i64>,
+    /// Flattened packed residual bytes for every token.
     pub merged_residuals: Vec<u8>,
+    /// Quantization bucket weights for compressed scoring.
     pub bucket_weights: Vec<f32>,
 }
 
+/// In-memory artifact bytes keyed by artifact kind.
 pub type ArtifactBytesMap = HashMap<ArtifactKind, Vec<u8>>;
 
 impl LoadedBundle {
+    /// Returns the bundle root directory.
+    #[must_use]
     pub fn root_dir(&self) -> &Path {
         &self.root_dir
     }
 
+    /// Returns the parsed bundle manifest.
+    #[must_use]
     pub fn manifest(&self) -> &BundleManifest {
         &self.manifest
     }
 
+    /// Returns the path for one artifact kind, when present.
+    #[must_use]
     pub fn artifact_path(&self, kind: ArtifactKind) -> Option<&Path> {
         self.artifact_paths.get(&kind).map(PathBuf::as_path)
     }
 
+    /// Reads one artifact file into memory.
+    #[must_use = "I/O and validation errors are only visible if the result is checked"]
     pub fn read_artifact_bytes(&self, kind: ArtifactKind) -> Result<Vec<u8>, BundleLoaderError> {
         let path = self
             .artifact_paths
@@ -56,6 +80,8 @@ impl LoadedBundle {
         fs::read(path).map_err(BundleLoaderError::Io)
     }
 
+    /// Reads and parses inline JSON metadata from the bundle.
+    #[must_use = "parsing errors are only visible if the result is checked"]
     pub fn read_inline_metadata_json(&self) -> Result<Value, BundleLoaderError> {
         let mut artifact_bytes = ArtifactBytesMap::new();
         artifact_bytes.insert(
@@ -65,6 +91,8 @@ impl LoadedBundle {
         parse_inline_metadata_json(&self.manifest, &artifact_bytes)
     }
 
+    /// Reads and parses the search-artifact payloads from the bundle.
+    #[must_use = "parsing errors are only visible if the result is checked"]
     pub fn read_search_artifacts(&self) -> Result<LoadedSearchArtifacts, BundleLoaderError> {
         let mut artifact_bytes = ArtifactBytesMap::new();
         for kind in [
@@ -82,56 +110,90 @@ impl LoadedBundle {
     }
 }
 
+/// Failures while loading or parsing a browser bundle.
 #[derive(Debug, Error)]
 pub enum BundleLoaderError {
+    /// The requested bundle root directory does not exist.
     #[error("bundle root does not exist: {0}")]
     MissingRoot(PathBuf),
+    /// The expected manifest file does not exist.
     #[error("bundle manifest does not exist: {0}")]
     MissingManifest(PathBuf),
+    /// Reading a file from disk failed.
     #[error("failed to read file: {0}")]
     Io(#[from] std::io::Error),
+    /// The manifest JSON could not be decoded.
     #[error("failed to parse manifest JSON: {0}")]
     ManifestParse(serde_json::Error),
+    /// The decoded manifest failed semantic validation.
     #[error("manifest validation failed: {0}")]
     ManifestValidation(#[from] BundleManifestError),
+    /// An expected artifact entry was absent from the provided map.
     #[error("required artifact missing from loaded bundle: {0}")]
     MissingArtifact(ArtifactKind),
+    /// An artifact path tried to escape the bundle root directory.
     #[error("artifact path escapes bundle root: {0}")]
     EscapingArtifactPath(String),
+    /// An artifact file path listed in the manifest does not exist on disk.
     #[error("artifact file does not exist for {kind}: {path}")]
-    MissingArtifactFile { kind: ArtifactKind, path: PathBuf },
+    MissingArtifactFile {
+        /// Artifact kind whose file is missing.
+        kind: ArtifactKind,
+        /// Expected on-disk path for the missing artifact.
+        path: PathBuf,
+    },
+    /// An artifact file's byte length differs from the manifest.
     #[error("artifact size mismatch for {kind}: expected {expected} bytes, found {actual}")]
     ArtifactSizeMismatch {
+        /// Artifact kind being validated.
         kind: ArtifactKind,
+        /// Expected size from the manifest.
         expected: u64,
+        /// Actual size observed on disk or in memory.
         actual: u64,
     },
+    /// An artifact file's digest differs from the manifest.
     #[error("artifact digest mismatch for {kind}: expected {expected}, found {actual}")]
     ArtifactDigestMismatch {
+        /// Artifact kind being validated.
         kind: ArtifactKind,
+        /// Expected digest from the manifest.
         expected: String,
+        /// Actual computed digest.
         actual: String,
     },
+    /// Inline metadata was requested for a non-inline bundle.
     #[error("inline metadata is not available for this bundle")]
     InlineMetadataUnavailable,
+    /// Inline metadata JSON could not be decoded.
     #[error("failed to parse inline metadata JSON: {0}")]
     MetadataJsonParse(serde_json::Error),
+    /// An artifact byte slice cannot be divided into the expected element width.
     #[error("artifact byte length is invalid for {kind}: expected a multiple of {element_size}, found {actual}")]
     InvalidArtifactByteLength {
+        /// Artifact kind being parsed.
         kind: ArtifactKind,
+        /// Size in bytes for one parsed element.
         element_size: usize,
+        /// Actual byte length supplied.
         actual: usize,
     },
+    /// The `doc_lengths` JSON payload could not be decoded.
     #[error("failed to parse doc_lengths JSON: {0}")]
     DocLengthsParse(serde_json::Error),
+    /// Parsed search artifacts disagree with the manifest or with each other.
     #[error("search artifact mismatch: {0}")]
     SearchArtifactMismatch(String),
 }
 
+/// Returns the expected manifest path for a bundle root.
+#[must_use]
 pub fn manifest_path(root_dir: impl AsRef<Path>) -> PathBuf {
     root_dir.as_ref().join(MANIFEST_FILE_NAME)
 }
 
+/// Verifies artifact presence, sizes, and digests against the manifest.
+#[must_use = "verification failures are only visible if the result is checked"]
 pub fn verify_artifact_bytes(
     manifest: &BundleManifest,
     artifact_bytes: &ArtifactBytesMap,
@@ -162,6 +224,8 @@ pub fn verify_artifact_bytes(
     Ok(())
 }
 
+/// Parses inline JSON metadata from an artifact map.
+#[must_use = "parsing errors are only visible if the result is checked"]
 pub fn parse_inline_metadata_json(
     manifest: &BundleManifest,
     artifact_bytes: &ArtifactBytesMap,
@@ -175,6 +239,8 @@ pub fn parse_inline_metadata_json(
     serde_json::from_slice(bytes).map_err(BundleLoaderError::MetadataJsonParse)
 }
 
+/// Parses the search-artifact set required by the browser kernel.
+#[must_use = "parsing errors are only visible if the result is checked"]
 pub fn parse_search_artifacts(
     manifest: &BundleManifest,
     artifact_bytes: &ArtifactBytesMap,
@@ -307,6 +373,8 @@ pub fn parse_search_artifacts(
     })
 }
 
+/// Loads, validates, and indexes a bundle rooted at `root_dir`.
+#[must_use = "load failures are only visible if the result is checked"]
 pub fn load_bundle_from_dir(root_dir: impl AsRef<Path>) -> Result<LoadedBundle, BundleLoaderError> {
     let root_dir = root_dir.as_ref().to_path_buf();
     if !root_dir.exists() {
@@ -373,6 +441,8 @@ pub fn load_bundle_from_dir(root_dir: impl AsRef<Path>) -> Result<LoadedBundle, 
     })
 }
 
+/// Computes the lowercase hexadecimal SHA-256 digest for a byte slice.
+#[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut output = String::with_capacity(digest.len() * 2);

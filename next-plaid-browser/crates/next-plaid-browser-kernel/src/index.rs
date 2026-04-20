@@ -1,9 +1,12 @@
+//! Read-only index views used by the browser-safe kernel.
+
 use std::collections::HashSet;
 
 use crate::decompress::{decompress_values, packed_dim};
 use crate::matrix::{maxsim_score, MatrixView};
 use crate::KernelError;
 
+/// Read-only dense index view used by the browser kernel.
 #[derive(Debug, Clone, Copy)]
 pub struct BrowserIndexView<'a> {
     centroids: MatrixView<'a>,
@@ -14,6 +17,7 @@ pub struct BrowserIndexView<'a> {
     all_doc_values: &'a [f32],
 }
 
+/// Read-only compressed index view used by the browser kernel.
 #[derive(Debug, Clone, Copy)]
 pub struct CompressedBrowserIndexView<'a> {
     centroids: MatrixView<'a>,
@@ -47,6 +51,8 @@ pub(crate) trait IndexView<'a>: Copy {
 }
 
 impl<'a> BrowserIndexView<'a> {
+    /// Builds a validated dense index view over borrowed buffers.
+    #[must_use = "index validation errors are only visible if the result is checked"]
     pub fn new(
         centroids: MatrixView<'a>,
         ivf_doc_ids: &'a [i64],
@@ -94,11 +100,15 @@ impl<'a> BrowserIndexView<'a> {
     }
 
     #[inline]
+    /// Returns the centroid matrix used for coarse retrieval.
+    #[must_use]
     pub fn centroids(&self) -> MatrixView<'a> {
         self.centroids
     }
 
     #[inline]
+    /// Returns the number of indexed documents.
+    #[must_use]
     pub fn document_count(&self) -> usize {
         self.doc_offsets.len().saturating_sub(1)
     }
@@ -123,6 +133,8 @@ impl<'a> BrowserIndexView<'a> {
         MatrixView::new(values, end - start, dim).ok()
     }
 
+    /// Returns the deduplicated candidate document ids for the selected centroids.
+    #[must_use]
     pub fn get_candidates(&self, centroid_indices: &[usize]) -> Vec<i64> {
         let mut candidates = Vec::new();
         let mut offset = 0usize;
@@ -166,6 +178,9 @@ impl<'a> IndexView<'a> for BrowserIndexView<'a> {
 }
 
 impl<'a> CompressedBrowserIndexView<'a> {
+    /// Builds a validated compressed index view over borrowed buffers.
+    #[must_use = "index validation errors are only visible if the result is checked"]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         centroids: MatrixView<'a>,
         nbits: usize,
@@ -226,11 +241,15 @@ impl<'a> CompressedBrowserIndexView<'a> {
     }
 
     #[inline]
+    /// Returns the centroid matrix used for coarse retrieval.
+    #[must_use]
     pub fn centroids(&self) -> MatrixView<'a> {
         self.centroids
     }
 
     #[inline]
+    /// Returns the number of indexed documents.
+    #[must_use]
     pub fn document_count(&self) -> usize {
         self.doc_offsets.len().saturating_sub(1)
     }
@@ -254,6 +273,8 @@ impl<'a> CompressedBrowserIndexView<'a> {
         Some(&self.all_packed_residuals[start * packed_dim..end * packed_dim])
     }
 
+    /// Returns the deduplicated candidate document ids for the selected centroids.
+    #[must_use]
     pub fn get_candidates(&self, centroid_indices: &[usize]) -> Vec<i64> {
         let mut candidates = Vec::new();
         let mut offset = 0usize;

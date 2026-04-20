@@ -26,6 +26,13 @@ wasm-bindgen = "0.2.105"
 wasm-bindgen-futures = "0.4.55"
 wasm-bindgen-test = "0.3.55"
 
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+
 [profile.release]
 lto = true
 codegen-units = 1

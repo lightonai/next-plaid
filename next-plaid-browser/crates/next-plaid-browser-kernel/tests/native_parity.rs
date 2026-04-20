@@ -1,3 +1,6 @@
+#![allow(missing_docs)]
+#![allow(missing_crate_level_docs)]
+
 use std::fs;
 use std::path::Path;
 

@@ -1,5 +1,8 @@
+//! Matrix and scoring helpers for the browser-safe kernel.
+
 use crate::KernelError;
 
+/// Borrowed row-major matrix view used throughout the kernel.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MatrixView<'a> {
     values: &'a [f32],
@@ -8,6 +11,8 @@ pub struct MatrixView<'a> {
 }
 
 impl<'a> MatrixView<'a> {
+    /// Builds a validated matrix view over a flat row-major buffer.
+    #[must_use = "shape validation errors are only visible if the result is checked"]
     pub fn new(values: &'a [f32], rows: usize, dim: usize) -> Result<Self, KernelError> {
         if dim == 0 {
             return Err(KernelError::ZeroDimension);
@@ -19,11 +24,15 @@ impl<'a> MatrixView<'a> {
     }
 
     #[inline]
+    /// Returns the number of rows in the matrix.
+    #[must_use]
     pub fn rows(&self) -> usize {
         self.rows
     }
 
     #[inline]
+    /// Returns the embedding dimension for each row.
+    #[must_use]
     pub fn dim(&self) -> usize {
         self.dim
     }
@@ -93,6 +102,8 @@ pub fn maxsim_score(query: MatrixView<'_>, doc: MatrixView<'_>) -> f32 {
     total
 }
 
+/// Scores a packed batch of documents against one query matrix.
+#[must_use = "shape validation errors are only visible if the result is checked"]
 pub fn score_documents(
     query: MatrixView<'_>,
     docs: &[f32],
@@ -116,6 +127,8 @@ pub fn score_documents(
     Ok(scores)
 }
 
+/// Assigns each embedding row to its highest-scoring centroid row.
+#[must_use = "shape validation errors are only visible if the result is checked"]
 pub fn assign_to_centroids(
     embeddings: MatrixView<'_>,
     centroids: MatrixView<'_>,

@@ -1,3 +1,5 @@
+//! Browser storage installation and reopen logic for NextPlaid bundles.
+
 use next_plaid_browser_contract::{
     ArtifactKind, BundleInstalledResponse, BundleManifest, CompressionKind, MetadataMode,
 };
@@ -8,42 +10,66 @@ use thiserror::Error;
 #[cfg(target_arch = "wasm32")]
 const OPFS_ROOT_DIR: &str = "next-plaid-browser-bundles";
 
+/// Stored bundle reopened from browser persistence.
 #[derive(Debug, Clone)]
 pub struct StoredBrowserBundle {
+    /// Parsed bundle manifest.
     pub manifest: BundleManifest,
+    /// Parsed search artifacts used by the browser kernel.
     pub search_artifacts: LoadedSearchArtifacts,
+    /// Optional metadata rows reconstructed from stored metadata.
     pub metadata: Option<Vec<Option<Value>>>,
 }
 
+/// Errors returned by the browser storage layer.
 #[derive(Debug, Error)]
 pub enum BrowserStorageError {
+    /// Browser storage was requested on a non-wasm host target.
     #[error("browser storage is only available on wasm32 targets")]
     UnavailableOnHost,
+    /// Bundle validation or parsing failed.
     #[error("bundle validation failed: {0}")]
     Loader(#[from] BundleLoaderError),
+    /// JSON serialization or parsing failed.
     #[error("failed to parse JSON: {0}")]
     Json(#[from] serde_json::Error),
+    /// A browser API returned an opaque JavaScript failure.
     #[error("browser storage API error: {0}")]
     Js(String),
+    /// OPFS is unavailable in the current browser environment.
     #[error("browser storage does not expose navigator.storage.getDirectory()")]
     MissingOpfs,
+    /// IndexedDB is unavailable in the current browser environment.
     #[error("browser storage does not expose indexedDB")]
     MissingIndexedDb,
+    /// No active bundle pointer was recorded for the requested index id.
     #[error("no active stored bundle is recorded for index '{0}'")]
     MissingActiveBundle(String),
+    /// The manifest uses a metadata mode that the browser storage slice does not support.
     #[error("unsupported metadata mode for browser storage slice: {0:?}")]
     UnsupportedMetadataMode(MetadataMode),
+    /// The manifest uses artifact compression that the browser storage slice does not support.
     #[error(
         "unsupported artifact compression for browser storage slice: {kind} uses {compression:?}"
     )]
     UnsupportedArtifactCompression {
+        /// Artifact kind with unsupported compression.
         kind: ArtifactKind,
+        /// Compression mode that is not yet supported.
         compression: CompressionKind,
     },
+    /// Stored metadata JSON was not an array or `documents` object payload.
     #[error("stored metadata JSON does not match the expected document list shape")]
     InvalidMetadataShape,
+    /// Stored metadata row count did not match the manifest document count.
     #[error("stored metadata document count mismatch: expected {expected}, found {actual}")]
-    MetadataDocumentCount { expected: usize, actual: usize },
+    MetadataDocumentCount {
+        /// Document count from the manifest.
+        expected: usize,
+        /// Actual number of decoded metadata rows.
+        actual: usize,
+    },
+    /// A manifest artifact path was invalid for browser storage.
     #[error("invalid artifact path in manifest: {0}")]
     InvalidArtifactPath(String),
 }
@@ -58,6 +84,8 @@ struct ActiveBundleRecord {
     build_id: String,
 }
 
+/// Installs one browser bundle from in-memory artifact bytes.
+#[must_use = "install failures are only visible if the result is checked"]
 pub async fn install_bundle_from_bytes(
     manifest: &BundleManifest,
     artifact_bytes: ArtifactBytesMap,
@@ -66,6 +94,8 @@ pub async fn install_bundle_from_bytes(
     install_bundle_from_bytes_impl(manifest, artifact_bytes, activate).await
 }
 
+/// Loads the active stored bundle for one logical index id.
+#[must_use = "load failures are only visible if the result is checked"]
 pub async fn load_active_bundle(
     index_id: &str,
 ) -> Result<StoredBrowserBundle, BrowserStorageError> {

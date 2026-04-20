@@ -4,21 +4,33 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Artifact kinds that make up a browser-deliverable search bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
+    /// Dense centroid matrix bytes.
     Centroids,
+    /// IVF posting-list document ids.
     Ivf,
+    /// IVF posting-list lengths per centroid.
     IvfLengths,
+    /// Per-document token counts.
     DocLengths,
+    /// Packed centroid-assignment codes for every token.
     MergedCodes,
+    /// Packed residual bytes for every token.
     MergedResiduals,
+    /// Quantization bucket weights for compressed scoring.
     BucketWeights,
+    /// Inline JSON metadata payload.
     MetadataJson,
+    /// SQLite sidecar metadata payload.
     MetadataSqlite,
 }
 
 impl ArtifactKind {
+    /// Returns the stable string form used in manifests and JSON payloads.
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             ArtifactKind::Centroids => "centroids",
@@ -40,76 +52,115 @@ impl fmt::Display for ArtifactKind {
     }
 }
 
+/// Compression applied to an artifact entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CompressionKind {
+    /// The artifact bytes are stored uncompressed.
     #[default]
     None,
+    /// The artifact bytes are gzip-compressed.
     Gzip,
+    /// The artifact bytes are Zstandard-compressed.
     Zstd,
 }
 
+/// Metadata representation used by a browser bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MetadataMode {
+    /// No metadata artifact is included.
     None,
+    /// Metadata is embedded as JSON in the bundle.
     InlineJson,
+    /// Metadata lives in a separate SQLite sidecar artifact.
     SqliteSidecar,
 }
 
+/// Manifest entry describing one named artifact file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactEntry {
+    /// The artifact's logical kind.
     pub kind: ArtifactKind,
+    /// Relative path to the artifact inside the bundle root.
     pub path: String,
+    /// Expected byte length of the on-disk artifact.
     pub byte_size: u64,
+    /// Expected SHA-256 digest of the artifact bytes.
     pub sha256: String,
+    /// Compression applied to the stored artifact bytes.
     #[serde(default)]
     pub compression: CompressionKind,
 }
 
+/// Top-level manifest for a browser-search bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleManifest {
+    /// Schema version for the bundle format.
     pub format_version: u32,
+    /// Stable logical id for the indexed corpus.
     pub index_id: String,
+    /// Unique build id for one concrete bundle version.
     pub build_id: String,
+    /// Embedding dimension for centroids and document vectors.
     pub embedding_dim: usize,
+    /// Residual quantization bit-width.
     pub nbits: usize,
+    /// Number of indexed documents represented by the bundle.
     pub document_count: usize,
+    /// Metadata representation carried by the bundle.
     pub metadata_mode: MetadataMode,
+    /// Artifact entries required to load the bundle.
     pub artifacts: Vec<ArtifactEntry>,
 }
 
+/// Validation failures for a [`BundleManifest`].
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum BundleManifestError {
+    /// The manifest declared an invalid format version.
     #[error("format_version must be greater than zero")]
     InvalidFormatVersion,
+    /// The manifest omitted the logical index id.
     #[error("index_id must not be empty")]
     MissingIndexId,
+    /// The manifest omitted the concrete build id.
     #[error("build_id must not be empty")]
     MissingBuildId,
+    /// The manifest declared a zero embedding dimension.
     #[error("embedding_dim must be greater than zero")]
     InvalidEmbeddingDimension,
+    /// The manifest declared an invalid residual bit width.
     #[error("nbits must be greater than zero and divide 8")]
     InvalidNbits,
+    /// The manifest declared zero documents.
     #[error("document_count must be greater than zero")]
     InvalidDocumentCount,
+    /// The manifest did not list any artifacts.
     #[error("artifact list must not be empty")]
     MissingArtifacts,
+    /// A required artifact kind for the format is missing.
     #[error("required artifact kind missing: {0}")]
     MissingRequiredArtifact(ArtifactKind),
+    /// The manifest listed the same artifact kind more than once.
     #[error("duplicate artifact kind: {0}")]
     DuplicateArtifactKind(ArtifactKind),
+    /// An artifact path was empty or only whitespace.
     #[error("artifact path must not be empty")]
     EmptyArtifactPath,
+    /// An artifact declared an invalid byte length.
     #[error("artifact byte_size must be greater than zero")]
     InvalidArtifactSize,
+    /// An artifact declared an invalid digest string.
     #[error("artifact sha256 must look like a 64-character lowercase hex digest")]
     InvalidArtifactDigest,
+    /// The selected metadata mode requires an additional artifact kind.
     #[error("metadata_mode requires artifact kind: {0}")]
     MissingMetadataArtifact(ArtifactKind),
 }
 
 impl BundleManifest {
+    /// Validates manifest shape and required artifact coverage.
+    #[must_use = "validation errors are only visible if the result is checked"]
     pub fn validate(&self) -> Result<(), BundleManifestError> {
         if self.format_version == 0 {
             return Err(BundleManifestError::InvalidFormatVersion);

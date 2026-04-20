@@ -1,4 +1,8 @@
+//! Shared bundle and request/response types for the browser runtime.
+
+/// Browser bundle manifest types and validation rules.
 pub mod bundle;
+/// Wire-format request and response payloads for the browser runtime.
 pub mod protocol;
 
 pub use bundle::{

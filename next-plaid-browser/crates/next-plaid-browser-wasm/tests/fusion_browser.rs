@@ -1,4 +1,7 @@
+#![doc = "Browser-run fusion tests for the Wasm runtime."]
 #![cfg(target_arch = "wasm32")]
+#![allow(missing_docs)]
+#![allow(missing_crate_level_docs)]
 
 use next_plaid_browser_kernel::{fuse_relative_score, fuse_rrf};
 use wasm_bindgen_test::*;

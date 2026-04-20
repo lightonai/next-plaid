@@ -1,3 +1,5 @@
+//! Wasm entrypoints for the browser-native NextPlaid runtime.
+
 use next_plaid_browser_contract::{
     RuntimeRequest, RuntimeResponse, ScoreResponse, StorageRequest, StorageResponse,
     ValidateBundleResponse,
@@ -73,7 +75,9 @@ pub(crate) enum WasmError {
     #[error("zero dimension query embeddings")]
     ZeroDimensionQueryEmbeddings,
 
-    #[error("inconsistent query embedding dimension at row {row}: expected {expected}, got {actual}")]
+    #[error(
+        "inconsistent query embedding dimension at row {row}: expected {expected}, got {actual}"
+    )]
     InconsistentQueryDimension {
         row: usize,
         expected: usize,
@@ -82,6 +86,8 @@ pub(crate) enum WasmError {
 }
 
 #[wasm_bindgen]
+/// Scores one query matrix against a packed batch of document token vectors.
+#[must_use = "request validation and scoring errors are only visible if the result is checked"]
 pub fn maxsim_scores(
     query_values: Vec<f32>,
     query_rows: usize,
@@ -94,11 +100,14 @@ pub fn maxsim_scores(
 }
 
 #[wasm_bindgen]
+/// Clears all indices currently loaded into the in-memory runtime cache.
 pub fn reset_runtime_state() {
     runtime::clear_loaded_indices();
 }
 
 #[wasm_bindgen]
+/// Handles one JSON-encoded runtime request and returns a JSON response.
+#[must_use = "request parsing and runtime errors are only visible if the result is checked"]
 pub fn handle_runtime_request_json(request_json: &str) -> Result<String, JsError> {
     Ok(handle_runtime_request_json_impl(request_json)?)
 }
@@ -140,6 +149,8 @@ fn handle_runtime_request_json_impl(request_json: &str) -> Result<String, WasmEr
 }
 
 #[wasm_bindgen]
+/// Handles one JSON-encoded storage request and returns a JSON response.
+#[must_use = "request parsing and storage errors are only visible if the result is checked"]
 pub async fn handle_storage_request_json(request_json: String) -> Result<String, JsError> {
     Ok(handle_storage_request_json_impl(request_json).await?)
 }
@@ -158,7 +169,6 @@ async fn handle_storage_request_json_impl(request_json: String) -> Result<String
 
     Ok(serde_json::to_string(&response)?)
 }
-
 
 #[cfg(test)]
 mod tests {

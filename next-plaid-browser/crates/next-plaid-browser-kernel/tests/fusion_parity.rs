@@ -1,3 +1,6 @@
+#![allow(missing_docs)]
+#![allow(missing_crate_level_docs)]
+
 use next_plaid::text_search as native_text_search;
 use next_plaid_browser_kernel::{
     fuse_relative_score as browser_fuse_relative_score, fuse_rrf as browser_fuse_rrf,

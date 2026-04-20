@@ -29,7 +29,8 @@ pub(crate) async fn load_stored_browser_bundle(
     let build_id = stored.manifest.build_id.clone();
 
     let name = request.name.clone();
-    let summary = load_compressed_bundle_into_runtime(name.clone(), stored, &request.fts_tokenizer)?;
+    let summary =
+        load_compressed_bundle_into_runtime(name.clone(), stored, &request.fts_tokenizer)?;
 
     Ok(StoredBundleLoadedResponse {
         index_id: request.index_id,

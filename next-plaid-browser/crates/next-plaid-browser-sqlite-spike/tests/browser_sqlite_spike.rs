@@ -1,4 +1,7 @@
+#![doc = "Integration tests for the browser SQLite spike harness."]
 #![cfg(all(target_family = "wasm", target_os = "unknown"))]
+#![allow(missing_docs)]
+#![allow(missing_crate_level_docs)]
 
 use next_plaid_browser_sqlite_spike::run_sqlite_spike_probe;
 use wasm_bindgen_test::*;

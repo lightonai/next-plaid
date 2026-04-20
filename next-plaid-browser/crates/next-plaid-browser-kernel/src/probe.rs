@@ -107,9 +107,8 @@ fn ivf_probe_batched(
             .collect();
         let mut local_max_scores: HashMap<usize, f32> = HashMap::new();
 
-        for q_idx in 0..num_tokens {
+        for (q_idx, heap) in local_heaps.iter_mut().enumerate().take(num_tokens) {
             let query_row = query.row(q_idx);
-            let heap = &mut local_heaps[q_idx];
 
             for centroid_index in batch_start..batch_end {
                 let score = dot(query_row, centroids.row(centroid_index));
@@ -255,9 +254,8 @@ pub(crate) fn search_one_standard<'a, V: IndexView<'a>>(
             }
 
             if centroid_scores.len() > n_probe {
-                centroid_scores.select_nth_unstable_by(n_probe - 1, |lhs, rhs| {
-                    rhs.1.total_cmp(&lhs.1)
-                });
+                centroid_scores
+                    .select_nth_unstable_by(n_probe - 1, |lhs, rhs| rhs.1.total_cmp(&lhs.1));
             }
 
             for (centroid_index, _) in centroid_scores.iter().take(n_probe) {

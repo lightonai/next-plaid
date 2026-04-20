@@ -1,4 +1,7 @@
+#![doc = "Browser-run parity tests for the Wasm runtime."]
 #![cfg(target_arch = "wasm32")]
+#![allow(missing_docs)]
+#![allow(missing_crate_level_docs)]
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use next_plaid_browser_contract::{

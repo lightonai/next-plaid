@@ -22,27 +22,40 @@ pub use matrix::{assign_to_centroids, maxsim_score, score_documents, MatrixView}
 use index::IndexView;
 use probe::{search_one_batched, search_one_standard};
 
+/// Browser-kernel crate version.
 pub const KERNEL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Errors returned by browser-safe kernel operations.
 #[derive(Debug, Error, PartialEq)]
 pub enum KernelError {
+    /// A matrix or vector declared a zero embedding dimension.
     #[error("dimension must be greater than zero")]
     ZeroDimension,
+    /// A compressed index declared an invalid residual bit-width.
     #[error("nbits must be greater than zero and divide 8")]
     InvalidNbits,
+    /// A buffer length does not match the declared shape.
     #[error("buffer length does not match the provided shape")]
     ShapeMismatch,
+    /// Offset tables or posting-list lengths are inconsistent with backing buffers.
     #[error("offsets must start at zero, be non-decreasing, and match the backing buffers")]
     InvalidOffsets,
 }
 
+/// Search tuning parameters shared by dense and compressed search flows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchParameters {
+    /// Query batch size used by the scoring loop.
     pub batch_size: usize,
+    /// Number of candidates to exact-score after centroid probing.
     pub n_full_scores: usize,
+    /// Maximum number of ranked hits to return.
     pub top_k: usize,
+    /// Number of IVF centroids to probe.
     pub n_ivf_probe: usize,
+    /// Threshold for switching to the batched centroid-probing path.
     pub centroid_batch_size: usize,
+    /// Optional centroid-score threshold used to prune weak centroid matches.
     pub centroid_score_threshold: Option<f32>,
 }
 
@@ -59,13 +72,16 @@ impl Default for SearchParameters {
     }
 }
 
+/// Ranked output for one query.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryResult {
+    /// Zero-based query position within the batch.
     pub query_id: usize,
+    /// Ranked document ids.
     pub passage_ids: Vec<i64>,
+    /// Scores aligned with `passage_ids`.
     pub scores: Vec<f32>,
 }
-
 
 fn dispatch_search<'a, V: IndexView<'a>>(
     index: V,
@@ -87,6 +103,8 @@ fn dispatch_search<'a, V: IndexView<'a>>(
     })
 }
 
+/// Searches one dense browser index.
+#[must_use = "search errors are only visible if the result is checked"]
 pub fn search_one(
     index: BrowserIndexView<'_>,
     query: MatrixView<'_>,
@@ -96,6 +114,8 @@ pub fn search_one(
     dispatch_search(index, query, params, subset)
 }
 
+/// Searches one compressed browser index.
+#[must_use = "search errors are only visible if the result is checked"]
 pub fn search_one_compressed(
     index: CompressedBrowserIndexView<'_>,
     query: MatrixView<'_>,
