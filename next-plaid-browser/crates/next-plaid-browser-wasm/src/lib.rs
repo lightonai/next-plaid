@@ -18,9 +18,78 @@ use next_plaid_browser_kernel::{
     BrowserIndexView, CompressedBrowserIndexView, MatrixView, SearchParameters, KERNEL_VERSION,
 };
 use next_plaid_browser_storage::{install_bundle_from_bytes, load_active_bundle};
+use thiserror::Error;
 use wasm_bindgen::prelude::*;
 
 mod keyword_runtime;
+
+#[derive(Debug, Error)]
+pub(crate) enum WasmError {
+    #[error("kernel error: {0}")]
+    Kernel(#[from] next_plaid_browser_kernel::KernelError),
+
+    #[error("bundle manifest error: {0}")]
+    BundleManifest(#[from] next_plaid_browser_contract::BundleManifestError),
+
+    #[error("bundle loader error: {0}")]
+    BundleLoader(#[from] next_plaid_browser_loader::BundleLoaderError),
+
+    #[error("browser storage error: {0}")]
+    BrowserStorage(#[from] next_plaid_browser_storage::BrowserStorageError),
+
+    #[error("keyword runtime error: {0}")]
+    Keyword(#[from] crate::keyword_runtime::KeywordError),
+
+    #[error("serde_json error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    #[error("base64 decode error: {0}")]
+    Base64(#[from] base64::DecodeError),
+
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
+
+    #[error("index '{0}' is not loaded")]
+    IndexNotLoaded(String),
+
+    #[error("query dimension {query_dim} does not match index dimension {index_dim}")]
+    QueryDimensionMismatch { query_dim: usize, index_dim: usize },
+
+    #[error("metadata length {metadata_len} does not match document count {document_count}")]
+    MetadataLengthMismatch {
+        metadata_len: usize,
+        document_count: usize,
+    },
+
+    #[error("index byte count overflow")]
+    ByteCountOverflow,
+
+    #[error("doc_offsets must contain at least one entry")]
+    EmptyDocOffsets,
+
+    #[error("query shape overflow")]
+    QueryShapeOverflow,
+
+    #[error("expected {expected} bytes for shape {shape:?}, got {actual}")]
+    QueryShapeMismatch {
+        expected: usize,
+        shape: [usize; 2],
+        actual: usize,
+    },
+
+    #[error("empty query embeddings")]
+    EmptyQueryEmbeddings,
+
+    #[error("zero dimension query embeddings")]
+    ZeroDimensionQueryEmbeddings,
+
+    #[error("inconsistent query embedding dimension at row {row}: expected {expected}, got {actual}")]
+    InconsistentQueryDimension {
+        row: usize,
+        expected: usize,
+        actual: usize,
+    },
+}
 
 const BROWSER_INDEX_DIR: &str = "browser://memory";
 const DEFAULT_BATCH_SIZE: usize = 2000;
