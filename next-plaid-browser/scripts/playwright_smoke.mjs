@@ -191,6 +191,11 @@ async function runSmoke(browserName) {
     const filteredKeywordDocumentIds =
       result.filteredKeywordSearch?.results?.[0]?.document_ids ?? [];
     const loadedIndices = result.health?.loaded_indices;
+    const initialMemoryUsageBytes = result.initialHealth?.memory_usage_bytes;
+    const finalMemoryUsageBytes = result.health?.memory_usage_bytes;
+    const indexBytes = result.health?.memory_usage_breakdown?.index_bytes;
+    const metadataJsonBytes = result.health?.memory_usage_breakdown?.metadata_json_bytes;
+    const keywordRuntimeBytes = result.health?.memory_usage_breakdown?.keyword_runtime_bytes;
 
     if (
       installActivated !== true ||
@@ -205,7 +210,13 @@ async function runSmoke(browserName) {
       hybridTopDocumentId !== 1 ||
       filteredSemanticTopDocumentId !== 1 ||
       JSON.stringify(filteredKeywordDocumentIds) !== JSON.stringify([0, 2]) ||
-      loadedIndices !== 2
+      loadedIndices !== 2 ||
+      initialMemoryUsageBytes !== 0 ||
+      !(finalMemoryUsageBytes > 0) ||
+      !(indexBytes > 0) ||
+      !(metadataJsonBytes > 0) ||
+      !(keywordRuntimeBytes > 0) ||
+      finalMemoryUsageBytes !== indexBytes + metadataJsonBytes + keywordRuntimeBytes
     ) {
       throw new Error(`unexpected smoke result: ${JSON.stringify(result)}`);
     }

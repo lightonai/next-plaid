@@ -3,7 +3,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use next_plaid_browser_contract::{
     ArtifactEntry, ArtifactKind, BundleArtifactBytesPayload, BundleManifest, CompressionKind,
-    InstallBundleRequest, LoadStoredBundleRequest, MatrixPayload, MetadataMode,
+    HealthResponse, InstallBundleRequest, LoadStoredBundleRequest, MatrixPayload, MetadataMode,
     QueryEmbeddingsPayload, QueryResultResponse, RuntimeRequest, RuntimeResponse,
     SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse, StorageRequest,
     StorageResponse, WorkerLoadIndexRequest, WorkerSearchRequest,
@@ -303,6 +303,16 @@ fn runtime_result(request: &WorkerSearchRequest) -> SearchResponse {
     let response: RuntimeResponse = serde_json::from_str(&response_json).unwrap();
     match response {
         RuntimeResponse::SearchResults(result) => result,
+        other => panic!("unexpected response: {other:?}"),
+    }
+}
+
+fn runtime_health_response() -> HealthResponse {
+    let request_json = serde_json::to_string(&RuntimeRequest::Health).unwrap();
+    let response_json = handle_runtime_request_json(&request_json).unwrap();
+    let response: RuntimeResponse = serde_json::from_str(&response_json).unwrap();
+    match response {
+        RuntimeResponse::Health(result) => result,
         other => panic!("unexpected response: {other:?}"),
     }
 }
@@ -628,6 +638,18 @@ async fn browser_storage_install_and_reload_roundtrip() {
 
     let hybrid = runtime_result(&stored_hybrid_search_request("stored-demo"));
     assert_eq!(hybrid.results[0].document_ids[0], 1);
+
+    let health = runtime_health_response();
+    assert_eq!(health.loaded_indices, 1);
+    assert!(health.memory_usage_breakdown.index_bytes > 0);
+    assert!(health.memory_usage_breakdown.metadata_json_bytes > 0);
+    assert!(health.memory_usage_breakdown.keyword_runtime_bytes > 0);
+    assert_eq!(
+        health.memory_usage_bytes,
+        health.memory_usage_breakdown.index_bytes
+            + health.memory_usage_breakdown.metadata_json_bytes
+            + health.memory_usage_breakdown.keyword_runtime_bytes
+    );
 }
 
 #[wasm_bindgen_test]

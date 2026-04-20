@@ -320,6 +320,12 @@ Scope:
 
 ### Slice 3: Restore trustworthy memory accounting
 
+Status:
+
+- implemented on 2026-04-19 for runtime health reporting
+- current health responses now break memory into index payload bytes, retained
+  metadata JSON bytes, and the browser keyword-runtime copy
+
 Goal:
 
 - make runtime health memory numbers usable for sizing decisions

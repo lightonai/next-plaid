@@ -7,10 +7,10 @@ use keyword_runtime::KeywordIndex;
 use next_plaid_browser_contract::{
     BundleInstalledResponse, FusionRequest, FusionResponse, HealthResponse, IndexSummary,
     InlineSearchParamsRequest, InlineSearchRequest, InlineSearchResponse, InstallBundleRequest,
-    LoadStoredBundleRequest, MatrixPayload, QueryEmbeddingsPayload, QueryResultResponse,
-    RankedResultsPayload, RuntimeRequest, RuntimeResponse, ScoreResponse, SearchIndexPayload,
-    SearchParamsRequest, SearchRequest, SearchResponse, StorageRequest, StorageResponse,
-    StoredBundleLoadedResponse, ValidateBundleResponse, WorkerLoadIndexRequest,
+    LoadStoredBundleRequest, MatrixPayload, MemoryUsageBreakdown, QueryEmbeddingsPayload,
+    QueryResultResponse, RankedResultsPayload, RuntimeRequest, RuntimeResponse, ScoreResponse,
+    SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse, StorageRequest,
+    StorageResponse, StoredBundleLoadedResponse, ValidateBundleResponse, WorkerLoadIndexRequest,
     WorkerLoadIndexResponse, WorkerSearchRequest,
 };
 use next_plaid_browser_kernel::{
@@ -32,7 +32,7 @@ struct LoadedIndex {
     metadata: Option<Vec<Option<serde_json::Value>>>,
     keyword_index: Option<KeywordIndex>,
     summary: IndexSummary,
-    memory_usage_bytes: u64,
+    memory_usage_breakdown: MemoryUsageBreakdown,
 }
 
 #[derive(Debug)]
@@ -129,10 +129,22 @@ fn runtime_health() -> HealthResponse {
             .map(|loaded| loaded.summary.clone())
             .collect();
         summaries.sort_by(|left, right| left.name.cmp(&right.name));
-        let memory_usage_bytes = indices
-            .values()
-            .map(|loaded| loaded.memory_usage_bytes)
-            .sum();
+        let memory_usage_breakdown =
+            indices
+                .values()
+                .fold(MemoryUsageBreakdown::default(), |mut breakdown, loaded| {
+                    breakdown.index_bytes = breakdown
+                        .index_bytes
+                        .saturating_add(loaded.memory_usage_breakdown.index_bytes);
+                    breakdown.metadata_json_bytes = breakdown
+                        .metadata_json_bytes
+                        .saturating_add(loaded.memory_usage_breakdown.metadata_json_bytes);
+                    breakdown.keyword_runtime_bytes = breakdown
+                        .keyword_runtime_bytes
+                        .saturating_add(loaded.memory_usage_breakdown.keyword_runtime_bytes);
+                    breakdown
+                });
+        let memory_usage_bytes = saturating_memory_usage_total_bytes(&memory_usage_breakdown);
 
         HealthResponse {
             status: "healthy".into(),
@@ -140,6 +152,7 @@ fn runtime_health() -> HealthResponse {
             loaded_indices: summaries.len(),
             index_dir: BROWSER_INDEX_DIR.into(),
             memory_usage_bytes,
+            memory_usage_breakdown,
             indices: summaries,
             model: None,
         }
@@ -186,7 +199,6 @@ fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse
     validate_search_index_payload(&request.index)?;
 
     let summary = build_index_summary(&request)?;
-    let memory_usage_bytes = index_memory_usage_bytes(&request.index, request.metadata.as_deref())?;
     let name = request.name.clone();
 
     if let Some(metadata) = &request.metadata {
@@ -205,6 +217,11 @@ fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse
         .map(|metadata| KeywordIndex::new(metadata, &request.fts_tokenizer))
         .transpose()
         .map_err(|err| JsError::new(&err))?;
+    let memory_usage_breakdown = index_memory_usage_breakdown(
+        &request.index,
+        request.metadata.as_deref(),
+        keyword_index.as_ref(),
+    )?;
 
     LOADED_INDICES.with(|indices| {
         indices.borrow_mut().insert(
@@ -214,7 +231,7 @@ fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse
                 metadata: request.metadata,
                 keyword_index,
                 summary: summary.clone(),
-                memory_usage_bytes,
+                memory_usage_breakdown,
             },
         );
     });
@@ -234,8 +251,11 @@ fn load_compressed_bundle_into_runtime(
         .map(|metadata| KeywordIndex::new(metadata, fts_tokenizer))
         .transpose()
         .map_err(|err| JsError::new(&err))?;
-    let memory_usage_bytes =
-        compressed_index_memory_usage_bytes(&stored.search_artifacts, metadata.as_deref())?;
+    let memory_usage_breakdown = compressed_index_memory_usage_breakdown(
+        &stored.search_artifacts,
+        metadata.as_deref(),
+        keyword_index.as_ref(),
+    )?;
     let summary = build_compressed_index_summary(
         &name,
         &manifest,
@@ -251,7 +271,7 @@ fn load_compressed_bundle_into_runtime(
                 metadata,
                 keyword_index,
                 summary: summary.clone(),
-                memory_usage_bytes,
+                memory_usage_breakdown,
             },
         );
     });
@@ -674,63 +694,135 @@ fn build_compressed_index_summary(
     })
 }
 
-fn index_memory_usage_bytes(
+fn index_memory_usage_breakdown(
     index: &SearchIndexPayload,
     metadata: Option<&[Option<serde_json::Value>]>,
-) -> Result<u64, JsError> {
+    keyword_index: Option<&KeywordIndex>,
+) -> Result<MemoryUsageBreakdown, JsError> {
+    build_memory_usage_breakdown(
+        dense_index_payload_bytes(index)?,
+        metadata_json_usage_bytes(metadata)?,
+        keyword_runtime_usage_bytes(keyword_index)?,
+    )
+}
+
+fn compressed_index_memory_usage_breakdown(
+    search: &next_plaid_browser_loader::LoadedSearchArtifacts,
+    metadata: Option<&[Option<serde_json::Value>]>,
+    keyword_index: Option<&KeywordIndex>,
+) -> Result<MemoryUsageBreakdown, JsError> {
+    build_memory_usage_breakdown(
+        compressed_index_payload_bytes(search)?,
+        metadata_json_usage_bytes(metadata)?,
+        keyword_runtime_usage_bytes(keyword_index)?,
+    )
+}
+
+fn build_memory_usage_breakdown(
+    index_bytes: u64,
+    metadata_json_bytes: u64,
+    keyword_runtime_bytes: u64,
+) -> Result<MemoryUsageBreakdown, JsError> {
+    let breakdown = MemoryUsageBreakdown {
+        index_bytes,
+        metadata_json_bytes,
+        keyword_runtime_bytes,
+    };
+    let _ = memory_usage_total_bytes(&breakdown)?;
+    Ok(breakdown)
+}
+
+fn dense_index_payload_bytes(index: &SearchIndexPayload) -> Result<u64, JsError> {
     let mut total = 0u64;
-
-    total += slice_bytes::<f32>(&index.centroids.values)?;
-    total += slice_bytes::<i64>(&index.ivf_doc_ids)?;
-    total += slice_bytes::<i32>(&index.ivf_lengths)?;
-    total += slice_bytes::<usize>(&index.doc_offsets)?;
-    total += slice_bytes::<i64>(&index.doc_codes)?;
-    total += slice_bytes::<f32>(&index.doc_values)?;
-
-    if let Some(metadata) = metadata {
-        let metadata_bytes = metadata.iter().try_fold(0u64, |acc, value| {
-            let bytes = serde_json::to_vec(value)
-                .map_err(|err| JsError::new(&format!("failed to size metadata: {err}")))?;
-            acc.checked_add(bytes.len() as u64)
-                .ok_or_else(|| JsError::new("metadata byte count overflow"))
-        })?;
-        total = total
-            .checked_add(metadata_bytes)
-            .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    }
-
+    total = total
+        .checked_add(slice_bytes::<f32>(&index.centroids.values)?)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    total = total
+        .checked_add(slice_bytes::<i64>(&index.ivf_doc_ids)?)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    total = total
+        .checked_add(slice_bytes::<i32>(&index.ivf_lengths)?)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    total = total
+        .checked_add(slice_bytes::<usize>(&index.doc_offsets)?)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    total = total
+        .checked_add(slice_bytes::<i64>(&index.doc_codes)?)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    total = total
+        .checked_add(slice_bytes::<f32>(&index.doc_values)?)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
     Ok(total)
 }
 
-fn compressed_index_memory_usage_bytes(
+fn compressed_index_payload_bytes(
     search: &next_plaid_browser_loader::LoadedSearchArtifacts,
-    metadata: Option<&[Option<serde_json::Value>]>,
 ) -> Result<u64, JsError> {
     let mut total = 0u64;
-    total += slice_bytes::<f32>(&search.centroids)?;
-    total += slice_bytes::<i64>(&search.ivf)?;
-    total += slice_bytes::<i32>(&search.ivf_lengths)?;
-    total += slice_bytes::<usize>(&search.doc_lengths)?;
-    total += slice_bytes::<usize>(&search.doc_offsets)?;
-    total += slice_bytes::<i64>(&search.merged_codes)?;
+    total = total
+        .checked_add(slice_bytes::<f32>(&search.centroids)?)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    total = total
+        .checked_add(slice_bytes::<i64>(&search.ivf)?)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    total = total
+        .checked_add(slice_bytes::<i32>(&search.ivf_lengths)?)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    total = total
+        .checked_add(slice_bytes::<usize>(&search.doc_lengths)?)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    total = total
+        .checked_add(slice_bytes::<usize>(&search.doc_offsets)?)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    total = total
+        .checked_add(slice_bytes::<i64>(&search.merged_codes)?)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
     total = total
         .checked_add(search.merged_residuals.len() as u64)
         .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    total += slice_bytes::<f32>(&search.bucket_weights)?;
+    total = total
+        .checked_add(slice_bytes::<f32>(&search.bucket_weights)?)
+        .ok_or_else(|| JsError::new("index byte count overflow"))?;
+    Ok(total)
+}
 
-    if let Some(metadata) = metadata {
-        let metadata_bytes = metadata.iter().try_fold(0u64, |acc, value| {
+fn metadata_json_usage_bytes(
+    metadata: Option<&[Option<serde_json::Value>]>,
+) -> Result<u64, JsError> {
+    metadata.map_or(Ok(0), |metadata| {
+        metadata.iter().try_fold(0u64, |acc, value| {
             let bytes = serde_json::to_vec(value)
                 .map_err(|err| JsError::new(&format!("failed to size metadata: {err}")))?;
             acc.checked_add(bytes.len() as u64)
                 .ok_or_else(|| JsError::new("metadata byte count overflow"))
-        })?;
-        total = total
-            .checked_add(metadata_bytes)
-            .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    }
+        })
+    })
+}
 
-    Ok(total)
+fn keyword_runtime_usage_bytes(keyword_index: Option<&KeywordIndex>) -> Result<u64, JsError> {
+    keyword_index
+        .map(|keyword_index| {
+            keyword_index
+                .memory_usage_bytes()
+                .map_err(|err| JsError::new(&err))
+        })
+        .transpose()
+        .map(|bytes| bytes.unwrap_or(0))
+}
+
+fn memory_usage_total_bytes(breakdown: &MemoryUsageBreakdown) -> Result<u64, JsError> {
+    breakdown
+        .index_bytes
+        .checked_add(breakdown.metadata_json_bytes)
+        .and_then(|total| total.checked_add(breakdown.keyword_runtime_bytes))
+        .ok_or_else(|| JsError::new("index byte count overflow"))
+}
+
+fn saturating_memory_usage_total_bytes(breakdown: &MemoryUsageBreakdown) -> u64 {
+    breakdown
+        .index_bytes
+        .saturating_add(breakdown.metadata_json_bytes)
+        .saturating_add(breakdown.keyword_runtime_bytes)
 }
 
 fn slice_bytes<T>(values: &[T]) -> Result<u64, JsError> {
@@ -1060,6 +1152,17 @@ mod tests {
         }
     }
 
+    fn runtime_health_response() -> HealthResponse {
+        let response =
+            handle_runtime_request_json(&serde_json::to_string(&RuntimeRequest::Health).unwrap())
+                .unwrap();
+        let decoded: RuntimeResponse = serde_json::from_str(&response).unwrap();
+        match decoded {
+            RuntimeResponse::Health(result) => result,
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
     fn keyword_search_request(name: &str, text_queries: &[&str]) -> WorkerSearchRequest {
         WorkerSearchRequest {
             name: name.into(),
@@ -1132,17 +1235,15 @@ mod tests {
     fn health_request_roundtrip() {
         reset_runtime_state();
 
-        let request = serde_json::to_string(&RuntimeRequest::Health).unwrap();
-        let response = handle_runtime_request_json(&request).unwrap();
-        let decoded: RuntimeResponse = serde_json::from_str(&response).unwrap();
-        match decoded {
-            RuntimeResponse::Health(health) => {
-                assert_eq!(health.status, "healthy");
-                assert_eq!(health.version, KERNEL_VERSION);
-                assert_eq!(health.loaded_indices, 0);
-            }
-            other => panic!("unexpected response: {other:?}"),
-        }
+        let health = runtime_health_response();
+        assert_eq!(health.status, "healthy");
+        assert_eq!(health.version, KERNEL_VERSION);
+        assert_eq!(health.loaded_indices, 0);
+        assert_eq!(health.memory_usage_bytes, 0);
+        assert_eq!(
+            health.memory_usage_breakdown,
+            MemoryUsageBreakdown::default()
+        );
     }
 
     #[test]
@@ -1212,6 +1313,30 @@ mod tests {
             }
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    #[test]
+    fn health_reports_keyword_runtime_memory_for_loaded_index() {
+        reset_runtime_state();
+
+        let request = serde_json::to_string(&RuntimeRequest::LoadIndex(load_index_request(
+            "demo-health",
+        )))
+        .unwrap();
+        handle_runtime_request_json(&request).unwrap();
+
+        let health = runtime_health_response();
+
+        assert_eq!(health.loaded_indices, 1);
+        assert!(health.memory_usage_breakdown.index_bytes > 0);
+        assert!(health.memory_usage_breakdown.metadata_json_bytes > 0);
+        assert!(health.memory_usage_breakdown.keyword_runtime_bytes > 0);
+        assert_eq!(
+            health.memory_usage_bytes,
+            health.memory_usage_breakdown.index_bytes
+                + health.memory_usage_breakdown.metadata_json_bytes
+                + health.memory_usage_breakdown.keyword_runtime_bytes
+        );
     }
 
     #[test]

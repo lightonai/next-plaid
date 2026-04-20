@@ -74,6 +74,7 @@ successfully for:
 
 - stored-bundle semantic search after install and reload
 - stored-bundle hybrid search after install and reload
+- runtime health memory breakdown accounting
 - semantic search
 - keyword-only search
 - hybrid fusion

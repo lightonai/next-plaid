@@ -197,6 +197,10 @@ Status:
   - storage-backed runtime reopen of the active bundle
   - browser-run install/reload coverage in `wasm-bindgen-test`
   - Playwright smoke coverage for install, reload, and stored-bundle search
+- runtime health memory reporting now includes:
+  - index payload bytes
+  - retained metadata JSON bytes
+  - the browser keyword-runtime SQLite / FTS copy
 - remaining work is the operational hardening around that first path:
   - reject unsupported bundle shapes before installation
   - resume / partial download behavior

@@ -142,6 +142,16 @@ pub struct ModelHealthInfo {
     pub pad_token_id: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MemoryUsageBreakdown {
+    #[serde(default)]
+    pub index_bytes: u64,
+    #[serde(default)]
+    pub metadata_json_bytes: u64,
+    #[serde(default)]
+    pub keyword_runtime_bytes: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HealthResponse {
     pub status: String,
@@ -149,6 +159,8 @@ pub struct HealthResponse {
     pub loaded_indices: usize,
     pub index_dir: String,
     pub memory_usage_bytes: u64,
+    #[serde(default)]
+    pub memory_usage_breakdown: MemoryUsageBreakdown,
     pub indices: Vec<IndexSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelHealthInfo>,

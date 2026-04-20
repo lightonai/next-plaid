@@ -93,6 +93,25 @@ impl KeywordIndex {
         Ok(Self { conn })
     }
 
+    pub fn memory_usage_bytes(&self) -> Result<u64, String> {
+        let page_size: i64 = self
+            .conn
+            .pragma_query_value(Some("main"), "page_size", |row| row.get(0))
+            .map_err(sql_err)?;
+        let page_count: i64 = self
+            .conn
+            .pragma_query_value(Some("main"), "page_count", |row| row.get(0))
+            .map_err(sql_err)?;
+        let page_size =
+            u64::try_from(page_size).map_err(|_| "negative SQLite page_size".to_string())?;
+        let page_count =
+            u64::try_from(page_count).map_err(|_| "negative SQLite page_count".to_string())?;
+
+        page_size
+            .checked_mul(page_count)
+            .ok_or_else(|| "keyword runtime byte count overflow".to_string())
+    }
+
     pub fn search_many(
         &self,
         queries: &[String],
@@ -1099,5 +1118,14 @@ mod tests {
             .expect("trigram keyword search should succeed");
 
         assert_eq!(results[0].document_ids, vec![1]);
+    }
+
+    #[test]
+    fn keyword_index_reports_memory_usage() {
+        let index = KeywordIndex::new(&demo_metadata(), "unicode61").unwrap();
+
+        let memory_usage_bytes = index.memory_usage_bytes().unwrap();
+
+        assert!(memory_usage_bytes > 0);
     }
 }
