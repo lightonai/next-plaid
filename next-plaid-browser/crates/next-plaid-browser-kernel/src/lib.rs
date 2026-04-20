@@ -5,9 +5,6 @@
 //! into a browser-safe reference form that can be compared directly against the
 //! native `next-plaid` crate.
 
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
-
 use thiserror::Error;
 
 mod decompress;
