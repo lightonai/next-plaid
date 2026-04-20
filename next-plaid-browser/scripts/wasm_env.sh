@@ -1,6 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+resolve_llvm_clang() {
+  local candidate=""
+  local brew_prefix=""
+
+  if command -v brew >/dev/null 2>&1; then
+    brew_prefix="$(brew --prefix llvm 2>/dev/null || true)"
+    if [[ -n "$brew_prefix" ]]; then
+      candidate="$brew_prefix/bin/clang"
+      if [[ -x "$candidate" ]]; then
+        echo "$candidate"
+        return 0
+      fi
+    fi
+  fi
+
+  for candidate in \
+    "/opt/homebrew/opt/llvm/bin/clang" \
+    "/usr/local/opt/llvm/bin/clang" \
+    "/usr/bin/clang"
+  do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 resolve_wasm_toolchain() {
   local rustup_bin="${HOME}/.cargo/bin/rustup"
   local cargo_bin="${HOME}/.cargo/bin/cargo"
@@ -36,8 +65,9 @@ resolve_wasm_toolchain() {
     export PATH="$(dirname "$CARGO"):$PATH"
   fi
 
-  local llvm_clang="/opt/homebrew/opt/llvm/bin/clang"
-  if [[ -x "$llvm_clang" ]]; then
+  local llvm_clang=""
+  llvm_clang="$(resolve_llvm_clang || true)"
+  if [[ -n "$llvm_clang" ]]; then
     export CC_wasm32_unknown_unknown="${CC_wasm32_unknown_unknown:-$llvm_clang}"
   fi
 }

@@ -50,11 +50,11 @@ pub mod hierarchy;
 
 use anyhow::{Context, Result};
 use ndarray::Array2;
-pub use next_plaid_preprocess::{ColbertConfig, PreparedDocumentBatch};
 use next_plaid_preprocess::{
-    build_skiplist, prepare_batch_from_tokenized_documents,
-    prepare_batch_from_tokenizer_encodings, preprocess_texts, update_token_ids, TokenizedDocument,
+    build_skiplist, prepare_batch_from_tokenized_documents, prepare_batch_from_tokenizer_encodings,
+    preprocess_texts, update_token_ids, TokenizedDocument,
 };
+pub use next_plaid_preprocess::{ColbertConfig, PreparedDocumentBatch};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Tensor;
@@ -924,7 +924,7 @@ impl Colbert {
         // shape, reducing kernel launch overhead and minimizing padding waste.
         let prepared_lengths: Vec<usize> = tokenized
             .iter()
-            .map(|doc| doc.ids.len().min(truncate_limit) + 1)
+            .map(|doc| doc.len().min(truncate_limit) + 1)
             .collect();
         let mut items: Vec<(usize, TokenizedDocument)> =
             prepared_lengths.into_iter().zip(tokenized).collect();
@@ -1369,12 +1369,14 @@ fn tokenize_processed_texts_individually(
                     .get_attention_mask()
                     .iter()
                     .take_while(|&&v| v != 0)
-                    .count()
-                    .max(1);
-                Ok(TokenizedDocument {
-                    ids: encoding.get_ids()[..real_len].to_vec(),
-                    type_ids: encoding.get_type_ids()[..real_len].to_vec(),
-                })
+                    .count();
+                if real_len == 0 {
+                    return Err(anyhow::anyhow!("Tokenization produced an empty encoding"));
+                }
+                Ok(TokenizedDocument::new(
+                    encoding.get_ids()[..real_len].to_vec(),
+                    encoding.get_type_ids()[..real_len].to_vec(),
+                ))
             })
             .collect::<Vec<_>>()
     });
@@ -1459,33 +1461,23 @@ fn prepare_batch_for_session(
     filter_skiplist: bool,
 ) -> Result<PreparedDocumentBatch> {
     if texts.is_empty() {
-        return Ok(PreparedDocumentBatch {
-            batch_size: 0,
-            batch_max_len: 0,
-            all_input_ids: Vec::new(),
-            all_attention_mask: Vec::new(),
-            all_token_type_ids: if config.uses_token_type_ids {
-                Some(Vec::new())
-            } else {
-                None
-            },
-            all_token_ids: Vec::new(),
-            original_lengths: Vec::new(),
+        return Ok(PreparedDocumentBatch::empty(
+            config.uses_token_type_ids,
             is_query,
             filter_skiplist,
-        });
+        ));
     }
 
     let processed_texts = preprocess_texts(config, texts);
     let batch_encodings = tokenize_processed_texts(tokenizer, &processed_texts)?;
 
-    prepare_batch_from_tokenizer_encodings(
+    Ok(prepare_batch_from_tokenizer_encodings(
         tokenizer,
         config,
         batch_encodings,
         is_query,
         filter_skiplist,
-    )
+    )?)
 }
 
 fn encode_prepared_batch_with_session(
@@ -1494,7 +1486,7 @@ fn encode_prepared_batch_with_session(
     skiplist_ids: &HashSet<u32>,
     prepared: PreparedDocumentBatch,
 ) -> Result<Vec<Array2<f32>>> {
-    let PreparedDocumentBatch {
+    let (
         batch_size,
         batch_max_len,
         all_input_ids,
@@ -1504,7 +1496,7 @@ fn encode_prepared_batch_with_session(
         original_lengths,
         is_query,
         filter_skiplist,
-    } = prepared;
+    ) = prepared.into_parts();
 
     if batch_size == 0 {
         return Ok(Vec::new());

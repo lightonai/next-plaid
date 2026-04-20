@@ -34,7 +34,7 @@ python = ["pyo3", "numpy"]
 # Using load-dynamic for better compatibility across systems
 ort = { version = "=2.0.0-rc.11", features = ["ndarray", "load-dynamic"] }
 next-plaid-preprocess = { path = "../next-plaid-preprocess", default-features = false, features = ["native"] }
-tokenizers = { version = "0.21.1", default-features = false, features = [
+tokenizers = { workspace = true, features = [
     "onig",
 ] }
 ndarray = "0.16"

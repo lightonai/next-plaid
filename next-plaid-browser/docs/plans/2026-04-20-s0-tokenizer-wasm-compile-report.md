@@ -90,6 +90,7 @@ gzip -c "$WASM" | wc -c
 Follow-up proof script after installing Binaryen and `wasm-bindgen`:
 
 ```bash
+WASM_OPT_FLAGS="-Oz" \
 /Users/pooks/Dev/lighton-benchmark/next-plaid/next-plaid-browser/scripts/prove_tokenizer_wasm.sh
 ```
 
@@ -117,7 +118,7 @@ Release Wasm artifact:
 - raw bytes: `2,414,001`
 - gzipped bytes: `807,033`
 
-`wasm-opt -Oz` follow-up result:
+`wasm-opt` follow-up result with `WASM_OPT_FLAGS="-Oz"`:
 
 - raw bytes: `1,999,938`
 - gzipped bytes: `738,691`

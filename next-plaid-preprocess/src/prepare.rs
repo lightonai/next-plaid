@@ -1,39 +1,152 @@
 use std::collections::HashSet;
 
-use anyhow::Result;
 use tokenizers::{Encoding, Tokenizer};
 
-use crate::ColbertConfig;
+use crate::{ColbertConfig, Error, Result};
 
+/// Prepared model inputs and bookkeeping for a ColBERT batch.
 #[derive(Debug, Clone)]
 pub struct PreparedDocumentBatch {
-    pub batch_size: usize,
-    pub batch_max_len: usize,
-    pub all_input_ids: Vec<i64>,
-    pub all_attention_mask: Vec<i64>,
-    pub all_token_type_ids: Option<Vec<i64>>,
-    pub all_token_ids: Vec<Vec<u32>>,
-    pub original_lengths: Vec<usize>,
-    pub is_query: bool,
-    pub filter_skiplist: bool,
+    batch_size: usize,
+    batch_max_len: usize,
+    all_input_ids: Vec<i64>,
+    all_attention_mask: Vec<i64>,
+    all_token_type_ids: Option<Vec<i64>>,
+    all_token_ids: Vec<Vec<u32>>,
+    original_lengths: Vec<usize>,
+    is_query: bool,
+    filter_skiplist: bool,
 }
 
+/// Token ids and token-type ids for one tokenizer-produced row.
 #[derive(Debug, Clone)]
 pub struct TokenizedDocument {
-    pub ids: Vec<u32>,
-    pub type_ids: Vec<u32>,
+    ids: Vec<u32>,
+    type_ids: Vec<u32>,
 }
 
 impl PreparedDocumentBatch {
+    /// Construct an empty batch with the expected query/document metadata.
+    pub fn empty(uses_token_type_ids: bool, is_query: bool, filter_skiplist: bool) -> Self {
+        Self {
+            batch_size: 0,
+            batch_max_len: 0,
+            all_input_ids: Vec::new(),
+            all_attention_mask: Vec::new(),
+            all_token_type_ids: if uses_token_type_ids {
+                Some(Vec::new())
+            } else {
+                None
+            },
+            all_token_ids: Vec::new(),
+            original_lengths: Vec::new(),
+            is_query,
+            filter_skiplist,
+        }
+    }
+
+    /// Number of rows in the prepared batch.
     pub fn batch_size(&self) -> usize {
         self.batch_size
     }
 
+    /// Maximum padded token length across the batch.
     pub fn batch_max_len(&self) -> usize {
         self.batch_max_len
     }
+
+    /// Flat row-major `input_ids` buffer sized as `batch_size * batch_max_len`.
+    pub fn input_ids(&self) -> &[i64] {
+        &self.all_input_ids
+    }
+
+    /// Flat row-major `attention_mask` buffer sized as `batch_size * batch_max_len`.
+    pub fn attention_mask(&self) -> &[i64] {
+        &self.all_attention_mask
+    }
+
+    /// Flat row-major `token_type_ids` buffer when the model uses them.
+    pub fn token_type_ids(&self) -> Option<&[i64]> {
+        self.all_token_type_ids.as_deref()
+    }
+
+    /// Per-row token ids after prefix insertion and truncation.
+    pub fn token_ids(&self) -> &[Vec<u32>] {
+        &self.all_token_ids
+    }
+
+    /// Per-row sequence lengths before skiplist filtering.
+    pub fn original_lengths(&self) -> &[usize] {
+        &self.original_lengths
+    }
+
+    /// Whether this batch represents queries instead of documents.
+    pub fn is_query(&self) -> bool {
+        self.is_query
+    }
+
+    /// Whether document-side skiplist filtering should be applied.
+    pub fn filter_skiplist(&self) -> bool {
+        self.filter_skiplist
+    }
+
+    /// Consume the batch and return its raw owned buffers.
+    #[allow(clippy::type_complexity)]
+    pub fn into_parts(
+        self,
+    ) -> (
+        usize,
+        usize,
+        Vec<i64>,
+        Vec<i64>,
+        Option<Vec<i64>>,
+        Vec<Vec<u32>>,
+        Vec<usize>,
+        bool,
+        bool,
+    ) {
+        (
+            self.batch_size,
+            self.batch_max_len,
+            self.all_input_ids,
+            self.all_attention_mask,
+            self.all_token_type_ids,
+            self.all_token_ids,
+            self.original_lengths,
+            self.is_query,
+            self.filter_skiplist,
+        )
+    }
 }
 
+impl TokenizedDocument {
+    /// Create a tokenized document row from tokenizer-produced ids and type ids.
+    pub fn new(ids: Vec<u32>, type_ids: Vec<u32>) -> Self {
+        Self { ids, type_ids }
+    }
+
+    /// Number of tokens in the row.
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    /// Whether the row contains zero tokens.
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    /// Raw token ids for the row.
+    pub fn ids(&self) -> &[u32] {
+        &self.ids
+    }
+
+    /// Raw token type ids for the row.
+    pub fn type_ids(&self) -> &[u32] {
+        &self.type_ids
+    }
+}
+
+/// Normalize raw input text before tokenization using the model config.
 pub fn preprocess_texts(config: &ColbertConfig, texts: &[&str]) -> Vec<String> {
     if config.do_lower_case {
         texts.iter().map(|t| t.trim().to_lowercase()).collect()
@@ -42,6 +155,7 @@ pub fn preprocess_texts(config: &ColbertConfig, texts: &[&str]) -> Vec<String> {
     }
 }
 
+/// Update derived mask and pad token ids from the tokenizer when defaults are still in use.
 pub fn update_token_ids(config: &mut ColbertConfig, tokenizer: &Tokenizer) {
     if config.mask_token_id == 103 {
         if let Some(mask_id) = tokenizer.token_to_id("[MASK]") {
@@ -59,6 +173,7 @@ pub fn update_token_ids(config: &mut ColbertConfig, tokenizer: &Tokenizer) {
     }
 }
 
+/// Resolve configured skiplist words into tokenizer ids for document-side filtering.
 pub fn build_skiplist(config: &ColbertConfig, tokenizer: &Tokenizer) -> HashSet<u32> {
     let mut skiplist_ids = HashSet::new();
     for word in &config.skiplist_words {
@@ -69,6 +184,7 @@ pub fn build_skiplist(config: &ColbertConfig, tokenizer: &Tokenizer) -> HashSet<
     skiplist_ids
 }
 
+/// Prepare already-tokenized documents into model-ready ColBERT batch buffers.
 pub fn prepare_batch_from_tokenized_documents(
     tokenizer: &Tokenizer,
     config: &ColbertConfig,
@@ -78,12 +194,17 @@ pub fn prepare_batch_from_tokenized_documents(
 ) -> Result<PreparedDocumentBatch> {
     let (prefix_token_id, max_length) = resolve_prefix_token_id(tokenizer, config, is_query)?;
     let truncate_limit = max_length.saturating_sub(1);
+    let real_lengths: Vec<usize> = batch_docs
+        .iter()
+        .enumerate()
+        .map(|(row_idx, doc)| validate_tokenized_document_row(doc, row_idx))
+        .collect::<Result<_>>()?;
     let mut batch_max_len = 0usize;
-    for doc in &batch_docs {
-        let effective_len = if doc.ids.len() > truncate_limit {
+    for &real_len in &real_lengths {
+        let effective_len = if real_len > truncate_limit {
             max_length
         } else {
-            doc.ids.len() + 1
+            real_len + 1
         };
         batch_max_len = batch_max_len.max(effective_len);
     }
@@ -99,9 +220,8 @@ pub fn prepare_batch_from_tokenized_documents(
     let mut all_token_ids: Vec<Vec<u32>> = Vec::with_capacity(batch_size);
     let mut original_lengths: Vec<usize> = Vec::with_capacity(batch_size);
 
-    for (row_idx, doc) in batch_docs.into_iter().enumerate() {
+    for (row_idx, (doc, real_len)) in batch_docs.into_iter().zip(real_lengths).enumerate() {
         let row_start = row_idx * batch_max_len;
-        let real_len = doc.ids.len().max(1);
         let (content_prefix_len, keep_sep) = content_prefix_plan(real_len, truncate_limit);
         let final_len = final_length(real_len, max_length, keep_sep);
         original_lengths.push(final_len);
@@ -155,6 +275,7 @@ pub fn prepare_batch_from_tokenized_documents(
     })
 }
 
+/// Prepare tokenizer `Encoding` rows into model-ready ColBERT batch buffers.
 pub fn prepare_batch_from_tokenizer_encodings(
     tokenizer: &Tokenizer,
     config: &ColbertConfig,
@@ -166,15 +287,9 @@ pub fn prepare_batch_from_tokenizer_encodings(
     let truncate_limit = max_length.saturating_sub(1);
     let real_lengths: Vec<usize> = batch_encodings
         .iter()
-        .map(|encoding| {
-            encoding
-                .get_attention_mask()
-                .iter()
-                .take_while(|&&v| v != 0)
-                .count()
-                .max(1)
-        })
-        .collect();
+        .enumerate()
+        .map(|(row_idx, encoding)| validate_encoding_row(encoding, row_idx))
+        .collect::<Result<_>>()?;
 
     let mut batch_max_len = 0usize;
     for &real_len in &real_lengths {
@@ -198,7 +313,9 @@ pub fn prepare_batch_from_tokenizer_encodings(
     let mut all_token_ids: Vec<Vec<u32>> = Vec::with_capacity(batch_size);
     let mut original_lengths: Vec<usize> = Vec::with_capacity(batch_size);
 
-    for (row_idx, (encoding, &real_len)) in batch_encodings.into_iter().zip(&real_lengths).enumerate() {
+    for (row_idx, (encoding, &real_len)) in
+        batch_encodings.into_iter().zip(&real_lengths).enumerate()
+    {
         let row_start = row_idx * batch_max_len;
         let ids = encoding.get_ids();
         let masks = encoding.get_attention_mask();
@@ -276,17 +393,78 @@ fn resolve_prefix_token_id(
         )
     };
 
+    if max_length < 2 {
+        return Err(Error::InvalidConfig {
+            message: format!(
+                "{}_length must be at least 2 to preserve [CLS] and prefix insertion",
+                if is_query { "query" } else { "document" }
+            ),
+        });
+    }
+
     let prefix_token_id = match prefix_token_id_opt {
         Some(id) => id,
-        None => tokenizer.token_to_id(prefix_str).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Prefix token '{}' not found in tokenizer vocabulary",
-                prefix_str
-            )
-        })?,
+        None => tokenizer
+            .token_to_id(prefix_str)
+            .ok_or_else(|| Error::MissingPrefixToken {
+                prefix: prefix_str.to_string(),
+            })?,
     };
 
     Ok((prefix_token_id, max_length))
+}
+
+fn validate_tokenized_document_row(doc: &TokenizedDocument, row_index: usize) -> Result<usize> {
+    if doc.is_empty() {
+        return Err(Error::EmptyEncoding { row_index });
+    }
+
+    if doc.ids.len() != doc.type_ids.len() {
+        return Err(Error::InvalidEncoding {
+            row_index,
+            ids_len: doc.ids.len(),
+            type_ids_len: doc.type_ids.len(),
+        });
+    }
+
+    Ok(doc.len())
+}
+
+fn validate_encoding_row(encoding: &Encoding, row_index: usize) -> Result<usize> {
+    let ids = encoding.get_ids();
+    let type_ids = encoding.get_type_ids();
+
+    if ids.is_empty() || type_ids.is_empty() {
+        return Err(Error::EmptyEncoding { row_index });
+    }
+
+    if ids.len() != type_ids.len() {
+        return Err(Error::InvalidEncoding {
+            row_index,
+            ids_len: ids.len(),
+            type_ids_len: type_ids.len(),
+        });
+    }
+
+    let real_len = encoding
+        .get_attention_mask()
+        .iter()
+        .take_while(|&&v| v != 0)
+        .count();
+
+    if real_len == 0 {
+        return Err(Error::EmptyEncoding { row_index });
+    }
+
+    if ids.len() < real_len || type_ids.len() < real_len {
+        return Err(Error::InvalidEncoding {
+            row_index,
+            ids_len: ids.len(),
+            type_ids_len: type_ids.len(),
+        });
+    }
+
+    Ok(real_len)
 }
 
 fn default_fill_values(config: &ColbertConfig, is_query: bool) -> (i64, i64) {
@@ -418,5 +596,38 @@ mod tests {
 
         assert_eq!(prepared.batch_max_len, 4);
         assert!(prepared.all_token_type_ids.is_none());
+    }
+
+    #[test]
+    fn empty_tokenized_document_is_rejected() {
+        let tokenizer = test_tokenizer();
+        let config = ColbertConfig::default();
+        let error = prepare_batch_from_tokenized_documents(
+            &tokenizer,
+            &config,
+            vec![TokenizedDocument::new(Vec::new(), Vec::new())],
+            false,
+            true,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, Error::EmptyEncoding { row_index: 0 }));
+    }
+
+    #[test]
+    fn empty_tokenizer_encoding_is_rejected() {
+        let tokenizer = test_tokenizer();
+        let config = ColbertConfig::default();
+        let encoding = test_encoding(vec![1, 7, 2], vec![0, 0, 0], vec![0, 0, 0]);
+        let error = prepare_batch_from_tokenizer_encodings(
+            &tokenizer,
+            &config,
+            vec![encoding],
+            true,
+            false,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, Error::EmptyEncoding { row_index: 0 }));
     }
 }

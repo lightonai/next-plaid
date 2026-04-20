@@ -17,6 +17,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 anyhow = "1.0"
+# Keep tokenizers pinned across the native and shared preprocessing crates so
+# the public Encoding-based boundary never drifts on version semantics.
+tokenizers = { version = "=0.21.1", default-features = false }
 
 [profile.release]
 lto = true

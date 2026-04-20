@@ -2516,9 +2516,9 @@ dependencies = [
 name = "next-plaid-preprocess"
 version = "1.2.0"
 dependencies = [
- "anyhow",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokenizers",
 ]
 

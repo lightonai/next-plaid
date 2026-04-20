@@ -1,8 +1,9 @@
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "native")]
 use std::{fs, path::Path};
+
+use crate::{Error, Result};
 
 /// Configuration for ColBERT model behavior.
 ///
@@ -57,8 +58,8 @@ pub struct ColbertConfig {
     model_class: Option<String>,
     #[serde(default)]
     attend_to_expansion_tokens: bool,
-    pub query_prefix_id: Option<u32>,
-    pub document_prefix_id: Option<u32>,
+    pub(crate) query_prefix_id: Option<u32>,
+    pub(crate) document_prefix_id: Option<u32>,
     /// Whether to lowercase text before tokenization (matches sentence-transformers preprocessing)
     #[serde(default)]
     pub do_lower_case: bool,
@@ -131,12 +132,12 @@ impl Default for ColbertConfig {
 impl ColbertConfig {
     /// Parse config from JSON bytes.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self> {
-        serde_json::from_slice(bytes).context("Failed to parse onnx_config.json")
+        serde_json::from_slice(bytes).map_err(Error::from)
     }
 
     /// Parse config from a JSON string.
     pub fn from_json_str(content: &str) -> Result<Self> {
-        serde_json::from_str(content).context("Failed to parse onnx_config.json")
+        serde_json::from_str(content).map_err(Error::from)
     }
 
     /// Get the model name (if specified in config).
@@ -149,8 +150,11 @@ impl ColbertConfig {
 impl ColbertConfig {
     /// Load config from a JSON file.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = fs::read_to_string(path.as_ref())
-            .with_context(|| format!("Failed to read config from {:?}", path.as_ref()))?;
+        let path_buf = path.as_ref().to_path_buf();
+        let content = fs::read_to_string(path.as_ref()).map_err(|source| Error::ConfigRead {
+            path: path_buf,
+            source,
+        })?;
         Self::from_json_str(&content)
     }
 
@@ -161,10 +165,9 @@ impl ColbertConfig {
             return Self::from_file(&onnx_config_path);
         }
 
-        anyhow::bail!(
-            "onnx_config.json not found in {:?}. This file is required for ColBERT model configuration.",
-            model_dir.as_ref()
-        )
+        Err(Error::ConfigNotFound {
+            model_dir: model_dir.as_ref().to_path_buf(),
+        })
     }
 }
 

@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRATE_DIR="$ROOT/crates/spike-tokenizer-wasm"
 TARGET="wasm32-unknown-unknown"
 ARTIFACT="$CRATE_DIR/pkg/spike_tokenizer_wasm_bg.wasm"
+WASM_OPT_FLAGS="${WASM_OPT_FLAGS:--Oz}"
 
 source "$ROOT/scripts/wasm_env.sh"
 
@@ -35,11 +36,12 @@ if [[ -n "${WASM_OPT:-}" ]]; then
   optimized_artifact="$(mktemp "${TMPDIR:-/tmp}/spike-tokenizer-wasm-opt.XXXXXX")"
   trap 'rm -f "$optimized_artifact"' EXIT
 
-  "$WASM_OPT" -Oz "$ARTIFACT" -o "$optimized_artifact"
+  "$WASM_OPT" $WASM_OPT_FLAGS "$ARTIFACT" -o "$optimized_artifact"
 
   optimized_raw_bytes="$(wc -c < "$optimized_artifact" | tr -d ' ')"
   optimized_gzip_bytes="$(gzip -c -9 "$optimized_artifact" | wc -c | tr -d ' ')"
 
+  echo "wasm_opt_flags: $WASM_OPT_FLAGS"
   echo "optimized_raw_bytes: $optimized_raw_bytes"
   echo "optimized_gzip_bytes: $optimized_gzip_bytes"
 else
