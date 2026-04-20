@@ -344,9 +344,7 @@ impl PartialOrd for OrdF32 {
 
 impl Ord for OrdF32 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0
-            .partial_cmp(&other.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        self.0.total_cmp(&other.0)
     }
 }
 
@@ -507,8 +505,7 @@ pub fn fuse_rrf(sem_ids: &[i64], kw_ids: &[i64], alpha: f32, top_k: usize) -> (V
     combined.sort_by(|left, right| {
         right
             .1
-            .partial_cmp(&left.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&left.1)
     });
     combined.truncate(top_k);
 
@@ -565,8 +562,7 @@ pub fn fuse_relative_score(
     combined.sort_by(|left, right| {
         right
             .1
-            .partial_cmp(&left.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&left.1)
     });
     combined.truncate(top_k);
 
@@ -858,8 +854,7 @@ fn search_one_standard(
             if centroid_scores.len() > n_probe {
                 centroid_scores.select_nth_unstable_by(n_probe - 1, |lhs, rhs| {
                     rhs.1
-                        .partial_cmp(&lhs.1)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .total_cmp(&lhs.1)
                 });
             }
 
@@ -874,7 +869,7 @@ fn search_one_standard(
                     .map(|q_idx| {
                         dense_score_at(&query_centroid_scores, num_centroids, q_idx, centroid_index)
                     })
-                    .max_by(|lhs, rhs| lhs.partial_cmp(rhs).unwrap_or(std::cmp::Ordering::Equal))
+                    .max_by(|lhs, rhs| lhs.total_cmp(rhs))
                     .unwrap_or(f32::NEG_INFINITY);
                 max_score >= threshold
             });
@@ -963,8 +958,7 @@ where
 
     approx_scores.sort_by(|lhs, rhs| {
         rhs.1
-            .partial_cmp(&lhs.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&lhs.1)
     });
 
     let top_candidates = approx_scores
@@ -997,8 +991,7 @@ where
 
     exact_scores.sort_by(|lhs, rhs| {
         rhs.1
-            .partial_cmp(&lhs.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&lhs.1)
     });
 
     let result_count = params.top_k.min(exact_scores.len());
@@ -1048,8 +1041,7 @@ where
 
     approx_scores.sort_by(|lhs, rhs| {
         rhs.1
-            .partial_cmp(&lhs.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&lhs.1)
     });
 
     let top_candidates = approx_scores
@@ -1083,8 +1075,7 @@ where
 
     exact_scores.sort_by(|lhs, rhs| {
         rhs.1
-            .partial_cmp(&lhs.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&lhs.1)
     });
 
     let result_count = params.top_k.min(exact_scores.len());
@@ -1205,8 +1196,7 @@ fn search_one_standard_compressed(
             if centroid_scores.len() > n_probe {
                 centroid_scores.select_nth_unstable_by(n_probe - 1, |lhs, rhs| {
                     rhs.1
-                        .partial_cmp(&lhs.1)
-                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .total_cmp(&lhs.1)
                 });
             }
 
@@ -1221,7 +1211,7 @@ fn search_one_standard_compressed(
                     .map(|q_idx| {
                         dense_score_at(&query_centroid_scores, num_centroids, q_idx, centroid_index)
                     })
-                    .max_by(|lhs, rhs| lhs.partial_cmp(rhs).unwrap_or(std::cmp::Ordering::Equal))
+                    .max_by(|lhs, rhs| lhs.total_cmp(rhs))
                     .unwrap_or(f32::NEG_INFINITY);
                 max_score >= threshold
             });
