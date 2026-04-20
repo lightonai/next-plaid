@@ -959,8 +959,8 @@ fn search_one_standard<'a, V: IndexView<'a>>(
     })
 }
 
-fn search_one_batched(
-    index: BrowserIndexView<'_>,
+fn search_one_batched<'a, V: IndexView<'a>>(
+    index: V,
     query: MatrixView<'_>,
     params: &SearchParameters,
     subset: Option<&[i64]>,
@@ -1094,42 +1094,6 @@ pub fn search_one(
     })
 }
 
-fn search_one_batched_compressed(
-    index: CompressedBrowserIndexView<'_>,
-    query: MatrixView<'_>,
-    params: &SearchParameters,
-    subset: Option<&[i64]>,
-) -> QueryResult {
-    let cells_to_probe = ivf_probe_batched(
-        query,
-        index.centroids(),
-        params.n_ivf_probe,
-        params.centroid_batch_size,
-        params.centroid_score_threshold,
-    );
-
-    let mut unique_centroids = HashSet::new();
-    let mut candidates = index.get_candidates(&cells_to_probe);
-
-    if let Some(subset_docs) = subset {
-        let subset_set: HashSet<i64> = subset_docs.iter().copied().collect();
-        candidates.retain(|candidate| subset_set.contains(candidate));
-    }
-
-    for &doc_id in &candidates {
-        if let Some(codes) = index.doc_codes(doc_id as usize) {
-            for &code in codes {
-                unique_centroids.insert(code as usize);
-            }
-        }
-    }
-
-    let sparse_scores = build_sparse_centroid_scores(query, index.centroids(), &unique_centroids);
-    rank_candidates(index, query, params, candidates, |doc_codes| {
-        approximate_score_sparse(&sparse_scores, doc_codes, query.rows())
-    })
-}
-
 pub fn search_one_compressed(
     index: CompressedBrowserIndexView<'_>,
     query: MatrixView<'_>,
@@ -1144,7 +1108,7 @@ pub fn search_one_compressed(
         params.centroid_batch_size > 0 && index.centroids().rows() > params.centroid_batch_size;
 
     Ok(if use_batched {
-        search_one_batched_compressed(index, query, params, subset)
+        search_one_batched(index, query, params, subset)
     } else {
         search_one_standard(index, query, params, subset)
     })
