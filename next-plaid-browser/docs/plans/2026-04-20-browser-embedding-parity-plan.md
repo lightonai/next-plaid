@@ -65,15 +65,32 @@ them.
    search runtime should consume query embeddings and remain independently
    testable. Do not fuse them into one giant stateful runtime as a first step.
 
-6. Start with a single-threaded browser baseline.
-   ONNX Runtime Web multithreading depends on cross-origin isolation. That is a
-   worthwhile optimization later, but not the baseline architecture. First ship
-   correctness and parity in the simplest browser-safe mode.
+6. The browser encoder worker is a TypeScript-owned runtime.
+   The model worker should use TypeScript with `onnxruntime-web` directly. The
+   Rust/Wasm boundary should stay where it already is today: the search runtime
+   consumes `QueryEmbeddingsPayload` and does not own browser inference.
 
-7. Treat parity as the primary acceptance criterion.
+7. Start with a single-threaded browser baseline.
+   ONNX Runtime Web multithreading depends on `crossOriginIsolated`. The first
+   implementation should be correct and parity-focused in a single-threaded
+   baseline, while Phase 0 records whether the product will commit to COOP/COEP
+   for future threaded operation.
+
+8. Ship the same ONNX graph that native uses.
+   Browser encoding must use the same exported ONNX graph as native for a given
+   model and quantization mode, including any normalization or other logic that
+   lives inside the graph itself.
+
+9. Treat parity as the primary acceptance criterion.
    Performance matters, but the first question is whether browser embeddings are
    faithful enough to preserve ranking quality. No optimization work should be
    accepted if parity is not already measured.
+
+10. Prefer self-hosted ONNX Runtime Web artifacts.
+    Upstream docs allow CDN-hosted wasm assets, but same-origin deployment keeps
+    worker loading and CSP behavior simpler. Self-hosting is the default
+    project decision unless a later slice proves a CDN path is operationally
+    cleaner.
 
 ## What must remain faithful to native behavior
 
@@ -91,12 +108,12 @@ implementation details; they are part of the retrieval contract.
    - `uses_token_type_ids`
    - `mask_token_id`
    - `pad_token_id`
-   - skiplist configuration
 
 2. Prefix insertion behavior.
    Native preprocessing does not simply prepend raw text before tokenization.
-   It tokenizes first, then inserts the prefix token while reserving room for
-   that insertion. The browser implementation must match this behavior exactly.
+   It tokenizes first, then inserts the prefix token at slot 1, immediately
+   after `[CLS]`, while reserving room for that insertion. The browser
+   implementation must match this behavior exactly.
 
 3. Truncation semantics.
    Native code uses `max_length - 1` as the effective truncation limit to leave
@@ -106,10 +123,14 @@ implementation details; they are part of the retrieval contract.
    When `do_query_expansion` is enabled, queries are padded out with MASK token
    values and attention mask values remain active across the expansion region.
    This is part of the model contract and must not drift.
+   Browser query outputs in this mode should therefore be treated as full
+   `query_length x embedding_dim` blocks, not variable-length outputs that stop
+   at the real token count.
 
 5. Conditional `token_type_ids`.
    Some models use them and some do not. The browser implementation must follow
-   the model config rather than assuming one shape.
+   the model config rather than assuming one shape. When they are disabled, the
+   browser session feed must omit the input instead of sending a zero tensor.
 
 6. Text normalization behavior.
    Native config can lower-case input. That behavior must stay explicit and
@@ -118,6 +139,17 @@ implementation details; they are part of the retrieval contract.
 7. Output shape and ordering.
    The browser encoder must emit the same logical query token embedding layout
    that the search runtime expects today.
+
+## Explicitly out of scope for the first browser query encoder
+
+1. Document-side skiplist filtering.
+   Native skiplist behavior applies to document encoding and post-extraction
+   filtering, not to query encoding. The first browser query encoder should not
+   add skiplist behavior on the query path.
+
+2. Browser document encoding.
+   The first browser encoder phase is query-only. Document encoding remains a
+   separate concern and should not be smuggled into the initial browser worker.
 
 ## Native assumptions that should not be ported literally
 
@@ -143,6 +175,12 @@ server but should not be copied directly into the browser.
    Browser implementation should begin from a single model worker and only add
    more complicated concurrency if profiling proves it is needed.
 
+5. Per-model local process tuning assumptions.
+   The native encoder can treat threading and session fanout as local process
+   details. ONNX Runtime Web `env` flags are process-global, so the browser
+   architecture must assume those settings affect the whole in-page ORT-Web
+   environment.
+
 ## Browser runtime guidance from upstream docs
 
 These are the constraints and recommendations that should shape the browser
@@ -161,8 +199,9 @@ architecture.
 
 4. Browser multithreading is not free.
    ONNX Runtime Web notes that WebAssembly multithreading depends on
-   `crossOriginIsolated`. That should be treated as an optimization track, not
-   a prerequisite for the first parity-complete implementation.
+   `crossOriginIsolated`. This is not just a runtime tweak; it is a deployment
+   posture decision that affects preview environments, hosting, and embedding of
+   third-party content.
 
 5. Keep model execution off the UI thread.
    ONNX Runtime Web recommends worker-based execution for responsiveness. We
@@ -177,6 +216,11 @@ architecture.
    Upstream docs note ORT format can improve model size, init time, and peak
    memory. We should treat it as an explicit optimization experiment after the
    parity harness exists.
+
+8. WebGPU and proxy worker are mutually exclusive.
+   ONNX Runtime Web documents that the proxy worker cannot work with WebGPU.
+   That means the CPU wasm worker architecture and a future WebGPU architecture
+   cannot be treated as the same execution topology.
 
 ## Proposed high-level architecture
 
@@ -195,6 +239,8 @@ There should be two browser worker roles:
 
 These workers should communicate through typed payloads. The handoff format
 between them should be query embeddings, not hidden shared mutable state.
+The default handoff should reuse the existing `QueryEmbeddingsPayload` shape so
+we do not create a second near-duplicate embedding wire format.
 
 ### Ownership rule
 
@@ -232,12 +278,32 @@ Deliverables:
 - one small browser model-loading proof
 - one written decision on tokenizer runtime choice
 - one written decision on baseline execution provider order
+- one written decision on deployment posture for COOP/COEP and
+  `crossOriginIsolated`
+- one written decision on ORT-Web asset hosting strategy
 - one fixture path for parity testing against native outputs
 
 Open questions for this phase:
 - tokenizer runtime choice in browser
 - model asset packaging strategy
 - baseline EP order: wasm-only first or wasm + optional webgpu selection
+- deployment posture for cross-origin isolation
+
+### Phase 0.5: model worker scaffolding
+
+Goal:
+- build the worker and message-routing shell before real model logic lands
+
+Deliverables:
+- dedicated TypeScript model worker shell
+- request/response routing and error propagation
+- stub encoder path that returns shape-valid dummy embeddings
+- explicit browser-side ownership boundary between model worker and search
+  worker
+
+Acceptance:
+- model worker can be initialized, messaged, and torn down without touching the
+  Rust/Wasm search runtime internals
 
 ### Phase 1: tokenizer and preprocessing parity harness
 
@@ -252,6 +318,8 @@ Deliverables:
   - attention mask
   - token type ids when present
   - post-prefix insertion sequence shape
+  - explicit prefix-at-slot-1 placement
+  - query-expansion MASK region contents
 - browser-side tests that compare against those fixtures
 
 Acceptance:
@@ -271,11 +339,18 @@ Deliverables:
   - max absolute error
   - mean absolute error
   - shape mismatches
+  - top-k ranking preservation on fixed search fixtures
 
 Acceptance:
-- numeric thresholds must be defined up front and documented here before the
-  results are judged
+- browser wasm CPU vs native reference:
+  - per-position cosine similarity target of at least 0.9999
+  - max absolute error target of at most 1e-3
+  - mean absolute error target of at most 1e-4
+- quantized comparisons must be like-for-like:
+  - quantized native vs quantized browser
+  - fp32 native vs fp32 browser
 - no ranking-sensitive drift on the fixture set
+- any later WebGPU path must clear the same parity harness independently
 
 ### Phase 3: typed model worker API
 
@@ -289,8 +364,12 @@ Initial API surface:
 - health
 - optional warmup
 
-Health should populate the existing browser contract model-health shape instead
-of inventing a second status format.
+The encoder worker should cross the Rust/Wasm boundary using the existing
+`QueryEmbeddingsPayload` shape.
+
+Health should populate the existing browser contract model-health shape, but
+Phase 3 must first decide whether that shape needs optional fields or whether a
+separate lifecycle-status payload is required during partial initialization.
 
 ### Phase 4: end-to-end search parity
 
@@ -362,6 +441,9 @@ Until proven otherwise:
 5. Treat WebGPU as an optimization path that still has to clear parity tests.
 6. Do not make cross-origin isolation mandatory until we know the baseline
    needs it.
+7. Treat WebGPU operator coverage as a gating audit, not an assumption.
+   ORT-Web’s published WebGPU operator table must be checked against the actual
+   exported ColBERT graph before we invest in a GPU-first browser path.
 
 ## Model selection policy for the spike
 
@@ -428,10 +510,14 @@ External docs:
 
 - ONNX Runtime Web overview:
   `https://onnxruntime.ai/docs/tutorials/web/`
+- ONNX Runtime Web env flags and session options:
+  `https://onnxruntime.ai/docs/tutorials/web/env-flags-and-session-options.html`
 - ONNX Runtime Web browser support:
   `https://onnxruntime.ai/docs/get-started/with-javascript/web.html`
 - ONNX Runtime Web performance notes:
   `https://onnxruntime.ai/docs/tutorials/web/performance-diagnosis.html`
+- ONNX Runtime Web deployment notes:
+  `https://onnxruntime.ai/docs/tutorials/web/deploy.html`
 - ONNX Runtime Web build and packaging notes:
   `https://onnxruntime.ai/docs/build/web.html`
 - Hugging Face Tokenizers docs:
