@@ -2,11 +2,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use next_plaid_browser_contract::{
-    FusionRequest, FusionResponse, HealthResponse, IndexSummary, InlineSearchParamsRequest,
-    InlineSearchRequest, InlineSearchResponse, MemoryUsageBreakdown, QueryEmbeddingsPayload,
-    QueryResultResponse, RankedResultsPayload, SearchIndexPayload, SearchParamsRequest,
-    SearchRequest, SearchResponse, WorkerLoadIndexRequest, WorkerLoadIndexResponse,
-    WorkerSearchRequest,
+    FtsTokenizer, FusionMode, FusionRequest, FusionResponse, HealthResponse, IndexSummary,
+    InlineSearchParamsRequest, InlineSearchRequest, InlineSearchResponse, MemoryUsageBreakdown,
+    QueryEmbeddingsPayload, QueryResultResponse, RankedResultsPayload, SearchIndexPayload,
+    SearchParamsRequest, SearchRequest, SearchResponse, WorkerLoadIndexRequest,
+    WorkerLoadIndexResponse, WorkerSearchRequest,
 };
 use next_plaid_browser_kernel::{
     fuse_relative_score, fuse_rrf, search_one, search_one_compressed, MatrixView, SearchParameters,
@@ -109,7 +109,7 @@ pub(crate) fn load_index(
     let keyword_index = request
         .metadata
         .as_ref()
-        .map(|metadata| KeywordIndex::new(metadata, &request.fts_tokenizer))
+        .map(|metadata| KeywordIndex::new(metadata, request.fts_tokenizer))
         .transpose()?;
     let memory_usage_breakdown = index_memory_usage_breakdown(
         &request.index,
@@ -136,7 +136,7 @@ pub(crate) fn load_index(
 pub(crate) fn load_compressed_bundle_into_runtime(
     name: String,
     stored: next_plaid_browser_storage::StoredBrowserBundle,
-    fts_tokenizer: &str,
+    fts_tokenizer: FtsTokenizer,
 ) -> Result<IndexSummary, WasmError> {
     let manifest = stored.manifest.clone();
     let metadata = stored.metadata.clone();
@@ -211,7 +211,7 @@ pub(crate) fn search_loaded_index(
                     semantic: Some(semantic.clone()),
                     keyword: Some(keyword.clone()),
                     alpha: request.request.alpha,
-                    fusion: request.request.fusion.clone(),
+                    fusion: request.request.fusion,
                     top_k,
                 })?;
 
@@ -387,13 +387,7 @@ pub(crate) fn fuse_results(request: FusionRequest) -> Result<FusionResponse, Was
         ));
     }
 
-    let fusion_mode = request.fusion.as_deref().unwrap_or("rrf");
-    if fusion_mode != "rrf" && fusion_mode != "relative_score" {
-        return Err(WasmError::InvalidRequest(
-            "fusion must be `rrf` or `relative_score`".into(),
-        ));
-    }
-
+    let fusion_mode = request.fusion.unwrap_or(FusionMode::Rrf);
     let semantic = request.semantic.as_ref();
     let keyword = request.keyword.as_ref();
     if semantic.is_none() && keyword.is_none() {
@@ -412,7 +406,7 @@ pub(crate) fn fuse_results(request: FusionRequest) -> Result<FusionResponse, Was
 
     let (document_ids, scores) = match (semantic, keyword) {
         (Some(semantic), Some(keyword)) => match fusion_mode {
-            "relative_score" => fuse_relative_score(
+            FusionMode::RelativeScore => fuse_relative_score(
                 &semantic.document_ids,
                 &semantic.scores,
                 &keyword.document_ids,
@@ -420,7 +414,7 @@ pub(crate) fn fuse_results(request: FusionRequest) -> Result<FusionResponse, Was
                 alpha,
                 request.top_k,
             ),
-            _ => fuse_rrf(
+            FusionMode::Rrf => fuse_rrf(
                 &semantic.document_ids,
                 &keyword.document_ids,
                 alpha,

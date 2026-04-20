@@ -9,8 +9,8 @@ pub use bundle::{
     ArtifactEntry, ArtifactKind, BundleManifest, BundleManifestError, CompressionKind, MetadataMode,
 };
 pub use protocol::{
-    BundleArtifactBytesPayload, BundleInstalledResponse, FusionRequest, FusionResponse,
-    HealthResponse, IndexSummary, InlineSearchParamsRequest, InlineSearchRequest,
+    BundleArtifactBytesPayload, BundleInstalledResponse, FtsTokenizer, FusionMode, FusionRequest,
+    FusionResponse, HealthResponse, IndexSummary, InlineSearchParamsRequest, InlineSearchRequest,
     InlineSearchResponse, InstallBundleRequest, LoadStoredBundleRequest, MatrixPayload,
     MemoryUsageBreakdown, ModelHealthInfo, QueryEmbeddingsPayload, QueryResultResponse,
     RankedResultsPayload, RuntimeRequest, RuntimeResponse, ScoreRequest, ScoreResponse,

@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::bundle::{ArtifactKind, BundleManifest};
 
@@ -6,8 +6,52 @@ fn default_nbits() -> usize {
     4
 }
 
-fn default_fts_tokenizer() -> String {
-    "unicode61".into()
+fn default_fts_tokenizer() -> FtsTokenizer {
+    FtsTokenizer::default()
+}
+
+fn deserialize_present_optional_f32<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<f32>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<f32>::deserialize(deserializer).map(Some)
+}
+
+/// Supported SQLite FTS5 tokenizers exposed by the browser runtime wire API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FtsTokenizer {
+    /// SQLite's default Unicode-aware tokenizer.
+    #[default]
+    #[serde(rename = "unicode61")]
+    Unicode61,
+    /// SQLite's trigram tokenizer for substring-style matching.
+    #[serde(rename = "trigram")]
+    Trigram,
+}
+
+impl FtsTokenizer {
+    /// Returns the stable wire spelling shared by JSON requests and SQLite FTS5.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unicode61 => "unicode61",
+            Self::Trigram => "trigram",
+        }
+    }
+}
+
+/// Supported fusion algorithms for combining semantic and keyword scores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FusionMode {
+    /// Reciprocal-rank fusion.
+    #[default]
+    #[serde(rename = "rrf")]
+    Rrf,
+    /// Relative-score fusion using score normalization and interpolation.
+    #[serde(rename = "relative_score")]
+    RelativeScore,
 }
 
 /// Dense matrix payload serialized as flat row-major values.
@@ -51,7 +95,11 @@ pub struct SearchParamsRequest {
     ///
     /// The outer `Option` indicates whether the field was present in JSON.
     /// The inner `Option` distinguishes an explicit `null` from a numeric value.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_optional_f32"
+    )]
     pub centroid_score_threshold: Option<Option<f32>>,
 }
 
@@ -95,9 +143,9 @@ pub struct SearchRequest {
     /// Optional interpolation factor for hybrid fusion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alpha: Option<f32>,
-    /// Requested fusion mode name.
+    /// Requested fusion mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fusion: Option<String>,
+    pub fusion: Option<FusionMode>,
     /// SQL-like metadata filter condition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter_condition: Option<String>,
@@ -136,9 +184,9 @@ pub struct WorkerLoadIndexRequest {
     /// Residual quantization bit-width.
     #[serde(default = "default_nbits")]
     pub nbits: usize,
-    /// FTS tokenizer name used for keyword and hybrid search.
+    /// FTS tokenizer used for keyword and hybrid search.
     #[serde(default = "default_fts_tokenizer")]
-    pub fts_tokenizer: String,
+    pub fts_tokenizer: FtsTokenizer,
     /// Optional maximum number of documents expected by the caller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_documents: Option<usize>,
@@ -337,9 +385,9 @@ pub struct FusionRequest {
     /// Optional interpolation factor for relative-score fusion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alpha: Option<f32>,
-    /// Requested fusion mode name.
+    /// Requested fusion mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fusion: Option<String>,
+    pub fusion: Option<FusionMode>,
     /// Maximum number of fused hits to return.
     pub top_k: usize,
 }
@@ -405,9 +453,9 @@ pub struct LoadStoredBundleRequest {
     pub index_id: String,
     /// Runtime-local name to assign to the reopened bundle.
     pub name: String,
-    /// FTS tokenizer name used when rebuilding the keyword runtime.
+    /// FTS tokenizer used when rebuilding the keyword runtime.
     #[serde(default = "default_fts_tokenizer")]
-    pub fts_tokenizer: String,
+    pub fts_tokenizer: FtsTokenizer,
 }
 
 /// Response returned after loading a stored bundle into the runtime.
@@ -613,13 +661,17 @@ mod tests {
                 scores: vec![2.0, 1.0],
             }),
             alpha: Some(0.25),
-            fusion: Some("relative_score".into()),
+            fusion: Some(FusionMode::RelativeScore),
             top_k: 3,
         });
 
         let json = serde_json::to_string(&request).unwrap();
         let decoded: RuntimeRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, request);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["fusion"],
+            serde_json::json!("relative_score")
+        );
     }
 
     #[test]
@@ -702,5 +754,48 @@ mod tests {
         let json = serde_json::to_string(&request).unwrap();
         let decoded: StorageRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn search_params_request_distinguishes_missing_null_and_numeric_thresholds() {
+        let missing: SearchParamsRequest = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(missing.centroid_score_threshold, None);
+        assert_eq!(
+            serde_json::to_value(&missing).unwrap(),
+            serde_json::json!({})
+        );
+
+        let explicit_null: SearchParamsRequest =
+            serde_json::from_value(serde_json::json!({"centroid_score_threshold": null})).unwrap();
+        assert_eq!(explicit_null.centroid_score_threshold, Some(None));
+        assert_eq!(
+            serde_json::to_value(&explicit_null).unwrap(),
+            serde_json::json!({"centroid_score_threshold": null})
+        );
+
+        let numeric: SearchParamsRequest =
+            serde_json::from_value(serde_json::json!({"centroid_score_threshold": 0.25})).unwrap();
+        assert_eq!(numeric.centroid_score_threshold, Some(Some(0.25)));
+        assert_eq!(
+            serde_json::to_value(&numeric).unwrap(),
+            serde_json::json!({"centroid_score_threshold": 0.25})
+        );
+    }
+
+    #[test]
+    fn fts_tokenizer_serializes_as_existing_wire_string() {
+        assert_eq!(
+            serde_json::to_value(FtsTokenizer::Unicode61).unwrap(),
+            serde_json::json!("unicode61")
+        );
+        assert_eq!(
+            serde_json::to_value(FtsTokenizer::Trigram).unwrap(),
+            serde_json::json!("trigram")
+        );
+        assert_eq!(
+            serde_json::from_value::<FtsTokenizer>(serde_json::json!("unicode61")).unwrap(),
+            FtsTokenizer::Unicode61
+        );
+        assert!(serde_json::from_value::<FtsTokenizer>(serde_json::json!("porter")).is_err());
     }
 }

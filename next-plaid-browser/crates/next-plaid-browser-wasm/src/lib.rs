@@ -174,11 +174,11 @@ async fn handle_storage_request_json_impl(request_json: String) -> Result<String
 mod tests {
     use super::*;
     use next_plaid_browser_contract::{
-        ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, FusionRequest,
-        HealthResponse, InlineSearchParamsRequest, InlineSearchRequest, MatrixPayload,
-        MemoryUsageBreakdown, MetadataMode, QueryEmbeddingsPayload, RankedResultsPayload,
-        RuntimeRequest, SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse,
-        WorkerLoadIndexRequest, WorkerSearchRequest,
+        ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, FtsTokenizer, FusionMode,
+        FusionRequest, HealthResponse, InlineSearchParamsRequest, InlineSearchRequest,
+        MatrixPayload, MemoryUsageBreakdown, MetadataMode, QueryEmbeddingsPayload,
+        RankedResultsPayload, RuntimeRequest, SearchIndexPayload, SearchParamsRequest,
+        SearchRequest, SearchResponse, WorkerLoadIndexRequest, WorkerSearchRequest,
     };
     use next_plaid_browser_kernel::KERNEL_VERSION;
 
@@ -282,7 +282,7 @@ mod tests {
                 None,
             ]),
             nbits: 2,
-            fts_tokenizer: "unicode61".into(),
+            fts_tokenizer: FtsTokenizer::Unicode61,
             max_documents: None,
         }
     }
@@ -297,7 +297,7 @@ mod tests {
                 Some(serde_json::json!({"title": "gamma archive note", "topic": "history"})),
             ]),
             nbits: 2,
-            fts_tokenizer: "unicode61".into(),
+            fts_tokenizer: FtsTokenizer::Unicode61,
             max_documents: None,
         }
     }
@@ -398,7 +398,7 @@ mod tests {
                 subset: None,
                 text_query: Some(vec!["beta".into()]),
                 alpha: Some(0.25),
-                fusion: Some("relative_score".into()),
+                fusion: Some(FusionMode::RelativeScore),
                 filter_condition: None,
                 filter_parameters: None,
             },
@@ -569,7 +569,7 @@ mod tests {
 
         let mut request = worker_search_request("demo", 2, None);
         request.request.alpha = Some(0.25);
-        request.request.fusion = Some("relative_score".into());
+        request.request.fusion = Some(FusionMode::RelativeScore);
 
         let response = handle_runtime_request_json(
             &serde_json::to_string(&RuntimeRequest::Search(request)).unwrap(),
@@ -686,7 +686,7 @@ mod tests {
                 scores: vec![3.0, 1.0, 2.0],
             }),
             alpha: Some(0.25),
-            fusion: Some("relative_score".into()),
+            fusion: Some(FusionMode::RelativeScore),
             top_k: 4,
         });
 

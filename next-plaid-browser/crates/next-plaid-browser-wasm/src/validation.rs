@@ -15,7 +15,6 @@ pub(crate) fn validate_worker_search_request(request: &SearchRequest) -> Result<
     let has_queries = has_semantic_queries(request);
     let has_text_query = has_text_queries(request);
     let alpha = request.alpha.unwrap_or(0.75);
-    let fusion_mode = request.fusion.as_deref().unwrap_or("rrf");
 
     if !has_queries && !has_text_query {
         return Err(WasmError::InvalidRequest(
@@ -26,12 +25,6 @@ pub(crate) fn validate_worker_search_request(request: &SearchRequest) -> Result<
     if !(0.0..=1.0).contains(&alpha) {
         return Err(WasmError::InvalidRequest(
             "alpha must be between 0.0 and 1.0".into(),
-        ));
-    }
-
-    if fusion_mode != "rrf" && fusion_mode != "relative_score" {
-        return Err(WasmError::InvalidRequest(
-            "fusion must be `rrf` or `relative_score`".into(),
         ));
     }
 

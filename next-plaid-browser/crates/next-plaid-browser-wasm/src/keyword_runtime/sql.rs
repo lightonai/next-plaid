@@ -101,7 +101,7 @@ pub(super) fn ensure_tables(
           {metadata_columns}
         );
         "#,
-        tokenizer = tokenizer.fts5_tokenize_value(),
+        tokenizer = tokenizer.as_str(),
         metadata_columns = build_metadata_columns_sql(schema),
     ))?;
 
@@ -110,7 +110,7 @@ pub(super) fn ensure_tables(
             "INSERT OR REPLACE INTO \"{}\"(key, value) VALUES ('tokenizer', ?1)",
             FTS_CONFIG_TABLE
         ),
-        [tokenizer.fts5_tokenize_value()],
+        [tokenizer.as_str()],
     )?;
 
     Ok(())

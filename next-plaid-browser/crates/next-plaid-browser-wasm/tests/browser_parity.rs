@@ -6,10 +6,10 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use next_plaid_browser_contract::{
     ArtifactEntry, ArtifactKind, BundleArtifactBytesPayload, BundleManifest, CompressionKind,
-    HealthResponse, InstallBundleRequest, LoadStoredBundleRequest, MatrixPayload, MetadataMode,
-    QueryEmbeddingsPayload, QueryResultResponse, RuntimeRequest, RuntimeResponse,
-    SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse, StorageRequest,
-    StorageResponse, WorkerLoadIndexRequest, WorkerSearchRequest,
+    FtsTokenizer, FusionMode, HealthResponse, InstallBundleRequest, LoadStoredBundleRequest,
+    MatrixPayload, MetadataMode, QueryEmbeddingsPayload, QueryResultResponse, RuntimeRequest,
+    RuntimeResponse, SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse,
+    StorageRequest, StorageResponse, WorkerLoadIndexRequest, WorkerSearchRequest,
 };
 use next_plaid_browser_kernel::{search_one, BrowserIndexView, MatrixView, SearchParameters};
 use next_plaid_browser_wasm::{
@@ -55,7 +55,7 @@ fn load_request(name: &str) -> WorkerLoadIndexRequest {
             Some(serde_json::json!({"title": "gamma archive note", "topic": "history"})),
         ]),
         nbits: 2,
-        fts_tokenizer: "unicode61".into(),
+        fts_tokenizer: FtsTokenizer::Unicode61,
         max_documents: None,
     }
 }
@@ -138,7 +138,7 @@ fn hybrid_search_request(name: &str) -> WorkerSearchRequest {
             subset: None,
             text_query: Some(vec!["beta".into()]),
             alpha: Some(0.25),
-            fusion: Some("relative_score".into()),
+            fusion: Some(FusionMode::RelativeScore),
             filter_condition: None,
             filter_parameters: None,
         },
@@ -218,7 +218,7 @@ fn stored_hybrid_search_request(name: &str) -> WorkerSearchRequest {
             subset: None,
             text_query: Some(vec!["beta".into()]),
             alpha: Some(0.25),
-            fusion: Some("relative_score".into()),
+            fusion: Some(FusionMode::RelativeScore),
             filter_condition: None,
             filter_parameters: None,
         },
@@ -538,15 +538,15 @@ fn browser_worker_search_rejects_invalid_fusion_mode() {
     reset_runtime_state();
     load_demo_index("demo-invalid-fusion");
 
-    let mut request = worker_search_request(
+    let request = worker_search_request(
         "demo-invalid-fusion",
         vec![vec![vec![1.0, 0.0], vec![0.7, 0.7]]],
         None,
     );
-    request.request.fusion = Some("bogus".into());
+    let mut request_json = serde_json::to_value(RuntimeRequest::Search(request)).unwrap();
+    request_json["request"]["fusion"] = serde_json::json!("bogus");
 
-    let request_json = serde_json::to_string(&RuntimeRequest::Search(request)).unwrap();
-    assert!(handle_runtime_request_json(&request_json).is_err());
+    assert!(handle_runtime_request_json(&request_json.to_string()).is_err());
 }
 
 #[wasm_bindgen_test]
@@ -609,7 +609,7 @@ async fn browser_storage_install_and_reload_roundtrip() {
     let load = storage_response(StorageRequest::LoadStoredBundle(LoadStoredBundleRequest {
         index_id: index_id.into(),
         name: "stored-demo".into(),
-        fts_tokenizer: "unicode61".into(),
+        fts_tokenizer: FtsTokenizer::Unicode61,
     }))
     .await;
     match load {
@@ -710,7 +710,7 @@ fn browser_worker_search_rejects_hybrid_query_count_mismatch() {
             subset: None,
             text_query: Some(vec!["beta".into()]),
             alpha: Some(0.25),
-            fusion: Some("relative_score".into()),
+            fusion: Some(FusionMode::RelativeScore),
             filter_condition: None,
             filter_parameters: None,
         },

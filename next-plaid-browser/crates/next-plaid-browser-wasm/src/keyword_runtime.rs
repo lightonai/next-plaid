@@ -1,3 +1,4 @@
+use next_plaid_browser_contract::FtsTokenizer;
 use rusqlite::{params_from_iter, Connection, ToSql};
 use serde_json::Value;
 use thiserror::Error;
@@ -8,9 +9,6 @@ mod sql;
 
 #[derive(Debug, Error)]
 pub(crate) enum KeywordError {
-    #[error("unsupported FTS tokenizer: {0}")]
-    UnsupportedTokenizer(String),
-
     #[error("invalid metadata column '{column}': {reason}")]
     InvalidMetadataColumn {
         column: String,
@@ -63,29 +61,6 @@ pub(crate) enum KeywordError {
     Json(#[from] serde_json::Error),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FtsTokenizer {
-    Unicode61,
-    Trigram,
-}
-
-impl FtsTokenizer {
-    pub fn from_request_str(tokenizer: &str) -> Result<Self, KeywordError> {
-        match tokenizer {
-            "unicode61" => Ok(Self::Unicode61),
-            "trigram" => Ok(Self::Trigram),
-            other => Err(KeywordError::UnsupportedTokenizer(other.to_string())),
-        }
-    }
-
-    pub(super) fn fts5_tokenize_value(&self) -> &'static str {
-        match self {
-            Self::Unicode61 => "unicode61",
-            Self::Trigram => "trigram",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct RankedResults {
     pub document_ids: Vec<i64>,
@@ -99,8 +74,7 @@ pub struct KeywordIndex {
 
 impl KeywordIndex {
     /// Builds an in-memory SQLite metadata and FTS index for browser search.
-    pub fn new(metadata: &[Option<Value>], tokenizer: &str) -> Result<Self, KeywordError> {
-        let tokenizer = FtsTokenizer::from_request_str(tokenizer)?;
+    pub fn new(metadata: &[Option<Value>], tokenizer: FtsTokenizer) -> Result<Self, KeywordError> {
         let schema = schema::collect_metadata_schema(metadata)?;
         let mut conn = Connection::open_in_memory()?;
         sql::install_regexp_function(&conn)?;
@@ -217,7 +191,7 @@ mod tests {
                 Some(json!({"title": "beta report summary", "topic": "metrics"})),
                 Some(json!({"title": "alpha beta digest", "topic": "mixed"})),
             ],
-            "unicode61",
+            FtsTokenizer::Unicode61,
         )
         .unwrap();
 
@@ -238,7 +212,7 @@ mod tests {
                 Some(json!({"title": "beta report summary"})),
                 Some(json!({"title": "alpha beta digest"})),
             ],
-            "unicode61",
+            FtsTokenizer::Unicode61,
         )
         .unwrap();
 
@@ -251,7 +225,7 @@ mod tests {
 
     #[test]
     fn keyword_index_resolves_metadata_filters() {
-        let index = KeywordIndex::new(&demo_metadata(), "unicode61").unwrap();
+        let index = KeywordIndex::new(&demo_metadata(), FtsTokenizer::Unicode61).unwrap();
 
         assert_eq!(
             index
@@ -273,7 +247,7 @@ mod tests {
 
     #[test]
     fn keyword_index_accepts_native_filter_grammar() {
-        let index = KeywordIndex::new(&demo_metadata(), "unicode61").unwrap();
+        let index = KeywordIndex::new(&demo_metadata(), FtsTokenizer::Unicode61).unwrap();
         let valid_queries = vec![
             ("name = ?", vec![json!("Alice")]),
             ("score > ?", vec![json!(80)]),
@@ -319,7 +293,7 @@ mod tests {
 
     #[test]
     fn keyword_index_rejects_unsafe_metadata_filters() {
-        let index = KeywordIndex::new(&demo_metadata(), "unicode61").unwrap();
+        let index = KeywordIndex::new(&demo_metadata(), FtsTokenizer::Unicode61).unwrap();
 
         assert!(matches!(
             index
@@ -375,7 +349,7 @@ mod tests {
                 Some(json!({"symbol": "render_template"})),
                 Some(json!({"symbol": "validate_input"})),
             ],
-            "trigram",
+            FtsTokenizer::Trigram,
         )
         .unwrap();
 
@@ -388,7 +362,7 @@ mod tests {
 
     #[test]
     fn keyword_index_reports_memory_usage() {
-        let index = KeywordIndex::new(&demo_metadata(), "unicode61").unwrap();
+        let index = KeywordIndex::new(&demo_metadata(), FtsTokenizer::Unicode61).unwrap();
 
         let memory_usage_bytes = index.memory_usage_bytes().unwrap();
 
@@ -397,7 +371,7 @@ mod tests {
 
     #[test]
     fn keyword_index_surfaces_unknown_column_as_typed_error() {
-        let index = KeywordIndex::new(&demo_metadata(), "unicode61").unwrap();
+        let index = KeywordIndex::new(&demo_metadata(), FtsTokenizer::Unicode61).unwrap();
         let err = index
             .filter_document_ids("nonexistent = ?", &[json!("value")])
             .unwrap_err();
@@ -406,16 +380,10 @@ mod tests {
 
     #[test]
     fn keyword_index_surfaces_sql_keyword_ban_as_typed_error() {
-        let index = KeywordIndex::new(&demo_metadata(), "unicode61").unwrap();
+        let index = KeywordIndex::new(&demo_metadata(), FtsTokenizer::Unicode61).unwrap();
         let err = index
             .filter_document_ids("name = ? UNION SELECT * FROM x", &[json!("a")])
             .unwrap_err();
         assert!(matches!(err, KeywordError::SqlKeywordNotAllowed(_)));
-    }
-
-    #[test]
-    fn keyword_index_surfaces_unsupported_tokenizer_as_typed_error() {
-        let err = KeywordIndex::new(&demo_metadata(), "porter").unwrap_err();
-        assert!(matches!(err, KeywordError::UnsupportedTokenizer(ref name) if name == "porter"));
     }
 }
