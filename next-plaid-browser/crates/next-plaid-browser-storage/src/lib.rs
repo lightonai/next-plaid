@@ -261,13 +261,23 @@ mod wasm {
                     return Err(error);
                 }
             };
-            if let Err(error) =
-                put_runtime_state(&db, &active_bundle_key(&manifest.index_id), &staged_record).await
-            {
+            let active_key = active_bundle_key(&manifest.index_id);
+            let previous_record = match get_runtime_state(&db, &active_key).await {
+                Ok(record) => record,
+                Err(error) => {
+                    let _ =
+                        delete_bundle_directory(&manifest.index_id, staged_record.storage_key())
+                            .await;
+                    return Err(error);
+                }
+            };
+            if let Err(error) = put_runtime_state(&db, &active_key, &staged_record).await {
                 let _ =
                     delete_bundle_directory(&manifest.index_id, staged_record.storage_key()).await;
                 return Err(error);
             }
+
+            cleanup_superseded_bundle(previous_record.as_ref(), &staged_record).await;
         }
 
         Ok(BundleInstalledResponse {
@@ -527,6 +537,24 @@ mod wasm {
         let runtime_root = get_directory_handle(&root, OPFS_ROOT_DIR, false).await?;
         let index_dir = get_directory_handle(&runtime_root, index_id, false).await?;
         remove_entry(&index_dir, storage_key, true).await
+    }
+
+    async fn cleanup_superseded_bundle(
+        previous_record: Option<&ActiveBundleRecord>,
+        next_record: &ActiveBundleRecord,
+    ) {
+        let Some(previous_record) = previous_record else {
+            return;
+        };
+        if previous_record.index_id != next_record.index_id {
+            return;
+        }
+        if previous_record.storage_key() == next_record.storage_key() {
+            return;
+        }
+
+        let _ =
+            delete_bundle_directory(&previous_record.index_id, previous_record.storage_key()).await;
     }
 
     async fn put_runtime_state(

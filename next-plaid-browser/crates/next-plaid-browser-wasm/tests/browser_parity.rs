@@ -492,20 +492,41 @@ async fn active_bundle_record(index_id: &str) -> Option<serde_json::Value> {
         .unwrap()
 }
 
+fn active_bundle_storage_key(record: &serde_json::Value) -> String {
+    record
+        .get("storage_key")
+        .and_then(|value| value.as_str())
+        .or_else(|| record.get("build_id").and_then(|value| value.as_str()))
+        .expect("active bundle pointer should include build identity")
+        .to_string()
+}
+
 async fn remove_active_bundle_storage(index_id: &str) {
     let record = active_bundle_record(index_id)
         .await
         .expect("active bundle pointer should exist");
-    let storage_key = record
-        .get("storage_key")
-        .and_then(|value| value.as_str())
-        .or_else(|| record.get("build_id").and_then(|value| value.as_str()))
-        .expect("active bundle pointer should include build identity");
+    let storage_key = active_bundle_storage_key(&record);
 
     let root = opfs_root().await;
     let runtime_root = get_directory_handle(&root, BROWSER_STORAGE_OPFS_ROOT_DIR, false).await;
     let index_dir = get_directory_handle(&runtime_root, index_id, false).await;
-    remove_entry(&index_dir, storage_key, true).await;
+    remove_entry(&index_dir, &storage_key, true).await;
+}
+
+async fn bundle_storage_exists(index_id: &str, storage_key: &str) -> bool {
+    let root = opfs_root().await;
+    let Ok(runtime_root) =
+        try_get_directory_handle(&root, BROWSER_STORAGE_OPFS_ROOT_DIR, false).await
+    else {
+        return false;
+    };
+    let Ok(index_dir) = try_get_directory_handle(&runtime_root, index_id, false).await else {
+        return false;
+    };
+
+    try_get_directory_handle(&index_dir, storage_key, false)
+        .await
+        .is_ok()
 }
 
 async fn opfs_root() -> JsValue {
@@ -533,6 +554,27 @@ async fn get_directory_handle(parent: &JsValue, name: &str, create: bool) -> JsV
     await_promise(promise).await
 }
 
+async fn try_get_directory_handle(
+    parent: &JsValue,
+    name: &str,
+    create: bool,
+) -> Result<JsValue, JsValue> {
+    let options = Object::new();
+    Reflect::set(
+        &options,
+        &JsValue::from_str("create"),
+        &JsValue::from_bool(create),
+    )
+    .unwrap();
+    let promise = call_method2(
+        parent,
+        "getDirectoryHandle",
+        &JsValue::from_str(name),
+        &options.into(),
+    );
+    try_await_promise(promise).await
+}
+
 async fn remove_entry(parent: &JsValue, name: &str, recursive: bool) {
     let options = Object::new();
     Reflect::set(
@@ -553,6 +595,11 @@ async fn remove_entry(parent: &JsValue, name: &str, recursive: bool) {
 async fn await_promise(value: JsValue) -> JsValue {
     let promise = value.dyn_into::<Promise>().unwrap();
     JsFuture::from(promise).await.unwrap()
+}
+
+async fn try_await_promise(value: JsValue) -> Result<JsValue, JsValue> {
+    let promise = value.dyn_into::<Promise>().unwrap();
+    JsFuture::from(promise).await
 }
 
 fn call_method0(target: &JsValue, name: &str) -> JsValue {
@@ -815,6 +862,55 @@ async fn browser_storage_clears_stale_active_bundle_pointer() {
 
     let retry_error = storage_error_message(storage_load_request(index_id, "stale-demo")).await;
     assert!(retry_error.contains("no active stored bundle"));
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_replaces_old_active_bundle_bytes() {
+    reset_runtime_state();
+    let index_id = "stored-demo-replace-active";
+    let first_build_id = "build-storage-replace-active-001";
+    let second_build_id = "build-storage-replace-active-002";
+
+    let first_install = storage_response(storage_install_request(index_id, first_build_id)).await;
+    match first_install {
+        StorageResponse::BundleInstalled(result) => {
+            assert_eq!(result.build_id, first_build_id);
+            assert!(result.activated);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    let first_record = active_bundle_record(index_id)
+        .await
+        .expect("first active bundle pointer should exist");
+    let first_storage_key = active_bundle_storage_key(&first_record);
+    assert!(bundle_storage_exists(index_id, &first_storage_key).await);
+
+    let second_install = storage_response(storage_install_request(index_id, second_build_id)).await;
+    match second_install {
+        StorageResponse::BundleInstalled(result) => {
+            assert_eq!(result.build_id, second_build_id);
+            assert!(result.activated);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    let second_record = active_bundle_record(index_id)
+        .await
+        .expect("second active bundle pointer should exist");
+    let second_storage_key = active_bundle_storage_key(&second_record);
+    assert_ne!(second_storage_key, first_storage_key);
+    assert!(!bundle_storage_exists(index_id, &first_storage_key).await);
+    assert!(bundle_storage_exists(index_id, &second_storage_key).await);
+
+    let load = storage_response(storage_load_request(index_id, "replaced-demo")).await;
+    match load {
+        StorageResponse::StoredBundleLoaded(result) => {
+            assert_eq!(result.build_id, second_build_id);
+            assert_eq!(result.name, "replaced-demo");
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
 }
 
 #[wasm_bindgen_test]
