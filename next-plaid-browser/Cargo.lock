@@ -654,6 +654,7 @@ dependencies = [
  "regex",
  "rusqlite",
  "serde_json",
+ "thiserror",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
