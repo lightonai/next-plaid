@@ -496,8 +496,8 @@ mod tests {
 
     #[test]
     fn test_maxsim_score_ignores_non_finite_row_entries_when_finite_max_exists() {
-        let query = Array2::from_shape_vec((16, 2), vec![1.0, 0.0].repeat(16)).unwrap();
-        let mut doc_data = vec![0.5, 0.0].repeat(15);
+        let query = Array2::from_shape_vec((16, 2), [1.0, 0.0].repeat(16)).unwrap();
+        let mut doc_data = [0.5, 0.0].repeat(15);
         doc_data.extend([f32::NAN, 0.0]);
         let doc = Array2::from_shape_vec((16, 2), doc_data).unwrap();
 

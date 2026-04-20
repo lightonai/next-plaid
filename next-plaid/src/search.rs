@@ -716,7 +716,7 @@ mod tests {
 
     #[test]
     fn test_cmp_score_descending_places_non_finite_scores_last() {
-        let mut scores = vec![1.0f32, f32::INFINITY, 0.5, f32::NAN];
+        let mut scores = [1.0f32, f32::INFINITY, 0.5, f32::NAN];
         scores.sort_by(|a, b| cmp_score_descending(*a, *b));
 
         assert_eq!(scores[0], 1.0);
