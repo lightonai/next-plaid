@@ -122,10 +122,8 @@ pub fn maxsim_scores(
     doc_values: Vec<f32>,
     doc_token_lengths: Vec<usize>,
 ) -> Result<Vec<f32>, JsError> {
-    let query = MatrixView::new(&query_values, query_rows, dim)
-        .map_err(|err| JsError::new(&err.to_string()))?;
-    score_documents(query, &doc_values, &doc_token_lengths)
-        .map_err(|err| JsError::new(&err.to_string()))
+    let query = MatrixView::new(&query_values, query_rows, dim)?;
+    Ok(score_documents(query, &doc_values, &doc_token_lengths)?)
 }
 
 #[wasm_bindgen]
@@ -137,15 +135,16 @@ pub fn reset_runtime_state() {
 
 #[wasm_bindgen]
 pub fn handle_runtime_request_json(request_json: &str) -> Result<String, JsError> {
-    let request: RuntimeRequest =
-        serde_json::from_str(request_json).map_err(|err| JsError::new(&err.to_string()))?;
+    Ok(handle_runtime_request_json_impl(request_json)?)
+}
+
+fn handle_runtime_request_json_impl(request_json: &str) -> Result<String, WasmError> {
+    let request: RuntimeRequest = serde_json::from_str(request_json)?;
 
     let response = match request {
         RuntimeRequest::Health => RuntimeResponse::Health(runtime_health()),
         RuntimeRequest::ValidateBundle { manifest } => {
-            manifest
-                .validate()
-                .map_err(|err| JsError::new(&err.to_string()))?;
+            manifest.validate()?;
             RuntimeResponse::BundleValidated(ValidateBundleResponse {
                 index_id: manifest.index_id,
                 build_id: manifest.build_id,
@@ -154,10 +153,8 @@ pub fn handle_runtime_request_json(request_json: &str) -> Result<String, JsError
         }
         RuntimeRequest::Score(request) => {
             let query =
-                MatrixView::new(&request.query.values, request.query.rows, request.query.dim)
-                    .map_err(|err| JsError::new(&err.to_string()))?;
-            let scores = score_documents(query, &request.doc_values, &request.doc_token_lengths)
-                .map_err(|err| JsError::new(&err.to_string()))?;
+                MatrixView::new(&request.query.values, request.query.rows, request.query.dim)?;
+            let scores = score_documents(query, &request.doc_values, &request.doc_token_lengths)?;
             RuntimeResponse::Scores(ScoreResponse { scores })
         }
         RuntimeRequest::LoadIndex(request) => RuntimeResponse::IndexLoaded(load_index(request)?),
@@ -170,13 +167,16 @@ pub fn handle_runtime_request_json(request_json: &str) -> Result<String, JsError
         RuntimeRequest::Fuse(request) => RuntimeResponse::FusedResults(fuse_results(request)?),
     };
 
-    serde_json::to_string(&response).map_err(|err| JsError::new(&err.to_string()))
+    Ok(serde_json::to_string(&response)?)
 }
 
 #[wasm_bindgen]
 pub async fn handle_storage_request_json(request_json: String) -> Result<String, JsError> {
-    let request: StorageRequest =
-        serde_json::from_str(&request_json).map_err(|err| JsError::new(&err.to_string()))?;
+    Ok(handle_storage_request_json_impl(request_json).await?)
+}
+
+async fn handle_storage_request_json_impl(request_json: String) -> Result<String, WasmError> {
+    let request: StorageRequest = serde_json::from_str(&request_json)?;
 
     let response = match request {
         StorageRequest::InstallBundle(request) => {
@@ -187,7 +187,7 @@ pub async fn handle_storage_request_json(request_json: String) -> Result<String,
         }
     };
 
-    serde_json::to_string(&response).map_err(|err| JsError::new(&err.to_string()))
+    Ok(serde_json::to_string(&response)?)
 }
 
 fn runtime_health() -> HealthResponse {
@@ -230,26 +230,20 @@ fn runtime_health() -> HealthResponse {
 
 async fn install_browser_bundle(
     request: InstallBundleRequest,
-) -> Result<BundleInstalledResponse, JsError> {
+) -> Result<BundleInstalledResponse, WasmError> {
     let mut artifact_bytes = HashMap::new();
     for artifact in request.artifacts {
-        let bytes = STANDARD
-            .decode(&artifact.bytes_b64)
-            .map_err(|err| JsError::new(&format!("invalid base64 artifact bytes: {err}")))?;
+        let bytes = STANDARD.decode(&artifact.bytes_b64)?;
         artifact_bytes.insert(artifact.kind, bytes);
     }
 
-    install_bundle_from_bytes(&request.manifest, artifact_bytes, request.activate)
-        .await
-        .map_err(|err| JsError::new(&err.to_string()))
+    Ok(install_bundle_from_bytes(&request.manifest, artifact_bytes, request.activate).await?)
 }
 
 async fn load_stored_browser_bundle(
     request: LoadStoredBundleRequest,
-) -> Result<StoredBundleLoadedResponse, JsError> {
-    let stored = load_active_bundle(&request.index_id)
-        .await
-        .map_err(|err| JsError::new(&err.to_string()))?;
+) -> Result<StoredBundleLoadedResponse, WasmError> {
+    let stored = load_active_bundle(&request.index_id).await?;
     let build_id = stored.manifest.build_id.clone();
 
     let name = request.name.clone();
@@ -264,7 +258,7 @@ async fn load_stored_browser_bundle(
     })
 }
 
-fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse, JsError> {
+fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse, WasmError> {
     validate_search_index_payload(&request.index)?;
 
     let summary = build_index_summary(&request)?;
@@ -272,11 +266,10 @@ fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse
 
     if let Some(metadata) = &request.metadata {
         if metadata.len() != summary.num_documents {
-            return Err(JsError::new(&format!(
-                "metadata length {} does not match document count {}",
-                metadata.len(),
-                summary.num_documents,
-            )));
+            return Err(WasmError::MetadataLengthMismatch {
+                metadata_len: metadata.len(),
+                document_count: summary.num_documents,
+            });
         }
     }
 
@@ -284,8 +277,7 @@ fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse
         .metadata
         .as_ref()
         .map(|metadata| KeywordIndex::new(metadata, &request.fts_tokenizer))
-        .transpose()
-        .map_err(|err| JsError::new(&err.to_string()))?;
+        .transpose()?;
     let memory_usage_breakdown = index_memory_usage_breakdown(
         &request.index,
         request.metadata.as_deref(),
@@ -312,14 +304,13 @@ fn load_compressed_bundle_into_runtime(
     name: String,
     stored: next_plaid_browser_storage::StoredBrowserBundle,
     fts_tokenizer: &str,
-) -> Result<IndexSummary, JsError> {
+) -> Result<IndexSummary, WasmError> {
     let manifest = stored.manifest.clone();
     let metadata = stored.metadata.clone();
     let keyword_index = metadata
         .as_ref()
         .map(|metadata| KeywordIndex::new(metadata, fts_tokenizer))
-        .transpose()
-        .map_err(|err| JsError::new(&err.to_string()))?;
+        .transpose()?;
     let memory_usage_breakdown = compressed_index_memory_usage_breakdown(
         &stored.search_artifacts,
         metadata.as_deref(),
@@ -348,14 +339,14 @@ fn load_compressed_bundle_into_runtime(
     Ok(summary)
 }
 
-fn search_loaded_index(request: WorkerSearchRequest) -> Result<SearchResponse, JsError> {
+fn search_loaded_index(request: WorkerSearchRequest) -> Result<SearchResponse, WasmError> {
     validate_worker_search_request(&request.request)?;
 
     LOADED_INDICES.with(|indices| {
         let indices = indices.borrow();
         let loaded = indices
             .get(&request.name)
-            .ok_or_else(|| JsError::new(&format!("index '{}' is not loaded", request.name)))?;
+            .ok_or_else(|| WasmError::IndexNotLoaded(request.name.clone()))?;
         let subset = resolve_subset(loaded, &request.request)?;
         let top_k = request.request.params.top_k.unwrap_or(10);
         let has_queries = has_semantic_queries(&request.request);
@@ -431,16 +422,16 @@ fn search_loaded_index(request: WorkerSearchRequest) -> Result<SearchResponse, J
 fn resolve_subset(
     loaded: &LoadedIndex,
     request: &SearchRequest,
-) -> Result<Option<Vec<i64>>, JsError> {
+) -> Result<Option<Vec<i64>>, WasmError> {
     if has_filter_condition(request) {
         let keyword_index = loaded.keyword_index.as_ref().ok_or_else(|| {
-            JsError::new("metadata filtering requires metadata to be loaded for this index")
+            WasmError::InvalidRequest(
+                "metadata filtering requires metadata to be loaded for this index".into(),
+            )
         })?;
         let condition = request.filter_condition.as_deref().unwrap_or_default();
         let parameters: &[serde_json::Value] = request.filter_parameters.as_deref().unwrap_or(&[]);
-        let subset = keyword_index
-            .filter_document_ids(condition, parameters)
-            .map_err(|err| JsError::new(&err.to_string()))?;
+        let subset = keyword_index.filter_document_ids(condition, parameters)?;
         return Ok(Some(subset));
     }
 
@@ -453,7 +444,7 @@ fn semantic_ranked_results(
     params: &SearchParamsRequest,
     top_k: usize,
     subset: Option<&[i64]>,
-) -> Result<Vec<RankedResultsPayload>, JsError> {
+) -> Result<Vec<RankedResultsPayload>, WasmError> {
     let mut search_params = worker_search_parameters(params);
     search_params.top_k = top_k;
 
@@ -461,24 +452,22 @@ fn semantic_ranked_results(
     for query_payload in queries {
         let query_payload = query_payload_to_matrix_payload(query_payload)?;
         if query_payload.dim != loaded.summary.dimension {
-            return Err(JsError::new(&format!(
-                "query dimension {} does not match index dimension {}",
-                query_payload.dim, loaded.summary.dimension,
-            )));
+            return Err(WasmError::QueryDimensionMismatch {
+                query_dim: query_payload.dim,
+                index_dim: loaded.summary.dimension,
+            });
         }
 
-        let query = MatrixView::new(&query_payload.values, query_payload.rows, query_payload.dim)
-            .map_err(|err| JsError::new(&err.to_string()))?;
+        let query =
+            MatrixView::new(&query_payload.values, query_payload.rows, query_payload.dim)?;
         let result = match &loaded.payload {
             LoadedIndexPayload::Dense(index_payload) => {
                 let index = browser_index_view(index_payload)?;
-                search_one(index, query, &search_params, subset)
-                    .map_err(|err| JsError::new(&err.to_string()))?
+                search_one(index, query, &search_params, subset)?
             }
             LoadedIndexPayload::Compressed(stored) => {
                 let index = compressed_browser_index_view(&stored.search_artifacts)?;
-                search_one_compressed(index, query, &search_params, subset)
-                    .map_err(|err| JsError::new(&err.to_string()))?
+                search_one_compressed(index, query, &search_params, subset)?
             }
         };
 
@@ -496,23 +485,19 @@ fn keyword_ranked_results(
     text_queries: &[String],
     top_k: usize,
     subset: Option<&[i64]>,
-) -> Result<Vec<RankedResultsPayload>, JsError> {
+) -> Result<Vec<RankedResultsPayload>, WasmError> {
     let Some(keyword_index) = loaded.keyword_index.as_ref() else {
         return Ok(empty_ranked_results(text_queries.len()));
     };
 
-    keyword_index
-        .search_many(text_queries, top_k, subset)
-        .map_err(|err| JsError::new(&err.to_string()))
-        .map(|results| {
-            results
-                .into_iter()
-                .map(|result| RankedResultsPayload {
-                    document_ids: result.document_ids,
-                    scores: result.scores,
-                })
-                .collect()
+    let results = keyword_index.search_many(text_queries, top_k, subset)?;
+    Ok(results
+        .into_iter()
+        .map(|result| RankedResultsPayload {
+            document_ids: result.document_ids,
+            scores: result.scores,
         })
+        .collect())
 }
 
 fn empty_ranked_results(count: usize) -> Vec<RankedResultsPayload> {
@@ -545,13 +530,11 @@ fn search_response_from_ranked_results(
     }
 }
 
-fn run_inline_search(request: InlineSearchRequest) -> Result<InlineSearchResponse, JsError> {
-    let query = MatrixView::new(&request.query.values, request.query.rows, request.query.dim)
-        .map_err(|err| JsError::new(&err.to_string()))?;
+fn run_inline_search(request: InlineSearchRequest) -> Result<InlineSearchResponse, WasmError> {
+    let query = MatrixView::new(&request.query.values, request.query.rows, request.query.dim)?;
     let index = browser_index_view(&request.index)?;
     let params = inline_search_parameters(&request.params);
-    let result = search_one(index, query, &params, request.subset_doc_ids.as_deref())
-        .map_err(|err| JsError::new(&err.to_string()))?;
+    let result = search_one(index, query, &params, request.subset_doc_ids.as_deref())?;
 
     Ok(InlineSearchResponse {
         query_id: result.query_id,
@@ -560,15 +543,19 @@ fn run_inline_search(request: InlineSearchRequest) -> Result<InlineSearchRespons
     })
 }
 
-fn fuse_results(request: FusionRequest) -> Result<FusionResponse, JsError> {
+fn fuse_results(request: FusionRequest) -> Result<FusionResponse, WasmError> {
     let alpha = request.alpha.unwrap_or(0.75);
     if !(0.0..=1.0).contains(&alpha) {
-        return Err(JsError::new("alpha must be between 0.0 and 1.0"));
+        return Err(WasmError::InvalidRequest(
+            "alpha must be between 0.0 and 1.0".into(),
+        ));
     }
 
     let fusion_mode = request.fusion.as_deref().unwrap_or("rrf");
     if fusion_mode != "rrf" && fusion_mode != "relative_score" {
-        return Err(JsError::new("fusion must be `rrf` or `relative_score`"));
+        return Err(WasmError::InvalidRequest(
+            "fusion must be `rrf` or `relative_score`".into(),
+        ));
     }
 
     let semantic = request.semantic.as_ref();
@@ -615,10 +602,10 @@ fn fuse_results(request: FusionRequest) -> Result<FusionResponse, JsError> {
     })
 }
 
-fn validate_ranked_results(results: &RankedResultsPayload) -> Result<(), JsError> {
+fn validate_ranked_results(results: &RankedResultsPayload) -> Result<(), WasmError> {
     if results.document_ids.len() != results.scores.len() {
-        return Err(JsError::new(
-            "document_ids and scores must have the same length",
+        return Err(WasmError::InvalidRequest(
+            "document_ids and scores must have the same length".into(),
         ));
     }
     Ok(())
@@ -638,29 +625,33 @@ fn truncate_ranked_results(results: &RankedResultsPayload, top_k: usize) -> (Vec
     )
 }
 
-fn validate_worker_search_request(request: &SearchRequest) -> Result<(), JsError> {
+fn validate_worker_search_request(request: &SearchRequest) -> Result<(), WasmError> {
     let has_queries = has_semantic_queries(request);
     let has_text_query = has_text_queries(request);
     let alpha = request.alpha.unwrap_or(0.75);
     let fusion_mode = request.fusion.as_deref().unwrap_or("rrf");
 
     if !has_queries && !has_text_query {
-        return Err(JsError::new(
-            "At least one of `queries` or `text_query` must be provided",
+        return Err(WasmError::InvalidRequest(
+            "At least one of `queries` or `text_query` must be provided".into(),
         ));
     }
 
     if !(0.0..=1.0).contains(&alpha) {
-        return Err(JsError::new("alpha must be between 0.0 and 1.0"));
+        return Err(WasmError::InvalidRequest(
+            "alpha must be between 0.0 and 1.0".into(),
+        ));
     }
 
     if fusion_mode != "rrf" && fusion_mode != "relative_score" {
-        return Err(JsError::new("fusion must be `rrf` or `relative_score`"));
+        return Err(WasmError::InvalidRequest(
+            "fusion must be `rrf` or `relative_score`".into(),
+        ));
     }
 
     if has_queries && has_text_query && request.queries.as_ref().map_or(0, Vec::len) != 1 {
-        return Err(JsError::new(
-            "Hybrid search requires exactly 1 query embedding (text_query can only fuse with one semantic query)",
+        return Err(WasmError::InvalidRequest(
+            "Hybrid search requires exactly 1 query embedding (text_query can only fuse with one semantic query)".into(),
         ));
     }
 
@@ -669,8 +660,8 @@ fn validate_worker_search_request(request: &SearchRequest) -> Result<(), JsError
         && request.queries.as_ref().map_or(0, Vec::len)
             != request.text_query.as_ref().map_or(0, Vec::len)
     {
-        return Err(JsError::new(
-            "queries length must match text_query length in hybrid mode",
+        return Err(WasmError::InvalidRequest(
+            "queries length must match text_query length in hybrid mode".into(),
         ));
     }
 
@@ -702,15 +693,13 @@ fn has_filter_condition(request: &SearchRequest) -> bool {
         .unwrap_or(false)
 }
 
-fn build_index_summary(request: &WorkerLoadIndexRequest) -> Result<IndexSummary, JsError> {
+fn build_index_summary(request: &WorkerLoadIndexRequest) -> Result<IndexSummary, WasmError> {
     let doc_offsets = &request.index.doc_offsets;
     let num_documents = doc_offsets
         .len()
         .checked_sub(1)
-        .ok_or_else(|| JsError::new("doc_offsets must contain at least one entry"))?;
-    let num_embeddings = *doc_offsets
-        .last()
-        .ok_or_else(|| JsError::new("doc_offsets must contain at least one entry"))?;
+        .ok_or(WasmError::EmptyDocOffsets)?;
+    let num_embeddings = *doc_offsets.last().ok_or(WasmError::EmptyDocOffsets)?;
     let num_partitions = request.index.centroids.rows;
     let dimension = request.index.centroids.dim;
     let avg_doclen = if num_documents == 0 {
@@ -737,12 +726,9 @@ fn build_compressed_index_summary(
     manifest: &next_plaid_browser_contract::BundleManifest,
     search: &next_plaid_browser_loader::LoadedSearchArtifacts,
     metadata: Option<&[Option<serde_json::Value>]>,
-) -> Result<IndexSummary, JsError> {
+) -> Result<IndexSummary, WasmError> {
     let num_documents = manifest.document_count;
-    let num_embeddings = *search
-        .doc_offsets
-        .last()
-        .ok_or_else(|| JsError::new("doc_offsets must contain at least one entry"))?;
+    let num_embeddings = *search.doc_offsets.last().ok_or(WasmError::EmptyDocOffsets)?;
     let num_partitions = search.centroids.len() / search.embedding_dim;
     let avg_doclen = if num_documents == 0 {
         0.0
@@ -767,7 +753,7 @@ fn index_memory_usage_breakdown(
     index: &SearchIndexPayload,
     metadata: Option<&[Option<serde_json::Value>]>,
     keyword_index: Option<&KeywordIndex>,
-) -> Result<MemoryUsageBreakdown, JsError> {
+) -> Result<MemoryUsageBreakdown, WasmError> {
     build_memory_usage_breakdown(
         dense_index_payload_bytes(index)?,
         metadata_json_usage_bytes(metadata)?,
@@ -779,7 +765,7 @@ fn compressed_index_memory_usage_breakdown(
     search: &next_plaid_browser_loader::LoadedSearchArtifacts,
     metadata: Option<&[Option<serde_json::Value>]>,
     keyword_index: Option<&KeywordIndex>,
-) -> Result<MemoryUsageBreakdown, JsError> {
+) -> Result<MemoryUsageBreakdown, WasmError> {
     build_memory_usage_breakdown(
         compressed_index_payload_bytes(search)?,
         metadata_json_usage_bytes(metadata)?,
@@ -791,7 +777,7 @@ fn build_memory_usage_breakdown(
     index_bytes: u64,
     metadata_json_bytes: u64,
     keyword_runtime_bytes: u64,
-) -> Result<MemoryUsageBreakdown, JsError> {
+) -> Result<MemoryUsageBreakdown, WasmError> {
     let breakdown = MemoryUsageBreakdown {
         index_bytes,
         metadata_json_bytes,
@@ -801,90 +787,84 @@ fn build_memory_usage_breakdown(
     Ok(breakdown)
 }
 
-fn dense_index_payload_bytes(index: &SearchIndexPayload) -> Result<u64, JsError> {
-    let mut total = 0u64;
-    total = total
-        .checked_add(slice_bytes::<f32>(&index.centroids.values)?)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    total = total
-        .checked_add(slice_bytes::<i64>(&index.ivf_doc_ids)?)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    total = total
-        .checked_add(slice_bytes::<i32>(&index.ivf_lengths)?)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    total = total
-        .checked_add(slice_bytes::<usize>(&index.doc_offsets)?)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    total = total
-        .checked_add(slice_bytes::<i64>(&index.doc_codes)?)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    total = total
-        .checked_add(slice_bytes::<f32>(&index.doc_values)?)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    Ok(total)
+struct ByteCounter(u64);
+
+impl ByteCounter {
+    fn new() -> Self {
+        Self(0)
+    }
+
+    fn add_slice<T>(&mut self, slice: &[T]) -> Result<(), WasmError> {
+        let bytes = (slice.len() as u64)
+            .checked_mul(size_of::<T>() as u64)
+            .ok_or(WasmError::ByteCountOverflow)?;
+        self.add_bytes(bytes)
+    }
+
+    fn add_bytes(&mut self, bytes: u64) -> Result<(), WasmError> {
+        self.0 = self
+            .0
+            .checked_add(bytes)
+            .ok_or(WasmError::ByteCountOverflow)?;
+        Ok(())
+    }
+
+    fn total(&self) -> u64 {
+        self.0
+    }
+}
+
+fn dense_index_payload_bytes(index: &SearchIndexPayload) -> Result<u64, WasmError> {
+    let mut counter = ByteCounter::new();
+    counter.add_slice(&index.centroids.values)?;
+    counter.add_slice(&index.ivf_doc_ids)?;
+    counter.add_slice(&index.ivf_lengths)?;
+    counter.add_slice(&index.doc_offsets)?;
+    counter.add_slice(&index.doc_codes)?;
+    counter.add_slice(&index.doc_values)?;
+    Ok(counter.total())
 }
 
 fn compressed_index_payload_bytes(
     search: &next_plaid_browser_loader::LoadedSearchArtifacts,
-) -> Result<u64, JsError> {
-    let mut total = 0u64;
-    total = total
-        .checked_add(slice_bytes::<f32>(&search.centroids)?)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    total = total
-        .checked_add(slice_bytes::<i64>(&search.ivf)?)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    total = total
-        .checked_add(slice_bytes::<i32>(&search.ivf_lengths)?)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    total = total
-        .checked_add(slice_bytes::<usize>(&search.doc_lengths)?)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    total = total
-        .checked_add(slice_bytes::<usize>(&search.doc_offsets)?)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    total = total
-        .checked_add(slice_bytes::<i64>(&search.merged_codes)?)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    total = total
-        .checked_add(search.merged_residuals.len() as u64)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    total = total
-        .checked_add(slice_bytes::<f32>(&search.bucket_weights)?)
-        .ok_or_else(|| JsError::new("index byte count overflow"))?;
-    Ok(total)
+) -> Result<u64, WasmError> {
+    let mut counter = ByteCounter::new();
+    counter.add_slice(&search.centroids)?;
+    counter.add_slice(&search.ivf)?;
+    counter.add_slice(&search.ivf_lengths)?;
+    counter.add_slice(&search.doc_lengths)?;
+    counter.add_slice(&search.doc_offsets)?;
+    counter.add_slice(&search.merged_codes)?;
+    counter.add_bytes(search.merged_residuals.len() as u64)?;
+    counter.add_slice(&search.bucket_weights)?;
+    Ok(counter.total())
 }
 
 fn metadata_json_usage_bytes(
     metadata: Option<&[Option<serde_json::Value>]>,
-) -> Result<u64, JsError> {
+) -> Result<u64, WasmError> {
     metadata.map_or(Ok(0), |metadata| {
         metadata.iter().try_fold(0u64, |acc, value| {
-            let bytes = serde_json::to_vec(value)
-                .map_err(|err| JsError::new(&format!("failed to size metadata: {err}")))?;
+            let bytes = serde_json::to_vec(value)?;
             acc.checked_add(bytes.len() as u64)
-                .ok_or_else(|| JsError::new("metadata byte count overflow"))
+                .ok_or(WasmError::ByteCountOverflow)
         })
     })
 }
 
-fn keyword_runtime_usage_bytes(keyword_index: Option<&KeywordIndex>) -> Result<u64, JsError> {
+fn keyword_runtime_usage_bytes(keyword_index: Option<&KeywordIndex>) -> Result<u64, WasmError> {
     keyword_index
-        .map(|keyword_index| {
-            keyword_index
-                .memory_usage_bytes()
-                .map_err(|err| JsError::new(&err.to_string()))
-        })
+        .map(|keyword_index| keyword_index.memory_usage_bytes().map_err(WasmError::from))
         .transpose()
         .map(|bytes| bytes.unwrap_or(0))
 }
 
-fn memory_usage_total_bytes(breakdown: &MemoryUsageBreakdown) -> Result<u64, JsError> {
+fn memory_usage_total_bytes(breakdown: &MemoryUsageBreakdown) -> Result<u64, WasmError> {
     breakdown
         .index_bytes
         .checked_add(breakdown.metadata_json_bytes)
         .and_then(|total| total.checked_add(breakdown.keyword_runtime_bytes))
-        .ok_or_else(|| JsError::new("index byte count overflow"))
+        .ok_or(WasmError::ByteCountOverflow)
 }
 
 fn saturating_memory_usage_total_bytes(breakdown: &MemoryUsageBreakdown) -> u64 {
@@ -892,12 +872,6 @@ fn saturating_memory_usage_total_bytes(breakdown: &MemoryUsageBreakdown) -> u64 
         .index_bytes
         .saturating_add(breakdown.metadata_json_bytes)
         .saturating_add(breakdown.keyword_runtime_bytes)
-}
-
-fn slice_bytes<T>(values: &[T]) -> Result<u64, JsError> {
-    (values.len() as u64)
-        .checked_mul(size_of::<T>() as u64)
-        .ok_or_else(|| JsError::new("index byte count overflow"))
 }
 
 fn worker_search_parameters(payload: &SearchParamsRequest) -> SearchParameters {
@@ -922,27 +896,25 @@ fn inline_search_parameters(payload: &InlineSearchParamsRequest) -> SearchParame
     }
 }
 
-fn browser_index_view(index: &SearchIndexPayload) -> Result<BrowserIndexView<'_>, JsError> {
+fn browser_index_view(index: &SearchIndexPayload) -> Result<BrowserIndexView<'_>, WasmError> {
     let centroids = matrix_view(&index.centroids)?;
-    BrowserIndexView::new(
+    Ok(BrowserIndexView::new(
         centroids,
         &index.ivf_doc_ids,
         &index.ivf_lengths,
         &index.doc_offsets,
         &index.doc_codes,
         &index.doc_values,
-    )
-    .map_err(|err| JsError::new(&err.to_string()))
+    )?)
 }
 
 fn compressed_browser_index_view(
     search: &next_plaid_browser_loader::LoadedSearchArtifacts,
-) -> Result<CompressedBrowserIndexView<'_>, JsError> {
+) -> Result<CompressedBrowserIndexView<'_>, WasmError> {
     let rows = search.centroids.len() / search.embedding_dim;
-    let centroids = MatrixView::new(&search.centroids, rows, search.embedding_dim)
-        .map_err(|err| JsError::new(&err.to_string()))?;
+    let centroids = MatrixView::new(&search.centroids, rows, search.embedding_dim)?;
 
-    CompressedBrowserIndexView::new(
+    Ok(CompressedBrowserIndexView::new(
         centroids,
         search.nbits,
         &search.bucket_weights,
@@ -951,23 +923,21 @@ fn compressed_browser_index_view(
         &search.doc_offsets,
         &search.merged_codes,
         &search.merged_residuals,
-    )
-    .map_err(|err| JsError::new(&err.to_string()))
+    )?)
 }
 
-fn validate_search_index_payload(index: &SearchIndexPayload) -> Result<(), JsError> {
+fn validate_search_index_payload(index: &SearchIndexPayload) -> Result<(), WasmError> {
     let _ = browser_index_view(index)?;
     Ok(())
 }
 
-fn matrix_view(payload: &MatrixPayload) -> Result<MatrixView<'_>, JsError> {
-    MatrixView::new(&payload.values, payload.rows, payload.dim)
-        .map_err(|err| JsError::new(&err.to_string()))
+fn matrix_view(payload: &MatrixPayload) -> Result<MatrixView<'_>, WasmError> {
+    Ok(MatrixView::new(&payload.values, payload.rows, payload.dim)?)
 }
 
 fn query_payload_to_matrix_payload(
     query: &QueryEmbeddingsPayload,
-) -> Result<MatrixPayload, JsError> {
+) -> Result<MatrixPayload, WasmError> {
     if let (Some(embeddings_b64), Some(shape)) = (&query.embeddings_b64, query.shape) {
         return Ok(MatrixPayload {
             values: decode_b64_embeddings(embeddings_b64, shape)?,
@@ -977,26 +947,27 @@ fn query_payload_to_matrix_payload(
     }
 
     let embeddings = query.embeddings.as_ref().ok_or_else(|| {
-        JsError::new("Must provide either `embeddings` or `embeddings_b64` + `shape`")
+        WasmError::InvalidRequest(
+            "Must provide either `embeddings` or `embeddings_b64` + `shape`".into(),
+        )
     })?;
 
     if embeddings.is_empty() {
-        return Err(JsError::new("Empty query embeddings"));
+        return Err(WasmError::EmptyQueryEmbeddings);
     }
 
     let dim = embeddings[0].len();
     if dim == 0 {
-        return Err(JsError::new("Zero dimension query embeddings"));
+        return Err(WasmError::ZeroDimensionQueryEmbeddings);
     }
 
     for (row_index, row) in embeddings.iter().enumerate() {
         if row.len() != dim {
-            return Err(JsError::new(&format!(
-                "Inconsistent query embedding dimension at row {}: expected {}, got {}",
-                row_index,
-                dim,
-                row.len(),
-            )));
+            return Err(WasmError::InconsistentQueryDimension {
+                row: row_index,
+                expected: dim,
+                actual: row.len(),
+            });
         }
     }
 
@@ -1008,22 +979,19 @@ fn query_payload_to_matrix_payload(
     })
 }
 
-fn decode_b64_embeddings(b64: &str, shape: [usize; 2]) -> Result<Vec<f32>, JsError> {
-    let bytes = STANDARD
-        .decode(b64)
-        .map_err(|err| JsError::new(&format!("Invalid base64: {err}")))?;
+fn decode_b64_embeddings(b64: &str, shape: [usize; 2]) -> Result<Vec<f32>, WasmError> {
+    let bytes = STANDARD.decode(b64)?;
     let expected = shape[0]
         .checked_mul(shape[1])
         .and_then(|count| count.checked_mul(size_of::<f32>()))
-        .ok_or_else(|| JsError::new("query shape overflow"))?;
+        .ok_or(WasmError::QueryShapeOverflow)?;
 
     if bytes.len() != expected {
-        return Err(JsError::new(&format!(
-            "Expected {} bytes for shape {:?}, got {}",
+        return Err(WasmError::QueryShapeMismatch {
             expected,
             shape,
-            bytes.len()
-        )));
+            actual: bytes.len(),
+        });
     }
 
     Ok(bytes
