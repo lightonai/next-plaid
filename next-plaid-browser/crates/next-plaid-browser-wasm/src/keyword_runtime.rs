@@ -7,6 +7,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 mod filter;
+mod schema;
 
 #[derive(Debug, Error)]
 pub(crate) enum KeywordError {
@@ -104,16 +105,10 @@ pub struct KeywordIndex {
     conn: Connection,
 }
 
-#[derive(Debug)]
-struct MetadataSchema {
-    columns: Vec<String>,
-    column_types: HashMap<String, &'static str>,
-}
-
 impl KeywordIndex {
     pub fn new(metadata: &[Option<Value>], tokenizer: &str) -> Result<Self, KeywordError> {
         let tokenizer = FtsTokenizer::from_request_str(tokenizer)?;
-        let schema = collect_metadata_schema(metadata)?;
+        let schema = schema::collect_metadata_schema(metadata)?;
         let mut conn = Connection::open_in_memory()?;
         install_regexp_function(&conn)?;
         ensure_tables(&conn, &schema, &tokenizer)?;
@@ -155,7 +150,7 @@ impl KeywordIndex {
         condition: &str,
         parameters: &[Value],
     ) -> Result<Vec<i64>, KeywordError> {
-        let valid_columns = get_schema_columns(&self.conn)?;
+        let valid_columns = schema::get_schema_columns(&self.conn)?;
         filter::validate_condition(condition, &valid_columns)?;
 
         let query = format!(
@@ -165,7 +160,7 @@ impl KeywordIndex {
 
         let params: Vec<Box<dyn ToSql>> = parameters
             .iter()
-            .map(json_to_sql_value)
+            .map(schema::json_to_sql_value)
             .collect::<Result<_, _>>()?;
         let param_refs: Vec<&dyn ToSql> = params.iter().map(|value| value.as_ref()).collect();
         let mut statement = self.conn.prepare(&query)?;
@@ -238,7 +233,7 @@ fn install_regexp_function(conn: &Connection) -> Result<(), KeywordError> {
 
 fn ensure_tables(
     conn: &Connection,
-    schema: &MetadataSchema,
+    schema: &schema::MetadataSchema,
     tokenizer: &FtsTokenizer,
 ) -> Result<(), KeywordError> {
     conn.execute_batch(&format!(
@@ -265,7 +260,7 @@ fn ensure_tables(
         );
         "#,
         tokenizer = tokenizer.fts5_tokenize_value(),
-        metadata_columns = build_metadata_columns_sql(schema),
+        metadata_columns = schema::build_metadata_columns_sql(schema),
     ))?;
 
     conn.execute(
@@ -279,30 +274,17 @@ fn ensure_tables(
     Ok(())
 }
 
-fn build_metadata_columns_sql(schema: &MetadataSchema) -> String {
-    let mut columns = vec![format!("\"{}\" INTEGER PRIMARY KEY", SUBSET_COLUMN)];
-    for column_name in &schema.columns {
-        let sql_type = schema
-            .column_types
-            .get(column_name)
-            .copied()
-            .unwrap_or("TEXT");
-        columns.push(format!("\"{}\" {}", column_name, sql_type));
-    }
-    columns.join(", ")
-}
-
 fn insert_metadata(
     conn: &mut Connection,
     metadata: &[Option<Value>],
-    schema: &MetadataSchema,
+    schema: &schema::MetadataSchema,
 ) -> Result<(), KeywordError> {
     let transaction = conn.transaction()?;
     let mut fts_statement = transaction.prepare(&format!(
         "INSERT INTO \"{}\"(rowid, \"{}\") VALUES (?1, ?2)",
         FTS_TABLE, FTS_CONTENT_COLUMN
     ))?;
-    let mut metadata_statement = transaction.prepare(&build_insert_metadata_sql(schema))?;
+    let mut metadata_statement = transaction.prepare(&schema::build_insert_metadata_sql(schema))?;
 
     for (document_id, value) in metadata.iter().enumerate() {
         let document_id =
@@ -316,7 +298,7 @@ fn insert_metadata(
         let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(document_id)];
         let metadata_object = value.as_ref().and_then(Value::as_object);
         for column_name in &schema.columns {
-            values.push(json_to_sql(
+            values.push(schema::json_to_sql(
                 metadata_object.and_then(|object| object.get(column_name)),
             )?);
         }
@@ -331,23 +313,6 @@ fn insert_metadata(
     Ok(())
 }
 
-fn build_insert_metadata_sql(schema: &MetadataSchema) -> String {
-    let column_names: Vec<String> = std::iter::once(format!("\"{}\"", SUBSET_COLUMN))
-        .chain(
-            schema
-                .columns
-                .iter()
-                .map(|column_name| format!("\"{}\"", column_name)),
-        )
-        .collect();
-    let placeholders: Vec<&str> = std::iter::repeat_n("?", schema.columns.len() + 1).collect();
-    format!(
-        "INSERT INTO \"{}\"({}) VALUES ({})",
-        METADATA_TABLE,
-        column_names.join(", "),
-        placeholders.join(", ")
-    )
-}
 
 fn search_one(
     conn: &Connection,
@@ -426,94 +391,6 @@ fn search_one(
     })
 }
 
-fn collect_metadata_schema(metadata: &[Option<Value>]) -> Result<MetadataSchema, KeywordError> {
-    let mut columns = Vec::new();
-    let mut column_types = HashMap::new();
-    let mut seen_columns = HashSet::new();
-
-    for item in metadata {
-        let Some(object) = item.as_ref().and_then(Value::as_object) else {
-            continue;
-        };
-
-        for (column_name, value) in object {
-            if !is_valid_column_name(column_name) {
-                return Err(KeywordError::InvalidMetadataColumn {
-                    column: column_name.clone(),
-                    reason: "must start with a letter or underscore and only contain letters, digits, or underscores",
-                });
-            }
-
-            if seen_columns.insert(column_name.clone()) {
-                columns.push(column_name.clone());
-            }
-
-            if !column_types.contains_key(column_name) && !value.is_null() {
-                column_types.insert(column_name.clone(), infer_sql_type(value));
-            }
-        }
-    }
-
-    Ok(MetadataSchema {
-        columns,
-        column_types,
-    })
-}
-
-fn is_valid_column_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-
-    if !(first == '_' || first.is_ascii_alphabetic()) {
-        return false;
-    }
-
-    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-}
-
-fn infer_sql_type(value: &Value) -> &'static str {
-    match value {
-        Value::Number(number) => {
-            if number.is_i64() || number.is_u64() {
-                "INTEGER"
-            } else {
-                "REAL"
-            }
-        }
-        Value::Bool(_) => "INTEGER",
-        Value::String(_) | Value::Null => "TEXT",
-        Value::Array(_) | Value::Object(_) => "BLOB",
-    }
-}
-
-fn json_to_sql(value: Option<&Value>) -> Result<Box<dyn ToSql>, KeywordError> {
-    match value {
-        Some(value) => json_to_sql_value(value),
-        None => Ok(Box::new(None::<String>)),
-    }
-}
-
-fn json_to_sql_value(value: &Value) -> Result<Box<dyn ToSql>, KeywordError> {
-    Ok(match value {
-        Value::Null => Box::new(None::<String>),
-        Value::Bool(value) => Box::new(if *value { 1i64 } else { 0i64 }),
-        Value::Number(number) => {
-            if let Some(value) = number.as_i64() {
-                Box::new(value)
-            } else if let Some(value) = number.as_u64() {
-                Box::new(value as i64)
-            } else if let Some(value) = number.as_f64() {
-                Box::new(value)
-            } else {
-                Box::new(number.to_string())
-            }
-        }
-        Value::String(value) => Box::new(value.clone()),
-        Value::Array(_) | Value::Object(_) => Box::new(serde_json::to_string(value)?),
-    })
-}
 
 fn make_temp_table_name(prefix: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -569,16 +446,6 @@ fn drop_temp_table(conn: &Connection, table_name: &str) {
     let _ = conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", table_name), []);
 }
 
-fn get_schema_columns(conn: &Connection) -> Result<HashSet<String>, KeywordError> {
-    let mut statement = conn.prepare(&format!("PRAGMA table_info(\"{}\")", METADATA_TABLE))?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
-
-    let mut columns = HashSet::new();
-    for row in rows {
-        columns.insert(row?);
-    }
-    Ok(columns)
-}
 
 
 #[cfg(test)]
