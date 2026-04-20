@@ -1,4 +1,6 @@
-use next_plaid_browser_contract::{BundleInstalledResponse, BundleManifest, MetadataMode};
+use next_plaid_browser_contract::{
+    ArtifactKind, BundleInstalledResponse, BundleManifest, CompressionKind, MetadataMode,
+};
 use next_plaid_browser_loader::{ArtifactBytesMap, BundleLoaderError, LoadedSearchArtifacts};
 use serde_json::Value;
 use thiserror::Error;
@@ -31,6 +33,13 @@ pub enum BrowserStorageError {
     MissingActiveBundle(String),
     #[error("unsupported metadata mode for browser storage slice: {0:?}")]
     UnsupportedMetadataMode(MetadataMode),
+    #[error(
+        "unsupported artifact compression for browser storage slice: {kind} uses {compression:?}"
+    )]
+    UnsupportedArtifactCompression {
+        kind: ArtifactKind,
+        compression: CompressionKind,
+    },
     #[error("stored metadata JSON does not match the expected document list shape")]
     InvalidMetadataShape,
     #[error("stored metadata document count mismatch: expected {expected}, found {actual}")]
@@ -61,6 +70,29 @@ pub async fn load_active_bundle(
     index_id: &str,
 ) -> Result<StoredBrowserBundle, BrowserStorageError> {
     load_active_bundle_impl(index_id).await
+}
+
+#[cfg(any(test, target_arch = "wasm32"))]
+fn validate_storage_manifest_support(manifest: &BundleManifest) -> Result<(), BrowserStorageError> {
+    match manifest.metadata_mode {
+        MetadataMode::None | MetadataMode::InlineJson => {}
+        MetadataMode::SqliteSidecar => {
+            return Err(BrowserStorageError::UnsupportedMetadataMode(
+                MetadataMode::SqliteSidecar,
+            ))
+        }
+    }
+
+    for artifact in &manifest.artifacts {
+        if artifact.compression != CompressionKind::None {
+            return Err(BrowserStorageError::UnsupportedArtifactCompression {
+                kind: artifact.kind,
+                compression: artifact.compression,
+            });
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -129,6 +161,8 @@ mod wasm {
         artifact_bytes: ArtifactBytesMap,
         activate: bool,
     ) -> Result<BundleInstalledResponse, BrowserStorageError> {
+        manifest.validate().map_err(BundleLoaderError::from)?;
+        validate_storage_manifest_support(manifest)?;
         verify_artifact_bytes(manifest, &artifact_bytes)?;
 
         let bundle_dir = ensure_bundle_directory(&manifest.index_id, &manifest.build_id).await?;
@@ -181,6 +215,7 @@ mod wasm {
         let manifest_bytes = read_bytes_file(&bundle_dir, MANIFEST_FILE_NAME).await?;
         let manifest: BundleManifest = serde_json::from_slice(&manifest_bytes)?;
         manifest.validate().map_err(BundleLoaderError::from)?;
+        validate_storage_manifest_support(&manifest)?;
 
         let mut artifact_bytes = ArtifactBytesMap::new();
         for artifact in &manifest.artifacts {
@@ -519,6 +554,133 @@ mod wasm {
             })
             .unwrap_or_else(|| format!("{value:?}"));
         BrowserStorageError::Js(message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use next_plaid_browser_contract::{ArtifactEntry, ArtifactKind, CompressionKind};
+
+    fn sha() -> String {
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
+    }
+
+    fn base_manifest() -> BundleManifest {
+        BundleManifest {
+            format_version: 1,
+            index_id: "demo-index".into(),
+            build_id: "build-001".into(),
+            embedding_dim: 4,
+            nbits: 2,
+            document_count: 2,
+            metadata_mode: MetadataMode::InlineJson,
+            artifacts: vec![
+                ArtifactEntry {
+                    kind: ArtifactKind::Centroids,
+                    path: "artifacts/centroids.bin".into(),
+                    byte_size: 4,
+                    sha256: sha(),
+                    compression: CompressionKind::None,
+                },
+                ArtifactEntry {
+                    kind: ArtifactKind::Ivf,
+                    path: "artifacts/ivf.bin".into(),
+                    byte_size: 4,
+                    sha256: sha(),
+                    compression: CompressionKind::None,
+                },
+                ArtifactEntry {
+                    kind: ArtifactKind::IvfLengths,
+                    path: "artifacts/ivf_lengths.bin".into(),
+                    byte_size: 4,
+                    sha256: sha(),
+                    compression: CompressionKind::None,
+                },
+                ArtifactEntry {
+                    kind: ArtifactKind::DocLengths,
+                    path: "artifacts/doc_lengths.json".into(),
+                    byte_size: 4,
+                    sha256: sha(),
+                    compression: CompressionKind::None,
+                },
+                ArtifactEntry {
+                    kind: ArtifactKind::MergedCodes,
+                    path: "artifacts/merged_codes.bin".into(),
+                    byte_size: 4,
+                    sha256: sha(),
+                    compression: CompressionKind::None,
+                },
+                ArtifactEntry {
+                    kind: ArtifactKind::MergedResiduals,
+                    path: "artifacts/merged_residuals.bin".into(),
+                    byte_size: 4,
+                    sha256: sha(),
+                    compression: CompressionKind::None,
+                },
+                ArtifactEntry {
+                    kind: ArtifactKind::BucketWeights,
+                    path: "artifacts/bucket_weights.bin".into(),
+                    byte_size: 4,
+                    sha256: sha(),
+                    compression: CompressionKind::None,
+                },
+                ArtifactEntry {
+                    kind: ArtifactKind::MetadataJson,
+                    path: "artifacts/metadata.json".into(),
+                    byte_size: 4,
+                    sha256: sha(),
+                    compression: CompressionKind::None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn accepts_inline_json_uncompressed_manifest_for_storage() {
+        validate_storage_manifest_support(&base_manifest()).unwrap();
+    }
+
+    #[test]
+    fn rejects_sqlite_sidecar_manifest_for_storage() {
+        let mut manifest = base_manifest();
+        manifest.metadata_mode = MetadataMode::SqliteSidecar;
+        manifest
+            .artifacts
+            .retain(|artifact| artifact.kind != ArtifactKind::MetadataJson);
+        manifest.artifacts.push(ArtifactEntry {
+            kind: ArtifactKind::MetadataSqlite,
+            path: "artifacts/metadata.sqlite".into(),
+            byte_size: 4,
+            sha256: sha(),
+            compression: CompressionKind::None,
+        });
+
+        let err = validate_storage_manifest_support(&manifest).unwrap_err();
+        assert!(matches!(
+            err,
+            BrowserStorageError::UnsupportedMetadataMode(MetadataMode::SqliteSidecar)
+        ));
+    }
+
+    #[test]
+    fn rejects_compressed_artifacts_for_storage() {
+        let mut manifest = base_manifest();
+        manifest
+            .artifacts
+            .iter_mut()
+            .find(|artifact| artifact.kind == ArtifactKind::MergedCodes)
+            .unwrap()
+            .compression = CompressionKind::Zstd;
+
+        let err = validate_storage_manifest_support(&manifest).unwrap_err();
+        assert!(matches!(
+            err,
+            BrowserStorageError::UnsupportedArtifactCompression {
+                kind: ArtifactKind::MergedCodes,
+                compression: CompressionKind::Zstd,
+            }
+        ));
     }
 }
 

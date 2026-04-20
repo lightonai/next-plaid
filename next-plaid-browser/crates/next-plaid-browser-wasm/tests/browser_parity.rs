@@ -2,10 +2,11 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use next_plaid_browser_contract::{
-    ArtifactKind, BundleArtifactBytesPayload, BundleManifest, InstallBundleRequest,
-    LoadStoredBundleRequest, MatrixPayload, QueryEmbeddingsPayload, QueryResultResponse,
-    RuntimeRequest, RuntimeResponse, SearchIndexPayload, SearchParamsRequest, SearchRequest,
-    SearchResponse, StorageRequest, StorageResponse, WorkerLoadIndexRequest, WorkerSearchRequest,
+    ArtifactEntry, ArtifactKind, BundleArtifactBytesPayload, BundleManifest, CompressionKind,
+    InstallBundleRequest, LoadStoredBundleRequest, MatrixPayload, MetadataMode,
+    QueryEmbeddingsPayload, QueryResultResponse, RuntimeRequest, RuntimeResponse,
+    SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse, StorageRequest,
+    StorageResponse, WorkerLoadIndexRequest, WorkerSearchRequest,
 };
 use next_plaid_browser_kernel::{search_one, BrowserIndexView, MatrixView, SearchParameters};
 use next_plaid_browser_wasm::{
@@ -260,6 +261,15 @@ async fn storage_response(request: StorageRequest) -> StorageResponse {
     serde_json::from_str(&response_json).unwrap()
 }
 
+async fn storage_error_message(request: StorageRequest) -> String {
+    let request_json = serde_json::to_string(&request).unwrap();
+    let error = handle_storage_request_json(request_json)
+        .await
+        .expect_err("storage request should fail");
+    let value: wasm_bindgen::JsValue = error.into();
+    value.as_string().unwrap_or_else(|| format!("{value:?}"))
+}
+
 fn storage_manifest(index_id: &str, build_id: &str) -> BundleManifest {
     let mut manifest: BundleManifest =
         serde_json::from_str(include_str!("../../../fixtures/demo-bundle/manifest.json")).unwrap();
@@ -315,6 +325,58 @@ fn storage_artifacts() -> Vec<BundleArtifactBytesPayload> {
 fn storage_install_request(index_id: &str, build_id: &str) -> StorageRequest {
     StorageRequest::InstallBundle(InstallBundleRequest {
         manifest: storage_manifest(index_id, build_id),
+        artifacts: storage_artifacts(),
+        activate: true,
+    })
+}
+
+fn sqlite_sidecar_storage_install_request(index_id: &str, build_id: &str) -> StorageRequest {
+    let mut manifest = storage_manifest(index_id, build_id);
+    let metadata_json_entry = manifest
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == ArtifactKind::MetadataJson)
+        .cloned()
+        .unwrap();
+    manifest.metadata_mode = MetadataMode::SqliteSidecar;
+    manifest
+        .artifacts
+        .retain(|artifact| artifact.kind != ArtifactKind::MetadataJson);
+    manifest.artifacts.push(ArtifactEntry {
+        kind: ArtifactKind::MetadataSqlite,
+        path: "artifacts/metadata.sqlite".into(),
+        byte_size: metadata_json_entry.byte_size,
+        sha256: metadata_json_entry.sha256,
+        compression: CompressionKind::None,
+    });
+
+    let mut artifacts = storage_artifacts();
+    artifacts.retain(|artifact| artifact.kind != ArtifactKind::MetadataJson);
+    artifacts.push(BundleArtifactBytesPayload {
+        kind: ArtifactKind::MetadataSqlite,
+        bytes_b64: STANDARD.encode(include_bytes!(
+            "../../../fixtures/demo-bundle/artifacts/metadata.json"
+        )),
+    });
+
+    StorageRequest::InstallBundle(InstallBundleRequest {
+        manifest,
+        artifacts,
+        activate: true,
+    })
+}
+
+fn compressed_storage_install_request(index_id: &str, build_id: &str) -> StorageRequest {
+    let mut manifest = storage_manifest(index_id, build_id);
+    manifest
+        .artifacts
+        .iter_mut()
+        .find(|artifact| artifact.kind == ArtifactKind::MergedCodes)
+        .unwrap()
+        .compression = CompressionKind::Zstd;
+
+    StorageRequest::InstallBundle(InstallBundleRequest {
+        manifest,
         artifacts: storage_artifacts(),
         activate: true,
     })
@@ -491,6 +553,32 @@ async fn browser_storage_install_and_reload_roundtrip() {
     filtered.request.filter_parameters = Some(vec![serde_json::json!("beta")]);
     let filtered_response = runtime_result(&filtered);
     assert_eq!(filtered_response.results[0].document_ids, vec![1]);
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_rejects_sqlite_sidecar_install() {
+    reset_runtime_state();
+
+    let error = storage_error_message(sqlite_sidecar_storage_install_request(
+        "stored-demo-sqlite-sidecar",
+        "build-storage-sqlite-sidecar-001",
+    ))
+    .await;
+
+    assert!(error.contains("unsupported metadata mode"));
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_rejects_compressed_artifact_install() {
+    reset_runtime_state();
+
+    let error = storage_error_message(compressed_storage_install_request(
+        "stored-demo-compressed",
+        "build-storage-compressed-001",
+    ))
+    .await;
+
+    assert!(error.contains("unsupported artifact compression"));
 }
 
 #[wasm_bindgen_test]

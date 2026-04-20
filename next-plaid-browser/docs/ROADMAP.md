@@ -196,11 +196,14 @@ Status:
   - browser-run install/reload coverage in `wasm-bindgen-test`
   - Playwright smoke coverage for install, reload, and stored-bundle search
 - remaining work is the operational hardening around that first path:
+  - reject unsupported bundle shapes before installation
   - resume / partial download behavior
   - rollback bundle retention and cleanup
   - eviction recovery cleanup behavior
   - optional IndexedDB artifact fallback
   - `FileSystemSyncAccessHandle` optimization for the worker hot path
+- detailed review findings and remediation slices now live in
+  `docs/REMEDIATION_AUDIT.md`
 
 ## Phase 6: Metadata and filter story
 

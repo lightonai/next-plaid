@@ -82,6 +82,14 @@ Installation rules:
 5. Switch the active bundle pointer only after full verification succeeds.
 6. Keep at most one rollback bundle unless later measurements justify more.
 
+Current support boundary for the first storage-backed slice:
+
+- installable browser bundles must use uncompressed artifacts
+- installable browser bundles may use `metadata_mode = none` or
+  `metadata_mode = inline_json`
+- `metadata_mode = sqlite_sidecar` remains future work and should be rejected at
+  install time rather than accepted and discovered later on reload
+
 The browser should assume bundle files can disappear because storage is
 best-effort unless persistence is granted. Startup must verify that the active
 bundle still exists before trusting the metadata pointer.
