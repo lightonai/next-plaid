@@ -1,23 +1,8 @@
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::mem::size_of;
-
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use keyword_runtime::KeywordIndex;
 use next_plaid_browser_contract::{
-    BundleInstalledResponse, FusionRequest, FusionResponse, HealthResponse, IndexSummary,
-    InlineSearchParamsRequest, InlineSearchRequest, InlineSearchResponse, InstallBundleRequest,
-    LoadStoredBundleRequest, MatrixPayload, MemoryUsageBreakdown, QueryEmbeddingsPayload,
-    QueryResultResponse, RankedResultsPayload, RuntimeRequest, RuntimeResponse, ScoreResponse,
-    SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse, StorageRequest,
-    StorageResponse, StoredBundleLoadedResponse, ValidateBundleResponse, WorkerLoadIndexRequest,
-    WorkerLoadIndexResponse, WorkerSearchRequest,
+    RuntimeRequest, RuntimeResponse, ScoreResponse, StorageRequest, StorageResponse,
+    ValidateBundleResponse,
 };
-use next_plaid_browser_kernel::{
-    fuse_relative_score, fuse_rrf, score_documents, search_one, search_one_compressed,
-    BrowserIndexView, CompressedBrowserIndexView, MatrixView, SearchParameters, KERNEL_VERSION,
-};
-use next_plaid_browser_storage::{install_bundle_from_bytes, load_active_bundle};
+use next_plaid_browser_kernel::{score_documents, MatrixView};
 use thiserror::Error;
 use wasm_bindgen::prelude::*;
 
@@ -179,9 +164,13 @@ async fn handle_storage_request_json_impl(request_json: String) -> Result<String
 mod tests {
     use super::*;
     use next_plaid_browser_contract::{
-        ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, FusionRequest, MetadataMode,
-        RankedResultsPayload, RuntimeRequest,
+        ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, FusionRequest,
+        HealthResponse, InlineSearchParamsRequest, InlineSearchRequest, MatrixPayload,
+        MemoryUsageBreakdown, MetadataMode, QueryEmbeddingsPayload, RankedResultsPayload,
+        RuntimeRequest, SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse,
+        WorkerLoadIndexRequest, WorkerSearchRequest,
     };
+    use next_plaid_browser_kernel::KERNEL_VERSION;
 
     fn sha() -> String {
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
