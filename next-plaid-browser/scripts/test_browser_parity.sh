@@ -4,22 +4,15 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 workspace_root="$(cd "$script_dir/.." && pwd)"
+source "$workspace_root/scripts/wasm_env.sh"
 
-export PATH="$HOME/.cargo/bin:$PATH"
-
-LLVM_CLANG="/opt/homebrew/opt/llvm/bin/clang"
-if [[ -x "$LLVM_CLANG" ]]; then
-  export CC_wasm32_unknown_unknown="$LLVM_CLANG"
-fi
+resolve_wasm_toolchain
+require_tool "${WASM_PACK:-}" "wasm-pack" "Install it with: cargo install wasm-pack --locked"
+ensure_wasm_target
 
 browser="${1:-chrome}"
 headless="${BROWSER_HEADLESS:-1}"
 shift || true
-
-if ! command -v wasm-pack >/dev/null 2>&1; then
-  echo "wasm-pack is required. Install it with: cargo install wasm-pack --locked" >&2
-  exit 1
-fi
 
 cd "$workspace_root"
 
@@ -44,7 +37,7 @@ esac
 args+=("crates/next-plaid-browser-wasm")
 
 if [[ "$#" -gt 0 ]]; then
-  exec wasm-pack test "${args[@]}" -- "$@"
+  exec "$WASM_PACK" test "${args[@]}" -- "$@"
 fi
 
-exec wasm-pack test "${args[@]}"
+exec "$WASM_PACK" test "${args[@]}"

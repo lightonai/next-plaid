@@ -20,9 +20,8 @@ tests. The main caveats are:
 1. the browser-safe feature set differs from the native crate's current
    `onig`-based configuration
 2. local tooling required forcing rustup onto `PATH`
-3. `wasm-opt` was unavailable locally, so the measured size is a release build
-   without the extra Binaryen optimization step
-4. the gzipped artifact landed slightly above the initial 800 KB target
+3. the unoptimized release artifact landed slightly above the initial 800 KB
+   target, so Binaryen optimization remains part of the production build story
 
 That makes this a **soft-pass**, not a clean pass.
 
@@ -88,6 +87,12 @@ wc -c < "$WASM"
 gzip -c "$WASM" | wc -c
 ```
 
+Follow-up proof script after installing Binaryen and `wasm-bindgen`:
+
+```bash
+/Users/pooks/Dev/lighton-benchmark/next-plaid/next-plaid-browser/scripts/prove_tokenizer_wasm.sh
+```
+
 ## Results
 
 ### Functional result
@@ -112,11 +117,15 @@ Release Wasm artifact:
 - raw bytes: `2,414,001`
 - gzipped bytes: `807,033`
 
+`wasm-opt -Oz` follow-up result:
+
+- raw bytes: `1,999,938`
+- gzipped bytes: `738,691`
+
 Interpretation:
 
 - this is slightly above the initial `<= 800 KB gzipped` target
-- it is close enough to treat as a soft-pass, especially because no
-  Binaryen/`wasm-opt` step was available locally
+- with Binaryen installed, the optimized artifact clears the target
 
 ## Tooling findings
 
@@ -129,18 +138,14 @@ Working invocation:
 
 - `env PATH="$HOME/.cargo/bin:$PATH" ...`
 
-### 2. `wasm-opt` was not installed locally
+### 2. `wasm-opt` is now installed and worth keeping in the release path
 
-`wasm-pack` attempted to run `wasm-opt` and failed because the binary was not
-present.
+The first spike ran without Binaryen. A follow-up validation after installing
+`wasm-opt` showed a meaningful size drop, from `807,033` gzipped to `738,691`
+gzipped.
 
-For this spike, the crate was configured with:
-
-- `[package.metadata.wasm-pack.profile.release]`
-- `wasm-opt = false`
-
-That allowed the release build to complete and gave a valid size number for the
-unoptimized-by-Binaryen artifact.
+That means the production browser build should keep an explicit optimization
+step rather than relying on the larger raw release artifact.
 
 ### 3. The browser-safe tokenizer feature set is real
 
@@ -164,10 +169,9 @@ Proceed to:
 
 1. keep the browser tokenizer line browser-safe; do not assume the current
    native `onig` feature configuration carries over unchanged
-2. treat `807,033` gzipped as a soft-pass against the `800 KB` target
-3. if size sensitivity becomes acute, rerun the measurement with Binaryen
-   available before making the final packaging call
-4. keep the build-integrity harness in scope after extraction so the browser
+2. keep `wasm-opt` in the toolchain and use the optimized artifact size for
+   packaging decisions
+3. keep the build-integrity harness in scope after extraction so the browser
    Wasm wrapper is continuously checked against the native Rust source
 
 ## Bottom line
