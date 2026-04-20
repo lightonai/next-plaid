@@ -1,6 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::bundle::{ArtifactKind, BundleManifest};
+use crate::bundle::{ArtifactKind, BundleManifest, EncoderIdentity};
+
+/// Exact runtime JSON schema version understood by the browser runtime.
+pub const RUNTIME_SCHEMA_VERSION: u32 = 1;
 
 fn default_nbits() -> usize {
     4
@@ -65,9 +68,85 @@ pub struct MatrixPayload {
     pub dim: usize,
 }
 
+/// Public runtime/storage error codes exposed on the browser wire contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    /// Request shape or invariants were invalid.
+    InvalidRequest,
+    /// Named runtime index was not loaded.
+    IndexNotLoaded,
+    /// Query embeddings do not match the loaded index encoder.
+    EncoderMismatch,
+    /// Query embeddings have an invalid shape for the request or index.
+    EmbeddingShapeMismatch,
+    /// Query or result vectors contained NaN or Infinity.
+    InvalidNumericValues,
+    /// Bundle manifest validation failed.
+    BundleManifestInvalid,
+    /// Bundle load or reopen failed.
+    BundleLoadFailed,
+    /// Browser storage operation failed.
+    StorageFailed,
+    /// Keyword runtime operation failed.
+    KeywordRuntimeFailed,
+    /// Kernel execution failed.
+    KernelFailed,
+    /// Internal runtime failure.
+    Internal,
+}
+
+/// Typed error payload returned by runtime requests.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeErrorResponse {
+    /// Stable machine-readable error code.
+    pub code: ErrorCode,
+    /// Human-readable message for logs and diagnostics.
+    pub message: String,
+    /// Optional structured context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<serde_json::Value>,
+}
+
+/// Typed error payload returned by storage requests.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StorageErrorResponse {
+    /// Stable machine-readable error code.
+    pub code: ErrorCode,
+    /// Human-readable message for logs and diagnostics.
+    pub message: String,
+    /// Optional structured context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<serde_json::Value>,
+}
+
+/// Binary dtype for query embeddings sent across the browser wire contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingDtype {
+    /// Little-endian 32-bit floats.
+    F32Le,
+}
+
+/// Logical layout of a query embedding payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingLayout {
+    /// Payload contains only the real token rows.
+    Ragged,
+    /// Payload is padded out to the configured query length.
+    PaddedQueryLength,
+}
+
 /// Query embeddings encoded either inline or as base64 bytes plus shape metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryEmbeddingsPayload {
+    /// Encoder identity expected by the search runtime.
+    pub encoder: EncoderIdentity,
+    /// Binary dtype for the payload values.
+    pub dtype: EmbeddingDtype,
+    /// Logical sequence layout represented by the payload.
+    pub layout: EmbeddingLayout,
     /// Inline nested embeddings, when the sender does not use the binary form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embeddings: Option<Vec<Vec<f32>>>,
@@ -123,6 +202,31 @@ pub struct SearchResponse {
     pub results: Vec<QueryResultResponse>,
     /// Number of queries represented in `results`.
     pub num_queries: usize,
+    /// Optional request-level timing breakdown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<SearchTimingBreakdown>,
+}
+
+/// Request-level timing emitted by successful runtime searches.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchTimingBreakdown {
+    /// Total request time in microseconds.
+    pub total_us: u64,
+    /// Time spent decoding query payloads, when semantic search ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_decode_us: Option<u64>,
+    /// Time spent resolving subsets or metadata filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subset_us: Option<u64>,
+    /// Time spent in semantic search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_us: Option<u64>,
+    /// Time spent in keyword search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyword_us: Option<u64>,
+    /// Time spent fusing semantic and keyword results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fusion_us: Option<u64>,
 }
 
 /// Unified semantic, keyword, and hybrid search request.
@@ -178,6 +282,8 @@ pub struct WorkerLoadIndexRequest {
     pub name: String,
     /// Dense index payload to load.
     pub index: SearchIndexPayload,
+    /// Encoder identity expected by semantic queries for this index.
+    pub encoder: EncoderIdentity,
     /// Optional metadata rows aligned with the document ids.
     #[serde(default)]
     pub metadata: Option<Vec<Option<serde_json::Value>>>,
@@ -289,6 +395,8 @@ pub struct HealthResponse {
     pub status: String,
     /// Runtime version string.
     pub version: String,
+    /// Exact JSON schema version for this runtime.
+    pub schema_version: u32,
     /// Number of loaded indices.
     pub loaded_indices: usize,
     /// Logical location of the active runtime index store.
@@ -510,6 +618,8 @@ pub enum StorageRequest {
 pub enum RuntimeResponse {
     /// Runtime health response.
     Health(HealthResponse),
+    /// Typed runtime failure for a well-formed request.
+    Error(RuntimeErrorResponse),
     /// Bundle validation response.
     BundleValidated(ValidateBundleResponse),
     /// Direct score response.
@@ -528,6 +638,8 @@ pub enum RuntimeResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StorageResponse {
+    /// Typed storage failure for a well-formed request.
+    Error(StorageErrorResponse),
     /// Bundle-installed response.
     BundleInstalled(BundleInstalledResponse),
     /// Stored-bundle-loaded response.
@@ -543,22 +655,33 @@ mod tests {
     use super::*;
     use crate::bundle::{
         ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, MetadataMode,
+        SUPPORTED_BUNDLE_FORMAT_VERSION,
     };
 
     fn sha() -> String {
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
     }
 
+    fn encoder() -> EncoderIdentity {
+        EncoderIdentity {
+            encoder_id: "demo-encoder".into(),
+            encoder_build: "demo-build".into(),
+            embedding_dim: 64,
+            normalized: true,
+        }
+    }
+
     #[test]
     fn runtime_request_roundtrips() {
         let request = RuntimeRequest::ValidateBundle {
             manifest: BundleManifest {
-                format_version: 1,
+                format_version: SUPPORTED_BUNDLE_FORMAT_VERSION,
                 index_id: "demo".into(),
                 build_id: "build".into(),
                 embedding_dim: 64,
                 nbits: 2,
                 document_count: 2,
+                encoder: encoder(),
                 metadata_mode: MetadataMode::None,
                 artifacts: vec![
                     ArtifactEntry {
@@ -625,6 +748,12 @@ mod tests {
             name: "demo".into(),
             request: SearchRequest {
                 queries: Some(vec![QueryEmbeddingsPayload {
+                    encoder: EncoderIdentity {
+                        embedding_dim: 2,
+                        ..encoder()
+                    },
+                    dtype: EmbeddingDtype::F32Le,
+                    layout: EmbeddingLayout::Ragged,
                     embeddings: Some(vec![vec![1.0, 0.0], vec![0.7, 0.7]]),
                     embeddings_b64: None,
                     shape: None,
@@ -678,12 +807,13 @@ mod tests {
     fn storage_request_roundtrips() {
         let request = StorageRequest::InstallBundle(InstallBundleRequest {
             manifest: BundleManifest {
-                format_version: 1,
+                format_version: SUPPORTED_BUNDLE_FORMAT_VERSION,
                 index_id: "demo".into(),
                 build_id: "build".into(),
                 embedding_dim: 64,
                 nbits: 2,
                 document_count: 2,
+                encoder: encoder(),
                 metadata_mode: MetadataMode::InlineJson,
                 artifacts: vec![
                     ArtifactEntry {
@@ -754,6 +884,79 @@ mod tests {
         let json = serde_json::to_string(&request).unwrap();
         let decoded: StorageRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn runtime_error_response_roundtrips() {
+        let response = RuntimeResponse::Error(RuntimeErrorResponse {
+            code: ErrorCode::EncoderMismatch,
+            message: "encoder mismatch".into(),
+            context: Some(serde_json::json!({
+                "expected": encoder(),
+                "actual": {
+                    "encoder_id": "other",
+                    "encoder_build": "other-build",
+                    "embedding_dim": 64,
+                    "normalized": true
+                }
+            })),
+        });
+
+        let json = serde_json::to_string(&response).unwrap();
+        let decoded: RuntimeResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn storage_error_response_roundtrips() {
+        let response = StorageResponse::Error(StorageErrorResponse {
+            code: ErrorCode::StorageFailed,
+            message: "storage failed".into(),
+            context: None,
+        });
+
+        let json = serde_json::to_string(&response).unwrap();
+        let decoded: StorageResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn embedding_metadata_roundtrips() {
+        let payload = QueryEmbeddingsPayload {
+            encoder: EncoderIdentity {
+                embedding_dim: 2,
+                ..encoder()
+            },
+            dtype: EmbeddingDtype::F32Le,
+            layout: EmbeddingLayout::PaddedQueryLength,
+            embeddings: None,
+            embeddings_b64: Some("AACAPwAAAAA=".into()),
+            shape: Some([1, 2]),
+        };
+
+        let json = serde_json::to_string(&payload).unwrap();
+        let decoded: QueryEmbeddingsPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn search_response_timing_roundtrips() {
+        let response = SearchResponse {
+            results: vec![],
+            num_queries: 0,
+            timing: Some(SearchTimingBreakdown {
+                total_us: 120,
+                query_decode_us: Some(10),
+                subset_us: None,
+                semantic_us: Some(90),
+                keyword_us: None,
+                fusion_us: Some(20),
+            }),
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        let decoded: SearchResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, response);
     }
 
     #[test]

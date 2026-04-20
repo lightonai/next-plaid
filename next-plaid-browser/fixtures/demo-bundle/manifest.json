@@ -1,10 +1,16 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "index_id": "demo-bundle",
   "build_id": "build-demo-001",
   "embedding_dim": 4,
   "nbits": 2,
   "document_count": 2,
+  "encoder": {
+    "encoder_id": "demo-encoder",
+    "encoder_build": "demo-build",
+    "embedding_dim": 4,
+    "normalized": true
+  },
   "metadata_mode": "inline_json",
   "artifacts": [
     {

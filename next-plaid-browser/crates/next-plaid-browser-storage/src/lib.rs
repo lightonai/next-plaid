@@ -691,7 +691,10 @@ mod wasm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use next_plaid_browser_contract::{ArtifactEntry, ArtifactKind, CompressionKind};
+    use next_plaid_browser_contract::{
+        ArtifactEntry, ArtifactKind, CompressionKind, EncoderIdentity,
+        SUPPORTED_BUNDLE_FORMAT_VERSION,
+    };
 
     fn sha() -> String {
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
@@ -699,12 +702,18 @@ mod tests {
 
     fn base_manifest() -> BundleManifest {
         BundleManifest {
-            format_version: 1,
+            format_version: SUPPORTED_BUNDLE_FORMAT_VERSION,
             index_id: "demo-index".into(),
             build_id: "build-001".into(),
             embedding_dim: 4,
             nbits: 2,
             document_count: 2,
+            encoder: EncoderIdentity {
+                encoder_id: "demo-encoder".into(),
+                encoder_build: "demo-build".into(),
+                embedding_dim: 4,
+                normalized: true,
+            },
             metadata_mode: MetadataMode::InlineJson,
             artifacts: vec![
                 ArtifactEntry {

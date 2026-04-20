@@ -1,5 +1,17 @@
 const statusNode = document.getElementById("status");
 const WORKER_REQUEST_TIMEOUT_MS = 15_000;
+const DENSE_ENCODER = {
+  encoder_id: "demo-smoke-dense",
+  encoder_build: "demo-smoke-dense-build-1",
+  embedding_dim: 2,
+  normalized: true
+};
+const STORED_ENCODER = {
+  encoder_id: "demo-encoder",
+  encoder_build: "demo-build",
+  embedding_dim: 4,
+  normalized: true
+};
 
 function setStatus(state, value) {
   statusNode.dataset.state = state;
@@ -7,10 +19,20 @@ function setStatus(state, value) {
     typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
+function embeddingPayload(encoder, embeddings, layout = "ragged") {
+  return {
+    embeddings,
+    encoder,
+    dtype: "f32_le",
+    layout
+  };
+}
+
 function loadIndexRequest() {
   return {
     type: "load_index",
     name: "demo-smoke",
+    encoder: DENSE_ENCODER,
     index: {
       centroids: {
         values: [
@@ -87,12 +109,10 @@ function semanticSearchRequest() {
     name: "demo-smoke",
     request: {
       queries: [
-        {
-          embeddings: [
-            [1.0, 0.0],
-            [0.7, 0.7]
-          ]
-        }
+        embeddingPayload(DENSE_ENCODER, [
+          [1.0, 0.0],
+          [0.7, 0.7]
+        ])
       ],
       params: {
         top_k: 2,
@@ -138,12 +158,10 @@ function hybridSearchRequest() {
     name: "demo-smoke",
     request: {
       queries: [
-        {
-          embeddings: [
-            [0.0, 1.0],
-            [0.7, 0.7]
-          ]
-        }
+        embeddingPayload(DENSE_ENCODER, [
+          [0.0, 1.0],
+          [0.7, 0.7]
+        ])
       ],
       params: {
         top_k: 2,
@@ -167,12 +185,10 @@ function filteredSemanticSearchRequest() {
     name: "demo-smoke",
     request: {
       queries: [
-        {
-          embeddings: [
-            [1.0, 0.0],
-            [0.7, 0.7]
-          ]
-        }
+        embeddingPayload(DENSE_ENCODER, [
+          [1.0, 0.0],
+          [0.7, 0.7]
+        ])
       ],
       params: {
         top_k: 2,
@@ -240,11 +256,9 @@ function storedSemanticSearchRequest() {
     name: "stored-demo",
     request: {
       queries: [
-        {
-          embeddings: [
-            [1.0, 0.0, 0.0, 0.0]
-          ]
-        }
+        embeddingPayload(STORED_ENCODER, [
+          [1.0, 0.0, 0.0, 0.0]
+        ])
       ],
       params: {
         top_k: 2,
@@ -268,11 +282,9 @@ function storedHybridSearchRequest() {
     name: "stored-demo",
     request: {
       queries: [
-        {
-          embeddings: [
-            [0.0, 1.0, 0.0, 0.0]
-          ]
-        }
+        embeddingPayload(STORED_ENCODER, [
+          [0.0, 1.0, 0.0, 0.0]
+        ])
       ],
       params: {
         top_k: 2,

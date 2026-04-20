@@ -1,8 +1,8 @@
 //! Wasm entrypoints for the browser-native NextPlaid runtime.
 
 use next_plaid_browser_contract::{
-    RuntimeRequest, RuntimeResponse, ScoreResponse, StorageRequest, StorageResponse,
-    ValidateBundleResponse,
+    EncoderIdentity, ErrorCode, RuntimeErrorResponse, RuntimeRequest, RuntimeResponse,
+    ScoreResponse, StorageErrorResponse, StorageRequest, StorageResponse, ValidateBundleResponse,
 };
 use next_plaid_browser_kernel::{score_documents, MatrixView};
 use thiserror::Error;
@@ -44,6 +44,12 @@ pub(crate) enum WasmError {
     #[error("index '{0}' is not loaded")]
     IndexNotLoaded(String),
 
+    #[error("encoder mismatch: expected {expected:?}, got {actual:?}")]
+    EncoderMismatch {
+        expected: EncoderIdentity,
+        actual: EncoderIdentity,
+    },
+
     #[error("query dimension {query_dim} does not match index dimension {index_dim}")]
     QueryDimensionMismatch { query_dim: usize, index_dim: usize },
 
@@ -83,6 +89,12 @@ pub(crate) enum WasmError {
         expected: usize,
         actual: usize,
     },
+
+    #[error("query encoder.embedding_dim {declared} does not match payload dimension {actual}")]
+    DeclaredQueryDimensionMismatch { declared: usize, actual: usize },
+
+    #[error("non-finite numeric values in {what}")]
+    InvalidNumericValues { what: &'static str },
 }
 
 #[wasm_bindgen]
@@ -95,6 +107,7 @@ pub fn maxsim_scores(
     doc_values: Vec<f32>,
     doc_token_lengths: Vec<usize>,
 ) -> Result<Vec<f32>, JsError> {
+    init_wasm_once();
     let query = MatrixView::new(&query_values, query_rows, dim)?;
     Ok(score_documents(query, &doc_values, &doc_token_lengths)?)
 }
@@ -109,13 +122,18 @@ pub fn reset_runtime_state() {
 /// Handles one JSON-encoded runtime request and returns a JSON response.
 #[must_use = "request parsing and runtime errors are only visible if the result is checked"]
 pub fn handle_runtime_request_json(request_json: &str) -> Result<String, JsError> {
-    Ok(handle_runtime_request_json_impl(request_json)?)
+    init_wasm_once();
+    let request: RuntimeRequest =
+        serde_json::from_str(request_json).map_err(|error| JsError::new(&error.to_string()))?;
+    let response = match handle_runtime_request(request) {
+        Ok(response) => response,
+        Err(error) => RuntimeResponse::Error(runtime_error_response(&error)),
+    };
+    serde_json::to_string(&response).map_err(|error| JsError::new(&error.to_string()))
 }
 
-fn handle_runtime_request_json_impl(request_json: &str) -> Result<String, WasmError> {
-    let request: RuntimeRequest = serde_json::from_str(request_json)?;
-
-    let response = match request {
+fn handle_runtime_request(request: RuntimeRequest) -> Result<RuntimeResponse, WasmError> {
+    Ok(match request {
         RuntimeRequest::Health => RuntimeResponse::Health(runtime::runtime_health()),
         RuntimeRequest::ValidateBundle { manifest } => {
             manifest.validate()?;
@@ -129,6 +147,7 @@ fn handle_runtime_request_json_impl(request_json: &str) -> Result<String, WasmEr
             let query =
                 MatrixView::new(&request.query.values, request.query.rows, request.query.dim)?;
             let scores = score_documents(query, &request.doc_values, &request.doc_token_lengths)?;
+            validation::validate_finite_f32_slice(&scores, "score response scores")?;
             RuntimeResponse::Scores(ScoreResponse { scores })
         }
         RuntimeRequest::LoadIndex(request) => {
@@ -143,42 +162,139 @@ fn handle_runtime_request_json_impl(request_json: &str) -> Result<String, WasmEr
         RuntimeRequest::Fuse(request) => {
             RuntimeResponse::FusedResults(runtime::fuse_results(request)?)
         }
-    };
-
-    Ok(serde_json::to_string(&response)?)
+    })
 }
 
 #[wasm_bindgen]
 /// Handles one JSON-encoded storage request and returns a JSON response.
 #[must_use = "request parsing and storage errors are only visible if the result is checked"]
 pub async fn handle_storage_request_json(request_json: String) -> Result<String, JsError> {
-    Ok(handle_storage_request_json_impl(request_json).await?)
+    init_wasm_once();
+    let request: StorageRequest =
+        serde_json::from_str(&request_json).map_err(|error| JsError::new(&error.to_string()))?;
+    let response = match handle_storage_request(request).await {
+        Ok(response) => response,
+        Err(error) => StorageResponse::Error(storage_error_response(&error)),
+    };
+    serde_json::to_string(&response).map_err(|error| JsError::new(&error.to_string()))
 }
 
-async fn handle_storage_request_json_impl(request_json: String) -> Result<String, WasmError> {
-    let request: StorageRequest = serde_json::from_str(&request_json)?;
-
-    let response = match request {
+async fn handle_storage_request(request: StorageRequest) -> Result<StorageResponse, WasmError> {
+    Ok(match request {
         StorageRequest::InstallBundle(request) => {
             StorageResponse::BundleInstalled(storage::install_browser_bundle(request).await?)
         }
         StorageRequest::LoadStoredBundle(request) => {
             StorageResponse::StoredBundleLoaded(storage::load_stored_browser_bundle(request).await?)
         }
-    };
+    })
+}
 
-    Ok(serde_json::to_string(&response)?)
+fn init_wasm_once() {
+    console_error_panic_hook::set_once();
+}
+
+fn runtime_error_response(error: &WasmError) -> RuntimeErrorResponse {
+    RuntimeErrorResponse {
+        code: error_code(error),
+        message: error.to_string(),
+        context: error_context(error),
+    }
+}
+
+fn storage_error_response(error: &WasmError) -> StorageErrorResponse {
+    StorageErrorResponse {
+        code: error_code(error),
+        message: error.to_string(),
+        context: error_context(error),
+    }
+}
+
+fn error_code(error: &WasmError) -> ErrorCode {
+    match error {
+        WasmError::InvalidRequest(_) | WasmError::MetadataLengthMismatch { .. } => {
+            ErrorCode::InvalidRequest
+        }
+        WasmError::IndexNotLoaded(_) => ErrorCode::IndexNotLoaded,
+        WasmError::EncoderMismatch { .. } => ErrorCode::EncoderMismatch,
+        WasmError::QueryDimensionMismatch { .. }
+        | WasmError::QueryShapeOverflow
+        | WasmError::QueryShapeMismatch { .. }
+        | WasmError::EmptyQueryEmbeddings
+        | WasmError::ZeroDimensionQueryEmbeddings
+        | WasmError::InconsistentQueryDimension { .. }
+        | WasmError::DeclaredQueryDimensionMismatch { .. } => ErrorCode::EmbeddingShapeMismatch,
+        WasmError::InvalidNumericValues { .. } => ErrorCode::InvalidNumericValues,
+        WasmError::BundleManifest(_) => ErrorCode::BundleManifestInvalid,
+        WasmError::BundleLoader(_) => ErrorCode::BundleLoadFailed,
+        WasmError::BrowserStorage(_) => ErrorCode::StorageFailed,
+        WasmError::Keyword(_) => ErrorCode::KeywordRuntimeFailed,
+        WasmError::Kernel(_) => ErrorCode::KernelFailed,
+        WasmError::Base64(_)
+        | WasmError::Json(_)
+        | WasmError::ByteCountOverflow
+        | WasmError::EmptyDocOffsets => ErrorCode::Internal,
+    }
+}
+
+fn error_context(error: &WasmError) -> Option<serde_json::Value> {
+    match error {
+        WasmError::IndexNotLoaded(name) => Some(serde_json::json!({ "name": name })),
+        WasmError::EncoderMismatch { expected, actual } => {
+            Some(serde_json::json!({ "expected": expected, "actual": actual }))
+        }
+        WasmError::QueryDimensionMismatch {
+            query_dim,
+            index_dim,
+        } => Some(serde_json::json!({
+            "query_dim": query_dim,
+            "index_dim": index_dim,
+        })),
+        WasmError::MetadataLengthMismatch {
+            metadata_len,
+            document_count,
+        } => Some(serde_json::json!({
+            "metadata_len": metadata_len,
+            "document_count": document_count,
+        })),
+        WasmError::QueryShapeMismatch {
+            expected,
+            shape,
+            actual,
+        } => Some(serde_json::json!({
+            "expected": expected,
+            "shape": shape,
+            "actual": actual,
+        })),
+        WasmError::InconsistentQueryDimension {
+            row,
+            expected,
+            actual,
+        } => Some(serde_json::json!({
+            "row": row,
+            "expected": expected,
+            "actual": actual,
+        })),
+        WasmError::DeclaredQueryDimensionMismatch { declared, actual } => Some(serde_json::json!({
+            "declared": declared,
+            "actual": actual,
+        })),
+        WasmError::InvalidNumericValues { what } => Some(serde_json::json!({ "what": what })),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use next_plaid_browser_contract::{
-        ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, FtsTokenizer, FusionMode,
-        FusionRequest, HealthResponse, InlineSearchParamsRequest, InlineSearchRequest,
-        MatrixPayload, MemoryUsageBreakdown, MetadataMode, QueryEmbeddingsPayload,
-        RankedResultsPayload, RuntimeRequest, SearchIndexPayload, SearchParamsRequest,
+        ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, EmbeddingDtype,
+        EmbeddingLayout, EncoderIdentity, ErrorCode, FtsTokenizer, FusionMode, FusionRequest,
+        HealthResponse, InlineSearchParamsRequest, InlineSearchRequest, MatrixPayload,
+        MemoryUsageBreakdown, MetadataMode, QueryEmbeddingsPayload, RankedResultsPayload,
+        RuntimeErrorResponse, RuntimeRequest, SearchIndexPayload, SearchParamsRequest,
         SearchRequest, SearchResponse, WorkerLoadIndexRequest, WorkerSearchRequest,
+        RUNTIME_SCHEMA_VERSION, SUPPORTED_BUNDLE_FORMAT_VERSION,
     };
     use next_plaid_browser_kernel::KERNEL_VERSION;
 
@@ -186,14 +302,24 @@ mod tests {
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
     }
 
+    fn encoder(dim: usize) -> EncoderIdentity {
+        EncoderIdentity {
+            encoder_id: "demo-encoder".into(),
+            encoder_build: "demo-build".into(),
+            embedding_dim: dim,
+            normalized: true,
+        }
+    }
+
     fn manifest() -> BundleManifest {
         BundleManifest {
-            format_version: 1,
+            format_version: SUPPORTED_BUNDLE_FORMAT_VERSION,
             index_id: "demo-index".into(),
             build_id: "build-001".into(),
             embedding_dim: 2,
             nbits: 2,
             document_count: 2,
+            encoder: encoder(2),
             metadata_mode: MetadataMode::None,
             artifacts: vec![
                 ArtifactEntry {
@@ -276,6 +402,7 @@ mod tests {
         WorkerLoadIndexRequest {
             name: name.into(),
             index: demo_index(),
+            encoder: encoder(2),
             metadata: Some(vec![
                 Some(serde_json::json!({"title": "doc-0"})),
                 Some(serde_json::json!({"title": "doc-1"})),
@@ -291,6 +418,7 @@ mod tests {
         WorkerLoadIndexRequest {
             name: name.into(),
             index: demo_index(),
+            encoder: encoder(2),
             metadata: Some(vec![
                 Some(serde_json::json!({"title": "alpha launch memo", "topic": "edge"})),
                 Some(serde_json::json!({"title": "beta report summary", "topic": "metrics"})),
@@ -311,6 +439,9 @@ mod tests {
             name: name.into(),
             request: SearchRequest {
                 queries: Some(vec![QueryEmbeddingsPayload {
+                    encoder: encoder(2),
+                    dtype: EmbeddingDtype::F32Le,
+                    layout: EmbeddingLayout::Ragged,
                     embeddings: Some(vec![vec![1.0, 0.0], vec![0.7, 0.7]]),
                     embeddings_b64: None,
                     shape: None,
@@ -354,6 +485,16 @@ mod tests {
         }
     }
 
+    fn runtime_error_response(request: RuntimeRequest) -> RuntimeErrorResponse {
+        let response =
+            handle_runtime_request_json(&serde_json::to_string(&request).unwrap()).unwrap();
+        let decoded: RuntimeResponse = serde_json::from_str(&response).unwrap();
+        match decoded {
+            RuntimeResponse::Error(result) => result,
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+
     fn keyword_search_request(name: &str, text_queries: &[&str]) -> WorkerSearchRequest {
         WorkerSearchRequest {
             name: name.into(),
@@ -385,6 +526,9 @@ mod tests {
             name: name.into(),
             request: SearchRequest {
                 queries: Some(vec![QueryEmbeddingsPayload {
+                    encoder: encoder(2),
+                    dtype: EmbeddingDtype::F32Le,
+                    layout: EmbeddingLayout::Ragged,
                     embeddings: Some(vec![vec![0.0, 1.0], vec![0.7, 0.7]]),
                     embeddings_b64: None,
                     shape: None,
@@ -429,6 +573,7 @@ mod tests {
         let health = runtime_health_response();
         assert_eq!(health.status, "healthy");
         assert_eq!(health.version, KERNEL_VERSION);
+        assert_eq!(health.schema_version, RUNTIME_SCHEMA_VERSION);
         assert_eq!(health.loaded_indices, 0);
         assert_eq!(health.memory_usage_bytes, 0);
         assert_eq!(
@@ -550,6 +695,7 @@ mod tests {
                 assert_eq!(result.num_queries, 1);
                 assert_eq!(result.results[0].query_id, 0);
                 assert_eq!(result.results[0].document_ids[0], 0);
+                assert!(result.timing.is_some());
                 assert_eq!(
                     result.results[0].metadata[0],
                     Some(serde_json::json!({"title": "doc-0"}))
@@ -672,6 +818,116 @@ mod tests {
 
         let response = runtime_search_response(filtered_keyword_request("demo-filtered-keyword"));
         assert_eq!(response.results[0].document_ids, vec![0, 2]);
+    }
+
+    #[test]
+    fn validate_bundle_returns_typed_error_for_wrong_format_version() {
+        let mut invalid_manifest = manifest();
+        invalid_manifest.format_version = 1;
+
+        let error = runtime_error_response(RuntimeRequest::ValidateBundle {
+            manifest: invalid_manifest,
+        });
+        assert_eq!(error.code, ErrorCode::BundleManifestInvalid);
+        assert!(error.message.contains("unsupported format_version"));
+    }
+
+    #[test]
+    fn search_returns_typed_error_for_missing_loaded_index() {
+        reset_runtime_state();
+
+        let error = runtime_error_response(RuntimeRequest::Search(worker_search_request(
+            "missing", 2, None,
+        )));
+        assert_eq!(error.code, ErrorCode::IndexNotLoaded);
+        assert_eq!(
+            error.context,
+            Some(serde_json::json!({ "name": "missing" }))
+        );
+    }
+
+    #[test]
+    fn search_returns_typed_error_for_encoder_mismatch() {
+        reset_runtime_state();
+        handle_runtime_request_json(
+            &serde_json::to_string(&RuntimeRequest::LoadIndex(load_index_request(
+                "demo-mismatch",
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut request = worker_search_request("demo-mismatch", 2, None);
+        request.request.queries.as_mut().unwrap()[0]
+            .encoder
+            .encoder_build = "other-build".into();
+
+        let error = runtime_error_response(RuntimeRequest::Search(request));
+        assert_eq!(error.code, ErrorCode::EncoderMismatch);
+        assert!(error.message.contains("encoder mismatch"));
+    }
+
+    #[test]
+    fn search_returns_typed_error_for_non_finite_query_embeddings() {
+        reset_runtime_state();
+        handle_runtime_request_json(
+            &serde_json::to_string(&RuntimeRequest::LoadIndex(load_index_request("demo-nan")))
+                .unwrap(),
+        )
+        .unwrap();
+
+        let mut request = worker_search_request("demo-nan", 2, None);
+        request.request.queries.as_mut().unwrap()[0].embeddings = None;
+        request.request.queries.as_mut().unwrap()[0].embeddings_b64 =
+            Some("AADAfwAAAAAzMzM/MzMzPw==".into());
+        request.request.queries.as_mut().unwrap()[0].shape = Some([2, 2]);
+
+        let error = runtime_error_response(RuntimeRequest::Search(request));
+        assert_eq!(error.code, ErrorCode::InvalidNumericValues);
+        assert_eq!(
+            error.context,
+            Some(serde_json::json!({ "what": "query embeddings" }))
+        );
+    }
+
+    #[test]
+    fn search_returns_typed_error_for_invalid_binary_query_shape() {
+        reset_runtime_state();
+        handle_runtime_request_json(
+            &serde_json::to_string(&RuntimeRequest::LoadIndex(load_index_request("demo-shape")))
+                .unwrap(),
+        )
+        .unwrap();
+
+        let request = RuntimeRequest::Search(WorkerSearchRequest {
+            name: "demo-shape".into(),
+            request: SearchRequest {
+                queries: Some(vec![QueryEmbeddingsPayload {
+                    encoder: encoder(2),
+                    dtype: EmbeddingDtype::F32Le,
+                    layout: EmbeddingLayout::Ragged,
+                    embeddings: None,
+                    embeddings_b64: Some("AQ==".into()),
+                    shape: Some([1, 2]),
+                }]),
+                params: SearchParamsRequest {
+                    top_k: Some(2),
+                    n_ivf_probe: Some(2),
+                    n_full_scores: Some(3),
+                    centroid_score_threshold: None,
+                },
+                subset: None,
+                text_query: None,
+                alpha: None,
+                fusion: None,
+                filter_condition: None,
+                filter_parameters: None,
+            },
+        });
+
+        let error = runtime_error_response(request);
+        assert_eq!(error.code, ErrorCode::EmbeddingShapeMismatch);
+        assert!(error.message.contains("expected 8 bytes"));
     }
 
     #[test]

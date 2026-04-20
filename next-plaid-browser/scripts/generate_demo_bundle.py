@@ -85,12 +85,18 @@ def main() -> None:
         (ARTIFACTS_DIR / name).write_bytes(data)
 
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "index_id": "demo-bundle",
         "build_id": "build-demo-001",
         "embedding_dim": embedding_dim,
         "nbits": nbits,
         "document_count": len(doc_lengths),
+        "encoder": {
+            "encoder_id": "demo-encoder",
+            "encoder_build": "demo-build",
+            "embedding_dim": embedding_dim,
+            "normalized": True,
+        },
         "metadata_mode": "inline_json",
         "artifacts": [
             {

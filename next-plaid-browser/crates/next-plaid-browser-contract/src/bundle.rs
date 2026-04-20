@@ -4,6 +4,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Exact bundle format version understood by the browser runtime.
+pub const SUPPORTED_BUNDLE_FORMAT_VERSION: u32 = 2;
+
 /// Artifact kinds that make up a browser-deliverable search bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +55,19 @@ impl fmt::Display for ArtifactKind {
     }
 }
 
+/// Encoder identity attached to bundles, loaded indices, and query payloads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct EncoderIdentity {
+    /// Stable logical encoder id.
+    pub encoder_id: String,
+    /// Concrete encoder build identifier.
+    pub encoder_build: String,
+    /// Embedding dimension produced by the encoder.
+    pub embedding_dim: usize,
+    /// Whether vectors are normalized before search.
+    pub normalized: bool,
+}
+
 /// Compression applied to an artifact entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -96,7 +112,7 @@ pub struct ArtifactEntry {
 /// Top-level manifest for a browser-search bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleManifest {
-    /// Schema version for the bundle format.
+    /// Exact schema version for the bundle format.
     pub format_version: u32,
     /// Stable logical id for the indexed corpus.
     pub index_id: String,
@@ -108,6 +124,9 @@ pub struct BundleManifest {
     pub nbits: usize,
     /// Number of indexed documents represented by the bundle.
     pub document_count: usize,
+    /// Encoder identity expected by this bundle.
+    #[serde(default)]
+    pub encoder: EncoderIdentity,
     /// Metadata representation carried by the bundle.
     pub metadata_mode: MetadataMode,
     /// Artifact entries required to load the bundle.
@@ -117,9 +136,14 @@ pub struct BundleManifest {
 /// Validation failures for a [`BundleManifest`].
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum BundleManifestError {
-    /// The manifest declared an invalid format version.
-    #[error("format_version must be greater than zero")]
-    InvalidFormatVersion,
+    /// The manifest declared an unsupported format version.
+    #[error("unsupported format_version: expected {expected}, found {actual}")]
+    UnsupportedFormatVersion {
+        /// Exact format version supported by this browser runtime.
+        expected: u32,
+        /// Format version found in the manifest.
+        actual: u32,
+    },
     /// The manifest omitted the logical index id.
     #[error("index_id must not be empty")]
     MissingIndexId,
@@ -135,6 +159,25 @@ pub enum BundleManifestError {
     /// The manifest declared zero documents.
     #[error("document_count must be greater than zero")]
     InvalidDocumentCount,
+    /// The manifest omitted the encoder id.
+    #[error("encoder.encoder_id must not be empty")]
+    MissingEncoderId,
+    /// The manifest omitted the encoder build id.
+    #[error("encoder.encoder_build must not be empty")]
+    MissingEncoderBuild,
+    /// The manifest declared a zero encoder embedding dimension.
+    #[error("encoder.embedding_dim must be greater than zero")]
+    InvalidEncoderEmbeddingDimension,
+    /// The manifest encoder embedding dimension disagrees with the bundle dimension.
+    #[error(
+        "encoder.embedding_dim must match embedding_dim: expected {manifest_dim}, found {encoder_dim}"
+    )]
+    EncoderEmbeddingDimensionMismatch {
+        /// Embedding dimension recorded on the bundle manifest.
+        manifest_dim: usize,
+        /// Embedding dimension recorded on the encoder identity.
+        encoder_dim: usize,
+    },
     /// The manifest did not list any artifacts.
     #[error("artifact list must not be empty")]
     MissingArtifacts,
@@ -162,8 +205,11 @@ impl BundleManifest {
     /// Validates manifest shape and required artifact coverage.
     #[must_use = "validation errors are only visible if the result is checked"]
     pub fn validate(&self) -> Result<(), BundleManifestError> {
-        if self.format_version == 0 {
-            return Err(BundleManifestError::InvalidFormatVersion);
+        if self.format_version != SUPPORTED_BUNDLE_FORMAT_VERSION {
+            return Err(BundleManifestError::UnsupportedFormatVersion {
+                expected: SUPPORTED_BUNDLE_FORMAT_VERSION,
+                actual: self.format_version,
+            });
         }
         if self.index_id.trim().is_empty() {
             return Err(BundleManifestError::MissingIndexId);
@@ -179,6 +225,21 @@ impl BundleManifest {
         }
         if self.document_count == 0 {
             return Err(BundleManifestError::InvalidDocumentCount);
+        }
+        if self.encoder.encoder_id.trim().is_empty() {
+            return Err(BundleManifestError::MissingEncoderId);
+        }
+        if self.encoder.encoder_build.trim().is_empty() {
+            return Err(BundleManifestError::MissingEncoderBuild);
+        }
+        if self.encoder.embedding_dim == 0 {
+            return Err(BundleManifestError::InvalidEncoderEmbeddingDimension);
+        }
+        if self.encoder.embedding_dim != self.embedding_dim {
+            return Err(BundleManifestError::EncoderEmbeddingDimensionMismatch {
+                manifest_dim: self.embedding_dim,
+                encoder_dim: self.encoder.embedding_dim,
+            });
         }
         if self.artifacts.is_empty() {
             return Err(BundleManifestError::MissingArtifacts);
@@ -253,12 +314,18 @@ mod tests {
 
     fn base_manifest() -> BundleManifest {
         BundleManifest {
-            format_version: 1,
+            format_version: SUPPORTED_BUNDLE_FORMAT_VERSION,
             index_id: "demo-index".into(),
             build_id: "build-001".into(),
             embedding_dim: 64,
             nbits: 2,
             document_count: 10,
+            encoder: EncoderIdentity {
+                encoder_id: "demo-encoder".into(),
+                encoder_build: "demo-build".into(),
+                embedding_dim: 64,
+                normalized: true,
+            },
             metadata_mode: MetadataMode::InlineJson,
             artifacts: vec![
                 ArtifactEntry {
@@ -327,12 +394,53 @@ mod tests {
     }
 
     #[test]
+    fn rejects_wrong_format_version() {
+        let mut manifest = base_manifest();
+        manifest.format_version = 1;
+        assert_eq!(
+            manifest.validate().unwrap_err(),
+            BundleManifestError::UnsupportedFormatVersion {
+                expected: SUPPORTED_BUNDLE_FORMAT_VERSION,
+                actual: 1,
+            }
+        );
+    }
+
+    #[test]
     fn rejects_invalid_nbits() {
         let mut manifest = base_manifest();
         manifest.nbits = 3;
         assert_eq!(
             manifest.validate().unwrap_err(),
             BundleManifestError::InvalidNbits
+        );
+    }
+
+    #[test]
+    fn rejects_missing_encoder_identity() {
+        let mut manifest_json = serde_json::to_value(base_manifest()).unwrap();
+        manifest_json
+            .as_object_mut()
+            .unwrap()
+            .remove("encoder")
+            .unwrap();
+        let manifest: BundleManifest = serde_json::from_value(manifest_json).unwrap();
+        assert_eq!(
+            manifest.validate().unwrap_err(),
+            BundleManifestError::MissingEncoderId
+        );
+    }
+
+    #[test]
+    fn rejects_encoder_dimension_mismatch() {
+        let mut manifest = base_manifest();
+        manifest.encoder.embedding_dim = 32;
+        assert_eq!(
+            manifest.validate().unwrap_err(),
+            BundleManifestError::EncoderEmbeddingDimensionMismatch {
+                manifest_dim: 64,
+                encoder_dim: 32,
+            }
         );
     }
 

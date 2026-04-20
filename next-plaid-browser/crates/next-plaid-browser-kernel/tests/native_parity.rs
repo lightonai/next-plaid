@@ -8,7 +8,8 @@ use ndarray::Array2;
 use next_plaid::maxsim as native_maxsim;
 use next_plaid::{IndexConfig, MmapIndex};
 use next_plaid_browser_contract::{
-    ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, MetadataMode,
+    ArtifactEntry, ArtifactKind, BundleManifest, CompressionKind, EncoderIdentity, MetadataMode,
+    SUPPORTED_BUNDLE_FORMAT_VERSION,
 };
 use next_plaid_browser_loader::{load_bundle_from_dir, LoadedSearchArtifacts};
 use sha2::{Digest, Sha256};
@@ -262,12 +263,18 @@ fn write_browser_bundle_from_native_index(index: &MmapIndex, root: &Path) {
     }
 
     let manifest = BundleManifest {
-        format_version: 1,
+        format_version: SUPPORTED_BUNDLE_FORMAT_VERSION,
         index_id: "native-generated-demo".into(),
         build_id: "build-native-generated-001".into(),
         embedding_dim: index.embedding_dim(),
         nbits: index.codec.nbits,
         document_count: index.num_documents(),
+        encoder: EncoderIdentity {
+            encoder_id: "native-test-encoder".into(),
+            encoder_build: "native-test-build".into(),
+            embedding_dim: index.embedding_dim(),
+            normalized: true,
+        },
         metadata_mode: MetadataMode::InlineJson,
         artifacts: vec![
             artifact_entry(

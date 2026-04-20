@@ -4,6 +4,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use next_plaid_browser_contract::{MatrixPayload, QueryEmbeddingsPayload, SearchIndexPayload};
 use next_plaid_browser_kernel::{BrowserIndexView, CompressedBrowserIndexView, MatrixView};
 
+use crate::validation;
 use crate::WasmError;
 
 pub(crate) fn browser_index_view(
@@ -51,8 +52,11 @@ pub(crate) fn query_payload_to_matrix_payload(
     query: &QueryEmbeddingsPayload,
 ) -> Result<MatrixPayload, WasmError> {
     if let (Some(embeddings_b64), Some(shape)) = (&query.embeddings_b64, query.shape) {
+        let values = decode_b64_embeddings(embeddings_b64, shape)?;
+        validate_declared_query_dimension(query, shape[1])?;
+        validation::validate_finite_f32_slice(&values, "query embeddings")?;
         return Ok(MatrixPayload {
-            values: decode_b64_embeddings(embeddings_b64, shape)?,
+            values,
             rows: shape[0],
             dim: shape[1],
         });
@@ -83,12 +87,28 @@ pub(crate) fn query_payload_to_matrix_payload(
         }
     }
 
-    let values = embeddings.iter().flatten().copied().collect();
+    let values = embeddings.iter().flatten().copied().collect::<Vec<_>>();
+    validate_declared_query_dimension(query, dim)?;
+    validation::validate_finite_f32_slice(&values, "query embeddings")?;
     Ok(MatrixPayload {
         values,
         rows: embeddings.len(),
         dim,
     })
+}
+
+fn validate_declared_query_dimension(
+    query: &QueryEmbeddingsPayload,
+    actual_dim: usize,
+) -> Result<(), WasmError> {
+    if query.encoder.embedding_dim != actual_dim {
+        return Err(WasmError::DeclaredQueryDimensionMismatch {
+            declared: query.encoder.embedding_dim,
+            actual: actual_dim,
+        });
+    }
+
+    Ok(())
 }
 
 fn decode_b64_embeddings(b64: &str, shape: [usize; 2]) -> Result<Vec<f32>, WasmError> {

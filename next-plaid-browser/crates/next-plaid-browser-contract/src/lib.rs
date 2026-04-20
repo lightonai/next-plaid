@@ -6,15 +6,18 @@ pub mod bundle;
 pub mod protocol;
 
 pub use bundle::{
-    ArtifactEntry, ArtifactKind, BundleManifest, BundleManifestError, CompressionKind, MetadataMode,
+    ArtifactEntry, ArtifactKind, BundleManifest, BundleManifestError, CompressionKind,
+    EncoderIdentity, MetadataMode, SUPPORTED_BUNDLE_FORMAT_VERSION,
 };
 pub use protocol::{
-    BundleArtifactBytesPayload, BundleInstalledResponse, FtsTokenizer, FusionMode, FusionRequest,
-    FusionResponse, HealthResponse, IndexSummary, InlineSearchParamsRequest, InlineSearchRequest,
-    InlineSearchResponse, InstallBundleRequest, LoadStoredBundleRequest, MatrixPayload,
-    MemoryUsageBreakdown, ModelHealthInfo, QueryEmbeddingsPayload, QueryResultResponse,
-    RankedResultsPayload, RuntimeRequest, RuntimeResponse, ScoreRequest, ScoreResponse,
-    SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse, StorageRequest,
-    StorageResponse, StoredBundleLoadedResponse, ValidateBundleResponse, WorkerLoadIndexRequest,
-    WorkerLoadIndexResponse, WorkerSearchRequest,
+    BundleArtifactBytesPayload, BundleInstalledResponse, EmbeddingDtype, EmbeddingLayout,
+    ErrorCode, FtsTokenizer, FusionMode, FusionRequest, FusionResponse, HealthResponse,
+    IndexSummary, InlineSearchParamsRequest, InlineSearchRequest, InlineSearchResponse,
+    InstallBundleRequest, LoadStoredBundleRequest, MatrixPayload, MemoryUsageBreakdown,
+    ModelHealthInfo, QueryEmbeddingsPayload, QueryResultResponse, RankedResultsPayload,
+    RuntimeErrorResponse, RuntimeRequest, RuntimeResponse, ScoreRequest, ScoreResponse,
+    SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse, SearchTimingBreakdown,
+    StorageErrorResponse, StorageRequest, StorageResponse, StoredBundleLoadedResponse,
+    ValidateBundleResponse, WorkerLoadIndexRequest, WorkerLoadIndexResponse, WorkerSearchRequest,
+    RUNTIME_SCHEMA_VERSION,
 };

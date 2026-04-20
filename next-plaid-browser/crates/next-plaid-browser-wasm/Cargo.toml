@@ -10,6 +10,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 base64 = { workspace = true }
+console_error_panic_hook = "0.1"
+js-sys = "0.3.82"
 next-plaid-browser-contract = { path = "../next-plaid-browser-contract" }
 next-plaid-browser-kernel = { path = "../next-plaid-browser-kernel" }
 next-plaid-browser-loader = { path = "../next-plaid-browser-loader" }
@@ -23,7 +25,6 @@ wasm-bindgen-futures = { workspace = true }
 
 [dev-dependencies]
 indexed_db_futures = { version = "0.6.4", features = ["serde"] }
-js-sys = "0.3.82"
 wasm-bindgen-test = { workspace = true }
 
 [lints]

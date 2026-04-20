@@ -9,10 +9,12 @@ use indexed_db_futures::prelude::*;
 use js_sys::{Function, Object, Promise, Reflect};
 use next_plaid_browser_contract::{
     ArtifactEntry, ArtifactKind, BundleArtifactBytesPayload, BundleManifest, CompressionKind,
-    FtsTokenizer, FusionMode, HealthResponse, InstallBundleRequest, LoadStoredBundleRequest,
-    MatrixPayload, MetadataMode, QueryEmbeddingsPayload, QueryResultResponse, RuntimeRequest,
-    RuntimeResponse, SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse,
+    EmbeddingDtype, EmbeddingLayout, EncoderIdentity, ErrorCode, FtsTokenizer, FusionMode,
+    HealthResponse, InstallBundleRequest, LoadStoredBundleRequest, MatrixPayload, MetadataMode,
+    QueryEmbeddingsPayload, QueryResultResponse, RuntimeRequest, RuntimeResponse,
+    SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse, StorageErrorResponse,
     StorageRequest, StorageResponse, WorkerLoadIndexRequest, WorkerSearchRequest,
+    RUNTIME_SCHEMA_VERSION, SUPPORTED_BUNDLE_FORMAT_VERSION,
 };
 use next_plaid_browser_kernel::{search_one, BrowserIndexView, MatrixView, SearchParameters};
 use next_plaid_browser_wasm::{
@@ -54,10 +56,20 @@ fn demo_index() -> SearchIndexPayload {
     }
 }
 
+fn encoder(dim: usize) -> EncoderIdentity {
+    EncoderIdentity {
+        encoder_id: "demo-encoder".into(),
+        encoder_build: "demo-build".into(),
+        embedding_dim: dim,
+        normalized: true,
+    }
+}
+
 fn load_request(name: &str) -> WorkerLoadIndexRequest {
     WorkerLoadIndexRequest {
         name: name.into(),
         index: demo_index(),
+        encoder: encoder(2),
         metadata: Some(vec![
             Some(serde_json::json!({"title": "alpha launch memo", "topic": "edge"})),
             Some(serde_json::json!({"title": "beta report summary", "topic": "metrics"})),
@@ -81,6 +93,9 @@ fn worker_search_request(
                 query_embeddings
                     .into_iter()
                     .map(|embeddings| QueryEmbeddingsPayload {
+                        encoder: encoder(2),
+                        dtype: EmbeddingDtype::F32Le,
+                        layout: EmbeddingLayout::Ragged,
                         embeddings: Some(embeddings),
                         embeddings_b64: None,
                         shape: None,
@@ -134,6 +149,9 @@ fn hybrid_search_request(name: &str) -> WorkerSearchRequest {
         name: name.into(),
         request: SearchRequest {
             queries: Some(vec![QueryEmbeddingsPayload {
+                encoder: encoder(2),
+                dtype: EmbeddingDtype::F32Le,
+                layout: EmbeddingLayout::Ragged,
                 embeddings: Some(vec![vec![0.0, 1.0], vec![0.7, 0.7]]),
                 embeddings_b64: None,
                 shape: None,
@@ -176,6 +194,9 @@ fn stored_semantic_search_request(name: &str) -> WorkerSearchRequest {
         name: name.into(),
         request: SearchRequest {
             queries: Some(vec![QueryEmbeddingsPayload {
+                encoder: encoder(4),
+                dtype: EmbeddingDtype::F32Le,
+                layout: EmbeddingLayout::Ragged,
                 embeddings: Some(vec![vec![1.0, 0.0, 0.0, 0.0]]),
                 embeddings_b64: None,
                 shape: None,
@@ -214,6 +235,9 @@ fn stored_hybrid_search_request(name: &str) -> WorkerSearchRequest {
         name: name.into(),
         request: SearchRequest {
             queries: Some(vec![QueryEmbeddingsPayload {
+                encoder: encoder(4),
+                dtype: EmbeddingDtype::F32Le,
+                layout: EmbeddingLayout::Ragged,
                 embeddings: Some(vec![vec![0.0, 1.0, 0.0, 0.0]]),
                 embeddings_b64: None,
                 shape: None,
@@ -306,6 +330,7 @@ fn direct_kernel_result(request: &WorkerSearchRequest) -> SearchResponse {
     SearchResponse {
         num_queries: request.request.queries.as_ref().unwrap().len(),
         results,
+        timing: None,
     }
 }
 
@@ -315,6 +340,18 @@ fn runtime_result(request: &WorkerSearchRequest) -> SearchResponse {
     let response: RuntimeResponse = serde_json::from_str(&response_json).unwrap();
     match response {
         RuntimeResponse::SearchResults(result) => result,
+        other => panic!("unexpected response: {other:?}"),
+    }
+}
+
+fn runtime_error_response(
+    request: RuntimeRequest,
+) -> next_plaid_browser_contract::RuntimeErrorResponse {
+    let request_json = serde_json::to_string(&request).unwrap();
+    let response_json = handle_runtime_request_json(&request_json).unwrap();
+    let response: RuntimeResponse = serde_json::from_str(&response_json).unwrap();
+    match response {
+        RuntimeResponse::Error(error) => error,
         other => panic!("unexpected response: {other:?}"),
     }
 }
@@ -346,18 +383,20 @@ async fn storage_response(request: StorageRequest) -> StorageResponse {
     serde_json::from_str(&response_json).unwrap()
 }
 
-async fn storage_error_message(request: StorageRequest) -> String {
+async fn storage_error_response(request: StorageRequest) -> StorageErrorResponse {
     let request_json = serde_json::to_string(&request).unwrap();
-    let error = handle_storage_request_json(request_json)
-        .await
-        .expect_err("storage request should fail");
-    let value: wasm_bindgen::JsValue = error.into();
-    value.as_string().unwrap_or_else(|| format!("{value:?}"))
+    let response_json = handle_storage_request_json(request_json).await.unwrap();
+    let response: StorageResponse = serde_json::from_str(&response_json).unwrap();
+    match response {
+        StorageResponse::Error(error) => error,
+        other => panic!("unexpected storage response: {other:?}"),
+    }
 }
 
 fn storage_manifest(index_id: &str, build_id: &str) -> BundleManifest {
     let mut manifest: BundleManifest =
         serde_json::from_str(include_str!("../../../fixtures/demo-bundle/manifest.json")).unwrap();
+    assert_eq!(manifest.format_version, SUPPORTED_BUNDLE_FORMAT_VERSION);
     manifest.index_id = index_id.into();
     manifest.build_id = build_id.into();
     manifest
@@ -627,7 +666,9 @@ fn browser_worker_search_matches_kernel_standard_path() {
     let direct = direct_kernel_result(&request);
     let runtime = runtime_result(&request);
 
-    assert_eq!(runtime, direct);
+    assert_eq!(runtime.results, direct.results);
+    assert_eq!(runtime.num_queries, direct.num_queries);
+    assert!(runtime.timing.is_some());
     assert_eq!(runtime.results[0].document_ids[0], 0);
 }
 
@@ -644,7 +685,9 @@ fn browser_worker_search_matches_kernel_subset_path() {
     let direct = direct_kernel_result(&request);
     let runtime = runtime_result(&request);
 
-    assert_eq!(runtime, direct);
+    assert_eq!(runtime.results, direct.results);
+    assert_eq!(runtime.num_queries, direct.num_queries);
+    assert!(runtime.timing.is_some());
     assert!(runtime.results[0]
         .document_ids
         .iter()
@@ -667,7 +710,9 @@ fn browser_worker_search_matches_kernel_batch_query_path() {
     let direct = direct_kernel_result(&request);
     let runtime = runtime_result(&request);
 
-    assert_eq!(runtime, direct);
+    assert_eq!(runtime.results, direct.results);
+    assert_eq!(runtime.num_queries, direct.num_queries);
+    assert!(runtime.timing.is_some());
     assert_eq!(runtime.num_queries, 2);
     assert_eq!(runtime.results[0].query_id, 0);
     assert_eq!(runtime.results[1].query_id, 1);
@@ -685,8 +730,9 @@ fn browser_worker_search_rejects_invalid_alpha() {
     );
     request.request.alpha = Some(1.5);
 
-    let request_json = serde_json::to_string(&RuntimeRequest::Search(request)).unwrap();
-    assert!(handle_runtime_request_json(&request_json).is_err());
+    let error = runtime_error_response(RuntimeRequest::Search(request));
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert!(error.message.contains("alpha must be between 0.0 and 1.0"));
 }
 
 #[wasm_bindgen_test]
@@ -794,6 +840,7 @@ async fn browser_storage_install_and_reload_roundtrip() {
     assert_eq!(hybrid.results[0].document_ids[0], 1);
 
     let health = runtime_health_response();
+    assert_eq!(health.schema_version, RUNTIME_SCHEMA_VERSION);
     assert_eq!(health.loaded_indices, 1);
     assert!(health.memory_usage_breakdown.index_bytes > 0);
     assert!(health.memory_usage_breakdown.metadata_json_bytes > 0);
@@ -810,35 +857,38 @@ async fn browser_storage_install_and_reload_roundtrip() {
 async fn browser_storage_rejects_sqlite_sidecar_install() {
     reset_runtime_state();
 
-    let error = storage_error_message(sqlite_sidecar_storage_install_request(
+    let error = storage_error_response(sqlite_sidecar_storage_install_request(
         "stored-demo-sqlite-sidecar",
         "build-storage-sqlite-sidecar-001",
     ))
     .await;
 
-    assert!(error.contains("unsupported metadata mode"));
+    assert_eq!(error.code, ErrorCode::StorageFailed);
+    assert!(error.message.contains("unsupported metadata mode"));
 }
 
 #[wasm_bindgen_test]
 async fn browser_storage_rejects_compressed_artifact_install() {
     reset_runtime_state();
 
-    let error = storage_error_message(compressed_storage_install_request(
+    let error = storage_error_response(compressed_storage_install_request(
         "stored-demo-compressed",
         "build-storage-compressed-001",
     ))
     .await;
 
-    assert!(error.contains("unsupported artifact compression"));
+    assert_eq!(error.code, ErrorCode::StorageFailed);
+    assert!(error.message.contains("unsupported artifact compression"));
 }
 
 #[wasm_bindgen_test]
 async fn browser_storage_rejects_loading_missing_active_bundle() {
     reset_runtime_state();
 
-    let error = storage_error_message(storage_load_request("missing-demo", "missing-demo")).await;
+    let error = storage_error_response(storage_load_request("missing-demo", "missing-demo")).await;
 
-    assert!(error.contains("no active stored bundle"));
+    assert_eq!(error.code, ErrorCode::StorageFailed);
+    assert!(error.message.contains("no active stored bundle"));
 }
 
 #[wasm_bindgen_test]
@@ -856,12 +906,14 @@ async fn browser_storage_clears_stale_active_bundle_pointer() {
     assert!(active_bundle_record(index_id).await.is_some());
     remove_active_bundle_storage(index_id).await;
 
-    let error = storage_error_message(storage_load_request(index_id, "stale-demo")).await;
-    assert!(error.contains("no active stored bundle"));
+    let error = storage_error_response(storage_load_request(index_id, "stale-demo")).await;
+    assert_eq!(error.code, ErrorCode::StorageFailed);
+    assert!(error.message.contains("no active stored bundle"));
     assert!(active_bundle_record(index_id).await.is_none());
 
-    let retry_error = storage_error_message(storage_load_request(index_id, "stale-demo")).await;
-    assert!(retry_error.contains("no active stored bundle"));
+    let retry_error = storage_error_response(storage_load_request(index_id, "stale-demo")).await;
+    assert_eq!(retry_error.code, ErrorCode::StorageFailed);
+    assert!(retry_error.message.contains("no active stored bundle"));
 }
 
 #[wasm_bindgen_test]
@@ -923,11 +975,17 @@ fn browser_worker_search_rejects_hybrid_query_count_mismatch() {
         request: SearchRequest {
             queries: Some(vec![
                 QueryEmbeddingsPayload {
+                    encoder: encoder(2),
+                    dtype: EmbeddingDtype::F32Le,
+                    layout: EmbeddingLayout::Ragged,
                     embeddings: Some(vec![vec![1.0, 0.0], vec![0.7, 0.7]]),
                     embeddings_b64: None,
                     shape: None,
                 },
                 QueryEmbeddingsPayload {
+                    encoder: encoder(2),
+                    dtype: EmbeddingDtype::F32Le,
+                    layout: EmbeddingLayout::Ragged,
                     embeddings: Some(vec![vec![0.0, 1.0], vec![0.7, 0.7]]),
                     embeddings_b64: None,
                     shape: None,
@@ -948,6 +1006,9 @@ fn browser_worker_search_rejects_hybrid_query_count_mismatch() {
         },
     };
 
-    let request_json = serde_json::to_string(&RuntimeRequest::Search(request)).unwrap();
-    assert!(handle_runtime_request_json(&request_json).is_err());
+    let error = runtime_error_response(RuntimeRequest::Search(request));
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert!(error
+        .message
+        .contains("Hybrid search requires exactly 1 query embedding"));
 }

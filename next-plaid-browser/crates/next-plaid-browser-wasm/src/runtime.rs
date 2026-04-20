@@ -2,11 +2,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use next_plaid_browser_contract::{
-    FtsTokenizer, FusionMode, FusionRequest, FusionResponse, HealthResponse, IndexSummary,
-    InlineSearchParamsRequest, InlineSearchRequest, InlineSearchResponse, MemoryUsageBreakdown,
-    QueryEmbeddingsPayload, QueryResultResponse, RankedResultsPayload, SearchIndexPayload,
-    SearchParamsRequest, SearchRequest, SearchResponse, WorkerLoadIndexRequest,
-    WorkerLoadIndexResponse, WorkerSearchRequest,
+    EncoderIdentity, FtsTokenizer, FusionMode, FusionRequest, FusionResponse, HealthResponse,
+    IndexSummary, InlineSearchParamsRequest, InlineSearchRequest, InlineSearchResponse,
+    MatrixPayload, MemoryUsageBreakdown, QueryEmbeddingsPayload, QueryResultResponse,
+    RankedResultsPayload, SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse,
+    SearchTimingBreakdown, WorkerLoadIndexRequest, WorkerLoadIndexResponse, WorkerSearchRequest,
+    RUNTIME_SCHEMA_VERSION,
 };
 use next_plaid_browser_kernel::{
     fuse_relative_score, fuse_rrf, search_one, search_one_compressed, MatrixView, SearchParameters,
@@ -26,9 +27,41 @@ pub(crate) const BROWSER_INDEX_DIR: &str = "browser://memory";
 const DEFAULT_BATCH_SIZE: usize = 2000;
 const DEFAULT_CENTROID_BATCH_SIZE: usize = 100_000;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, Debug)]
+struct SearchTimer(std::time::Instant);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SearchTimer {
+    fn start() -> Self {
+        Self(std::time::Instant::now())
+    }
+
+    fn elapsed_us(self) -> u64 {
+        self.0.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, Debug)]
+struct SearchTimer(f64);
+
+#[cfg(target_arch = "wasm32")]
+impl SearchTimer {
+    fn start() -> Self {
+        Self(js_sys::Date::now())
+    }
+
+    fn elapsed_us(self) -> u64 {
+        let elapsed_ms = (js_sys::Date::now() - self.0).max(0.0);
+        (elapsed_ms * 1000.0).round().clamp(0.0, u64::MAX as f64) as u64
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct LoadedIndex {
     payload: LoadedIndexPayload,
+    encoder: EncoderIdentity,
     metadata: Option<Vec<Option<serde_json::Value>>>,
     keyword_index: Option<KeywordIndex>,
     summary: IndexSummary,
@@ -79,6 +112,7 @@ pub(crate) fn runtime_health() -> HealthResponse {
         HealthResponse {
             status: "healthy".into(),
             version: KERNEL_VERSION.into(),
+            schema_version: RUNTIME_SCHEMA_VERSION,
             loaded_indices: summaries.len(),
             index_dir: BROWSER_INDEX_DIR.into(),
             memory_usage_bytes,
@@ -96,6 +130,7 @@ pub(crate) fn load_index(
 
     let summary = build_index_summary(&request)?;
     let name = request.name.clone();
+    validate_loaded_index_encoder(&request.encoder, summary.dimension)?;
 
     if let Some(metadata) = &request.metadata {
         if metadata.len() != summary.num_documents {
@@ -122,6 +157,7 @@ pub(crate) fn load_index(
             name.clone(),
             LoadedIndex {
                 payload: LoadedIndexPayload::Dense(request.index),
+                encoder: request.encoder,
                 metadata: request.metadata,
                 keyword_index,
                 summary: summary.clone(),
@@ -161,6 +197,7 @@ pub(crate) fn load_compressed_bundle_into_runtime(
             name,
             LoadedIndex {
                 payload: LoadedIndexPayload::Compressed(stored),
+                encoder: manifest.encoder.clone(),
                 metadata,
                 keyword_index,
                 summary: summary.clone(),
@@ -175,6 +212,7 @@ pub(crate) fn load_compressed_bundle_into_runtime(
 pub(crate) fn search_loaded_index(
     request: WorkerSearchRequest,
 ) -> Result<SearchResponse, WasmError> {
+    let total_started_at = SearchTimer::start();
     validation::validate_worker_search_request(&request.request)?;
 
     LOADED_INDICES.with(|indices| {
@@ -182,26 +220,43 @@ pub(crate) fn search_loaded_index(
         let loaded = indices
             .get(&request.name)
             .ok_or_else(|| WasmError::IndexNotLoaded(request.name.clone()))?;
+        let subset_started_at = SearchTimer::start();
         let subset = resolve_subset(loaded, &request.request)?;
         let top_k = request.request.params.top_k.unwrap_or(10);
         let has_queries = validation::has_semantic_queries(&request.request);
         let has_text_query = validation::has_text_queries(&request.request);
+        let subset_us = if request.request.subset.is_some()
+            || validation::has_filter_condition(&request.request)
+        {
+            Some(elapsed_us(subset_started_at))
+        } else {
+            None
+        };
 
         if has_queries && has_text_query {
             let queries = request.request.queries.as_deref().unwrap_or(&[]);
+            validation::validate_encoder_identity(&loaded.encoder, &queries[0].encoder)?;
+            let decode_started_at = SearchTimer::start();
+            let decoded_queries = decode_query_payloads(queries)?;
             let text_queries = request.request.text_query.as_deref().unwrap_or(&[]);
             let fetch_k = top_k.saturating_mul(3);
+            let query_decode_us = Some(elapsed_us(decode_started_at));
+            let semantic_started_at = SearchTimer::start();
             let semantic_results = semantic_ranked_results(
                 loaded,
-                queries,
+                &decoded_queries,
                 &request.request.params,
                 fetch_k,
                 subset.as_deref(),
             )?;
+            let semantic_us = Some(elapsed_us(semantic_started_at));
+            let keyword_started_at = SearchTimer::start();
             let keyword_results =
                 keyword_ranked_results(loaded, text_queries, fetch_k, subset.as_deref())?;
+            let keyword_us = Some(elapsed_us(keyword_started_at));
 
             let mut results = Vec::with_capacity(queries.len());
+            let fusion_started_at = SearchTimer::start();
             for (query_id, (semantic, keyword)) in semantic_results
                 .iter()
                 .zip(keyword_results.iter())
@@ -222,18 +277,33 @@ pub(crate) fn search_loaded_index(
                     scores: fused.scores,
                 });
             }
+            let fusion_us = Some(elapsed_us(fusion_started_at));
+            validate_query_result_scores(&results)?;
 
             return Ok(SearchResponse {
                 num_queries: results.len(),
                 results,
+                timing: Some(SearchTimingBreakdown {
+                    total_us: elapsed_us(total_started_at),
+                    query_decode_us,
+                    subset_us,
+                    semantic_us,
+                    keyword_us,
+                    fusion_us,
+                }),
             });
         }
 
         if has_queries {
             let queries = request.request.queries.as_deref().unwrap_or(&[]);
+            validation::validate_encoder_identity(&loaded.encoder, &queries[0].encoder)?;
+            let decode_started_at = SearchTimer::start();
+            let decoded_queries = decode_query_payloads(queries)?;
+            let query_decode_us = Some(elapsed_us(decode_started_at));
+            let semantic_started_at = SearchTimer::start();
             let ranked_results = semantic_ranked_results(
                 loaded,
-                queries,
+                &decoded_queries,
                 &request.request.params,
                 top_k,
                 subset.as_deref(),
@@ -241,16 +311,33 @@ pub(crate) fn search_loaded_index(
             return Ok(search_response_from_ranked_results(
                 loaded.metadata.as_deref(),
                 ranked_results,
-            ));
+                Some(SearchTimingBreakdown {
+                    total_us: elapsed_us(total_started_at),
+                    query_decode_us,
+                    subset_us,
+                    semantic_us: Some(elapsed_us(semantic_started_at)),
+                    keyword_us: None,
+                    fusion_us: None,
+                }),
+            )?);
         }
 
         let text_queries = request.request.text_query.as_deref().unwrap_or(&[]);
+        let keyword_started_at = SearchTimer::start();
         let ranked_results =
             keyword_ranked_results(loaded, text_queries, top_k, subset.as_deref())?;
         Ok(search_response_from_ranked_results(
             loaded.metadata.as_deref(),
             ranked_results,
-        ))
+            Some(SearchTimingBreakdown {
+                total_us: elapsed_us(total_started_at),
+                query_decode_us: None,
+                subset_us,
+                semantic_us: None,
+                keyword_us: Some(elapsed_us(keyword_started_at)),
+                fusion_us: None,
+            }),
+        )?)
     })
 }
 
@@ -275,7 +362,7 @@ fn resolve_subset(
 
 fn semantic_ranked_results(
     loaded: &LoadedIndex,
-    queries: &[QueryEmbeddingsPayload],
+    queries: &[MatrixPayload],
     params: &SearchParamsRequest,
     top_k: usize,
     subset: Option<&[i64]>,
@@ -285,7 +372,6 @@ fn semantic_ranked_results(
 
     let mut results = Vec::with_capacity(queries.len());
     for query_payload in queries {
-        let query_payload = convert::query_payload_to_matrix_payload(query_payload)?;
         if query_payload.dim != loaded.summary.dimension {
             return Err(WasmError::QueryDimensionMismatch {
                 query_dim: query_payload.dim,
@@ -346,7 +432,8 @@ fn empty_ranked_results(count: usize) -> Vec<RankedResultsPayload> {
 fn search_response_from_ranked_results(
     metadata: Option<&[Option<serde_json::Value>]>,
     ranked_results: Vec<RankedResultsPayload>,
-) -> SearchResponse {
+    timing: Option<SearchTimingBreakdown>,
+) -> Result<SearchResponse, WasmError> {
     let results = ranked_results
         .into_iter()
         .enumerate()
@@ -357,11 +444,13 @@ fn search_response_from_ranked_results(
             scores: ranked.scores,
         })
         .collect::<Vec<_>>();
+    validate_query_result_scores(&results)?;
 
-    SearchResponse {
+    Ok(SearchResponse {
         num_queries: results.len(),
         results,
-    }
+        timing,
+    })
 }
 
 pub(crate) fn run_inline_search(
@@ -371,6 +460,7 @@ pub(crate) fn run_inline_search(
     let index = convert::browser_index_view(&request.index)?;
     let params = inline_search_parameters(&request.params);
     let result = search_one(index, query, &params, request.subset_doc_ids.as_deref())?;
+    validation::validate_finite_f32_slice(&result.scores, "inline search scores")?;
 
     Ok(InlineSearchResponse {
         query_id: result.query_id,
@@ -425,6 +515,7 @@ pub(crate) fn fuse_results(request: FusionRequest) -> Result<FusionResponse, Was
         (None, Some(keyword)) => truncate_ranked_results(keyword, request.top_k),
         (None, None) => unreachable!(),
     };
+    validation::validate_finite_f32_slice(&scores, "fused scores")?;
 
     Ok(FusionResponse {
         document_ids,
@@ -547,4 +638,54 @@ fn metadata_for_results(
                 .flatten()
         })
         .collect()
+}
+
+fn validate_loaded_index_encoder(
+    encoder: &EncoderIdentity,
+    index_dim: usize,
+) -> Result<(), WasmError> {
+    if encoder.encoder_id.trim().is_empty() {
+        return Err(WasmError::InvalidRequest(
+            "index encoder.encoder_id must not be empty".into(),
+        ));
+    }
+    if encoder.encoder_build.trim().is_empty() {
+        return Err(WasmError::InvalidRequest(
+            "index encoder.encoder_build must not be empty".into(),
+        ));
+    }
+    if encoder.embedding_dim == 0 {
+        return Err(WasmError::InvalidRequest(
+            "index encoder.embedding_dim must be greater than zero".into(),
+        ));
+    }
+    if encoder.embedding_dim != index_dim {
+        return Err(WasmError::InvalidRequest(format!(
+            "index encoder.embedding_dim must match index dimension: expected {index_dim}, found {}",
+            encoder.embedding_dim
+        )));
+    }
+
+    Ok(())
+}
+
+fn decode_query_payloads(
+    queries: &[QueryEmbeddingsPayload],
+) -> Result<Vec<MatrixPayload>, WasmError> {
+    queries
+        .iter()
+        .map(convert::query_payload_to_matrix_payload)
+        .collect()
+}
+
+fn validate_query_result_scores(results: &[QueryResultResponse]) -> Result<(), WasmError> {
+    for result in results {
+        validation::validate_finite_f32_slice(&result.scores, "search response scores")?;
+    }
+
+    Ok(())
+}
+
+fn elapsed_us(started_at: SearchTimer) -> u64 {
+    started_at.elapsed_us()
 }
