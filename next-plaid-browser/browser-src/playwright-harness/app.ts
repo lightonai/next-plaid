@@ -1,3 +1,6 @@
+import { Effect, Layer, Stream, SubscriptionRef } from "effect";
+import * as BrowserWorker from "@effect/platform-browser/BrowserWorker";
+
 import type {
   BundleInstalledResponseEnvelope,
   BundleManifest,
@@ -23,9 +26,24 @@ import type {
   EncoderInitRequest,
   EncoderInitResponse,
   EncoderWorkerRequest,
-  EncoderWorkerResponse,
 } from "../model-worker/types.js";
 import type { WorkerResponseEnvelope } from "../shared/worker-envelope.js";
+import { permanentClientError } from "../effect/client-errors.js";
+import { EncoderWorkerClient } from "../effect/encoder-worker-client.js";
+import { SearchWorkerClient } from "../effect/search-worker-client.js";
+
+const searchWorkerLayer = BrowserWorker.layer(
+  () => new Worker("./worker.mjs", { type: "module" }),
+);
+const encoderWorkerLayer = BrowserWorker.layer(
+  () => new Worker("./encoder-worker.js", { type: "module" }),
+);
+const searchClientLayer = SearchWorkerClient.layer().pipe(
+  Layer.provide(searchWorkerLayer),
+);
+const encoderClientLayer = EncoderWorkerClient.layer().pipe(
+  Layer.provide(encoderWorkerLayer),
+);
 
 declare global {
   interface Window {
@@ -410,21 +428,26 @@ async function callWorker<TRequest, TResponse, TEvent = never>(
       worker.removeEventListener("messageerror", handleMessageError);
     };
 
-    const handleMessage = (event: MessageEvent<WorkerResponseEnvelope<TResponse, TEvent>>): void => {
-      if (event.data?.requestId !== requestId) {
+    const handleMessage = (event: MessageEvent<unknown>): void => {
+      const frame = event.data;
+      if (!Array.isArray(frame) || frame.length < 2 || frame[0] !== 1) {
+        return;
+      }
+      const envelope = frame[1] as WorkerResponseEnvelope<TResponse, TEvent>;
+      if (envelope?.requestId !== requestId) {
         return;
       }
 
-      if (event.data.ok && "event" in event.data) {
-        options?.onEvent?.(event.data.event);
+      if (envelope.ok && "event" in envelope) {
+        options?.onEvent?.(envelope.event);
         return;
       }
 
       cleanup();
-      if (event.data.ok) {
-        resolve(event.data.response);
+      if (envelope.ok) {
+        resolve(envelope.response);
       } else {
-        reject(new Error(event.data.error));
+        reject(new Error(envelope.error));
       }
     };
 
@@ -441,7 +464,7 @@ async function callWorker<TRequest, TResponse, TEvent = never>(
     worker.addEventListener("message", handleMessage);
     worker.addEventListener("error", handleError);
     worker.addEventListener("messageerror", handleMessageError);
-    worker.postMessage({ requestId, request });
+    worker.postMessage([0, { requestId, request }]);
   });
 }
 
@@ -451,6 +474,86 @@ async function callSearchWorker<TResponse extends SearchWorkerResponse>(
 ): Promise<Exclude<TResponse, Extract<SearchWorkerResponse, { type: "error" }>>> {
   const response = await callWorker<SearchWorkerRequest, TResponse>(worker, request);
   return unwrapSearchResponse(response);
+}
+
+async function runWrapperSmoke(): Promise<unknown> {
+  return await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function*() {
+        const initialPhase = yield* Effect.scoped(
+          Effect.gen(function*() {
+            const searchClient = yield* SearchWorkerClient;
+            const initialState = yield* SubscriptionRef.get(searchClient.state);
+            const installBundle = yield* searchClient.installBundle(
+              yield* Effect.tryPromise({
+                try: () => installStoredBundleRequest(),
+                catch: (error) =>
+                  permanentClientError({
+                    cause: "harness_bundle_request_failed",
+                    message: error instanceof Error ? error.message : String(error),
+                    operation: "playwright_harness.wrapper_smoke.install_bundle_request",
+                    details: error,
+                  }),
+              }),
+            );
+            return {
+              initialState,
+              installBundle,
+            };
+          }).pipe(Effect.provide(searchClientLayer)),
+        );
+
+        const runtimePhase = yield* Effect.scoped(
+          Effect.gen(function*() {
+            const searchClient = yield* SearchWorkerClient;
+            const encoderClient = yield* EncoderWorkerClient;
+            const searchState = yield* SubscriptionRef.get(searchClient.state);
+
+            const loadStoredBundle = yield* searchClient.loadStoredBundle(loadStoredBundleRequest());
+            const load = yield* searchClient.loadIndex(loadIndexRequest());
+            const loadEncodedIndex = yield* searchClient.loadIndex(loadEncodedIndexRequest());
+            const semanticSearch = yield* searchClient.search(semanticSearchRequest());
+            const hybridSearch = yield* searchClient.search(hybridSearchRequest());
+
+            const encoderEvents: EncoderInitEvent[] = [];
+            yield* Stream.runForEach(encoderClient.events, (event) =>
+              Effect.sync(() => {
+                if (event.stage !== "failed" && event.stage !== "disposed") {
+                  encoderEvents.push(event);
+                }
+              }),
+            ).pipe(Effect.forkScoped);
+
+            const encoderCapabilities = yield* encoderClient.init(encoderInitRequest().payload);
+            const encoderState = yield* SubscriptionRef.get(encoderClient.state);
+            const encodedQuery = yield* encoderClient.encode({ text: "alpha" });
+            const encodedSearch = yield* searchClient.search(encodedSearchRequest(encodedQuery.payload));
+
+            return {
+              searchState,
+              loadStoredBundle,
+              load,
+              loadEncodedIndex,
+              semanticSearch,
+              hybridSearch,
+              encoderEvents,
+              encoderCapabilities,
+              encoderState,
+              encodedQuery,
+              encodedSearch,
+            };
+          }).pipe(
+            Effect.provide(Layer.mergeAll(searchClientLayer, encoderClientLayer)),
+          ),
+        );
+
+        return {
+          initialPhase,
+          runtimePhase,
+        };
+      }),
+    ),
+  );
 }
 
 async function main(): Promise<void> {
@@ -550,6 +653,7 @@ async function main(): Promise<void> {
       encoderWorker,
       { type: "dispose" },
     );
+    const wrapperSmoke = await runWrapperSmoke();
 
     const result = {
       initialHealth,
@@ -574,6 +678,7 @@ async function main(): Promise<void> {
       encodedQuery,
       encodedSearch,
       disposeEncoder,
+      wrapperSmoke,
     };
     window.__NEXT_PLAID_SMOKE_RESULT__ = result;
     setStatus("ok", result);

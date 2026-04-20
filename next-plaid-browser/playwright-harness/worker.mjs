@@ -25,12 +25,27 @@ async function handleRequest(request) {
   return JSON.parse(responseJson);
 }
 
+function postFrame(payload) {
+  self.postMessage([1, payload]);
+}
+
+self.postMessage([0]);
+
 self.addEventListener("message", async (event) => {
-  const { requestId, request } = event.data ?? {};
+  const frame = event.data;
+  if (Array.isArray(frame) && frame.length === 1 && frame[0] === 1) {
+    self.close();
+    return;
+  }
+  if (!Array.isArray(frame) || frame[0] !== 0) {
+    return;
+  }
+  const data = frame[1] ?? {};
+  const { requestId, request } = data;
 
   if (typeof requestId !== "string") {
-    self.postMessage({
-      requestId: null,
+    postFrame({
+      requestId: "",
       ok: false,
       error: "Worker request envelope must include a string requestId"
     });
@@ -38,7 +53,7 @@ self.addEventListener("message", async (event) => {
   }
 
   if (!request || typeof request !== "object") {
-    self.postMessage({
+    postFrame({
       requestId,
       ok: false,
       error: "Worker request envelope must include an object request payload"
@@ -48,9 +63,9 @@ self.addEventListener("message", async (event) => {
 
   try {
     const response = await handleRequest(request);
-    self.postMessage({ requestId, ok: true, response });
+    postFrame({ requestId, ok: true, response });
   } catch (error) {
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
-    self.postMessage({ requestId, ok: false, error: message });
+    postFrame({ requestId, ok: false, error: message });
   }
 });

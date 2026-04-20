@@ -18,6 +18,10 @@ let backend: EncoderBackend | null = null;
 let state: EncoderState = "empty";
 let lastError: string | null = null;
 
+function postFrame(payload: unknown): void {
+  self.postMessage([1, payload]);
+}
+
 function postSuccess(
   requestId: string,
   response: EncoderWorkerResponse,
@@ -27,7 +31,7 @@ function postSuccess(
     ok: true,
     response,
   };
-  self.postMessage(envelope);
+  postFrame(envelope);
 }
 
 function postEvent(requestId: string, event: unknown): void {
@@ -36,7 +40,7 @@ function postEvent(requestId: string, event: unknown): void {
     ok: true,
     event,
   };
-  self.postMessage(envelope);
+  postFrame(envelope);
 }
 
 function postFailure(requestId: string | null, error: string): void {
@@ -45,8 +49,10 @@ function postFailure(requestId: string | null, error: string): void {
     ok: false,
     error,
   };
-  self.postMessage(envelope);
+  postFrame(envelope);
 }
+
+self.postMessage([0]);
 
 async function handleRequest(
   requestId: string,
@@ -107,9 +113,18 @@ async function handleRequest(
   }
 }
 
-self.addEventListener("message", async (event: MessageEvent<WorkerRequestEnvelope<EncoderWorkerRequest>>) => {
-  const requestId = event.data?.requestId ?? null;
-  const request = event.data?.request;
+self.addEventListener("message", async (event: MessageEvent<unknown>) => {
+  const frame = event.data as unknown;
+  if (Array.isArray(frame) && frame.length === 1 && frame[0] === 1) {
+    self.close();
+    return;
+  }
+  if (!Array.isArray(frame) || frame[0] !== 0) {
+    return;
+  }
+  const data = (frame[1] ?? {}) as Partial<WorkerRequestEnvelope<EncoderWorkerRequest>>;
+  const requestId = typeof data.requestId === "string" ? data.requestId : null;
+  const request = data.request;
 
   if (typeof requestId !== "string") {
     postFailure(null, "Worker request envelope must include a string requestId");
