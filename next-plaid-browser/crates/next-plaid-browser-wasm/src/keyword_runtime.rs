@@ -1194,4 +1194,28 @@ mod tests {
 
         assert!(memory_usage_bytes > 0);
     }
+
+    #[test]
+    fn keyword_index_surfaces_unknown_column_as_typed_error() {
+        let index = KeywordIndex::new(&demo_metadata(), "unicode61").unwrap();
+        let err = index
+            .filter_document_ids("nonexistent = ?", &[json!("value")])
+            .unwrap_err();
+        assert!(matches!(err, KeywordError::UnknownColumn(ref name) if name == "nonexistent"));
+    }
+
+    #[test]
+    fn keyword_index_surfaces_sql_keyword_ban_as_typed_error() {
+        let index = KeywordIndex::new(&demo_metadata(), "unicode61").unwrap();
+        let err = index
+            .filter_document_ids("name = ? UNION SELECT * FROM x", &[json!("a")])
+            .unwrap_err();
+        assert!(matches!(err, KeywordError::SqlKeywordNotAllowed(_)));
+    }
+
+    #[test]
+    fn keyword_index_surfaces_unsupported_tokenizer_as_typed_error() {
+        let err = KeywordIndex::new(&demo_metadata(), "porter").unwrap_err();
+        assert!(matches!(err, KeywordError::UnsupportedTokenizer(ref name) if name == "porter"));
+    }
 }
