@@ -80,6 +80,7 @@ use state::{ApiConfig, AppState};
         (name = "health", description = "Health check endpoints"),
         (name = "indices", description = "Index management operations"),
         (name = "documents", description = "Document upload and deletion"),
+        (name = "project_sync", description = "MCP project sync staged upload operations"),
         (name = "search", description = "Search operations"),
         (name = "metadata", description = "Metadata management and filtering"),
         (name = "encoding", description = "Text encoding operations (requires --model)"),
@@ -96,6 +97,11 @@ use state::{ApiConfig, AppState};
         handlers::documents::update_index,
         handlers::documents::update_index_config,
         handlers::documents::update_index_with_encoding,
+        handlers::project_sync::create_project_sync_job,
+        handlers::project_sync::upload_project_sync_job,
+        handlers::project_sync::finalize_project_sync_job,
+        handlers::project_sync::get_project_sync_job,
+        handlers::project_sync::cancel_project_sync_job,
         handlers::search::search,
         handlers::search::search_filtered,
         handlers::search::search_with_encoding,
@@ -151,6 +157,10 @@ use state::{ApiConfig, AppState};
         models::SearchWithEncodingRequest,
         models::FilteredSearchWithEncodingRequest,
         models::UpdateWithEncodingRequest,
+        models::ProjectSyncCreateJobRequest,
+        models::ProjectSyncCreateJobResponse,
+        models::ProjectSyncJobStatus,
+        models::ProjectSyncJobResponse,
         models::RerankRequest,
         models::RerankWithEncodingRequest,
         models::RerankResult,
@@ -418,6 +428,53 @@ fn build_router(state: Arc<AppState>) -> Router {
         .layer(ConcurrencyLimitLayer::new(concurrency_limit))
         .with_state(state.clone());
 
+    let project_sync_router = Router::new()
+        .without_v07_checks()
+        .route(
+            "/indices/{name}/project_sync/jobs",
+            post(handlers::create_project_sync_job),
+        )
+        .route(
+            "/project_sync/jobs/{job_id}/finalize",
+            post(handlers::finalize_project_sync_job),
+        )
+        .route(
+            "/project_sync/jobs/{job_id}",
+            get(handlers::get_project_sync_job).delete(handlers::cancel_project_sync_job),
+        )
+        .layer(middleware::from_fn(tracing_middleware::trace_request))
+        .layer(TraceLayer::new_for_http())
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(300),
+        ))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
+        .layer(ConcurrencyLimitLayer::new(concurrency_limit))
+        .with_state(state.clone());
+
+    let project_sync_upload_router = Router::new()
+        .without_v07_checks()
+        .route(
+            "/project_sync/jobs/{job_id}/upload",
+            put(handlers::upload_project_sync_job),
+        )
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
+        .layer(ConcurrencyLimitLayer::new(concurrency_limit))
+        .layer(DefaultBodyLimit::max(
+            handlers::project_sync::max_ingest_request_bytes() as usize,
+        ))
+        .with_state(state.clone());
+
     // API router with rate limiting - use without_v07_checks to allow :param syntax
     let api_router = Router::new()
         .without_v07_checks()
@@ -499,6 +556,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .merge(update_router)
         .merge(encode_router)
         .merge(delete_router)
+        .merge(project_sync_router)
+        .merge(project_sync_upload_router)
         .merge(api_router)
 }
 
@@ -848,6 +907,12 @@ Examples:
         }
         Arc::new(AppState::new(config))
     };
+
+    if let Err(error) = handlers::project_sync::recover_project_sync_jobs(state.clone()).await {
+        tracing::error!(error = %error, "project_sync.recovery.failed");
+        eprintln!("Error: project_sync recovery failed: {}", error);
+        std::process::exit(1);
+    }
 
     // Build router
     let app = build_router(state);

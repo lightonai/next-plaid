@@ -54,6 +54,20 @@ fn max_queued_tasks_per_index() -> usize {
 static REPAIR_LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<()>>>>> =
     OnceLock::new();
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IndexDbSyncCheck {
+    pub(crate) in_sync: bool,
+    pub(crate) index_count: usize,
+    pub(crate) db_count: usize,
+    pub(crate) check_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PreflightRepairMetrics {
+    pub(crate) repaired: bool,
+    pub(crate) repair_ms: u64,
+}
+
 /// Get or create a repair lock for the given index path.
 /// Used to serialize repair operations on a specific index.
 fn get_repair_lock(index_path: &str) -> Arc<std::sync::Mutex<()>> {
@@ -75,7 +89,7 @@ fn get_repair_lock(index_path: &str) -> Arc<std::sync::Mutex<()>> {
 /// Returns Ok(true) if repair was performed, Ok(false) if no repair needed.
 ///
 /// Thread-safety: Uses a per-index lock to prevent concurrent repair operations.
-fn repair_index_db_sync(index_path: &str) -> Result<bool, String> {
+pub(crate) fn repair_index_db_sync(index_path: &str) -> Result<bool, String> {
     // Acquire per-index repair lock to prevent concurrent repairs
     let repair_lock = get_repair_lock(index_path);
     let _guard = repair_lock
@@ -159,11 +173,84 @@ fn repair_index_db_sync(index_path: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+fn verify_index_db_sync(index_path: &str) -> Result<IndexDbSyncCheck, String> {
+    let check_start = std::time::Instant::now();
+    let path = std::path::Path::new(index_path);
+    let has_index_metadata = path.join("metadata.json").exists();
+    let has_metadata_db = filtering::exists(index_path);
+    let index_count = if has_index_metadata {
+        Metadata::load_from_path(path)
+            .map_err(|error| format!("Failed to load index metadata: {}", error))?
+            .num_documents
+    } else {
+        0
+    };
+    let db_count = if has_metadata_db {
+        filtering::count(index_path)
+            .map_err(|error| format!("Failed to get DB count: {}", error))?
+    } else {
+        0
+    };
+    let in_sync = match (has_index_metadata, has_metadata_db) {
+        (true, true) => index_count == db_count,
+        (true, false) => index_count == 0,
+        (false, true) => db_count == 0,
+        (false, false) => true,
+    };
+    Ok(IndexDbSyncCheck {
+        in_sync,
+        index_count,
+        db_count,
+        check_ms: check_start.elapsed().as_millis() as u64,
+    })
+}
+
+pub(crate) async fn verify_index_db_sync_locked(
+    index_path: &str,
+) -> Result<IndexDbSyncCheck, String> {
+    let index_path_owned = index_path.to_string();
+    task::spawn_blocking(move || verify_index_db_sync(&index_path_owned))
+        .await
+        .map_err(|error| format!("Index/DB sync verification worker panicked: {}", error))?
+}
+
+fn run_preflight_repair(index_path: &str) -> Result<PreflightRepairMetrics, String> {
+    let repair_start = std::time::Instant::now();
+    let repaired = repair_index_db_sync(index_path)?;
+    Ok(PreflightRepairMetrics {
+        repaired,
+        repair_ms: repair_start.elapsed().as_millis() as u64,
+    })
+}
+
+pub(crate) async fn run_preflight_repair_locked(
+    index_path: &str,
+) -> Result<PreflightRepairMetrics, String> {
+    let index_path_owned = index_path.to_string();
+    task::spawn_blocking(move || run_preflight_repair(&index_path_owned))
+        .await
+        .map_err(|error| format!("Index/DB sync repair worker panicked: {}", error))?
+}
+
+fn build_update_config(stored_config: &IndexConfigStored) -> UpdateConfig {
+    let default_update_config = UpdateConfig::default();
+    UpdateConfig {
+        batch_size: stored_config.batch_size,
+        kmeans_niters: default_update_config.kmeans_niters,
+        max_points_per_centroid: default_update_config.max_points_per_centroid,
+        n_samples_kmeans: default_update_config.n_samples_kmeans,
+        seed: stored_config.seed.unwrap_or(default_update_config.seed),
+        start_from_scratch: stored_config.start_from_scratch,
+        buffer_size: default_update_config.buffer_size,
+        force_cpu: default_update_config.force_cpu,
+    }
+}
+
 // --- Batch Collection ---
 
 /// Get the maximum number of documents to batch together before processing.
 /// Configurable via MAX_BATCH_DOCUMENTS env var (default: 300).
-fn max_batch_documents() -> usize {
+pub(crate) fn max_batch_documents() -> usize {
     static VALUE: OnceLock<usize> = OnceLock::new();
     *VALUE.get_or_init(|| {
         std::env::var("MAX_BATCH_DOCUMENTS")
@@ -194,6 +281,50 @@ struct BatchItem {
     metadata: Vec<serde_json::Value>,
 }
 
+pub(crate) struct PreparedUpdateWithEncodingBatch {
+    pub(crate) embeddings: Vec<Array2<f32>>,
+    pub(crate) metadata: Vec<serde_json::Value>,
+}
+
+fn validate_update_with_encoding_request(req: &UpdateWithEncodingRequest) -> ApiResult<()> {
+    if req.documents.is_empty() {
+        return Err(ApiError::BadRequest(
+            "At least one document is required".to_string(),
+        ));
+    }
+
+    if req.metadata.len() != req.documents.len() {
+        return Err(ApiError::BadRequest(format!(
+            "Metadata length ({}) must match documents length ({})",
+            req.metadata.len(),
+            req.documents.len()
+        )));
+    }
+
+    Ok(())
+}
+
+pub(crate) async fn prepare_update_with_encoding_batch(
+    state: Arc<AppState>,
+    req: UpdateWithEncodingRequest,
+) -> ApiResult<PreparedUpdateWithEncodingBatch> {
+    validate_update_with_encoding_request(&req)?;
+
+    let UpdateWithEncodingRequest {
+        documents,
+        metadata,
+        pool_factor,
+    } = req;
+
+    let embeddings =
+        encode_texts_internal(state, &documents, InputType::Document, pool_factor).await?;
+
+    Ok(PreparedUpdateWithEncodingBatch {
+        embeddings,
+        metadata,
+    })
+}
+
 /// Handle to a batch queue for an index.
 struct BatchQueue {
     sender: mpsc::Sender<BatchItem>,
@@ -202,28 +333,14 @@ struct BatchQueue {
 /// Global registry of batch queues per index.
 static BATCH_QUEUES: OnceLock<std::sync::Mutex<HashMap<String, BatchQueue>>> = OnceLock::new();
 
-/// Global registry to manage locks per index name.
+/// Global registry to manage locks per index path.
 /// We use tokio::sync::Mutex to allow tasks to wait asynchronously without blocking threads.
 static INDEX_LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
 
-/// Global registry to manage semaphores per index name.
+/// Global registry to manage semaphores per index path.
 /// Limits the number of queued background tasks to prevent resource exhaustion.
 static INDEX_SEMAPHORES: OnceLock<std::sync::Mutex<HashMap<String, Arc<Semaphore>>>> =
     OnceLock::new();
-
-/// Helper to get (or create) an async mutex for a specific index.
-/// Used to serialize updates to a specific index.
-/// Uses the index name as key (assumes unique names within a single server instance).
-pub fn get_index_lock(name: &str) -> Arc<Mutex<()>> {
-    let locks: &std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> =
-        INDEX_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let mut map = locks
-        .lock()
-        .expect("INDEX_LOCKS mutex poisoned - a thread panicked while holding this lock");
-    map.entry(name.to_string())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
-}
 
 /// Helper to get (or create) an async mutex for a specific index path.
 /// Used when full path isolation is needed (e.g., in tests with separate temp directories).
@@ -238,15 +355,21 @@ pub fn get_index_lock_by_path(path: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-/// Helper to get (or create) a semaphore for a specific index name.
+pub(crate) fn get_index_write_lock(state: &AppState, name: &str) -> Arc<Mutex<()>> {
+    let path_str = state.index_path(name).to_string_lossy().to_string();
+    get_index_lock_by_path(&path_str)
+}
+
+/// Helper to get (or create) a semaphore for a specific index path.
 /// The semaphore limits queued background tasks to prevent unbounded growth.
-fn get_index_semaphore(name: &str) -> Arc<Semaphore> {
+fn get_index_semaphore(state: &AppState, name: &str) -> Arc<Semaphore> {
+    let path_str = state.index_path(name).to_string_lossy().to_string();
     let sems: &std::sync::Mutex<HashMap<String, Arc<Semaphore>>> =
         INDEX_SEMAPHORES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     let mut map = sems
         .lock()
         .expect("INDEX_SEMAPHORES mutex poisoned - a thread panicked while holding this lock");
-    map.entry(name.to_string())
+    map.entry(path_str)
         .or_insert_with(|| Arc::new(Semaphore::new(max_queued_tasks_per_index())))
         .clone()
 }
@@ -348,12 +471,175 @@ async fn batch_worker(
 }
 
 /// Metrics returned from the blocking batch processing.
-struct BatchMetrics {
+pub(crate) struct BatchMetrics {
     index_update_ms: u64,
     metadata_update_ms: u64,
     first_doc_id: Option<i64>,
     last_doc_id: Option<i64>,
     evicted_count: usize,
+}
+
+fn run_embeddings_batch_after_repair_blocking(
+    index_name: String,
+    path_str: String,
+    state: Arc<AppState>,
+    embeddings: Vec<Array2<f32>>,
+    metadata: Vec<serde_json::Value>,
+) -> Result<BatchMetrics, String> {
+    let stored_config = state
+        .get_index_config(&index_name)
+        .ok_or_else(|| format!("Failed to load config for index '{}'", index_name))?;
+
+    let fts_tokenizer =
+        crate::models::parse_fts_tokenizer(&stored_config.fts_tokenizer).unwrap_or_default();
+    let index_config = IndexConfig {
+        nbits: stored_config.nbits,
+        batch_size: stored_config.batch_size,
+        seed: stored_config.seed,
+        start_from_scratch: stored_config.start_from_scratch,
+        fts_tokenizer: fts_tokenizer.clone(),
+        ..Default::default()
+    };
+    let update_config = build_update_config(&stored_config);
+
+    let index_update_start = std::time::Instant::now();
+    let index_result =
+        MmapIndex::update_or_create(&embeddings, &path_str, &index_config, &update_config);
+
+    let (mut index, doc_ids) = match index_result {
+        Ok((idx, ids)) => (idx, ids),
+        Err(error) => {
+            return Err(format!("Index update failed: {}", error));
+        }
+    };
+    let index_update_ms = index_update_start.elapsed().as_millis() as u64;
+
+    let first_doc_id = doc_ids.first().copied();
+    let last_doc_id = doc_ids.last().copied();
+
+    let metadata_update_start = std::time::Instant::now();
+    let db_existed = filtering::exists(&path_str);
+    let db_result = if db_existed {
+        filtering::update(&path_str, &metadata, &doc_ids)
+    } else {
+        filtering::create(&path_str, &metadata, &doc_ids)
+    };
+
+    if let Err(error) = db_result {
+        if let Err(rollback_error) = index.delete_with_options(&doc_ids, false) {
+            tracing::error!(
+                index = %index_name,
+                error = %rollback_error,
+                operation = "rollback",
+                "update.rollback.failed"
+            );
+        }
+        return Err(format!("Failed to update metadata: {}", error));
+    }
+
+    if let Err(error) =
+        next_plaid::text_search::index(&path_str, &metadata, &doc_ids, &fts_tokenizer)
+    {
+        tracing::warn!(
+            index = %index_name,
+            error = %error,
+            "update.fts_index.failed"
+        );
+    }
+    let metadata_update_ms = metadata_update_start.elapsed().as_millis() as u64;
+
+    let evicted_count = if let Some(max_docs) = stored_config.max_documents {
+        match evict_oldest_documents(&mut index, max_docs) {
+            Ok(count) => count,
+            Err(error) => {
+                tracing::warn!(
+                    index = %index_name,
+                    error = %error,
+                    max_documents = max_docs,
+                    "update.eviction.failed"
+                );
+                0
+            }
+        }
+    } else {
+        0
+    };
+
+    state.unload_index(&index_name);
+    let reloaded_index =
+        MmapIndex::load(&path_str).map_err(|error| format!("Failed to load index: {}", error))?;
+    state.register_index(&index_name, reloaded_index);
+
+    Ok(BatchMetrics {
+        index_update_ms,
+        metadata_update_ms,
+        first_doc_id,
+        last_doc_id,
+        evicted_count,
+    })
+}
+
+async fn run_embeddings_batch_after_repair_locked(
+    index_name: &str,
+    embeddings: Vec<Array2<f32>>,
+    metadata: Vec<serde_json::Value>,
+    state: &Arc<AppState>,
+) -> Result<BatchMetrics, String> {
+    let name_inner = index_name.to_string();
+    let state_clone = state.clone();
+    let path_str = state.index_path(index_name).to_string_lossy().to_string();
+    task::spawn_blocking(move || {
+        run_embeddings_batch_after_repair_blocking(
+            name_inner,
+            path_str,
+            state_clone,
+            embeddings,
+            metadata,
+        )
+    })
+    .await
+    .map_err(|error| format!("Update batch worker panicked: {}", error))?
+}
+
+async fn run_embeddings_batch_with_preflight_locked(
+    index_name: &str,
+    embeddings: Vec<Array2<f32>>,
+    metadata: Vec<serde_json::Value>,
+    state: &Arc<AppState>,
+) -> Result<BatchMetrics, String> {
+    let path_str = state.index_path(index_name).to_string_lossy().to_string();
+    run_preflight_repair_locked(&path_str).await?;
+    run_embeddings_batch_after_repair_locked(index_name, embeddings, metadata, state).await
+}
+
+async fn run_embeddings_batch(
+    index_name: &str,
+    embeddings: Vec<Array2<f32>>,
+    metadata: Vec<serde_json::Value>,
+    state: &Arc<AppState>,
+) -> Result<BatchMetrics, String> {
+    let lock = get_index_write_lock(state, index_name);
+    let _guard = lock.lock().await;
+
+    commit_embeddings_batch_locked(index_name, embeddings, metadata, state).await
+}
+
+pub(crate) async fn commit_embeddings_batch_locked(
+    index_name: &str,
+    embeddings: Vec<Array2<f32>>,
+    metadata: Vec<serde_json::Value>,
+    state: &Arc<AppState>,
+) -> Result<BatchMetrics, String> {
+    run_embeddings_batch_with_preflight_locked(index_name, embeddings, metadata, state).await
+}
+
+pub(crate) async fn commit_embeddings_batch_after_repair_locked(
+    index_name: &str,
+    embeddings: Vec<Array2<f32>>,
+    metadata: Vec<serde_json::Value>,
+    state: &Arc<AppState>,
+) -> Result<BatchMetrics, String> {
+    run_embeddings_batch_after_repair_locked(index_name, embeddings, metadata, state).await
 }
 
 /// Process a batch of documents for the given index.
@@ -365,130 +651,12 @@ async fn process_batch(
 ) {
     let doc_count = embeddings.len();
     let start = std::time::Instant::now();
-
-    let name_inner = index_name.to_string();
-    let state_clone = state.clone();
-    let path_str = state.index_path(index_name).to_string_lossy().to_string();
-
-    // Acquire per-index lock using full path for isolation
-    let lock = get_index_lock_by_path(&path_str);
-    let _guard = lock.lock().await;
-
-    // Run heavy work in blocking thread
-    let result = task::spawn_blocking(move || -> Result<BatchMetrics, String> {
-        // Load stored config from the shared state cache. The config update endpoint
-        // writes through this cache first, so background updates should read from the
-        // same source of truth instead of racing a fresh config.json reopen.
-        let stored_config = state_clone
-            .get_index_config(&name_inner)
-            .ok_or_else(|| format!("Failed to load config for index '{}'", name_inner))?;
-
-        // Check and automatically repair sync issues between index and DB
-        if let Err(e) = repair_index_db_sync(&path_str) {
-            return Err(format!("Index/DB sync repair failed: {}", e));
-        }
-
-        // Build IndexConfig
-        let fts_tokenizer =
-            crate::models::parse_fts_tokenizer(&stored_config.fts_tokenizer).unwrap_or_default();
-        let index_config = IndexConfig {
-            nbits: stored_config.nbits,
-            batch_size: stored_config.batch_size,
-            seed: stored_config.seed,
-            start_from_scratch: stored_config.start_from_scratch,
-            fts_tokenizer: fts_tokenizer.clone(),
-            ..Default::default()
-        };
-        let update_config = UpdateConfig::default();
-
-        // STEP 1: Update vector index FIRST
-        let index_update_start = std::time::Instant::now();
-        let index_result =
-            MmapIndex::update_or_create(&embeddings, &path_str, &index_config, &update_config);
-
-        let (mut index, doc_ids) = match index_result {
-            Ok((idx, ids)) => (idx, ids),
-            Err(e) => {
-                return Err(format!("Index update failed: {}", e));
-            }
-        };
-        let index_update_ms = index_update_start.elapsed().as_millis() as u64;
-
-        let first_doc_id = doc_ids.first().copied();
-        let last_doc_id = doc_ids.last().copied();
-
-        // STEP 2: Update metadata DB using the ACTUAL doc_ids from the index
-        let metadata_update_start = std::time::Instant::now();
-        let db_existed = filtering::exists(&path_str);
-        let db_result = if db_existed {
-            filtering::update(&path_str, &metadata, &doc_ids)
-        } else {
-            filtering::create(&path_str, &metadata, &doc_ids)
-        };
-
-        if let Err(e) = db_result {
-            // ROLLBACK: Remove the documents we just added to the index
-            if let Err(rollback_err) = index.delete_with_options(&doc_ids, false) {
-                tracing::error!(
-                    index = %name_inner,
-                    error = %rollback_err,
-                    operation = "rollback",
-                    "update.rollback.failed"
-                );
-            }
-            return Err(format!("Failed to update metadata: {}", e));
-        }
-
-        // STEP 3: Index metadata into FTS5 for full-text / hybrid search
-        if let Err(e) =
-            next_plaid::text_search::index(&path_str, &metadata, &doc_ids, &fts_tokenizer)
-        {
-            tracing::warn!(
-                index = %name_inner,
-                error = %e,
-                "update.fts_index.failed"
-            );
-            // Non-fatal: FTS is optional, semantic search still works
-        }
-        let metadata_update_ms = metadata_update_start.elapsed().as_millis() as u64;
-
-        // Eviction: Check if over max_documents limit
-        let evicted_count = if let Some(max_docs) = stored_config.max_documents {
-            match evict_oldest_documents(&mut index, max_docs) {
-                Ok(count) => count,
-                Err(e) => {
-                    tracing::warn!(
-                        index = %name_inner,
-                        error = %e,
-                        max_documents = max_docs,
-                        "update.eviction.failed"
-                    );
-                    0
-                }
-            }
-        } else {
-            0
-        };
-
-        // Reload State
-        state_clone.unload_index(&name_inner);
-        let idx = MmapIndex::load(&path_str).map_err(|e| format!("Failed to load index: {}", e))?;
-        state_clone.register_index(&name_inner, idx);
-
-        Ok(BatchMetrics {
-            index_update_ms,
-            metadata_update_ms,
-            first_doc_id,
-            last_doc_id,
-            evicted_count,
-        })
-    })
-    .await;
+    let result = run_embeddings_batch(index_name, embeddings, metadata, state).await;
 
     let total_ms = start.elapsed().as_millis() as u64;
 
     match result {
-        Ok(Ok(metrics)) => {
+        Ok(metrics) => {
             tracing::info!(
                 index = %index_name,
                 num_documents = doc_count,
@@ -510,15 +678,6 @@ async fn process_batch(
                     "update.batch.slow"
                 );
             }
-        }
-        Ok(Err(e)) => {
-            tracing::error!(
-                index = %index_name,
-                num_documents = doc_count,
-                error = %e,
-                total_ms = total_ms,
-                "update.batch.failed"
-            );
         }
         Err(e) => {
             tracing::error!(
@@ -798,7 +957,7 @@ async fn process_delete_batch(
     let path_str = state.index_path(index_name).to_string_lossy().to_string();
 
     // Acquire per-index lock using full path for isolation
-    let lock = get_index_lock_by_path(&path_str);
+    let lock = get_index_write_lock(state, index_name);
     let _guard = lock.lock().await;
 
     // Run in blocking thread
@@ -939,7 +1098,7 @@ pub async fn create_index(
     }
 
     // Lock mainly to prevent race condition on file existence check
-    let lock = get_index_lock(&req.name);
+    let lock = get_index_write_lock(&state, &req.name);
     let _guard = lock.lock().await;
 
     // Check if index already exists (either declared or populated)
@@ -1146,10 +1305,10 @@ pub async fn add_documents(
     let name_clone = name.clone();
     let state_clone = state.clone();
     let metadata = req.metadata;
-    let lock = get_index_lock(&name);
+    let lock = get_index_write_lock(&state, &name);
 
     // Acquire semaphore permit to limit queued tasks
-    let semaphore = get_index_semaphore(&name);
+    let semaphore = get_index_semaphore(&state, &name);
     let permit = semaphore.clone().try_acquire_owned().map_err(|_| {
         ApiError::ServiceUnavailable(format!(
             "Update queue full for index '{}'. Max {} pending updates. Retry later.",
@@ -1366,7 +1525,7 @@ pub async fn delete_index(
 ) -> ApiResult<Json<DeleteIndexResponse>> {
     let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
 
-    let lock = get_index_lock(&name);
+    let lock = get_index_write_lock(&state, &name);
     let _guard = lock.lock().await;
 
     // Stop background workers by removing their queue entries.
@@ -1387,12 +1546,10 @@ pub async fn delete_index(
     state.unload_index(&name);
     state.invalidate_config_cache(&name);
 
-    // Drop the lock guard before removing the directory, so the async mutex
-    // isn't held while we delete (similar to colgrep's drop(lock) pattern).
-    drop(_guard);
-
-    // Delete from disk. On Windows, recently dropped mmap/file handles can take a
-    // brief moment to release after unload, so retry a few times before failing.
+    // Keep the path lock until directory removal completes so project_sync
+    // replace/rollback work cannot interleave with delete_index on the same path.
+    // On Windows, recently dropped mmap/file handles can take a brief moment to
+    // release after unload, so retry a few times before failing.
     let path = state.index_path(&name);
     if path.exists() {
         let mut last_err = None;
@@ -1564,7 +1721,7 @@ pub async fn update_index_config(
 ) -> ApiResult<Json<UpdateIndexConfigResponse>> {
     let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
 
-    let lock = get_index_lock(&name);
+    let lock = get_index_write_lock(&state, &name);
     let _guard = lock.lock().await;
 
     // Load existing config from cache (or disk if not cached)
@@ -1639,21 +1796,7 @@ pub async fn update_index_with_encoding(
         return Err(ApiError::IndexNotDeclared(name));
     }
 
-    // Validate input
-    if req.documents.is_empty() {
-        return Err(ApiError::BadRequest(
-            "At least one document is required".to_string(),
-        ));
-    }
-
-    // Validate metadata length
-    if req.metadata.len() != req.documents.len() {
-        return Err(ApiError::BadRequest(format!(
-            "Metadata length ({}) must match documents length ({})",
-            req.metadata.len(),
-            req.documents.len()
-        )));
-    }
+    validate_update_with_encoding_request(&req)?;
 
     // Get or create the batch queue for this index FIRST
     let sender = get_or_create_batch_queue(&name, state.clone());
@@ -1672,20 +1815,13 @@ pub async fn update_index_with_encoding(
     })?;
 
     // Now encode - we have a guaranteed slot in the batch queue
-    let embeddings = encode_texts_internal(
-        state.clone(),
-        &req.documents,
-        InputType::Document,
-        req.pool_factor,
-    )
-    .await?;
-
-    let doc_count = embeddings.len();
+    let prepared = prepare_update_with_encoding_batch(state.clone(), req).await?;
+    let doc_count = prepared.embeddings.len();
 
     // Create batch item
     let batch_item = BatchItem {
-        embeddings,
-        metadata: req.metadata,
+        embeddings: prepared.embeddings,
+        metadata: prepared.metadata,
     };
 
     // Send using the reserved permit - this is guaranteed to succeed
@@ -1699,4 +1835,81 @@ pub async fn update_index_with_encoding(
 
     // Immediate Response
     Ok((StatusCode::ACCEPTED, Json("Update queued for batching")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_index_lock_by_path, get_index_semaphore, get_index_write_lock};
+    use crate::state::{ApiConfig, AppState};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    #[cfg(feature = "model")]
+    fn build_test_state(index_dir: std::path::PathBuf) -> AppState {
+        AppState::with_model_pool(
+            ApiConfig {
+                index_dir,
+                default_top_k: 10,
+            },
+            None,
+            None,
+        )
+    }
+
+    #[cfg(not(feature = "model"))]
+    fn build_test_state(index_dir: std::path::PathBuf) -> AppState {
+        AppState::new(ApiConfig {
+            index_dir,
+            default_top_k: 10,
+        })
+    }
+
+    #[test]
+    fn get_index_write_lock_uses_same_path_key_as_project_sync() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let state = build_test_state(temp_dir.path().to_path_buf());
+        let path_str = state.index_path("shared").to_string_lossy().to_string();
+
+        let documents_lock = get_index_write_lock(&state, "shared");
+        let project_sync_lock = get_index_lock_by_path(&path_str);
+
+        assert!(Arc::ptr_eq(&documents_lock, &project_sync_lock));
+    }
+
+    #[test]
+    fn get_index_write_lock_distinguishes_same_name_in_different_roots() {
+        let temp_dir_a = TempDir::new().expect("temp dir should exist");
+        let temp_dir_b = TempDir::new().expect("temp dir should exist");
+        let state_a = build_test_state(temp_dir_a.path().to_path_buf());
+        let state_b = build_test_state(temp_dir_b.path().to_path_buf());
+
+        let lock_a = get_index_write_lock(&state_a, "shared");
+        let lock_b = get_index_write_lock(&state_b, "shared");
+
+        assert!(!Arc::ptr_eq(&lock_a, &lock_b));
+    }
+
+    #[test]
+    fn get_index_semaphore_uses_same_path_key_within_root() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let state = build_test_state(temp_dir.path().to_path_buf());
+
+        let semaphore_a = get_index_semaphore(&state, "shared");
+        let semaphore_b = get_index_semaphore(&state, "shared");
+
+        assert!(Arc::ptr_eq(&semaphore_a, &semaphore_b));
+    }
+
+    #[test]
+    fn get_index_semaphore_distinguishes_same_name_in_different_roots() {
+        let temp_dir_a = TempDir::new().expect("temp dir should exist");
+        let temp_dir_b = TempDir::new().expect("temp dir should exist");
+        let state_a = build_test_state(temp_dir_a.path().to_path_buf());
+        let state_b = build_test_state(temp_dir_b.path().to_path_buf());
+
+        let semaphore_a = get_index_semaphore(&state_a, "shared");
+        let semaphore_b = get_index_semaphore(&state_b, "shared");
+
+        assert!(!Arc::ptr_eq(&semaphore_a, &semaphore_b));
+    }
 }
