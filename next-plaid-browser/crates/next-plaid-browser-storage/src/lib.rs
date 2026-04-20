@@ -168,17 +168,15 @@ async fn load_active_bundle_impl(
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use super::*;
+    use indexed_db_futures::database::Database;
+    use indexed_db_futures::prelude::*;
+    use indexed_db_futures::transaction::TransactionMode;
     use js_sys::{Function, Object, Promise, Reflect, Uint8Array};
     use next_plaid_browser_loader::{
         parse_inline_metadata_json, parse_search_artifacts, verify_artifact_bytes,
     };
-    use wasm_bindgen::closure::Closure;
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
-    use web_sys::{
-        Event, IdbDatabase, IdbFactory, IdbObjectStore, IdbOpenDbRequest, IdbRequest,
-        IdbTransaction, IdbTransactionMode,
-    };
 
     const INDEXED_DB_NAME: &str = "next-plaid-browser";
     const INDEXED_DB_VERSION: u32 = 1;
@@ -216,12 +214,7 @@ mod wasm {
                 index_id: manifest.index_id.clone(),
                 build_id: manifest.build_id.clone(),
             };
-            put_runtime_state(
-                &db,
-                &active_bundle_key(&manifest.index_id),
-                &serde_json::to_string(&record)?,
-            )
-            .await?;
+            put_runtime_state(&db, &active_bundle_key(&manifest.index_id), &record).await?;
         }
 
         Ok(BundleInstalledResponse {
@@ -236,10 +229,9 @@ mod wasm {
         index_id: &str,
     ) -> Result<StoredBrowserBundle, BrowserStorageError> {
         let db = open_indexed_db().await?;
-        let record_json = get_runtime_state(&db, &active_bundle_key(index_id))
+        let record = get_runtime_state(&db, &active_bundle_key(index_id))
             .await?
             .ok_or_else(|| BrowserStorageError::MissingActiveBundle(index_id.to_string()))?;
-        let record: ActiveBundleRecord = serde_json::from_str(&record_json)?;
 
         let bundle_dir = get_bundle_directory(&record.index_id, &record.build_id, false).await?;
         let manifest_bytes = read_bytes_file(&bundle_dir, MANIFEST_FILE_NAME).await?;
@@ -422,124 +414,70 @@ mod wasm {
         await_promise(promise).await
     }
 
-    async fn open_indexed_db() -> Result<IdbDatabase, BrowserStorageError> {
+    async fn open_indexed_db() -> Result<Database, BrowserStorageError> {
         let global = js_sys::global();
         let indexed_db =
             Reflect::get(&global, &JsValue::from_str("indexedDB")).map_err(js_error_value)?;
         if indexed_db.is_undefined() || indexed_db.is_null() {
             return Err(BrowserStorageError::MissingIndexedDb);
         }
-        let factory = indexed_db
-            .dyn_into::<IdbFactory>()
-            .map_err(js_error_value)?;
-        let request = factory
-            .open_with_u32(INDEXED_DB_NAME, INDEXED_DB_VERSION)
-            .map_err(js_error_value)?;
-
-        let upgrade = Closure::<dyn FnMut(Event)>::wrap(Box::new(move |event: Event| {
-            if let Some(target) = event.target() {
-                if let Ok(open_request) = target.dyn_into::<IdbOpenDbRequest>() {
-                    if let Ok(result) = open_request.result() {
-                        if let Ok(db) = result.dyn_into::<IdbDatabase>() {
-                            let _ = db.create_object_store(INDEXED_DB_STORE);
-                        }
-                    }
+        Database::open(INDEXED_DB_NAME)
+            .with_version(INDEXED_DB_VERSION)
+            .with_on_upgrade_needed_fut(|event, db| async move {
+                if event.old_version() == 0.0 {
+                    db.create_object_store(INDEXED_DB_STORE).build()?;
                 }
-            }
-        }));
-        request.set_onupgradeneeded(Some(upgrade.as_ref().unchecked_ref()));
-        let result = request_promise(&request).await?;
-        upgrade.forget();
-        result.dyn_into::<IdbDatabase>().map_err(js_error_value)
+                Ok(())
+            })
+            .await
+            .map_err(|error| BrowserStorageError::Js(error.to_string()))
     }
 
     async fn put_runtime_state(
-        db: &IdbDatabase,
+        db: &Database,
         key: &str,
-        value: &str,
+        value: &ActiveBundleRecord,
     ) -> Result<(), BrowserStorageError> {
         let tx = db
-            .transaction_with_str_and_mode(INDEXED_DB_STORE, IdbTransactionMode::Readwrite)
-            .map_err(js_error_value)?;
-        let store = tx.object_store(INDEXED_DB_STORE).map_err(js_error_value)?;
-        let request = store
-            .put_with_key(&JsValue::from_str(value), &JsValue::from_str(key))
-            .map_err(js_error_value)?;
-        let _ = request_promise(&request).await?;
-        transaction_promise(&tx).await?;
+            .transaction(INDEXED_DB_STORE)
+            .with_mode(TransactionMode::Readwrite)
+            .build()
+            .map_err(indexed_db_error)?;
+        let store = tx
+            .object_store(INDEXED_DB_STORE)
+            .map_err(indexed_db_error)?;
+        store
+            .put(value)
+            .with_key(key.to_string())
+            .serde()
+            .map_err(indexed_db_error)?
+            .await
+            .map_err(indexed_db_error)?;
+        tx.commit().await.map_err(indexed_db_error)?;
         Ok(())
     }
 
     async fn get_runtime_state(
-        db: &IdbDatabase,
+        db: &Database,
         key: &str,
-    ) -> Result<Option<String>, BrowserStorageError> {
+    ) -> Result<Option<ActiveBundleRecord>, BrowserStorageError> {
         let tx = db
-            .transaction_with_str_and_mode(INDEXED_DB_STORE, IdbTransactionMode::Readonly)
-            .map_err(js_error_value)?;
-        let store: IdbObjectStore = tx.object_store(INDEXED_DB_STORE).map_err(js_error_value)?;
-        let request = store.get(&JsValue::from_str(key)).map_err(js_error_value)?;
-        let value = request_promise(&request).await?;
-        transaction_promise(&tx).await?;
-        Ok(value.as_string())
+            .transaction(INDEXED_DB_STORE)
+            .build()
+            .map_err(indexed_db_error)?;
+        let store = tx
+            .object_store(INDEXED_DB_STORE)
+            .map_err(indexed_db_error)?;
+        store
+            .get(key.to_string())
+            .serde()
+            .map_err(indexed_db_error)?
+            .await
+            .map_err(indexed_db_error)
     }
 
     fn active_bundle_key(index_id: &str) -> String {
         format!("{ACTIVE_BUNDLE_PREFIX}{index_id}")
-    }
-
-    async fn request_promise(request: &IdbRequest) -> Result<JsValue, BrowserStorageError> {
-        let request_success = request.clone();
-        let request_error = request.clone();
-        let promise = Promise::new(&mut |resolve: Function, reject: Function| {
-            let request_success = request_success.clone();
-            let request_error = request_error.clone();
-            let on_success = Closure::<dyn FnMut(Event)>::once(move |_event: Event| {
-                let result = request_success.result().unwrap_or(JsValue::UNDEFINED);
-                let _ = resolve.call1(&JsValue::UNDEFINED, &result);
-            });
-            let on_error = Closure::<dyn FnMut(Event)>::once(move |_event: Event| {
-                let error = request_error
-                    .error()
-                    .ok()
-                    .flatten()
-                    .map(|error| error.message())
-                    .map(|message| JsValue::from_str(&message))
-                    .unwrap_or_else(|| JsValue::from_str("IndexedDB request failed"));
-                let _ = reject.call1(&JsValue::UNDEFINED, &error);
-            });
-            request.set_onsuccess(Some(on_success.as_ref().unchecked_ref()));
-            request.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-            on_success.forget();
-            on_error.forget();
-        });
-        JsFuture::from(promise).await.map_err(js_error_value)
-    }
-
-    async fn transaction_promise(tx: &IdbTransaction) -> Result<(), BrowserStorageError> {
-        let tx_complete = tx.clone();
-        let tx_error = tx.clone();
-        let promise = Promise::new(&mut |resolve: Function, reject: Function| {
-            let tx_error = tx_error.clone();
-            let on_complete = Closure::<dyn FnMut(Event)>::once(move |_event: Event| {
-                let _ = resolve.call0(&JsValue::UNDEFINED);
-            });
-            let on_error = Closure::<dyn FnMut(Event)>::once(move |_event: Event| {
-                let error = tx_error
-                    .error()
-                    .map(|error| error.message())
-                    .map(|message| JsValue::from_str(&message))
-                    .unwrap_or_else(|| JsValue::from_str("IndexedDB transaction failed"));
-                let _ = reject.call1(&JsValue::UNDEFINED, &error);
-            });
-            tx_complete.set_oncomplete(Some(on_complete.as_ref().unchecked_ref()));
-            tx.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-            tx.set_onabort(Some(on_error.as_ref().unchecked_ref()));
-            on_complete.forget();
-            on_error.forget();
-        });
-        let _ = JsFuture::from(promise).await.map_err(js_error_value)?;
-        Ok(())
     }
 
     async fn await_promise(value: JsValue) -> Result<JsValue, BrowserStorageError> {
@@ -584,6 +522,10 @@ mod wasm {
             })
             .unwrap_or_else(|| format!("{value:?}"));
         BrowserStorageError::Js(message)
+    }
+
+    fn indexed_db_error(error: indexed_db_futures::error::Error) -> BrowserStorageError {
+        BrowserStorageError::Js(error.to_string())
     }
 }
 

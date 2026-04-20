@@ -1,4 +1,5 @@
 const statusNode = document.getElementById("status");
+const WORKER_REQUEST_TIMEOUT_MS = 15_000;
 
 function setStatus(state, value) {
   statusNode.dataset.state = state;
@@ -315,12 +316,24 @@ function callWorker(worker, request) {
   const requestId = crypto.randomUUID();
 
   return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Worker request timed out after ${WORKER_REQUEST_TIMEOUT_MS}ms: ${request?.type ?? "unknown"}`));
+    }, WORKER_REQUEST_TIMEOUT_MS);
+
+    const cleanup = () => {
+      clearTimeout(timeoutId);
+      worker.removeEventListener("message", handleMessage);
+      worker.removeEventListener("error", handleError);
+      worker.removeEventListener("messageerror", handleMessageError);
+    };
+
     const handleMessage = (event) => {
       if (event.data?.requestId !== requestId) {
         return;
       }
 
-      worker.removeEventListener("message", handleMessage);
+      cleanup();
       const { ok, response, error } = event.data;
       if (ok) {
         resolve(response);
@@ -329,7 +342,19 @@ function callWorker(worker, request) {
       }
     };
 
+    const handleError = (event) => {
+      cleanup();
+      reject(new Error(`Worker error while handling ${request?.type ?? "unknown"}: ${event.message}`));
+    };
+
+    const handleMessageError = () => {
+      cleanup();
+      reject(new Error(`Worker messageerror while handling ${request?.type ?? "unknown"}`));
+    };
+
     worker.addEventListener("message", handleMessage);
+    worker.addEventListener("error", handleError);
+    worker.addEventListener("messageerror", handleMessageError);
     worker.postMessage({ requestId, request });
   });
 }

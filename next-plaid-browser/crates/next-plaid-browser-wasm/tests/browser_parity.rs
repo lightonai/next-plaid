@@ -682,6 +682,20 @@ async fn browser_storage_rejects_compressed_artifact_install() {
 }
 
 #[wasm_bindgen_test]
+async fn browser_storage_rejects_loading_missing_active_bundle() {
+    reset_runtime_state();
+
+    let error = storage_error_message(StorageRequest::LoadStoredBundle(LoadStoredBundleRequest {
+        index_id: "missing-demo".into(),
+        name: "missing-demo".into(),
+        fts_tokenizer: FtsTokenizer::Unicode61,
+    }))
+    .await;
+
+    assert!(error.contains("no active stored bundle"));
+}
+
+#[wasm_bindgen_test]
 fn browser_worker_search_rejects_hybrid_query_count_mismatch() {
     reset_runtime_state();
     load_demo_index("demo-hybrid-invalid");

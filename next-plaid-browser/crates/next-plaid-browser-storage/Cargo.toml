@@ -13,6 +13,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+indexed_db_futures = { version = "0.6.4", features = ["async-upgrade", "serde"] }
 js-sys = "0.3.82"
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
@@ -20,13 +21,6 @@ web-sys = { version = "0.3.82", features = [
   "DomException",
   "Event",
   "EventTarget",
-  "IdbDatabase",
-  "IdbFactory",
-  "IdbObjectStore",
-  "IdbOpenDbRequest",
-  "IdbRequest",
-  "IdbTransaction",
-  "IdbTransactionMode"
 ] }
 
 [lints]

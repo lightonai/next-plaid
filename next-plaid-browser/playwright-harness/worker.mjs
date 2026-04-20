@@ -28,6 +28,24 @@ async function handleRequest(request) {
 self.addEventListener("message", async (event) => {
   const { requestId, request } = event.data ?? {};
 
+  if (typeof requestId !== "string") {
+    self.postMessage({
+      requestId: null,
+      ok: false,
+      error: "Worker request envelope must include a string requestId"
+    });
+    return;
+  }
+
+  if (!request || typeof request !== "object") {
+    self.postMessage({
+      requestId,
+      ok: false,
+      error: "Worker request envelope must include an object request payload"
+    });
+    return;
+  }
+
   try {
     const response = await handleRequest(request);
     self.postMessage({ requestId, ok: true, response });
