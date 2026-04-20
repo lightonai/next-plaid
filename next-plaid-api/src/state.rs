@@ -125,6 +125,32 @@ pub struct ModelPool {
     pub cached_info: CachedModelInfo,
 }
 
+#[cfg(feature = "model")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EncodeLane {
+    Query,
+    Ingest,
+}
+
+#[cfg(feature = "model")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EncodePoolKind {
+    Unified,
+    Query,
+    Ingest,
+}
+
+#[cfg(feature = "model")]
+impl EncodePoolKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unified => "unified",
+            Self::Query => "query",
+            Self::Ingest => "ingest",
+        }
+    }
+}
+
 /// Cached model information that doesn't require locking.
 /// This information is immutable after model initialization.
 #[cfg(feature = "model")]
@@ -174,10 +200,127 @@ pub struct AppState {
     /// Optional model pool for concurrent encoding
     #[cfg(feature = "model")]
     pub model_pool: Option<ModelPool>,
+    /// Optional dedicated pool for query/rerank encoding.
+    #[cfg(feature = "model")]
+    pub query_model_pool: Option<ModelPool>,
+    /// Whether query/rerank should use the dedicated query pool.
+    #[cfg(feature = "model")]
+    pub query_on_cpu: bool,
     /// Model configuration info (path, quantization status) - for logging
     #[cfg(feature = "model")]
     #[allow(dead_code)]
     pub model_info: Option<ModelInfo>,
+}
+
+#[cfg(all(test, feature = "model"))]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::{
+        ApiConfig, AppState, CachedModelInfo, EncodeLane, EncodePoolKind, ModelConfig, ModelPool,
+    };
+
+    fn dummy_model_pool(path: &str, use_cuda: bool, pool_size: usize) -> ModelPool {
+        ModelPool {
+            pool_size,
+            model_config: ModelConfig {
+                path: std::path::PathBuf::from(path),
+                use_cuda,
+                use_int8: false,
+                parallel_sessions: Some(1),
+                batch_size: Some(4),
+                threads: None,
+                query_length: Some(48),
+                document_length: Some(300),
+            },
+            cached_info: CachedModelInfo {
+                name: Some("dummy".to_string()),
+                path: path.to_string(),
+                quantized: false,
+                embedding_dim: 48,
+                batch_size: 4,
+                num_sessions: 1,
+                query_prefix: "[Q] ".to_string(),
+                document_prefix: "[D] ".to_string(),
+                query_length: 48,
+                document_length: 300,
+                do_query_expansion: false,
+                uses_token_type_ids: false,
+                mask_token_id: 50284,
+                pad_token_id: 50284,
+            },
+        }
+    }
+
+    #[test]
+    fn query_on_cpu_routes_logical_lanes_to_distinct_pools() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let config = ApiConfig {
+            index_dir: temp_dir.path().to_path_buf(),
+            default_top_k: 10,
+        };
+
+        let state = AppState::with_dual_model_pools(
+            config,
+            dummy_model_pool("/models/ingest", true, 2),
+            dummy_model_pool("/models/query", false, 1),
+            None,
+        );
+
+        assert_eq!(
+            state.encode_pool_kind_for_lane(EncodeLane::Query),
+            EncodePoolKind::Query
+        );
+        assert_eq!(
+            state.encode_pool_kind_for_lane(EncodeLane::Ingest),
+            EncodePoolKind::Ingest
+        );
+        assert!(
+            !state
+                .model_pool_for_kind(EncodePoolKind::Query)
+                .expect("query pool must exist")
+                .model_config
+                .use_cuda
+        );
+        assert!(
+            state
+                .model_pool_for_kind(EncodePoolKind::Ingest)
+                .expect("ingest pool must exist")
+                .model_config
+                .use_cuda
+        );
+    }
+
+    #[test]
+    fn single_model_pool_keeps_unified_encode_lane() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let config = ApiConfig {
+            index_dir: temp_dir.path().to_path_buf(),
+            default_top_k: 10,
+        };
+
+        let state = AppState::with_model_pool(
+            config,
+            Some(dummy_model_pool("/models/unified", true, 2)),
+            None,
+        );
+
+        assert_eq!(
+            state.encode_pool_kind_for_lane(EncodeLane::Query),
+            EncodePoolKind::Unified
+        );
+        assert_eq!(
+            state.encode_pool_kind_for_lane(EncodeLane::Ingest),
+            EncodePoolKind::Unified
+        );
+        assert!(
+            state
+                .model_pool_for_kind(EncodePoolKind::Unified)
+                .expect("unified pool must exist")
+                .model_config
+                .use_cuda
+        );
+    }
 }
 
 impl AppState {
@@ -213,6 +356,31 @@ impl AppState {
             indices: RwLock::new(HashMap::new()),
             index_configs: RwLock::new(HashMap::new()),
             model_pool,
+            query_model_pool: None,
+            query_on_cpu: false,
+            model_info,
+        }
+    }
+
+    /// Create a new application state with dedicated ingest and query pools.
+    #[cfg(feature = "model")]
+    pub fn with_dual_model_pools(
+        config: ApiConfig,
+        ingest_model_pool: ModelPool,
+        query_model_pool: ModelPool,
+        model_info: Option<ModelInfo>,
+    ) -> Self {
+        if !config.index_dir.exists() {
+            std::fs::create_dir_all(&config.index_dir).ok();
+        }
+
+        Self {
+            config,
+            indices: RwLock::new(HashMap::new()),
+            index_configs: RwLock::new(HashMap::new()),
+            model_pool: Some(ingest_model_pool),
+            query_model_pool: Some(query_model_pool),
+            query_on_cpu: true,
             model_info,
         }
     }
@@ -275,13 +443,39 @@ impl AppState {
     /// Check if model pool is available.
     #[cfg(feature = "model")]
     pub fn has_model(&self) -> bool {
-        self.model_pool.is_some()
+        self.model_pool.is_some() || self.query_model_pool.is_some()
     }
 
     /// Get cached model info if model pool is available.
     #[cfg(feature = "model")]
     pub fn cached_model_info(&self) -> Option<&CachedModelInfo> {
-        self.model_pool.as_ref().map(|p| &p.cached_info)
+        self.model_pool
+            .as_ref()
+            .or(self.query_model_pool.as_ref())
+            .map(|pool| &pool.cached_info)
+    }
+
+    /// Resolve the physical worker pool for a logical encoding lane.
+    #[cfg(feature = "model")]
+    pub fn encode_pool_kind_for_lane(&self, lane: EncodeLane) -> EncodePoolKind {
+        if self.query_on_cpu {
+            match lane {
+                EncodeLane::Query => EncodePoolKind::Query,
+                EncodeLane::Ingest => EncodePoolKind::Ingest,
+            }
+        } else {
+            EncodePoolKind::Unified
+        }
+    }
+
+    /// Get the model pool for a physical worker pool.
+    #[cfg(feature = "model")]
+    pub fn model_pool_for_kind(&self, pool_kind: EncodePoolKind) -> Option<&ModelPool> {
+        match pool_kind {
+            EncodePoolKind::Unified => self.model_pool.as_ref(),
+            EncodePoolKind::Query => self.query_model_pool.as_ref().or(self.model_pool.as_ref()),
+            EncodePoolKind::Ingest => self.model_pool.as_ref(),
+        }
     }
 
     /// Get the path for an index by name.
