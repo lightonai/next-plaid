@@ -22,4 +22,4 @@ n_full_scores?: number | null,
  * The outer `Option` indicates whether the field was present in JSON.
  * The inner `Option` distinguishes an explicit `null` from a numeric value.
  */
-centroid_score_threshold?: number | null | null, };
+centroid_score_threshold?: number | null, };

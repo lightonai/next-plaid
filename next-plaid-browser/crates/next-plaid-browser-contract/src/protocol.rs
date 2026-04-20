@@ -1,3 +1,6 @@
+use std::fmt;
+
+use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use ts_rs::TS;
 
@@ -12,15 +15,6 @@ fn default_nbits() -> usize {
 
 fn default_fts_tokenizer() -> FtsTokenizer {
     FtsTokenizer::default()
-}
-
-fn deserialize_present_optional_f32<'de, D>(
-    deserializer: D,
-) -> Result<Option<Option<f32>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Option::<f32>::deserialize(deserializer).map(Some)
 }
 
 /// Supported SQLite FTS5 tokenizers exposed by the browser runtime wire API.
@@ -162,7 +156,7 @@ pub struct QueryEmbeddingsPayload {
 }
 
 /// Search tuning parameters sent over the browser runtime wire.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default, TS)]
 pub struct SearchParamsRequest {
     /// Maximum number of ranked hits to return per query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -177,12 +171,128 @@ pub struct SearchParamsRequest {
     ///
     /// The outer `Option` indicates whether the field was present in JSON.
     /// The inner `Option` distinguishes an explicit `null` from a numeric value.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_present_optional_f32"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null")]
     pub centroid_score_threshold: Option<Option<f32>>,
+}
+
+impl<'de> Deserialize<'de> for SearchParamsRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        enum Field {
+            TopK,
+            NIvfProbe,
+            NFullScores,
+            CentroidScoreThreshold,
+            Ignore,
+        }
+
+        impl<'de> Deserialize<'de> for Field {
+            fn deserialize<FD>(deserializer: FD) -> Result<Self, FD::Error>
+            where
+                FD: Deserializer<'de>,
+            {
+                struct FieldVisitor;
+
+                impl<'de> Visitor<'de> for FieldVisitor {
+                    type Value = Field;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        formatter.write_str("a search params request field")
+                    }
+
+                    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+                    where
+                        E: serde::de::Error,
+                    {
+                        Ok(match value {
+                            "top_k" => Field::TopK,
+                            "n_ivf_probe" => Field::NIvfProbe,
+                            "n_full_scores" => Field::NFullScores,
+                            "centroid_score_threshold" => Field::CentroidScoreThreshold,
+                            _ => Field::Ignore,
+                        })
+                    }
+                }
+
+                deserializer.deserialize_identifier(FieldVisitor)
+            }
+        }
+
+        struct SearchParamsVisitor;
+
+        impl<'de> Visitor<'de> for SearchParamsVisitor {
+            type Value = SearchParamsRequest;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a search params request object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut top_k: Option<Option<usize>> = None;
+                let mut n_ivf_probe: Option<Option<usize>> = None;
+                let mut n_full_scores: Option<Option<usize>> = None;
+                let mut centroid_score_threshold: Option<Option<f32>> = None;
+
+                while let Some(field) = map.next_key()? {
+                    match field {
+                        Field::TopK => {
+                            if top_k.is_some() {
+                                return Err(serde::de::Error::duplicate_field("top_k"));
+                            }
+                            top_k = Some(map.next_value()?);
+                        }
+                        Field::NIvfProbe => {
+                            if n_ivf_probe.is_some() {
+                                return Err(serde::de::Error::duplicate_field("n_ivf_probe"));
+                            }
+                            n_ivf_probe = Some(map.next_value()?);
+                        }
+                        Field::NFullScores => {
+                            if n_full_scores.is_some() {
+                                return Err(serde::de::Error::duplicate_field("n_full_scores"));
+                            }
+                            n_full_scores = Some(map.next_value()?);
+                        }
+                        Field::CentroidScoreThreshold => {
+                            if centroid_score_threshold.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "centroid_score_threshold",
+                                ));
+                            }
+                            centroid_score_threshold = Some(map.next_value()?);
+                        }
+                        Field::Ignore => {
+                            let _: IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+
+                Ok(SearchParamsRequest {
+                    top_k: top_k.flatten(),
+                    n_ivf_probe: n_ivf_probe.flatten(),
+                    n_full_scores: n_full_scores.flatten(),
+                    centroid_score_threshold,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct(
+            "SearchParamsRequest",
+            &[
+                "top_k",
+                "n_ivf_probe",
+                "n_full_scores",
+                "centroid_score_threshold",
+            ],
+            SearchParamsVisitor,
+        )
+    }
 }
 
 /// Ranked results for one query in the browser wire format.
