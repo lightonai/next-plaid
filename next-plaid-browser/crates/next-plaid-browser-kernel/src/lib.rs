@@ -1469,4 +1469,18 @@ mod tests {
         assert_eq!(ids, vec![20, 40, 10, 30]);
         assert_eq!(scores, vec![0.875, 0.375, 0.25, 0.0]);
     }
+
+    #[test]
+    fn total_cmp_orders_nans_deterministically_for_descending_sort() {
+        let mut values: Vec<f32> = vec![0.3, f32::NAN, 0.7, 0.1, f32::NAN, 0.9];
+        values.sort_by(|a, b| b.total_cmp(a));
+
+        // Positive NaN is greater than every finite value under
+        // f32::total_cmp, so a descending sort clusters NaN at the start.
+        // The finite tail is strictly descending. The key property we
+        // rely on is determinism, not the NaN position itself.
+        assert!(values[0].is_nan());
+        assert!(values[1].is_nan());
+        assert_eq!(values[2..], [0.9, 0.7, 0.3, 0.1]);
+    }
 }
