@@ -211,6 +211,48 @@ Status:
 - detailed review findings and remediation slices now live in
   `docs/REMEDIATION_AUDIT.md`
 
+## Phase 5.5: Code quality remediation pass
+
+Goal:
+
+- land the mechanical Rust refactors that every later phase depends on, so
+  those phases do not have to carry duplicated kernel paths, string-based
+  errors, and an under-annotated public surface forward
+
+What this phase means in practice:
+
+- collapse the dense and compressed search paths into a single
+  implementation behind an internal `IndexView` trait
+- split the oversized `kernel`, `wasm`, and `keyword_runtime` crates along
+  their natural module boundaries
+- replace `Result<T, String>` and `JsError::new(&err.to_string())` patterns
+  with typed `KeywordError` / `WasmError` enums
+- annotate the public surface with `#[must_use]`, `///` documentation, and
+  workspace-level `[lints]`
+
+Scope:
+
+- follows remediation `Slice 7`, `Slice 8`, and `Slice 9` in
+  `docs/REMEDIATION_AUDIT.md`
+- does not change search semantics or the browser runtime contract
+- overlaps with `Slice 4` for typed `fusion_mode` and `fts_tokenizer`
+  values at the contract boundary
+
+Exit criteria:
+
+- dense and compressed search paths share a single implementation
+- `kernel`, `wasm`, and `keyword_runtime` are split along their natural
+  module boundaries
+- `KeywordError` and `WasmError` replace the string-based and stringified
+  error paths
+- `#[must_use]` and `///` documentation are present on the public surface
+- a workspace-level `[lints]` block is in place
+- all existing parity, browser, and smoke lanes remain green
+
+Status:
+
+- not started; unlocks cleaner subsequent work in Phases 5, 6, and 7
+
 ## Phase 6: Metadata and filter story
 
 Goal:

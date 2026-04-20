@@ -233,6 +233,195 @@ Why this matters:
 - Safari private browsing and degraded environments are still real targets for
   graceful failure behavior
 
+### P3 Rust code quality and structure
+
+These findings do not change browser behavior, but they slow every later
+phase on the roadmap (storage hardening, FTS mutations, encoder path).
+They are called out separately from the P1 / P2 work because each one is a
+mechanical refactor rather than a design decision.
+
+This pass reviewed the current Rust implementation against
+`.reference/rust-skills` with a focus on the kernel, wasm, keyword runtime,
+loader, and contract crates.
+
+#### 13. Dense and compressed search paths are duplicated end-to-end
+
+`next-plaid-browser-kernel/src/lib.rs` carries two near-identical versions
+of the standard search path, the batched search path, and the candidate
+reranker:
+
+- `search_one_standard` and `search_one_standard_compressed`
+- `search_one_batched` and `search_one_batched_compressed`
+- `rank_candidates` and `rank_compressed_candidates`
+
+The only real differences are how `doc_codes` is retrieved and how documents
+are reconstructed for exact rerank.
+
+Why this matters:
+
+- every future change to the search flow has to land twice
+- the duplicated versions will drift as storage-driven mutation and encoder
+  work add new call sites
+- it is roughly 500 lines that do not need to exist
+
+Short-term fix:
+
+- introduce an internal `IndexView` trait with `centroids`, `document_count`,
+  `doc_codes`, `get_candidates`, and `exact_score`
+- implement it for both `BrowserIndexView` and `CompressedBrowserIndexView`
+- collapse the four search / rerank functions into two generic functions
+
+#### 14. Keyword runtime uses `Result<T, String>` throughout
+
+`next-plaid-browser-wasm/src/keyword_runtime.rs` flattens every SQL, regex,
+and JSON failure into `String` via `sql_err` and `regex_err`. Production
+code also contains an unconditional `.unwrap()` in `json_to_sql_value` when
+serializing nested metadata values.
+
+Why this matters:
+
+- source-chain information is discarded at the first `?`
+- callers cannot distinguish user-input errors from internal failures
+- `.unwrap()` in the hot path violates `err-no-unwrap-prod`
+
+Short-term fix:
+
+- define a `KeywordError` enum with `thiserror`, using `#[from]` for
+  `rusqlite::Error`, `regex::Error`, and `serde_json::Error`
+- bubble the `serde_json::to_string` failure instead of unwrapping
+- update all internal call sites to `?`
+
+#### 15. The WASM boundary stringifies every underlying error
+
+`next-plaid-browser-wasm/src/lib.rs` contains over twenty copies of
+`.map_err(|err| JsError::new(&err.to_string()))`.
+
+Why this matters:
+
+- the wasm boundary is the hardest place to diagnose failures from
+- every crossed-boundary error type ends up as the same JS string
+- the pattern encourages drive-by stringification instead of real error
+  modeling
+
+Short-term fix:
+
+- introduce an internal `WasmError` enum with `thiserror` and `#[from]` for
+  each crossed-boundary error (`KernelError`, `BrowserStorageError`,
+  `BundleManifestError`, `KeywordError`, `serde_json::Error`)
+- implement `From<WasmError> for JsError` once
+- replace the scattered `.map_err(...)` sites with bare `?`
+
+#### 16. Oversized single-file crates slow every change
+
+Three core files are over 1000 lines:
+
+- `next-plaid-browser-kernel/src/lib.rs` (about 1470 lines)
+- `next-plaid-browser-wasm/src/lib.rs` (about 1550 lines)
+- `next-plaid-browser-wasm/src/keyword_runtime.rs` (about 1130 lines)
+
+Why this matters:
+
+- code review and navigation cost grows on every slice
+- natural module boundaries (matrix, probe, rerank, fusion, runtime
+  dispatch, memory accounting, conversion, validation, filter grammar) are
+  already there; they just are not reflected in the file layout
+
+Short-term fix:
+
+- split `kernel` into `matrix`, `index` (trait plus both views),
+  `decompress`, `probe`, `rerank`, `fusion`, `ord` modules
+- split `wasm` into `runtime`, `storage`, `memory`, `convert`, `validation`
+  modules
+- split `keyword_runtime` into `index`, `schema`, `filter` (tokenizer plus
+  validator), and `sql` modules
+
+#### 17. `f32` comparator boilerplate is repeated everywhere
+
+The kernel spells out
+`sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))`
+roughly ten times, and the hand-rolled `OrdF32` wrapper mirrors what
+`f32::total_cmp` already provides in `std` since 1.62.
+
+Short-term fix:
+
+- replace the comparator chain with `f32::total_cmp`
+- delete the `OrdF32` wrapper
+- where a wrapper is still needed for `BinaryHeap` keys, derive its ordering
+  from `total_cmp` consistently
+
+#### 18. `parse_f32_le` / `parse_i32_le` / `parse_i64_le` are near-duplicates
+
+`next-plaid-browser-loader/src/lib.rs` holds three copies of the same
+chunks-exact-and-decode helper, plus a repeated
+`.get(kind).ok_or(MissingArtifact(kind))?` pattern across seven artifact
+kinds.
+
+Short-term fix:
+
+- generalize the `*_le` helpers through a small `FromLeBytes` trait or a
+  `bytemuck`-style cast
+- extract `require_artifact(bytes_map, kind)` to collapse the artifact
+  lookups
+
+#### 19. Unchecked `i64 → usize` casts across the kernel
+
+`code as usize` and `doc_id as usize` appear throughout the kernel.
+Negative values wrap silently into very large `usize` values and then index
+into the vector arrays. Some call sites use `usize::try_from`, most do not.
+
+Short-term fix:
+
+- standardize on `usize::try_from(value).ok()` for centroid codes and
+  document ids
+- treat out-of-range values as "skip" instead of "wrap" at a minimum
+
+#### 20. WASM byte accounting repeats the same overflow pattern
+
+`wasm/src/lib.rs` repeats `checked_add` plus
+`.ok_or_else(|| JsError::new("index byte count overflow"))` fourteen times
+across `dense_index_payload_bytes` and `compressed_index_payload_bytes`.
+
+Short-term fix:
+
+- extract a small `ByteCounter` helper or an `add_slice!` macro
+- define the overflow message once
+
+#### 21. Missing `#[must_use]`, doc comments, and lint configuration
+
+The public surface is currently under-annotated relative to the guidelines
+in `.reference/rust-skills`:
+
+- `MatrixView::new`, `BrowserIndexView::new`,
+  `CompressedBrowserIndexView::new`, `search_one`,
+  `search_one_compressed`, `maxsim_score`, `fuse_rrf`,
+  `fuse_relative_score`, and `KeywordIndex::new` lack `#[must_use]`
+- nearly all public types and functions in `contract`, `kernel`, `loader`,
+  `storage`, and the wasm exports lack `///` documentation
+- the workspace root does not yet declare a `[lints]` table for
+  `clippy::correctness`, `clippy::perf`, and `clippy::style`
+
+Short-term fix:
+
+- add `#[must_use]` to constructors and pure computation entry points
+- document the public request / response types and kernel search entry
+  points
+- land a workspace-level `[lints]` block per `lint-workspace-lints`
+
+#### 22. Minor correctness and clarity nits worth clearing with the refactor
+
+- `std::process::id()` in `keyword_runtime::make_temp_table_name` returns a
+  meaningless constant on `wasm32`; the atomic counter alone is enough
+- the two `chunks_exact(4).try_into().unwrap()` calls in the loader are
+  safe today but still fall under `err-no-unwrap-prod`
+- `SearchParamsRequest::centroid_score_threshold` uses
+  `Option<Option<f32>>` to distinguish "unset" from "explicitly null" on
+  the wire; at minimum this needs a short doc comment
+- the hard-coded `0.75` fusion alpha appears in `fuse_results` and
+  `validate_worker_search_request`; extract it into one constant
+- the `.forget()` closures in the storage IndexedDB bridge are correct for
+  wasm-bindgen once-callbacks but should carry a one-line justification so
+  future readers do not treat them as leaks to be fixed blindly
+
 ## Rust-rules takeaways
 
 The local Rust reference set reinforced a few concrete design directions:
@@ -249,6 +438,20 @@ The local Rust reference set reinforced a few concrete design directions:
 - `own-borrow-over-clone`, `anti-clone-excessive`, `mem-zero-copy`
   The current metadata + SQLite duplication is likely too expensive for the
   browser baseline and should be revisited before optimization work branches.
+- `proj-mod-by-feature`
+  Kernel, wasm, and keyword-runtime crates are large enough that
+  feature-based module splits are now higher priority than any further
+  cross-cutting cleanups.
+- `api-extension-trait`, `type-result-fallible`
+  Unifying the duplicated dense and compressed search paths benefits from a
+  small internal `IndexView` trait rather than more ad-hoc helpers.
+- `api-must-use`, `doc-all-public`, `lint-workspace-lints`
+  The public surface needs consistent ergonomic, documentation, and lint
+  markers before more crates land against it.
+- `err-no-unwrap-prod`, `anti-unwrap-abuse`
+  The remaining `.unwrap()` calls in the keyword runtime and loader live in
+  production paths and should be bubbled or replaced with `expect` on
+  documented invariants before the FTS write path lands.
 
 ## External reference implementations to learn from
 
@@ -372,6 +575,66 @@ Scope:
 - malformed payload tests
 - browser-native fixture parity against the same logical native source of truth
 
+### Slice 7: Kernel dedup and module split
+
+Goal:
+
+- eliminate the duplicated dense / compressed search paths
+- reflect natural module boundaries in the file layout so later phases do
+  not grow the single-file crates any further
+
+Scope:
+
+- introduce an internal `IndexView` trait
+- unify `search_one_standard` / `*_compressed`, `search_one_batched` /
+  `*_compressed`, and `rank_candidates` / `rank_compressed_candidates` into
+  single generic implementations
+- split `kernel/src/lib.rs` into `matrix`, `index`, `decompress`, `probe`,
+  `rerank`, `fusion`, and `ord` modules
+- split `wasm/src/lib.rs` into `runtime`, `storage`, `memory`, `convert`,
+  and `validation` modules
+- split `wasm/src/keyword_runtime.rs` into `index`, `schema`, `filter`, and
+  `sql` modules
+- replace the `OrdF32` wrapper with `f32::total_cmp`
+- generalize the `parse_*_le` helpers in `loader`
+
+### Slice 8: Typed errors and WASM boundary
+
+Goal:
+
+- replace string-based errors and boundary stringification with typed
+  errors that preserve source-chain information
+
+Scope:
+
+- `KeywordError` with `thiserror` and `#[from]` conversions for
+  `rusqlite::Error`, `regex::Error`, and `serde_json::Error`
+- `WasmError` with `thiserror` and `impl From<WasmError> for JsError`
+- remove the `.unwrap()` in `json_to_sql_value`
+- collapse `.map_err(|err| JsError::new(&err.to_string()))` call sites
+  into bare `?`
+- extract the WASM byte-count overflow helper
+- standardize on `usize::try_from` for `i64 → usize` casts in the kernel
+
+### Slice 9: Public-surface ergonomics and lints
+
+Goal:
+
+- raise the baseline for documentation, must-use annotations, and lint
+  coverage to match `.reference/rust-skills`
+
+Scope:
+
+- `#[must_use]` on kernel constructors and search / fusion entry points
+- `///` documentation on `contract` request / response types, public
+  kernel types, public loader types, and public storage types
+- workspace-level `[lints]` block
+- typed enums on the wire for `fusion_mode` and `fts_tokenizer` (overlaps
+  with Slice 4)
+- explicit doc comment on `SearchParamsRequest::centroid_score_threshold`
+  explaining the nested-`Option` wire contract
+- extract the hard-coded fusion alpha default into one constant
+
 ## Working rule for upcoming work
 
 Until the first remediation slices are complete:
@@ -380,3 +643,9 @@ Until the first remediation slices are complete:
 - do not add more unsupported bundle shapes
 - do not treat the current memory metric as final sizing truth
 - do not treat browser-kernel parity alone as sufficient native-fidelity proof
+- do not grow the duplicated dense / compressed kernel paths before Slice 7
+  lands
+- do not introduce new `Result<T, String>` or bare `.map_err(|err|
+  JsError::new(&err.to_string()))` boundaries before Slice 8 lands
+- do not add new public kernel or contract types without `#[must_use]` and
+  `///` documentation once Slice 9 begins
