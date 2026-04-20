@@ -21,6 +21,7 @@ use next_plaid_browser_storage::{install_bundle_from_bytes, load_active_bundle};
 use thiserror::Error;
 use wasm_bindgen::prelude::*;
 
+mod convert;
 mod keyword_runtime;
 mod memory;
 
@@ -260,7 +261,7 @@ async fn load_stored_browser_bundle(
 }
 
 fn load_index(request: WorkerLoadIndexRequest) -> Result<WorkerLoadIndexResponse, WasmError> {
-    validate_search_index_payload(&request.index)?;
+    convert::validate_search_index_payload(&request.index)?;
 
     let summary = build_index_summary(&request)?;
     let name = request.name.clone();
@@ -451,7 +452,7 @@ fn semantic_ranked_results(
 
     let mut results = Vec::with_capacity(queries.len());
     for query_payload in queries {
-        let query_payload = query_payload_to_matrix_payload(query_payload)?;
+        let query_payload = convert::query_payload_to_matrix_payload(query_payload)?;
         if query_payload.dim != loaded.summary.dimension {
             return Err(WasmError::QueryDimensionMismatch {
                 query_dim: query_payload.dim,
@@ -463,11 +464,11 @@ fn semantic_ranked_results(
             MatrixView::new(&query_payload.values, query_payload.rows, query_payload.dim)?;
         let result = match &loaded.payload {
             LoadedIndexPayload::Dense(index_payload) => {
-                let index = browser_index_view(index_payload)?;
+                let index = convert::browser_index_view(index_payload)?;
                 search_one(index, query, &search_params, subset)?
             }
             LoadedIndexPayload::Compressed(stored) => {
-                let index = compressed_browser_index_view(&stored.search_artifacts)?;
+                let index = convert::compressed_browser_index_view(&stored.search_artifacts)?;
                 search_one_compressed(index, query, &search_params, subset)?
             }
         };
@@ -533,7 +534,7 @@ fn search_response_from_ranked_results(
 
 fn run_inline_search(request: InlineSearchRequest) -> Result<InlineSearchResponse, WasmError> {
     let query = MatrixView::new(&request.query.values, request.query.rows, request.query.dim)?;
-    let index = browser_index_view(&request.index)?;
+    let index = convert::browser_index_view(&request.index)?;
     let params = inline_search_parameters(&request.params);
     let result = search_one(index, query, &params, request.subset_doc_ids.as_deref())?;
 
@@ -773,109 +774,6 @@ fn inline_search_parameters(payload: &InlineSearchParamsRequest) -> SearchParame
     }
 }
 
-fn browser_index_view(index: &SearchIndexPayload) -> Result<BrowserIndexView<'_>, WasmError> {
-    let centroids = matrix_view(&index.centroids)?;
-    Ok(BrowserIndexView::new(
-        centroids,
-        &index.ivf_doc_ids,
-        &index.ivf_lengths,
-        &index.doc_offsets,
-        &index.doc_codes,
-        &index.doc_values,
-    )?)
-}
-
-fn compressed_browser_index_view(
-    search: &next_plaid_browser_loader::LoadedSearchArtifacts,
-) -> Result<CompressedBrowserIndexView<'_>, WasmError> {
-    let rows = search.centroids.len() / search.embedding_dim;
-    let centroids = MatrixView::new(&search.centroids, rows, search.embedding_dim)?;
-
-    Ok(CompressedBrowserIndexView::new(
-        centroids,
-        search.nbits,
-        &search.bucket_weights,
-        &search.ivf,
-        &search.ivf_lengths,
-        &search.doc_offsets,
-        &search.merged_codes,
-        &search.merged_residuals,
-    )?)
-}
-
-fn validate_search_index_payload(index: &SearchIndexPayload) -> Result<(), WasmError> {
-    let _ = browser_index_view(index)?;
-    Ok(())
-}
-
-fn matrix_view(payload: &MatrixPayload) -> Result<MatrixView<'_>, WasmError> {
-    Ok(MatrixView::new(&payload.values, payload.rows, payload.dim)?)
-}
-
-fn query_payload_to_matrix_payload(
-    query: &QueryEmbeddingsPayload,
-) -> Result<MatrixPayload, WasmError> {
-    if let (Some(embeddings_b64), Some(shape)) = (&query.embeddings_b64, query.shape) {
-        return Ok(MatrixPayload {
-            values: decode_b64_embeddings(embeddings_b64, shape)?,
-            rows: shape[0],
-            dim: shape[1],
-        });
-    }
-
-    let embeddings = query.embeddings.as_ref().ok_or_else(|| {
-        WasmError::InvalidRequest(
-            "Must provide either `embeddings` or `embeddings_b64` + `shape`".into(),
-        )
-    })?;
-
-    if embeddings.is_empty() {
-        return Err(WasmError::EmptyQueryEmbeddings);
-    }
-
-    let dim = embeddings[0].len();
-    if dim == 0 {
-        return Err(WasmError::ZeroDimensionQueryEmbeddings);
-    }
-
-    for (row_index, row) in embeddings.iter().enumerate() {
-        if row.len() != dim {
-            return Err(WasmError::InconsistentQueryDimension {
-                row: row_index,
-                expected: dim,
-                actual: row.len(),
-            });
-        }
-    }
-
-    let values = embeddings.iter().flatten().copied().collect();
-    Ok(MatrixPayload {
-        values,
-        rows: embeddings.len(),
-        dim,
-    })
-}
-
-fn decode_b64_embeddings(b64: &str, shape: [usize; 2]) -> Result<Vec<f32>, WasmError> {
-    let bytes = STANDARD.decode(b64)?;
-    let expected = shape[0]
-        .checked_mul(shape[1])
-        .and_then(|count| count.checked_mul(size_of::<f32>()))
-        .ok_or(WasmError::QueryShapeOverflow)?;
-
-    if bytes.len() != expected {
-        return Err(WasmError::QueryShapeMismatch {
-            expected,
-            shape,
-            actual: bytes.len(),
-        });
-    }
-
-    Ok(bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect())
-}
 
 fn metadata_for_results(
     metadata: Option<&[Option<serde_json::Value>]>,
