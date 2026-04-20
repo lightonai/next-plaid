@@ -10,6 +10,10 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use thiserror::Error;
 
+mod ord;
+
+use ord::OrdF32;
+
 pub const KERNEL_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RRF_K: f32 = 60.0;
 
@@ -393,23 +397,6 @@ impl<'a> IndexView<'a> for CompressedBrowserIndexView<'a> {
 
     fn exact_score(&self, query: MatrixView<'_>, doc_id: usize) -> Option<f32> {
         CompressedBrowserIndexView::exact_score(self, query, doc_id)
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-struct OrdF32(f32);
-
-impl Eq for OrdF32 {}
-
-impl PartialOrd for OrdF32 {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for OrdF32 {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.total_cmp(&other.0)
     }
 }
 
