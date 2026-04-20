@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::{Connection, ToSql};
 use serde_json::Value;
 
-use super::{KeywordError, METADATA_TABLE, SUBSET_COLUMN};
+use super::sql::{METADATA_TABLE, SUBSET_COLUMN};
+use super::KeywordError;
 
 #[derive(Debug)]
 pub(super) struct MetadataSchema {
