@@ -1,4 +1,3 @@
-import * as BrowserWorker from "@effect/platform-browser/BrowserWorker";
 import { expect, it, layer } from "@effect/vitest";
 import {
   Context,
@@ -25,6 +24,7 @@ import {
   type FakeSpawner,
   makeFakeSpawner,
 } from "./__tests__/fake-spawner.js";
+import * as BrowserWorker from "./browser-worker.js";
 
 interface TransportHarnessApi {
   readonly fake: FakeSpawner;
@@ -171,6 +171,42 @@ layer(
       const result = yield* Fiber.join(resultFiber);
       const failure = expectFailure(result, "TransientClientError", "timeout");
       expect(failure.requestId).toBe(request.requestId);
+    }),
+  );
+});
+
+layer(makeTransportHarnessLayer())("WorkerTransport messageerror handling", (it) => {
+  it.effect("maps messageerror to a typed transient failure and rejects later calls", () =>
+    Effect.gen(function*() {
+      const harness = yield* TransportHarness;
+
+      const resultFiber = yield* Effect.result(ping(harness.transport)).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+      yield* waitForWorkerStart(harness.fake);
+      harness.fake.dispatchReady();
+      yield* Effect.yieldNow;
+
+      singleCapturedRequest<{ readonly type: "ping" }>(harness.fake);
+      harness.fake.dispatchMessageError({ malformed: true });
+      yield* Effect.yieldNow;
+
+      const result = yield* Fiber.join(resultFiber);
+      const failure = expectFailure(
+        result,
+        "TransientClientError",
+        "worker_messageerror",
+      );
+      expect(failure.requestId).toBeNull();
+
+      const lateResult = yield* Effect.result(ping(harness.transport));
+      const lateFailure = expectFailure(
+        lateResult,
+        "TransientClientError",
+        "worker_messageerror",
+      );
+      expect(lateFailure.requestId).toBeNull();
     }),
   );
 });

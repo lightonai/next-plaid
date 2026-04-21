@@ -19,7 +19,35 @@ This workspace is for the browser-safe runtime boundary:
 - wasm exports
 - worker-oriented runtime interfaces
 - browser storage and bundle lifecycle rules
+- browser-hosted API surfaces for websites, shells, and later agent adapters
 - browser-facing planning and verification artifacts
+
+## Product surface
+
+The primary product target is an embeddable browser search, query, and
+indexing engine for arbitrary websites.
+
+The browser runtime remains the home of local state, storage, and query
+execution. Website integrations and UI shells should consume that runtime
+through a stable browser-owned API. Agent drivers are a later access path to
+that same runtime, not the place where the index or search engine should live.
+
+That means the browser workspace should aim to expose a stable browser-owned
+surface that can be reached by:
+
+- a page-hosted application
+- an extension page or offscreen document
+- later, harness-driven JavaScript execution from agent systems
+
+The browser-use style harness is therefore an adapter target, not the core
+runtime home and not the first integration priority. The durable design rule
+is:
+
+- keep the runtime and storage browser-resident
+- prioritize the embeddable browser API before agent-specific adapters
+- keep harness-specific glue thin
+- make the public surface a small stable API rather than a harness-specific
+  pile of helpers
 
 ## Locked runtime decisions
 
@@ -85,7 +113,8 @@ Still-expected additions:
 
 The intended browser execution shape is:
 
-- main thread for UI, install controls, and persistence requests
+- browser-owned host surface for UI, install controls, persistence requests,
+  and embeddable API exposure
 - dedicated module worker for bundle download, loading, query execution, and
   reranking
 - wasm module for the hot numeric path
@@ -146,6 +175,20 @@ If a feature depends on:
 - server-only control flow
 
 it belongs in a later phase or a different workspace.
+
+## Bridge rule
+
+The browser-facing API should be defined in terms of search capability, not in
+terms of a specific browser harness.
+
+The preferred layering is:
+
+1. browser-resident runtime
+2. browser bridge API for install / sync / search / status / events
+3. website and UI integrations against that browser API
+4. thin adapters for harnesses or agent drivers
+
+This keeps product integration flexible while preserving one runtime contract.
 
 ## Fidelity rule
 

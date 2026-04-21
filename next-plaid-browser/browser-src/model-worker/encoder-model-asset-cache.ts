@@ -17,6 +17,12 @@ const textDecoder = new TextDecoder();
 const ASSET_CACHE_CAPACITY = 16;
 
 export interface EncoderModelAssetCacheApi {
+  readonly readCachedBytes: (
+    url: string,
+  ) => Effect.Effect<Uint8Array | null, WorkerRuntimeError>;
+  readonly fetchAndCacheBytes: (
+    url: string,
+  ) => Effect.Effect<Uint8Array, WorkerRuntimeError>;
   readonly loadBytes: (url: string) => Effect.Effect<Uint8Array, WorkerRuntimeError>;
   readonly loadText: (url: string) => Effect.Effect<string, WorkerRuntimeError>;
   readonly persistentStorage: () => Effect.Effect<boolean, WorkerRuntimeError>;
@@ -160,19 +166,34 @@ function makeEncoderModelAssetCache(): Effect.Effect<
     const readPersistentStorage = yield* queryPersistentStorage().pipe(
       Effect.cachedWithTTL(Duration.infinity),
     );
+    const readCachedBytes_ = Effect.fn(
+      "EncoderModelAssetCache.readCachedBytes",
+    )(function*(url: string) {
+      const browserCache = yield* openPersistentCache;
+      const cachedResponse = yield* readCachedResponse(browserCache, url);
+      if (cachedResponse === null) {
+        return null;
+      }
+      return yield* readBytes(cachedResponse, url);
+    });
+    const fetchAndCacheBytes_ = Effect.fn(
+      "EncoderModelAssetCache.fetchAndCacheBytes",
+    )(function*(url: string) {
+      const browserCache = yield* openPersistentCache;
+      const response = yield* fetchOk(url);
+      yield* persistResponse(browserCache, url, response);
+      return yield* readBytes(response, url);
+    });
     const bytesCache = yield* EffectCache.make<string, Uint8Array, WorkerRuntimeError>({
       capacity: ASSET_CACHE_CAPACITY,
       lookup: (url) =>
         Effect.gen(function*() {
-          const browserCache = yield* openPersistentCache;
-          const cachedResponse = yield* readCachedResponse(browserCache, url);
-          if (cachedResponse !== null) {
-            return yield* readBytes(cachedResponse, url);
+          const cachedBytes = yield* readCachedBytes_(url);
+          if (cachedBytes !== null) {
+            return cachedBytes;
           }
 
-          const response = yield* fetchOk(url);
-          yield* persistResponse(browserCache, url, response);
-          return yield* readBytes(response, url);
+          return yield* fetchAndCacheBytes_(url);
         }),
     });
 
@@ -194,6 +215,8 @@ function makeEncoderModelAssetCache(): Effect.Effect<
     });
 
     return EncoderModelAssetCache.of({
+      readCachedBytes: readCachedBytes_,
+      fetchAndCacheBytes: fetchAndCacheBytes_,
       loadBytes,
       loadText,
       persistentStorage,

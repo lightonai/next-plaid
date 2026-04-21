@@ -1,4 +1,3 @@
-import * as BrowserWorker from "@effect/platform-browser/BrowserWorker";
 import {
   Layer,
   ManagedRuntime,
@@ -18,6 +17,7 @@ import {
   SearchWorkerClient,
   type SearchWorkerClientOptions,
 } from "./search-worker-client.js";
+import * as BrowserWorker from "./browser-worker.js";
 
 export type BrowserRuntimeAppServices =
   | SearchWorkerClient

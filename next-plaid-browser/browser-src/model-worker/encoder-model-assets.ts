@@ -41,14 +41,25 @@ function loadAssetBytes(
   modelAssetCache: EncoderModelAssetCacheApi,
 ): Effect.Effect<Uint8Array, WorkerRuntimeError> {
   return Effect.gen(function*() {
-    yield* emitEvent({ stage: "fetch_start", url, expectedBytes: null });
-    const bytes = yield* modelAssetCache.loadBytes(url);
+    const cachedBytes = yield* modelAssetCache.readCachedBytes(url);
+    if (cachedBytes !== null) {
+      yield* emitEvent({
+        stage: "asset_cache_hit",
+        url,
+        bytesReceived: cachedBytes.byteLength,
+      });
+      return cachedBytes;
+    }
+
+    yield* emitEvent({ stage: "asset_cache_miss", url });
+    yield* emitEvent({ stage: "asset_fetch_start", url, expectedBytes: null });
+    const fetchedBytes = yield* modelAssetCache.fetchAndCacheBytes(url);
     yield* emitEvent({
-      stage: "fetch_complete",
+      stage: "asset_fetch_complete",
       url,
-      bytesReceived: bytes.byteLength,
+      bytesReceived: fetchedBytes.byteLength,
     });
-    return bytes;
+    return fetchedBytes;
   });
 }
 
@@ -77,9 +88,11 @@ function loadAssetJson<T>(
 
 function loadTokenizer(
   url: string,
+  emitEvent: (event: EncoderInitEvent) => Effect.Effect<void>,
   modelAssetCache: EncoderModelAssetCacheApi,
 ): Effect.Effect<FixtureTokenizer, WorkerRuntimeError> {
-  return modelAssetCache.loadText(url).pipe(
+  return loadAssetBytes(url, emitEvent, modelAssetCache).pipe(
+    Effect.map((bytes) => new TextDecoder().decode(bytes)),
     Effect.flatMap((text) =>
       decodeJsonString(text).pipe(
         Effect.mapError((error) =>
@@ -122,22 +135,28 @@ function makeEncoderModelAssets(): Effect.Effect<
     const { input } = yield* EncoderRuntimeConfig;
     const eventSink = yield* EncoderInitEventSink;
     const modelAssetCache = yield* EncoderModelAssetCache;
+    const modelBytes = yield* loadAssetBytes(
+      input.modelUrl,
+      eventSink.emit,
+      modelAssetCache,
+    );
+    const tokenizer = yield* loadTokenizer(
+      input.tokenizerUrl,
+      eventSink.emit,
+      modelAssetCache,
+    );
+    const config = yield* loadOnnxConfig(
+      input.onnxConfigUrl,
+      eventSink.emit,
+      modelAssetCache,
+    );
+    const persistentStorage = yield* modelAssetCache.persistentStorage();
 
-    const assets = yield* Effect.all({
-      modelBytes: loadAssetBytes(
-        input.modelUrl,
-        eventSink.emit,
-        modelAssetCache,
-      ),
-      tokenizer: loadTokenizer(input.tokenizerUrl, modelAssetCache),
-      config: loadOnnxConfig(
-        input.onnxConfigUrl,
-        eventSink.emit,
-        modelAssetCache,
-      ),
-      persistentStorage: modelAssetCache.persistentStorage(),
+    return EncoderModelAssets.of({
+      modelBytes,
+      tokenizer,
+      config,
+      persistentStorage,
     });
-
-    return EncoderModelAssets.of(assets);
   });
 }

@@ -5,13 +5,11 @@ import type {
   EncoderCreateInput,
   EncoderWorkerRequest,
 } from "./types.js";
-
-export const EncoderIdentitySchema = Schema.Struct({
-  encoder_id: Schema.String,
-  encoder_build: Schema.String,
-  embedding_dim: Schema.Number,
-  normalized: Schema.Boolean,
-});
+import {
+  EncoderIdentitySchema,
+  InlineQueryEmbeddingsPayloadSchema,
+  normalizeQueryEmbeddingsPayload,
+} from "../shared/search-contract-schema.js";
 
 export const EncoderCapabilitiesSchema = Schema.Struct({
   backend: Schema.Literal("wasm"),
@@ -32,15 +30,7 @@ export const EncodeTimingBreakdownSchema = Schema.Struct({
 });
 
 export const EncodedQuerySchema = Schema.Struct({
-  payload: Schema.Struct({
-    embeddings: Schema.Array(Schema.Array(Schema.Number)),
-    encoder: EncoderIdentitySchema,
-    dtype: Schema.Literal("f32_le"),
-    layout: Schema.Union([
-      Schema.Literal("ragged"),
-      Schema.Literal("padded_query_length"),
-    ]),
-  }),
+  payload: InlineQueryEmbeddingsPayloadSchema,
   timing: EncodeTimingBreakdownSchema,
   input_ids: Schema.Array(Schema.Number),
   attention_mask: Schema.Array(Schema.Number),
@@ -69,14 +59,28 @@ export const EncodeResponseSchema = Schema.Struct({
 
 export const EncoderInitEventSchema = Schema.Union([
   Schema.Struct({
-    stage: Schema.Literal("fetch_start"),
+    stage: Schema.Literal("asset_cache_hit"),
+    url: Schema.String,
+    bytesReceived: Schema.Number,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("asset_cache_miss"),
+    url: Schema.String,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("asset_fetch_start"),
     url: Schema.String,
     expectedBytes: Schema.NullOr(Schema.Number),
   }),
   Schema.Struct({
-    stage: Schema.Literal("fetch_complete"),
+    stage: Schema.Literal("asset_fetch_complete"),
     url: Schema.String,
     bytesReceived: Schema.Number,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("config_validated"),
+    queryLength: Schema.Number,
+    embeddingDim: Schema.Number,
   }),
   Schema.Struct({
     stage: Schema.Literal("session_create_start"),
@@ -117,6 +121,12 @@ export const EncoderWorkerRequestSchema = Schema.Union([
   }),
 ]);
 
+export const isEncodedQuery = Schema.is(EncodedQuerySchema);
+export const isEncoderWorkerRequest = Schema.is(EncoderWorkerRequestSchema);
+export const isEncoderInitResponse = Schema.is(EncoderInitResponseSchema);
+export const isEncodeResponse = Schema.is(EncodeResponseSchema);
+export const isEncoderInitEvent = Schema.is(EncoderInitEventSchema);
+
 function normalizeEncoderCreateInput(
   input: Schema.Schema.Type<typeof EncoderCreateInputSchema>,
 ): EncoderCreateInput {
@@ -144,12 +154,7 @@ function normalizeEncodeResponse(
   return {
     type: response.type,
     encoded: {
-      payload: {
-        embeddings: response.encoded.payload.embeddings.map((row) => [...row]),
-        encoder: response.encoded.payload.encoder,
-        dtype: response.encoded.payload.dtype,
-        layout: response.encoded.payload.layout,
-      },
+      payload: normalizeQueryEmbeddingsPayload(response.encoded.payload),
       timing: {
         total_ms: response.encoded.timing.total_ms,
         tokenize_ms: response.encoded.timing.tokenize_ms,

@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Stream, SubscriptionRef } from "effect";
+import { Context, Effect, Layer, Schema, SchemaIssue, Stream, SubscriptionRef } from "effect";
 
 import type { EncoderCapabilities } from "../model-worker/types.js";
 import type {
@@ -12,6 +12,11 @@ import type {
   SearchRequestEnvelope,
   SearchResultsResponseEnvelope,
 } from "../shared/search-contract.js";
+import {
+  decodeDenseQueryEmbeddingsPayload,
+  isBinaryQueryEmbeddingsPayload,
+  isInlineQueryEmbeddingsPayload,
+} from "../shared/search-contract-schema.js";
 import {
   type LoadedSearchIndexMetadata,
   SearchWorkerClient,
@@ -135,7 +140,8 @@ function malformedQueryPayloadError(options: {
   readonly queryIndex: number;
   readonly cause: string;
   readonly message: string;
-  readonly details: unknown;
+  readonly payload: unknown;
+  readonly schemaIssues?: unknown;
 }): BrowserRuntimeError {
   return permanentClientError({
     cause: options.cause,
@@ -144,90 +150,90 @@ function malformedQueryPayloadError(options: {
     details: {
       indexName: options.indexName,
       queryIndex: options.queryIndex,
-      payload: options.details,
+      payload: options.payload,
+      schemaIssues: options.schemaIssues ?? null,
     },
   });
 }
 
-function queryEmbeddingDimension(
+const queryPayloadIssueFormatter = SchemaIssue.makeFormatterStandardSchemaV1();
+
+type QueryPayloadValidationCause =
+  | "ambiguous_query_embeddings"
+  | "invalid_query_embeddings"
+  | "missing_binary_shape"
+  | "missing_query_embeddings"
+  | "query_embedding_dim_mismatch";
+
+function queryPayloadValidationCause(
+  issues: ReadonlyArray<{ readonly message: string }>,
+): QueryPayloadValidationCause {
+  switch (issues[0]?.message) {
+    case "ambiguous_query_embeddings":
+      return "ambiguous_query_embeddings";
+    case "missing_binary_shape":
+      return "missing_binary_shape";
+    case "missing_query_embeddings":
+      return "missing_query_embeddings";
+    case "query_embedding_dim_mismatch":
+      return "query_embedding_dim_mismatch";
+    default:
+      return "invalid_query_embeddings";
+  }
+}
+
+function queryPayloadValidationMessage(
+  cause: QueryPayloadValidationCause,
+): string {
+  switch (cause) {
+    case "ambiguous_query_embeddings":
+      return "query payload includes both inline and binary embeddings";
+    case "missing_binary_shape":
+      return "binary query embeddings are missing shape metadata";
+    case "missing_query_embeddings":
+      return "query payload does not contain embeddings";
+    case "query_embedding_dim_mismatch":
+      return "query embedding payload does not match its encoder identity";
+    case "invalid_query_embeddings":
+      return "query payload failed schema validation";
+  }
+}
+
+function validatedQueryEmbeddingDimension(
+  payload: QueryEmbeddingsPayload,
+): number {
+  if (isInlineQueryEmbeddingsPayload(payload)) {
+    return payload.encoder.embedding_dim;
+  }
+
+  if (isBinaryQueryEmbeddingsPayload(payload)) {
+    return payload.shape[1];
+  }
+
+  return payload.encoder.embedding_dim;
+}
+
+function validateDenseQueryPayload(
   payload: QueryEmbeddingsPayload,
   options: {
     readonly operation: string;
     readonly indexName: string;
     readonly queryIndex: number;
   },
-): Effect.Effect<number, BrowserRuntimeError> {
-  if (payload.embeddings !== undefined && payload.embeddings !== null) {
-    if (payload.embeddings_b64 !== undefined && payload.embeddings_b64 !== null) {
-      return Effect.fail(
-        malformedQueryPayloadError({
-          operation: options.operation,
-          indexName: options.indexName,
-          queryIndex: options.queryIndex,
-          cause: "ambiguous_query_embeddings",
-          message: "query payload includes both inline and binary embeddings",
-          details: payload,
-        }),
-      );
-    }
-
-    for (const row of payload.embeddings) {
-      if (row.length !== payload.encoder.embedding_dim) {
-        return Effect.fail(
-          malformedQueryPayloadError({
-            operation: options.operation,
-            indexName: options.indexName,
-            queryIndex: options.queryIndex,
-            cause: "query_embedding_dim_mismatch",
-            message: "inline query embedding row width does not match encoder identity",
-            details: payload,
-          }),
-        );
-      }
-    }
-
-    return Effect.succeed(payload.encoder.embedding_dim);
-  }
-
-  if (payload.embeddings_b64 !== undefined && payload.embeddings_b64 !== null) {
-    if (payload.shape === undefined || payload.shape === null) {
-      return Effect.fail(
-        malformedQueryPayloadError({
-          operation: options.operation,
-          indexName: options.indexName,
-          queryIndex: options.queryIndex,
-          cause: "missing_binary_shape",
-          message: "binary query embeddings are missing shape metadata",
-          details: payload,
-        }),
-      );
-    }
-
-    const [, dimension] = payload.shape;
-    if (dimension !== payload.encoder.embedding_dim) {
-      return Effect.fail(
-        malformedQueryPayloadError({
-          operation: options.operation,
-          indexName: options.indexName,
-          queryIndex: options.queryIndex,
-          cause: "query_embedding_dim_mismatch",
-          message: "binary query embedding shape does not match encoder identity",
-          details: payload,
-        }),
-      );
-    }
-
-    return Effect.succeed(dimension);
-  }
-
-  return Effect.fail(
-    malformedQueryPayloadError({
-      operation: options.operation,
-      indexName: options.indexName,
-      queryIndex: options.queryIndex,
-      cause: "missing_query_embeddings",
-      message: "query payload does not contain embeddings",
-      details: payload,
+): Effect.Effect<QueryEmbeddingsPayload, BrowserRuntimeError> {
+  return decodeDenseQueryEmbeddingsPayload(payload).pipe(
+    Effect.mapError((error: Schema.SchemaError) => {
+      const issues = queryPayloadIssueFormatter(error.issue).issues;
+      const cause = queryPayloadValidationCause(issues);
+      return malformedQueryPayloadError({
+        operation: options.operation,
+        indexName: options.indexName,
+        queryIndex: options.queryIndex,
+        cause,
+        message: queryPayloadValidationMessage(cause),
+        payload,
+        schemaIssues: issues,
+      });
     }),
   );
 }
@@ -239,11 +245,12 @@ function ensureQueryCompatibleWithIndex(
   operation: string,
 ): Effect.Effect<void, BrowserRuntimeError> {
   return Effect.gen(function*() {
-    const payloadDimension = yield* queryEmbeddingDimension(payload, {
+    const validatedPayload = yield* validateDenseQueryPayload(payload, {
       operation,
       indexName: indexMetadata.name,
       queryIndex,
     });
+    const payloadDimension = validatedQueryEmbeddingDimension(validatedPayload);
 
     if (payloadDimension !== indexMetadata.summary.dimension) {
       return yield* queryDimensionMismatchError({
@@ -255,12 +262,15 @@ function ensureQueryCompatibleWithIndex(
       });
     }
 
-    if (indexMetadata.encoder !== null && !sameEncoderIdentity(payload.encoder, indexMetadata.encoder)) {
+    if (
+      indexMetadata.encoder !== null &&
+      !sameEncoderIdentity(validatedPayload.encoder, indexMetadata.encoder)
+    ) {
       return yield* incompatibleEncoderError({
         operation,
         indexName: indexMetadata.name,
         expected: indexMetadata.encoder,
-        actual: payload.encoder,
+        actual: validatedPayload.encoder,
       });
     }
   });
@@ -314,6 +324,48 @@ function loadedIndexMetadata(
   );
 }
 
+function hasKeywordText(
+  request: EncodeAndSearchArgs["searchRequest"]["request"],
+): boolean {
+  return request.text_query !== undefined &&
+    request.text_query !== null &&
+    request.text_query.length > 0;
+}
+
+function searchMode(
+  request: SearchRequestEnvelope["request"],
+): "keyword" | "dense" | "hybrid" {
+  const hasDense = request.queries !== undefined &&
+    request.queries !== null &&
+    request.queries.length > 0;
+  const hasKeyword = request.text_query !== undefined &&
+    request.text_query !== null &&
+    request.text_query.length > 0;
+
+  if (hasDense && hasKeyword) {
+    return "hybrid";
+  }
+  if (hasDense) {
+    return "dense";
+  }
+  return "keyword";
+}
+
+function keywordOnlyRequest(
+  args: EncodeAndSearchArgs,
+): SearchRequestEnvelope {
+  return {
+    type: args.searchRequest.type,
+    name: args.searchRequest.name,
+    request: {
+      ...args.searchRequest.request,
+      queries: null,
+      alpha: null,
+      fusion: null,
+    },
+  };
+}
+
 function validateSearchRequest(
   indexMetadata: LoadedSearchIndexMetadata,
   request: SearchRequestEnvelope,
@@ -359,6 +411,7 @@ export const makeBrowserSearchRuntime: Effect.Effect<
           operation: "browser_runtime.search_with_embeddings",
           index_name: request.name,
           query_count: request.request.queries?.length ?? 0,
+          search_mode: searchMode(request.request),
         }),
       ),
   );
@@ -371,20 +424,54 @@ export const makeBrowserSearchRuntime: Effect.Effect<
           args.searchRequest.name,
           "browser_runtime.encode_and_search",
         );
-        const encoderSnapshot = yield* SubscriptionRef.get(encoderClient.state);
-        if (encoderSnapshot.status === "ready") {
-          yield* ensureEncoderCompatibleWithIndex(
-            indexMetadata,
-            encoderIdentityFromCapabilities(encoderSnapshot.capabilities),
-            "browser_runtime.encode_and_search",
+        const canFallbackToKeyword = hasKeywordText(args.searchRequest.request);
+        const fallbackRequest = keywordOnlyRequest(args);
+        const fallbackToKeyword = () =>
+          searchClient.search(fallbackRequest).pipe(
+            Effect.withLogSpan("browser_runtime.encode_and_search.keyword_fallback"),
+            Effect.annotateLogs({
+              operation: "browser_runtime.encode_and_search",
+              index_name: args.searchRequest.name,
+              fallback_mode: "keyword_only",
+              search_mode: "keyword",
+            }),
           );
+        const encoderSnapshot = yield* SubscriptionRef.get(encoderClient.state);
+
+        if (encoderSnapshot.status !== "ready") {
+          if (canFallbackToKeyword) {
+            return yield* fallbackToKeyword();
+          }
+        } else {
+          const compatibilityResult = yield* Effect.result(
+            ensureEncoderCompatibleWithIndex(
+              indexMetadata,
+              encoderIdentityFromCapabilities(encoderSnapshot.capabilities),
+              "browser_runtime.encode_and_search",
+            ),
+          );
+          if (compatibilityResult._tag === "Failure") {
+            if (canFallbackToKeyword) {
+              return yield* fallbackToKeyword();
+            }
+            return yield* compatibilityResult.failure;
+          }
         }
 
-        const encoded = yield* encoderClient.encode(
-          args.requestId === undefined
-            ? { text: args.text }
-            : { text: args.text, requestId: args.requestId },
+        const encodedResult = yield* Effect.result(
+          encoderClient.encode(
+            args.requestId === undefined
+              ? { text: args.text }
+              : { text: args.text, requestId: args.requestId },
+          ),
         );
+        if (encodedResult._tag === "Failure") {
+          if (canFallbackToKeyword) {
+            return yield* fallbackToKeyword();
+          }
+          return yield* encodedResult.failure;
+        }
+        const encoded = encodedResult.success;
 
         const request: SearchRequestEnvelope = {
           type: args.searchRequest.type,
@@ -402,6 +489,7 @@ export const makeBrowserSearchRuntime: Effect.Effect<
           operation: "browser_runtime.encode_and_search",
           index_name: args.searchRequest.name,
           query_char_len: args.text.length,
+          search_mode: hasKeywordText(args.searchRequest.request) ? "hybrid" : "dense",
         }),
       ),
   );

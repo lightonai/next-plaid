@@ -1,4 +1,3 @@
-import * as BrowserWorker from "@effect/platform-browser/BrowserWorker";
 import { describe, expect, it, layer } from "@effect/vitest";
 import {
   Context,
@@ -18,12 +17,16 @@ import type {
   EncoderInitEvent,
 } from "../model-worker/types.js";
 import type { EncoderClientError } from "./client-errors.js";
-import { EncoderWorkerClient } from "./encoder-worker-client.js";
+import {
+  type EncoderWorkerClientApi,
+  EncoderWorkerClient,
+} from "./encoder-worker-client.js";
 import {
   type CapturedRequest,
   type FakeSpawner,
   makeFakeSpawner,
 } from "./__tests__/fake-spawner.js";
+import * as BrowserWorker from "./browser-worker.js";
 
 interface EncoderHarnessApi {
   readonly fake: FakeSpawner;
@@ -116,14 +119,51 @@ function encodeResponse() {
 function initEvents(): ReadonlyArray<EncoderInitEvent> {
   return [
     {
-      stage: "fetch_start",
+      stage: "asset_cache_miss",
+      url: encoderInput().modelUrl,
+    },
+    {
+      stage: "asset_fetch_start",
       url: encoderInput().modelUrl,
       expectedBytes: 1024,
     },
     {
-      stage: "fetch_complete",
+      stage: "asset_fetch_complete",
       url: encoderInput().modelUrl,
       bytesReceived: 1024,
+    },
+    {
+      stage: "asset_cache_miss",
+      url: encoderInput().tokenizerUrl,
+    },
+    {
+      stage: "asset_fetch_start",
+      url: encoderInput().tokenizerUrl,
+      expectedBytes: 1024,
+    },
+    {
+      stage: "asset_fetch_complete",
+      url: encoderInput().tokenizerUrl,
+      bytesReceived: 1024,
+    },
+    {
+      stage: "asset_cache_miss",
+      url: encoderInput().onnxConfigUrl,
+    },
+    {
+      stage: "asset_fetch_start",
+      url: encoderInput().onnxConfigUrl,
+      expectedBytes: 1024,
+    },
+    {
+      stage: "asset_fetch_complete",
+      url: encoderInput().onnxConfigUrl,
+      bytesReceived: 1024,
+    },
+    {
+      stage: "config_validated",
+      queryLength: 8,
+      embeddingDim: 4,
     },
     {
       stage: "session_create_start",
@@ -162,6 +202,85 @@ function waitForWorkerStart(fake: FakeSpawner): Effect.Effect<void> {
     while (!fake.isStarted()) {
       yield* Effect.yieldNow;
     }
+  });
+}
+
+function waitForCapturedRequestType<TRequest extends { readonly type: string }>(
+  fake: FakeSpawner,
+  requestType: TRequest["type"],
+): Effect.Effect<CapturedRequest<TRequest>> {
+  return Effect.gen(function*() {
+    while (true) {
+      const request = fake
+        .capturedRequests<TRequest>()
+        .find((captured) => captured.request.type === requestType);
+      if (request !== undefined) {
+        return request;
+      }
+      yield* Effect.yieldNow;
+    }
+  });
+}
+
+function initEncoderClient(
+  harness: EncoderHarnessApi,
+  client: EncoderWorkerClientApi,
+): Effect.Effect<void, EncoderClientError> {
+  return Effect.gen(function*() {
+    const initFiber = yield* Effect.result(client.init(encoderInput())).pipe(
+      Effect.forkChild({ startImmediately: true }),
+    );
+    yield* Effect.yieldNow;
+    yield* waitForWorkerStart(harness.fake);
+    harness.fake.dispatchReady();
+    yield* Effect.yieldNow;
+
+    const initRequest = firstCapturedRequest<{ readonly type: "init" }>(harness.fake);
+    harness.fake.dispatchEnvelope({
+      requestId: initRequest.requestId,
+      ok: true,
+      response: initResponse(),
+    });
+
+    const initResult = yield* Fiber.join(initFiber);
+    expect(initResult._tag).toBe("Success");
+    if (initResult._tag !== "Success") {
+      throw new Error("expected successful init result");
+    }
+    expect(initResult.success).toEqual(encoderCapabilities());
+  });
+}
+
+function encodeThroughWorker(
+  harness: EncoderHarnessApi,
+  client: EncoderWorkerClientApi,
+  text: string,
+): Effect.Effect<void, EncoderClientError> {
+  return Effect.gen(function*() {
+    const beforeCount = harness.fake.capturedRequests().length;
+    const encodeFiber = yield* Effect.result(client.encode({ text })).pipe(
+      Effect.forkChild({ startImmediately: true }),
+    );
+    yield* Effect.yieldNow;
+
+    const encodeRequest = yield* waitForCapturedRequestType<
+      { readonly type: "encode" }
+    >(harness.fake, "encode");
+    expect(harness.fake.capturedRequests()).toHaveLength(beforeCount + 1);
+
+    harness.fake.dispatchEnvelope({
+      requestId: encodeRequest.requestId,
+      ok: true,
+      response: encodeResponse(),
+    });
+    yield* Effect.yieldNow;
+
+    const encodeResult = yield* Fiber.join(encodeFiber);
+    expect(encodeResult._tag).toBe("Success");
+    if (encodeResult._tag !== "Success") {
+      throw new Error("expected successful encode result");
+    }
+    expect(encodeResult.success).toEqual(encodedQuery());
   });
 }
 
@@ -316,8 +435,6 @@ layer(makeEncoderHarnessLayer())("EncoderWorkerClient readiness gating", (it) =>
       );
       yield* Effect.yieldNow;
 
-      expect(harness.fake.capturedRequests()).toHaveLength(1);
-
       harness.fake.dispatchEnvelope({
         requestId: initRequest.requestId,
         ok: true,
@@ -352,6 +469,91 @@ layer(makeEncoderHarnessLayer())("EncoderWorkerClient readiness gating", (it) =>
         throw new Error("expected successful encode result");
       }
       expect(encodeResult.success).toEqual(encodedQuery());
+    }),
+  );
+});
+
+layer(
+  makeEncoderHarnessLayer(),
+)("EncoderWorkerClient queued encode failure state", (it) => {
+  it.effect("preserves ready capabilities when an encode waiting on init fails", () =>
+    Effect.gen(function*() {
+      const harness = yield* EncoderHarness;
+      const client = yield* EncoderWorkerClient;
+
+      const failedEventFiber = yield* client.events.pipe(
+        Stream.filter((event) => event.stage === "failed"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild({ startImmediately: true }),
+      );
+      const initFiber = yield* Effect.result(client.init(encoderInput())).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+      yield* waitForWorkerStart(harness.fake);
+      harness.fake.dispatchReady();
+      yield* Effect.yieldNow;
+
+      const initRequest = firstCapturedRequest<{ readonly type: "init" }>(harness.fake);
+      const encodeFiber = yield* Effect.result(client.encode({ text: "beta" })).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+
+      harness.fake.dispatchEnvelope({
+        requestId: initRequest.requestId,
+        ok: true,
+        response: initResponse(),
+      });
+      yield* Effect.yieldNow;
+
+      const encodeRequest = yield* waitForCapturedRequestType<
+        { readonly type: "encode" }
+      >(harness.fake, "encode");
+
+      harness.fake.dispatchEnvelope({
+        requestId: encodeRequest.requestId,
+        ok: false,
+        error: "synthetic encode failure",
+      });
+      yield* Effect.yieldNow;
+
+      const initResult = yield* Fiber.join(initFiber);
+      expect(initResult._tag).toBe("Success");
+      if (initResult._tag !== "Success") {
+        throw new Error("expected successful init result");
+      }
+      expect(initResult.success).toEqual(encoderCapabilities());
+
+      const encodeResult = yield* Fiber.join(encodeFiber);
+      expect(encodeResult._tag).toBe("Failure");
+      if (encodeResult._tag !== "Failure") {
+        throw new Error("expected queued encode to fail");
+      }
+      expect(encodeResult.failure._tag).toBe("DegradedClientError");
+      expect(encodeResult.failure.cause).toBe("worker_failure_envelope");
+
+      const failedEvents = [...(yield* Fiber.join(failedEventFiber))];
+      expect(failedEvents).toHaveLength(1);
+      const failedEvent = failedEvents[0];
+      expect(failedEvent).toBeDefined();
+      if (failedEvent === undefined) {
+        throw new Error("expected one failed lifecycle event");
+      }
+      expect(failedEvent.stage).toBe("failed");
+      if (failedEvent.stage !== "failed") {
+        throw new Error("expected a failed lifecycle event");
+      }
+      expect(failedEvent.error.cause).toBe("worker_failure_envelope");
+
+      const state = yield* SubscriptionRef.get(client.state);
+      expect(state.status).toBe("failed");
+      if (state.status !== "failed") {
+        throw new Error("expected failed encoder state");
+      }
+      expect(state.capabilities).toEqual(encoderCapabilities());
+      expect(state.lastError.cause).toBe("worker_failure_envelope");
     }),
   );
 });
@@ -540,6 +742,42 @@ it.effect("marks the client disposed and rejects new calls after scope close", (
   }),
 );
 
+it.effect("fails joined init callers when the client scope closes mid-init", () =>
+  Effect.gen(function*() {
+    const scope = yield* Scope.make();
+    const context = yield* Layer.buildWithScope(makeEncoderHarnessLayer(), scope);
+    const harness = Context.get(context, EncoderHarness);
+    const client = Context.get(context, EncoderWorkerClient);
+
+    const firstFiber = yield* Effect.result(client.init(encoderInput())).pipe(
+      Effect.forkChild({ startImmediately: true }),
+    );
+    const secondFiber = yield* Effect.result(client.init(encoderInput())).pipe(
+      Effect.forkChild({ startImmediately: true }),
+    );
+    yield* Effect.yieldNow;
+    yield* waitForWorkerStart(harness.fake);
+    harness.fake.dispatchReady();
+    yield* Effect.yieldNow;
+
+    expect(harness.fake.capturedRequests()).toHaveLength(1);
+    yield* Scope.close(scope, Exit.void);
+
+    const firstResult = yield* Fiber.join(firstFiber);
+    const secondResult = yield* Fiber.join(secondFiber);
+    expect(firstResult._tag).toBe("Failure");
+    expect(secondResult._tag).toBe("Failure");
+    if (firstResult._tag !== "Failure" || secondResult._tag !== "Failure") {
+      throw new Error("expected joined init callers to fail when scope closes");
+    }
+    expect(firstResult.failure.cause).toBe("encoder_disposed");
+    expect(secondResult.failure.cause).toBe("encoder_disposed");
+
+    const state = yield* SubscriptionRef.get(client.state);
+    expect(state.status).toBe("disposed");
+  }),
+);
+
 describe("Deferred wrapper invariants", () => {
   layer(makeEncoderHarnessLayer())(
     "EncoderWorkerClient encode cache",
@@ -666,9 +904,40 @@ describe("Deferred wrapper invariants", () => {
     },
   );
 
-  it.effect.skip("model reload clears the query cache (W2b)", () => Effect.void);
+  it.effect("model reload clears the query cache", () =>
+    Effect.gen(function*() {
+      const firstScope = yield* Scope.make();
+      try {
+        const firstContext = yield* Layer.buildWithScope(
+          makeEncoderHarnessLayer(),
+          firstScope,
+        );
+        const firstHarness = Context.get(firstContext, EncoderHarness);
+        const firstClient = Context.get(firstContext, EncoderWorkerClient);
 
-  it.effect.skip("encoder output with NaN or wrong shape is rejected before search handoff (W3)", () =>
-    Effect.void,
+        yield* initEncoderClient(firstHarness, firstClient);
+        yield* encodeThroughWorker(firstHarness, firstClient, "alpha");
+        expect(firstHarness.fake.capturedRequests()).toHaveLength(2);
+      } finally {
+        yield* Scope.close(firstScope, Exit.void);
+      }
+
+      const secondScope = yield* Scope.make();
+      try {
+        const secondContext = yield* Layer.buildWithScope(
+          makeEncoderHarnessLayer(),
+          secondScope,
+        );
+        const secondHarness = Context.get(secondContext, EncoderHarness);
+        const secondClient = Context.get(secondContext, EncoderWorkerClient);
+
+        yield* initEncoderClient(secondHarness, secondClient);
+        yield* encodeThroughWorker(secondHarness, secondClient, "alpha");
+        expect(secondHarness.fake.capturedRequests()).toHaveLength(2);
+      } finally {
+        yield* Scope.close(secondScope, Exit.void);
+      }
+    }),
   );
+
 });

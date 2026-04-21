@@ -1,5 +1,6 @@
 import { Deferred, Duration, Effect, Schema, Scope, Semaphore } from "effect";
 import * as Worker from "effect/unstable/workers/Worker";
+import { WorkerError } from "effect/unstable/workers/WorkerError";
 
 import {
   type EncoderClientError,
@@ -70,6 +71,32 @@ interface PendingEntry {
   readonly decodeEvent: ((value: unknown) => Effect.Effect<unknown, ClientError>) | undefined;
   readonly onEvent: ((event: unknown) => Effect.Effect<void>) | undefined;
   readonly deferred: Deferred.Deferred<unknown, ClientError>;
+}
+
+function workerTransportErrorFromPlatformFailure(
+  workerKind: WorkerTransportOptions["workerKind"],
+  error: WorkerError,
+): ClientError {
+  const cause = error.reason._tag === "WorkerReceiveError" &&
+      error.reason.message.includes("messageerror")
+    ? "worker_messageerror"
+    : "worker_crashed";
+
+  const message = cause === "worker_messageerror"
+    ? "worker emitted a messageerror event"
+    : "worker run fiber terminated";
+
+  return transientClientError({
+    cause,
+    message,
+    operation: "worker_transport.run",
+    details: {
+      workerKind,
+      reasonTag: error.reason._tag,
+      reasonMessage: error.reason.message,
+      cause: error.reason.cause ?? null,
+    },
+  });
 }
 
 export const makeWorkerTransport = <TRequest>(
@@ -233,17 +260,27 @@ export const makeWorkerTransport = <TRequest>(
 
       yield* Effect.forkScoped(
         worker.run(handleInbound).pipe(
-          Effect.catchCause((cause) => {
-            const crashed = transientClientError({
-              cause: "worker_crashed",
-              message: "worker run fiber terminated",
-              operation: "worker_transport.run",
-              details: { workerKind: options.workerKind, cause: String(cause) },
-            });
-            return terminateTransport(crashed, {
-              logMessage: `worker_transport: ${options.workerKind} worker crashed`,
-            });
-          }),
+          Effect.catchTag("WorkerError", (error) =>
+            terminateTransport(
+              workerTransportErrorFromPlatformFailure(options.workerKind, error),
+              {
+                logMessage: `worker_transport: ${options.workerKind} worker receive loop failed`,
+              },
+            )
+          ),
+          Effect.catchCause((cause) =>
+            terminateTransport(
+              transientClientError({
+                cause: "worker_crashed",
+                message: "worker run fiber terminated",
+                operation: "worker_transport.run",
+                details: { workerKind: options.workerKind, cause: String(cause) },
+              }),
+              {
+                logMessage: `worker_transport: ${options.workerKind} worker crashed`,
+              },
+            )
+          ),
         ),
       );
 

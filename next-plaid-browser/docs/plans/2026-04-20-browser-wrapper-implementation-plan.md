@@ -7,6 +7,7 @@ Companion docs:
 - `2026-04-20-rust-preprocessor-architecture-sketch.md`
 - `2026-04-20-effect-tokenizer-and-parity-proposal.md`
 - `2026-04-20-encoder-runtime-service-architecture.md`
+- `2026-04-21-browser-mutable-index-sync-foundation.md`
 
 ## Purpose
 
@@ -19,6 +20,9 @@ Update after the worker-runner cutover:
 - The next implementation slice is **W1.5: encoder runtime boundary cleanup**.
 - The companion encoder-runtime note records the live-code review and the
   multi-agent architecture pass that motivated this insertion.
+- The future Rust/Wasm indexing follow-on is now tracked separately in
+  `2026-04-21-browser-mutable-index-sync-foundation.md` so wrapper cleanup can
+  stay focused on the current boundary work.
 
 The wrapper layer is the TypeScript and Effect-owned code that sits between:
 
@@ -89,6 +93,11 @@ This plan does **not** include:
 - WebGPU work
 - scoring changes
 - search kernel changes
+- mutable browser corpus sync or query-time freshness parity
+
+That later browser indexing work is now tracked explicitly in:
+
+- `docs/plans/2026-04-21-browser-mutable-index-sync-foundation.md`
 
 ## One-sentence recommendation
 

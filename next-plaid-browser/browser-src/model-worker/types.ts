@@ -64,8 +64,11 @@ export interface EncoderBackend {
 }
 
 export type EncoderInitEvent =
-  | { stage: "fetch_start"; url: string; expectedBytes: number | null }
-  | { stage: "fetch_complete"; url: string; bytesReceived: number }
+  | { stage: "asset_cache_hit"; url: string; bytesReceived: number }
+  | { stage: "asset_cache_miss"; url: string }
+  | { stage: "asset_fetch_start"; url: string; expectedBytes: number | null }
+  | { stage: "asset_fetch_complete"; url: string; bytesReceived: number }
+  | { stage: "config_validated"; queryLength: number; embeddingDim: number }
   | { stage: "session_create_start" }
   | { stage: "session_create_complete"; durationMs: number }
   | { stage: "warmup_start" }

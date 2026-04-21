@@ -9,6 +9,7 @@ The first full browser runtime will target:
 - OPFS-backed bundle storage
 - IndexedDB metadata for install state and active-version bookkeeping
 - single-threaded parity-first execution
+- a stable embeddable browser-owned API surface for websites and shells
 
 The following are deferred until after browser parity is proven:
 
@@ -16,6 +17,7 @@ The following are deferred until after browser parity is proven:
 - threaded Wasm
 - `SharedWorker` runtime sharing
 - service-worker-hosted search execution
+- agent- or harness-specific deep integrations beyond a thin adapter
 
 ## Phase 0: Build proof and structure
 
@@ -211,6 +213,50 @@ Status:
 - detailed review findings and remediation slices now live in
   `docs/REMEDIATION_AUDIT.md`
 
+## Phase 5.25: Embeddable browser API surface
+
+Goal:
+
+- expose the browser runtime through a stable browser-owned API that
+  arbitrary websites and browser-owned shells can integrate without becoming
+  the runtime home
+
+Exit criteria:
+
+- the browser runtime has a documented embeddable API surface for:
+  - install or register
+  - sync or refresh
+  - search
+  - status and readiness inspection
+  - optional lifecycle or progress events
+- the API is defined independently of any one harness implementation
+- the API is suitable for direct website or shell integration
+- docs clearly separate runtime ownership from access-path ownership
+
+Status:
+
+- newly in scope as the primary product surface for browser integration
+- depends on the storage-backed runtime remaining browser-resident
+- full hybrid text-to-embedding flow still depends on Phase 7 encoder work
+
+## Phase 5.3: Agent bridge adapters
+
+Goal:
+
+- expose the embeddable browser API through thin adapters for agent drivers and
+  browser-control environments
+
+Exit criteria:
+
+- at least one thin adapter example exists for a browser-driver environment
+- agent-facing access reuses the embeddable browser API instead of forking it
+- docs keep agent access clearly downstream of the core browser API
+
+Status:
+
+- in scope after the embeddable API surface is defined
+- should not block the core browser API or website integration work
+
 ## Phase 5.5: Code quality remediation pass
 
 Goal:
@@ -272,6 +318,34 @@ Status:
 - remaining work is:
   - storage-backed persistence instead of in-memory-only FTS state
   - iterative add / update / delete support for the browser FTS side
+- the tracked follow-on note for this work is:
+  `docs/plans/2026-04-21-browser-mutable-index-sync-foundation.md`
+
+## Phase 6.25: Mutable index sync foundation
+
+Goal:
+
+- give the browser runtime the mutable corpus and sync primitives that later
+  query-time freshness parity depends on
+
+Exit criteria:
+
+- a mutable browser corpus can be created or reopened after reload
+- browser-side keyword and metadata state is persisted instead of rebuilt only
+  in memory
+- add / update / delete mutation flows exist on the Rust/Wasm side
+- the worker contract exposes explicit sync operations
+- the embeddable browser API can perform `register -> sync -> search -> reload
+  -> search`
+- sync reports whether anything changed
+
+Status:
+
+- tracked as the next Rust/Wasm indexing slice after wrapper cleanup and API
+  stabilization
+- intentionally comes before full query-time freshness parity
+- plan of record:
+  `docs/plans/2026-04-21-browser-mutable-index-sync-foundation.md`
 
 ## Phase 7: Encoder path
 
@@ -286,6 +360,8 @@ What this phase means in practice:
 - package and load the browser-safe embedding model
 - generate query embeddings in-browser
 - prove parity against the native query embedding path
+- extend the embeddable browser API so callers can use text-to-hybrid search,
+  not only precomputed embeddings
 
 Exit criteria:
 

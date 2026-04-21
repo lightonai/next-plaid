@@ -1,4 +1,3 @@
-import * as BrowserWorker from "@effect/platform-browser/BrowserWorker";
 import { expect, it, layer } from "@effect/vitest";
 import {
   Context,
@@ -24,6 +23,7 @@ import {
   type FakeSpawner,
   makeFakeSpawner,
 } from "./__tests__/fake-spawner.js";
+import * as BrowserWorker from "./browser-worker.js";
 
 interface SearchHarnessApi {
   readonly fake: FakeSpawner;
@@ -156,6 +156,15 @@ layer(makeSearchHarnessLayer())("SearchWorkerClient worker crash handling", (it)
 
       const state = expectFailureState(yield* SubscriptionRef.get(client.state));
       expect(state.lastError.cause).toBe("worker_crashed");
+
+      const lateResult = yield* Effect.result(client.search(searchRequest()));
+      expect(lateResult._tag).toBe("Failure");
+      if (lateResult._tag !== "Failure") {
+        throw new Error("expected later search request to fail after worker crash");
+      }
+      expect(lateResult.failure._tag).toBe("TransientClientError");
+      expect(lateResult.failure.cause).toBe("worker_crashed");
+      expect(harness.fake.capturedRequests()).toHaveLength(1);
     }),
   );
 });

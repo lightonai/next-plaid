@@ -95,6 +95,11 @@ function makeEncoderInferenceEngine(): Effect.Effect<
 
     const plan = deriveEncoderEffectiveEncodePlan(input, assets.config);
     yield* validateEncodePlan(input, plan);
+    yield* eventSink.emit({
+      stage: "config_validated",
+      queryLength: plan.query_length,
+      embeddingDim: plan.embedding_dim,
+    });
     const capabilities = deriveEncoderCapabilities(
       plan,
       assets.persistentStorage,

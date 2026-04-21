@@ -46,9 +46,10 @@ Slice W1 of `docs/plans/2026-04-20-browser-wrapper-implementation-plan.md`
 - `browser-src/playwright-harness/app.ts` — module-level
   `searchWorkerLayer` / `encoderWorkerLayer` from `BrowserWorker.layer`,
   composed with the client layers. `runWrapperSmoke` uses
-  `yield* SearchWorkerClient` / `yield* EncoderWorkerClient`. Legacy
-  `callWorker` path updated to the same `[0, data] | [1, data]` platform
-  framing so baseline coverage keeps passing.
+  `yield* SearchWorkerClient` / `yield* EncoderWorkerClient`. At
+  `955f7be`, the legacy raw `callWorker` baseline still existed beside the
+  wrapper path; at current HEAD that fallback has been removed, so the smoke
+  harness now exercises the wrapper path only.
 - `playwright-harness/worker.mjs` and
   `browser-src/model-worker/encoder-worker.ts` — minimal platform
   framing shim: post `[0]` ready signal on startup, wrap outgoing as
@@ -83,9 +84,9 @@ Ran before committing:
 - `bun run typecheck:fast` — clean (tsgo, no Effect LS diagnostics).
   Use for inner-loop feedback only.
 - `bun run test` — `No test files found, exiting with code 0`.
-- `bun run smoke:chromium` — passes end to end. Exercises both the
-  wrapper path (`runWrapperSmoke`) and the legacy `callWorker` path
-  against the real WASM search worker + ONNX encoder worker.
+- `bun run smoke:chromium` — passes end to end. Current HEAD exercises the
+  wrapper path (`runWrapperSmoke`) only against the real WASM search worker
+  + ONNX encoder worker.
 
 ## What's next
 
@@ -205,10 +206,9 @@ After W1.5 is green:
 
 ## Known leftovers and non-goals
 
-- `runWrapperSmoke` in `app.ts` runs alongside the legacy `callWorker`
-  path. The legacy path is parallel baseline coverage and can be
-  removed after Phase 2 tests land. Do NOT remove before the invariant
-  suite is green.
+- The legacy `callWorker` harness path in `app.ts` has now been removed.
+  `runWrapperSmoke` is the single smoke path, so future harness changes
+  should keep the wrapper-owned result shape and assertions aligned.
 - `decodePassthrough` on the search side is a conscious W1 compromise:
   search payloads are trusted at compile time from the Rust-derived
   contract. Add runtime Schema decoding only if evidence shows it's

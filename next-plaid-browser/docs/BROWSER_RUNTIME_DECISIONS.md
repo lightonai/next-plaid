@@ -24,6 +24,48 @@ Why this is the default:
 - it avoids the deployment and toolchain complexity of threaded Wasm
 - it gives the runtime the fastest currently standard browser file-access path
 
+## Embeddable access model
+
+The browser runtime is treated first as a browser-resident capability that can
+be embedded into arbitrary websites and browser-owned shells.
+
+The important ownership rule is:
+
+- the browser owns local index state, storage, and query execution
+- websites, UI shells, and later agent harnesses are access paths, not the
+  runtime home
+
+This means the public surface should be a narrow browser API that supports:
+
+- install or register corpus state
+- refresh or sync when browser-side source data changes
+- search
+- status and readiness inspection
+- progress or lifecycle events where needed
+
+The first priority is making that API clean and embeddable for browser-hosted
+products. Agent-facing drivers and MCP-style integrations should sit on top of
+the same API rather than reshaping the runtime around one automation harness.
+
+Later, that same API should also support agent-facing access patterns by
+allowing systems such as browser-use to execute JavaScript or send
+browser-scoped commands against the bridge.
+
+Acceptable host shells for the browser-owned API include:
+
+- a page-hosted application
+- an extension page
+- an offscreen document
+
+The host shell may vary; the worker-owned runtime contract should not.
+
+## Agent adapter rule
+
+Harness-specific integration should stay thin. The preferred model is to let
+systems such as browser-use execute JavaScript or send browser-scoped commands
+against the browser API instead of embedding the search engine directly into a
+harness-specific layer.
+
 ## Storage stack
 
 The browser storage hierarchy is:
@@ -167,6 +209,13 @@ The next concrete work after this is:
 2. add rollback and cleanup policy for superseded bundles
 3. move hot-path worker reads toward `FileSystemSyncAccessHandle`
 4. keep the first browser runtime single-threaded
+
+Product-surface follow-up after the storage-backed baseline:
+
+1. define the stable embeddable browser API for website-hosted callers
+2. expose install / sync / search / status as browser-owned operations
+3. only after that, prove a thin adapter path against a browser-driver
+   environment
 
 ## Supporting research
 

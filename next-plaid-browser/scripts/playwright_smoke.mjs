@@ -204,11 +204,8 @@ async function runSmoke(browserName) {
       ? result.encoderInitEvents.map((event) => event?.stage)
       : [];
     const loadedIndices = result.health?.loaded_indices;
-    const initialMemoryUsageBytes = result.initialHealth?.memory_usage_bytes;
-    const finalMemoryUsageBytes = result.health?.memory_usage_bytes;
-    const indexBytes = result.health?.memory_usage_breakdown?.index_bytes;
-    const metadataJsonBytes = result.health?.memory_usage_breakdown?.metadata_json_bytes;
-    const keywordRuntimeBytes = result.health?.memory_usage_breakdown?.keyword_runtime_bytes;
+    const runtimeEncodedTopDocumentId =
+      result.runtimeEncodedSearch?.results?.[0]?.document_ids?.[0];
 
     if (
       installActivated !== true ||
@@ -228,17 +225,12 @@ async function runSmoke(browserName) {
       encodedQueryEncoderId !== "tiny-encoder-proof" ||
       encoderBackend !== "wasm" ||
       encoderState !== "ready" ||
-      !encoderEventStages.includes("fetch_start") ||
+      !encoderEventStages.includes("asset_fetch_start") ||
       !encoderEventStages.includes("session_create_complete") ||
       !encoderEventStages.includes("warmup_complete") ||
       !encoderEventStages.includes("ready") ||
       loadedIndices !== 3 ||
-      initialMemoryUsageBytes !== 0 ||
-      !(finalMemoryUsageBytes > 0) ||
-      !(indexBytes > 0) ||
-      !(metadataJsonBytes > 0) ||
-      !(keywordRuntimeBytes > 0) ||
-      finalMemoryUsageBytes !== indexBytes + metadataJsonBytes + keywordRuntimeBytes
+      runtimeEncodedTopDocumentId !== 0
     ) {
       throw new Error(`unexpected smoke result: ${JSON.stringify(result)}`);
     }

@@ -1,6 +1,5 @@
-import * as BrowserWorker from "@effect/platform-browser/BrowserWorker";
 import { expect, layer } from "@effect/vitest";
-import { Context, Effect, Fiber, Layer } from "effect";
+import { Context, Effect, Fiber, Layer, Stream, SubscriptionRef } from "effect";
 
 import type {
   EncodedQuery,
@@ -14,7 +13,11 @@ import type {
 import {
   makeBrowserSearchRuntimeLayer,
 } from "./browser-runtime-app.js";
+import {
+  permanentClientError,
+} from "./client-errors.js";
 import type {
+  EncoderStateSnapshot,
   EncoderWorkerClientApi,
 } from "./encoder-worker-client.js";
 import type {
@@ -25,8 +28,13 @@ import type {
   SearchResultsResponseEnvelope,
 } from "../shared/search-contract.js";
 import { BrowserSearchRuntime } from "./browser-search-runtime.js";
+import * as BrowserWorker from "./browser-worker.js";
 import { EncoderWorkerClient } from "./encoder-worker-client.js";
-import type { SearchWorkerClientApi } from "./search-worker-client.js";
+import type {
+  LoadedSearchIndexMetadata,
+  SearchWorkerClientApi,
+  SearchWorkerState,
+} from "./search-worker-client.js";
 import { SearchWorkerClient } from "./search-worker-client.js";
 import {
   type CapturedRequest,
@@ -63,6 +71,81 @@ function makeBrowserRuntimeHarnessLayer(): Layer.Layer<
   );
 
   return Layer.mergeAll(appLayer, harnessLayer);
+}
+
+function makeEncodeFailureFallbackLayer(): Layer.Layer<
+  BrowserSearchRuntime,
+  never
+> {
+  const searchLayer = Layer.effect(SearchWorkerClient)(
+    Effect.gen(function*() {
+      const state = yield* SubscriptionRef.make<SearchWorkerState>({
+        status: "ready" as const,
+        lastError: null,
+      });
+      const loadedIndices = yield* SubscriptionRef.make<
+        ReadonlyMap<string, LoadedSearchIndexMetadata>
+      >(
+        new Map<string, LoadedSearchIndexMetadata>([
+          [
+            "proof-index",
+            {
+              name: "proof-index",
+              source: "load_index" as const,
+              summary: indexLoadedResponse().summary,
+              encoder: proofEncoder(),
+              indexId: null,
+              buildId: null,
+            },
+          ],
+        ]),
+      );
+
+      return SearchWorkerClient.of({
+        state,
+        loadedIndices,
+        loadIndex: () => Effect.die("unused loadIndex in fallback test"),
+        installBundle: () => Effect.die("unused installBundle in fallback test"),
+        loadStoredBundle: () => Effect.die("unused loadStoredBundle in fallback test"),
+        search: (request) =>
+          Effect.sync(() => {
+            expect(request.request.queries).toBeNull();
+            expect(request.request.text_query).toEqual(["alpha"]);
+            expect(request.request.alpha).toBeNull();
+            expect(request.request.fusion).toBeNull();
+            return searchResultsResponse();
+          }),
+      });
+    }),
+  );
+
+  const encoderLayer = Layer.effect(EncoderWorkerClient)(
+    Effect.gen(function*() {
+      const state = yield* SubscriptionRef.make<EncoderStateSnapshot>({
+        status: "ready" as const,
+        capabilities: encoderCapabilities(proofEncoder()),
+        lastError: null,
+      });
+
+      return EncoderWorkerClient.of({
+        state,
+        events: Stream.empty,
+        init: () => Effect.die("unused init in fallback test"),
+        encode: () =>
+          Effect.fail(
+            permanentClientError({
+              cause: "synthetic_encode_failure",
+              message: "encode failed in fallback test",
+              operation: "encoder_worker.encode",
+              details: null,
+            }),
+          ),
+      });
+    }),
+  );
+
+  const appLayer = Layer.mergeAll(searchLayer, encoderLayer);
+  return BrowserSearchRuntime.layer().pipe(Layer.provide(appLayer));
 }
 
 function proofEncoder(
@@ -179,6 +262,27 @@ function encodeResponse(encoder: EncoderIdentity = proofEncoder()) {
   } as const;
 }
 
+function malformedEncodeResponseWithNaN(encoder: EncoderIdentity = proofEncoder()) {
+  return {
+    type: "encoded_query",
+    encoded: {
+      payload: {
+        embeddings: [[0.1, Number.NaN, 0.3, 0.4]],
+        encoder,
+        dtype: "f32_le",
+        layout: "ragged",
+      },
+      timing: {
+        total_ms: 2,
+        tokenize_ms: 1,
+        inference_ms: 1,
+      },
+      input_ids: [101, 102],
+      attention_mask: [1, 1],
+    },
+  } as const;
+}
+
 function searchResultsResponse(): SearchResultsResponseEnvelope {
   return {
     type: "search_results",
@@ -219,6 +323,30 @@ function searchRequest(
   };
 }
 
+function hybridEncodeAndSearchArgs() {
+  return {
+    text: "alpha",
+    searchRequest: {
+      type: "search" as const,
+      name: "proof-index",
+      request: {
+        params: {
+          top_k: 2,
+          n_ivf_probe: 2,
+          n_full_scores: 2,
+          centroid_score_threshold: null,
+        },
+        subset: null,
+        text_query: ["alpha"],
+        alpha: 0.25,
+        fusion: "relative_score" as const,
+        filter_condition: null,
+        filter_parameters: null,
+      },
+    },
+  };
+}
+
 function firstCapturedRequest<TRequest = unknown>(
   fake: FakeSpawner,
 ): CapturedRequest<TRequest> {
@@ -233,6 +361,17 @@ function firstCapturedRequest<TRequest = unknown>(
 function waitForWorkerStart(fake: FakeSpawner): Effect.Effect<void> {
   return Effect.gen(function*() {
     while (!fake.isStarted()) {
+      yield* Effect.yieldNow;
+    }
+  });
+}
+
+function waitForCapturedRequestCount(
+  fake: FakeSpawner,
+  expectedMinimum: number,
+): Effect.Effect<void> {
+  return Effect.gen(function*() {
+    while (fake.capturedRequests().length < expectedMinimum) {
       yield* Effect.yieldNow;
     }
   });
@@ -413,6 +552,72 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime compatibility pref
     }),
   );
 
+  it.effect("rejects query payloads that include both inline and binary embeddings", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const searchClient = yield* SearchWorkerClient;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+
+      yield* loadIndexIntoRuntime(searchClient, harness.searchFake);
+
+      const ambiguousPayload: QueryEmbeddingsPayload = {
+        embeddings: [[0.1, 0.2, 0.3, 0.4]],
+        embeddings_b64: "AQIDBA==",
+        shape: [1, 4],
+        encoder: proofEncoder(),
+        dtype: "f32_le",
+        layout: "ragged",
+      };
+
+      const result = yield* Effect.result(
+        runtime.searchWithEmbeddings(searchRequest(ambiguousPayload)),
+      );
+      expect(result._tag).toBe("Failure");
+      if (result._tag !== "Failure") {
+        throw new Error("expected ambiguous query payload to fail");
+      }
+      expect(result.failure.cause).toBe("ambiguous_query_embeddings");
+      expect(harness.searchFake.capturedRequests()).toHaveLength(0);
+    }),
+  );
+
+  it.effect("rejects binary embeddings without shape metadata before the search worker sees them", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const searchClient = yield* SearchWorkerClient;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+
+      yield* loadIndexIntoRuntime(searchClient, harness.searchFake);
+
+      const malformedPayload: QueryEmbeddingsPayload = {
+        embeddings_b64: "AQIDBA==",
+        encoder: proofEncoder(),
+        dtype: "f32_le",
+        layout: "ragged",
+      };
+
+      const result = yield* Effect.result(
+        runtime.searchWithEmbeddings(searchRequest(malformedPayload)),
+      );
+      expect(result._tag).toBe("Failure");
+      if (result._tag !== "Failure") {
+        throw new Error("expected malformed binary query payload to fail");
+      }
+      expect(result.failure.cause).toBe("missing_binary_shape");
+      expect(harness.searchFake.capturedRequests()).toHaveLength(0);
+    }),
+  );
+
   it.effect("fails before encode when the initialized encoder does not match the loaded index", () =>
     Effect.gen(function*() {
       const harness = yield* BrowserRuntimeHarness;
@@ -457,6 +662,119 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime compatibility pref
       }
       expect(result.failure.cause).toBe("encoder_identity_mismatch");
       expect(harness.encoderFake.capturedRequests()).toHaveLength(0);
+      expect(harness.searchFake.capturedRequests()).toHaveLength(0);
+    }),
+  );
+
+  it.effect("falls back to keyword-only search when the encoder is not initialized but text query exists", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const searchClient = yield* SearchWorkerClient;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+
+      yield* loadIndexIntoRuntime(searchClient, harness.searchFake, proofEncoder());
+
+      const resultFiber = yield* runtime.encodeAndSearch(hybridEncodeAndSearchArgs()).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+
+      expect(harness.encoderFake.capturedRequests()).toHaveLength(0);
+      yield* waitForCapturedRequestCount(harness.searchFake, 1);
+      const searchRequestEnvelope = firstCapturedRequest<SearchRequestEnvelope>(harness.searchFake);
+      expect(searchRequestEnvelope.request.type).toBe("search");
+      expect(searchRequestEnvelope.request.request.queries).toBeNull();
+      expect(searchRequestEnvelope.request.request.text_query).toEqual(["alpha"]);
+      expect(searchRequestEnvelope.request.request.alpha).toBeNull();
+      expect(searchRequestEnvelope.request.request.fusion).toBeNull();
+
+      yield* replySuccess(
+        harness.searchFake,
+        searchRequestEnvelope.requestId,
+        searchResultsResponse(),
+      );
+      yield* Effect.yieldNow;
+
+      const result = yield* Fiber.join(resultFiber);
+      expect(result.type).toBe("search_results");
+      expect(result.results[0]?.document_ids).toEqual([0, 1]);
+    }),
+  );
+
+});
+
+layer(makeEncodeFailureFallbackLayer())("BrowserSearchRuntime encode failure fallback", (it) => {
+  it.effect("falls back to keyword-only search when encode fails after init", () =>
+    Effect.gen(function*() {
+      const runtime = yield* BrowserSearchRuntime;
+      const result = yield* runtime.encodeAndSearch(hybridEncodeAndSearchArgs());
+      expect(result.type).toBe("search_results");
+      expect(result.results[0]?.document_ids).toEqual([0, 1]);
+    }),
+  );
+});
+
+layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime malformed encoder output", (it) => {
+  it.effect("rejects non-finite encoder output before search handoff", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const searchClient = yield* SearchWorkerClient;
+      const encoderClient = yield* EncoderWorkerClient;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+
+      yield* loadIndexIntoRuntime(searchClient, harness.searchFake);
+      yield* initEncoder(encoderClient, harness.encoderFake);
+
+      const searchFiber = yield* Effect.result(
+        runtime.encodeAndSearch({
+          text: "alpha",
+          searchRequest: {
+            type: "search",
+            name: "proof-index",
+            request: {
+              params: {
+                top_k: 2,
+                n_ivf_probe: 2,
+                n_full_scores: 2,
+                centroid_score_threshold: null,
+              },
+              subset: null,
+              text_query: null,
+              alpha: null,
+              fusion: null,
+              filter_condition: null,
+              filter_parameters: null,
+            },
+          },
+        }),
+      ).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Effect.yieldNow;
+
+      const encodeRequest = firstCapturedRequest<{ readonly type: "encode" }>(harness.encoderFake);
+      expect(encodeRequest.request.type).toBe("encode");
+      yield* replySuccess(
+        harness.encoderFake,
+        encodeRequest.requestId,
+        malformedEncodeResponseWithNaN(),
+      );
+      yield* Effect.yieldNow;
+
+      const result = yield* Fiber.join(searchFiber);
+      expect(result._tag).toBe("Failure");
+      if (result._tag !== "Failure") {
+        throw new Error("expected malformed encoder output to fail encode-and-search");
+      }
+      expect(result.failure.cause).toBe("decode_failed");
       expect(harness.searchFake.capturedRequests()).toHaveLength(0);
     }),
   );

@@ -4,29 +4,13 @@ import type {
   BundleInstalledResponseEnvelope,
   BundleManifest,
   EncoderIdentity,
-  HealthRequestEnvelope,
-  HealthResponseEnvelope,
-  IndexLoadedResponseEnvelope,
   InstallBundleRequestEnvelope,
   LoadIndexRequestEnvelope,
   LoadStoredBundleRequestEnvelope,
   QueryEmbeddingsPayload,
-  SearchResultsResponseEnvelope,
-  SearchWorkerRequest,
-  SearchWorkerResponse,
-  StoredBundleLoadedResponseEnvelope,
   SearchRequestEnvelope,
 } from "../shared/search-contract.js";
-import type {
-  EncodeResponse,
-  EncoderDisposeResponse,
-  EncoderHealthResponse,
-  EncoderInitEvent,
-  EncoderInitRequest,
-  EncoderInitResponse,
-  EncoderWorkerRequest,
-} from "../model-worker/types.js";
-import type { WorkerResponseEnvelope } from "../shared/worker-envelope.js";
+import type { EncoderInitEvent, EncoderInitRequest } from "../model-worker/types.js";
 import {
   makeBrowserSearchRuntimeManagedRuntimeFromFactories,
 } from "../effect/browser-runtime-app.js";
@@ -56,8 +40,6 @@ const statusNode = (() => {
   }
   return node;
 })();
-const WORKER_REQUEST_TIMEOUT_MS = 15_000;
-
 const DENSE_ENCODER: EncoderIdentity = {
   encoder_id: "demo-smoke-dense",
   encoder_build: "demo-smoke-dense-build-1",
@@ -390,97 +372,19 @@ function encodedSearchRequest(payload: QueryEmbeddingsPayload): SearchRequestEnv
   };
 }
 
-function unwrapSearchResponse<T extends SearchWorkerResponse>(
-  response: T,
-): Exclude<T, Extract<SearchWorkerResponse, { type: "error" }>> {
-  if (response.type === "error") {
-    throw new Error(`search worker returned ${response.code}: ${response.message}`);
-  }
-  return response as Exclude<T, Extract<SearchWorkerResponse, { type: "error" }>>;
-}
-
-async function callWorker<TRequest, TResponse, TEvent = never>(
-  worker: Worker,
-  request: TRequest,
-  options?: { onEvent?: (event: TEvent) => void },
-): Promise<TResponse> {
-  const requestId = crypto.randomUUID();
-
-  return new Promise<TResponse>((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      cleanup();
-      reject(
-        new Error(
-          `Worker request timed out after ${WORKER_REQUEST_TIMEOUT_MS}ms: ${
-            (request as { type?: string })?.type ?? "unknown"
-          }`,
-        ),
-      );
-    }, WORKER_REQUEST_TIMEOUT_MS);
-
-    const cleanup = (): void => {
-      clearTimeout(timeoutId);
-      worker.removeEventListener("message", handleMessage);
-      worker.removeEventListener("error", handleError);
-      worker.removeEventListener("messageerror", handleMessageError);
-    };
-
-    const handleMessage = (event: MessageEvent<unknown>): void => {
-      const frame = event.data;
-      if (!Array.isArray(frame) || frame.length < 2 || frame[0] !== 1) {
-        return;
-      }
-      const envelope = frame[1] as WorkerResponseEnvelope<TResponse, TEvent>;
-      if (envelope?.requestId !== requestId) {
-        return;
-      }
-
-      if (envelope.ok && "event" in envelope) {
-        options?.onEvent?.(envelope.event);
-        return;
-      }
-
-      cleanup();
-      if (envelope.ok) {
-        resolve(envelope.response);
-      } else {
-        reject(new Error(envelope.error));
-      }
-    };
-
-    const handleError = (event: ErrorEvent): void => {
-      cleanup();
-      reject(new Error(`Worker error while handling ${(request as { type?: string })?.type ?? "unknown"}: ${event.message}`));
-    };
-
-    const handleMessageError = (): void => {
-      cleanup();
-      reject(new Error(`Worker messageerror while handling ${(request as { type?: string })?.type ?? "unknown"}`));
-    };
-
-    worker.addEventListener("message", handleMessage);
-    worker.addEventListener("error", handleError);
-    worker.addEventListener("messageerror", handleMessageError);
-    worker.postMessage([0, { requestId, request }]);
-  });
-}
-
-async function callSearchWorker<TResponse extends SearchWorkerResponse>(
-  worker: Worker,
-  request: SearchWorkerRequest,
-): Promise<Exclude<TResponse, Extract<SearchWorkerResponse, { type: "error" }>>> {
-  const response = await callWorker<SearchWorkerRequest, TResponse>(worker, request);
-  return unwrapSearchResponse(response);
-}
-
 async function runWrapperSmoke(): Promise<unknown> {
   const initialRuntime = makeHarnessRuntime();
-  let initialPhase: unknown;
+  let initialPhase: {
+    readonly initialState: unknown;
+    readonly initialLoadedIndexCount: number;
+    readonly installBundle: BundleInstalledResponseEnvelope;
+  };
   try {
     initialPhase = await initialRuntime.runPromise(
       Effect.gen(function*() {
         const searchClient = yield* SearchWorkerClient;
         const initialState = yield* SubscriptionRef.get(searchClient.state);
+        const initialLoadedIndices = yield* SubscriptionRef.get(searchClient.loadedIndices);
         const installBundle = yield* searchClient.installBundle(
           yield* Effect.tryPromise({
             try: () => installStoredBundleRequest(),
@@ -495,6 +399,7 @@ async function runWrapperSmoke(): Promise<unknown> {
         );
         return {
           initialState,
+          initialLoadedIndexCount: initialLoadedIndices.size,
           installBundle,
         };
       }),
@@ -511,13 +416,32 @@ async function runWrapperSmoke(): Promise<unknown> {
           const searchClient = yield* SearchWorkerClient;
           const encoderClient = yield* EncoderWorkerClient;
           const runtimeService = yield* BrowserSearchRuntime;
+          const reloadedInitialHealth = {
+            loaded_indices: (yield* SubscriptionRef.get(searchClient.loadedIndices)).size,
+          };
           const searchState = yield* SubscriptionRef.get(runtimeService.searchState);
 
           const loadStoredBundle = yield* searchClient.loadStoredBundle(loadStoredBundleRequest());
+          const storedSemanticSearch = yield* searchClient.search(storedSemanticSearchRequest());
+          const storedKeywordSearch = yield* searchClient.search(storedKeywordSearchRequest());
+          const storedHybridSearch = yield* searchClient.search(storedHybridSearchRequest());
+          const storedFilteredKeywordSearch = yield* searchClient.search(
+            storedFilteredKeywordSearchRequest(),
+          );
           const load = yield* searchClient.loadIndex(loadIndexRequest());
           const loadEncodedIndex = yield* searchClient.loadIndex(loadEncodedIndexRequest());
           const semanticSearch = yield* searchClient.search(semanticSearchRequest());
+          const keywordSearch = yield* searchClient.search(keywordSearchRequest());
           const hybridSearch = yield* searchClient.search(hybridSearchRequest());
+          const filteredSemanticSearch = yield* searchClient.search(
+            filteredSemanticSearchRequest(),
+          );
+          const filteredKeywordSearch = yield* searchClient.search(
+            filteredKeywordSearchRequest(),
+          );
+          const health = {
+            loaded_indices: (yield* SubscriptionRef.get(searchClient.loadedIndices)).size,
+          };
 
           const encoderEvents: EncoderInitEvent[] = [];
           yield* Stream.runForEach(encoderClient.events, (event) =>
@@ -530,9 +454,9 @@ async function runWrapperSmoke(): Promise<unknown> {
 
           const encoderCapabilities = yield* encoderClient.init(encoderInitRequest().payload);
           const encoderState = yield* SubscriptionRef.get(runtimeService.encoderState);
-          const encodedQuery = yield* encoderClient.encode({ text: "alpha" });
+          const encodedQueryValue = yield* encoderClient.encode({ text: "alpha" });
           const encodedSearch = yield* runtimeService.searchWithEmbeddings(
-            encodedSearchRequest(encodedQuery.payload),
+            encodedSearchRequest(encodedQueryValue.payload),
           );
           const runtimeEncodedSearch = yield* runtimeService.encodeAndSearch({
             text: "alpha",
@@ -557,166 +481,65 @@ async function runWrapperSmoke(): Promise<unknown> {
           });
 
           return {
+            initialHealth: {
+              loaded_indices: initialPhase.initialLoadedIndexCount,
+            },
+            initialState: initialPhase.initialState,
+            installBundle: initialPhase.installBundle,
+            reloadedInitialHealth,
             searchState,
             loadStoredBundle,
+            storedSemanticSearch,
+            storedKeywordSearch,
+            storedHybridSearch,
+            storedFilteredKeywordSearch,
             load,
             loadEncodedIndex,
+            health,
             semanticSearch,
+            keywordSearch,
             hybridSearch,
-            encoderEvents,
+            filteredSemanticSearch,
+            filteredKeywordSearch,
+            encoderInitEvents: encoderEvents,
             encoderCapabilities,
+            encoderInit: {
+              type: "encoder_ready" as const,
+              state: "ready" as const,
+              capabilities: encoderCapabilities,
+            },
+            encoderHealth: {
+              state: encoderState.status,
+              capabilities: encoderState.status === "ready"
+                ? encoderState.capabilities
+                : encoderState.capabilities,
+            },
             encoderState,
-            encodedQuery,
+            encodedQuery: {
+              type: "encoded_query" as const,
+              encoded: encodedQueryValue,
+            },
             encodedSearch,
             runtimeEncodedSearch,
           };
         }),
       ),
     );
-
-    return {
-      initialPhase,
-      runtimePhase,
-    };
+    return runtimePhase;
   } finally {
     await runtime.dispose();
   }
 }
 
 async function main(): Promise<void> {
-  const worker = new Worker("./search-worker.js", { type: "module" });
-  const encoderWorker = new Worker("./encoder-worker.js", { type: "module" });
-  let reloadWorker: Worker | null = null;
-
   try {
-    const initialHealth = await callSearchWorker<HealthResponseEnvelope>(
-      worker,
-      { type: "health" } satisfies HealthRequestEnvelope,
-    );
-    const installBundle = await callSearchWorker<BundleInstalledResponseEnvelope>(
-      worker,
-      await installStoredBundleRequest(),
-    );
-    worker.terminate();
-
-    reloadWorker = new Worker("./search-worker.js", { type: "module" });
-    const reloadedInitialHealth = await callSearchWorker<HealthResponseEnvelope>(
-      reloadWorker,
-      { type: "health" } satisfies HealthRequestEnvelope,
-    );
-    const loadStoredBundle = await callSearchWorker<StoredBundleLoadedResponseEnvelope>(
-      reloadWorker,
-      loadStoredBundleRequest(),
-    );
-    const storedSemanticSearch = await callSearchWorker<SearchResultsResponseEnvelope>(
-      reloadWorker,
-      storedSemanticSearchRequest(),
-    );
-    const storedKeywordSearch = await callSearchWorker<SearchResultsResponseEnvelope>(
-      reloadWorker,
-      storedKeywordSearchRequest(),
-    );
-    const storedHybridSearch = await callSearchWorker<SearchResultsResponseEnvelope>(
-      reloadWorker,
-      storedHybridSearchRequest(),
-    );
-    const storedFilteredKeywordSearch = await callSearchWorker<SearchResultsResponseEnvelope>(
-      reloadWorker,
-      storedFilteredKeywordSearchRequest(),
-    );
-    const load = await callSearchWorker<IndexLoadedResponseEnvelope>(reloadWorker, loadIndexRequest());
-    const loadEncodedIndex = await callSearchWorker<IndexLoadedResponseEnvelope>(
-      reloadWorker,
-      loadEncodedIndexRequest(),
-    );
-    const health = await callSearchWorker<HealthResponseEnvelope>(
-      reloadWorker,
-      { type: "health" } satisfies HealthRequestEnvelope,
-    );
-    const semanticSearch = await callSearchWorker<SearchResultsResponseEnvelope>(
-      reloadWorker,
-      semanticSearchRequest(),
-    );
-    const keywordSearch = await callSearchWorker<SearchResultsResponseEnvelope>(
-      reloadWorker,
-      keywordSearchRequest(),
-    );
-    const hybridSearch = await callSearchWorker<SearchResultsResponseEnvelope>(
-      reloadWorker,
-      hybridSearchRequest(),
-    );
-    const filteredSemanticSearch = await callSearchWorker<SearchResultsResponseEnvelope>(
-      reloadWorker,
-      filteredSemanticSearchRequest(),
-    );
-    const filteredKeywordSearch = await callSearchWorker<SearchResultsResponseEnvelope>(
-      reloadWorker,
-      filteredKeywordSearchRequest(),
-    );
-
-    const encoderInitEvents: EncoderInitEvent[] = [];
-    const encoderInit = await callWorker<EncoderWorkerRequest, EncoderInitResponse, EncoderInitEvent>(
-      encoderWorker,
-      encoderInitRequest(),
-      {
-        onEvent: (event) => {
-          encoderInitEvents.push(event);
-        },
-      },
-    );
-    const encoderHealth = await callWorker<EncoderWorkerRequest, EncoderHealthResponse>(
-      encoderWorker,
-      { type: "health" },
-    );
-    const encodedQuery = await callWorker<EncoderWorkerRequest, EncodeResponse>(encoderWorker, {
-      type: "encode",
-      payload: { text: "alpha" },
-    });
-    const encodedSearch = await callSearchWorker<SearchResultsResponseEnvelope>(
-      reloadWorker,
-      encodedSearchRequest(encodedQuery.encoded.payload),
-    );
-    const disposeEncoder = await callWorker<EncoderWorkerRequest, EncoderDisposeResponse>(
-      encoderWorker,
-      { type: "dispose" },
-    );
-    const wrapperSmoke = await runWrapperSmoke();
-
-    const result = {
-      initialHealth,
-      installBundle,
-      reloadedInitialHealth,
-      loadStoredBundle,
-      storedSemanticSearch,
-      storedKeywordSearch,
-      storedHybridSearch,
-      storedFilteredKeywordSearch,
-      load,
-      loadEncodedIndex,
-      health,
-      semanticSearch,
-      keywordSearch,
-      hybridSearch,
-      filteredSemanticSearch,
-      filteredKeywordSearch,
-      encoderInitEvents,
-      encoderInit,
-      encoderHealth,
-      encodedQuery,
-      encodedSearch,
-      disposeEncoder,
-      wrapperSmoke,
-    };
+    const result = await runWrapperSmoke();
     window.__NEXT_PLAID_SMOKE_RESULT__ = result;
     setStatus("ok", result);
   } catch (error) {
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
     window.__NEXT_PLAID_SMOKE_ERROR__ = message;
     setStatus("error", message);
-  } finally {
-    worker.terminate();
-    reloadWorker?.terminate();
-    encoderWorker.terminate();
   }
 }
 

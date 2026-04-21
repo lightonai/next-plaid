@@ -27,6 +27,11 @@ import {
   decodeEncoderInitResponseSchema,
 } from "../model-worker/encoder-contract.js";
 import {
+  decodeEncoderQueryCacheKey,
+  encodeEncoderInitBindingKey,
+  encodeEncoderQueryCacheKey,
+} from "./encoder-worker-client-schema.js";
+import {
   type EncoderClientError,
   permanentClientError,
 } from "./client-errors.js";
@@ -98,44 +103,11 @@ const emptyLifecycleControl: EncoderLifecycleControl = {
   readyGate: null,
 };
 
-function encoderInputKey(input: EncoderCreateInput): string {
-  return JSON.stringify({
-    encoder: input.encoder,
-    modelUrl: input.modelUrl,
-    onnxConfigUrl: input.onnxConfigUrl,
-    tokenizerUrl: input.tokenizerUrl,
-    prefer: input.prefer ?? null,
-  });
-}
-
 function publishEvent(
   pubsub: PubSub.PubSub<EncoderLifecycleEvent>,
   event: EncoderLifecycleEvent,
 ): Effect.Effect<void> {
   return PubSub.publish(pubsub, event).pipe(Effect.asVoid);
-}
-
-function encoderQueryCacheKey(
-  capabilities: EncoderCapabilities,
-  text: string,
-): string {
-  return JSON.stringify({
-    encoderId: capabilities.encoderId,
-    encoderBuild: capabilities.encoderBuild,
-    text,
-  });
-}
-
-function decodeEncoderQueryCacheKey(
-  key: string,
-): { readonly text: string } {
-  const parsed = JSON.parse(key) as { readonly text?: unknown };
-  if (typeof parsed.text !== "string") {
-    throw new Error("invalid encoder cache key");
-  }
-  return {
-    text: parsed.text,
-  };
 }
 
 function disposedEncoderError(operation: string): EncoderClientError {
@@ -319,29 +291,27 @@ export const makeEncoderWorkerClient = (
         "EncoderWorkerClient.requestEncodedQuery",
       )(
         (cacheKey: string) =>
-          Effect.gen(function*() {
-            const { text } = yield* Effect.try({
-              try: () => decodeEncoderQueryCacheKey(cacheKey),
-              catch: (error) =>
+          decodeEncoderQueryCacheKey(cacheKey).pipe(
+            Effect.mapError((error) =>
                 permanentClientError({
                   cause: "invalid_cache_key",
                   message: "failed to decode encoder query cache key",
                   operation: "encoder_worker.encode",
                   details: error,
                 }),
-            });
-
-            const response = yield* transport.request(
-              { type: "encode", payload: { text } },
-              {
-                operation: "encoder_worker.encode",
-                requestType: "encode",
-                decodeResponse: decodeEncodedResponse,
-              },
-            );
-
-            return response.encoded;
-          }),
+            ),
+            Effect.flatMap(({ text }) =>
+              transport.request(
+                { type: "encode", payload: { text } },
+                {
+                  operation: "encoder_worker.encode",
+                  requestType: "encode",
+                  decodeResponse: decodeEncodedResponse,
+                },
+              )
+            ),
+            Effect.map((response) => response.encoded),
+          ),
       );
 
       const encoderCacheContext = yield* Layer.buildWithScope(
@@ -377,7 +347,16 @@ export const makeEncoderWorkerClient = (
       const init = Effect.fn("EncoderWorkerClient.init")(
         (input: EncoderCreateInput) =>
           Effect.gen(function*() {
-            const requestedKey = encoderInputKey(input);
+            const requestedKey = yield* encodeEncoderInitBindingKey(input).pipe(
+              Effect.mapError((error) =>
+                permanentClientError({
+                  cause: "invalid_init_key",
+                  message: "failed to encode encoder init binding key",
+                  operation: "encoder_worker.init",
+                  details: error,
+                })
+              ),
+            );
             const control: EncoderInitControl = yield* SynchronizedRef.modifyEffect(
               controlState,
               (
@@ -530,18 +509,6 @@ export const makeEncoderWorkerClient = (
               logAnnotations.encoder_id = readySnapshot.capabilities.encoderId;
             }
 
-            const handleEncodeError = (error: EncoderClientError) =>
-              encoderCache.clear().pipe(
-                Effect.andThen(
-                  failEncoder(
-                    "encoder_worker.encode",
-                    error,
-                    snapshot.status === "ready" ? snapshot.capabilities : null,
-                  ),
-                ),
-                Effect.andThen(Effect.fail(error)),
-              );
-
             if (readySnapshot.status !== "ready") {
               return yield* permanentClientError({
                 cause: "encoder_not_initialized",
@@ -551,9 +518,31 @@ export const makeEncoderWorkerClient = (
               });
             }
 
-            const cacheKey = encoderQueryCacheKey(
-              readySnapshot.capabilities,
+            const readyCapabilities = readySnapshot.capabilities;
+            const handleEncodeError = (error: EncoderClientError) =>
+              encoderCache.clear().pipe(
+                Effect.andThen(
+                  failEncoder(
+                    "encoder_worker.encode",
+                    error,
+                    readyCapabilities,
+                  ),
+                ),
+                Effect.andThen(Effect.fail(error)),
+              );
+
+            const cacheKey = yield* encodeEncoderQueryCacheKey(
+              readyCapabilities,
               text,
+            ).pipe(
+              Effect.mapError((error) =>
+                permanentClientError({
+                  cause: "invalid_cache_key",
+                  message: "failed to encode encoder query cache key",
+                  operation: "encoder_worker.encode",
+                  details: error,
+                })
+              ),
             );
 
             const encoded = yield* encoderCache.get(cacheKey).pipe(
