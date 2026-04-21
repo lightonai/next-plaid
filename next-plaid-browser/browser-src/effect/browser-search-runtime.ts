@@ -1,4 +1,15 @@
-import { Context, Effect, Layer, Schema, SchemaIssue, Stream, SubscriptionRef } from "effect";
+import {
+  Context,
+  Effect,
+  Layer,
+  PubSub,
+  Ref,
+  Schema,
+  SchemaIssue,
+  Scope,
+  Stream,
+  SubscriptionRef,
+} from "effect";
 
 import type { EncoderCapabilities } from "../model-worker/types.js";
 import type {
@@ -8,9 +19,15 @@ import type {
 import { EncoderWorkerClient } from "./encoder-worker-client.js";
 import type {
   EncoderIdentity,
+  MutableCorpusSnapshot,
+  MutableCorpusSummary,
+  MutableCorpusSyncSummary,
+  RegisterMutableCorpusRequestEnvelope,
+  RegisterMutableCorpusResponseEnvelope,
   QueryEmbeddingsPayload,
   SearchRequestEnvelope,
   SearchResultsResponseEnvelope,
+  SyncMutableCorpusResponseEnvelope,
 } from "../shared/search-contract.js";
 import {
   decodeDenseQueryEmbeddingsPayload,
@@ -19,6 +36,7 @@ import {
 } from "../shared/search-contract-schema.js";
 import {
   type LoadedSearchIndexMetadata,
+  type MutableCorpusMetadata,
   SearchWorkerClient,
   type SearchWorkerState,
 } from "./search-worker-client.js";
@@ -37,10 +55,66 @@ export interface EncodeAndSearchArgs {
   };
 }
 
+export interface RegisterCorpusArgs {
+  readonly corpusId: string;
+  readonly encoder: EncoderIdentity;
+  readonly ftsTokenizer?: RegisterMutableCorpusRequestEnvelope["fts_tokenizer"] | undefined;
+}
+
+export interface SyncCorpusArgs {
+  readonly corpusId: string;
+  readonly snapshot: MutableCorpusSnapshot;
+}
+
+export interface SearchCorpusArgs {
+  readonly corpusId: string;
+  readonly request: Omit<
+    SearchRequestEnvelope["request"],
+    "queries" | "alpha" | "fusion"
+  >;
+}
+
+export type MutableCorpusSyncEvent =
+  | {
+    readonly type: "sync_started";
+    readonly corpusId: string;
+    readonly documentCount: number;
+  }
+  | {
+    readonly type: "sync_committed";
+    readonly corpusId: string;
+    readonly summary: MutableCorpusSummary;
+    readonly sync: MutableCorpusSyncSummary;
+  }
+  | {
+    readonly type: "sync_noop";
+    readonly corpusId: string;
+    readonly summary: MutableCorpusSummary;
+    readonly sync: MutableCorpusSyncSummary;
+  }
+  | {
+    readonly type: "sync_failed";
+    readonly corpusId: string;
+    readonly error: BrowserRuntimeError;
+  };
+
 export interface BrowserSearchRuntimeApi {
   readonly encoderState: SubscriptionRef.SubscriptionRef<EncoderStateSnapshot>;
   readonly searchState: SubscriptionRef.SubscriptionRef<SearchWorkerState>;
+  readonly mutableCorpora: SubscriptionRef.SubscriptionRef<
+    ReadonlyMap<string, MutableCorpusMetadata>
+  >;
   readonly encoderEvents: Stream.Stream<EncoderLifecycleEvent, never>;
+  readonly mutableSyncEvents: Stream.Stream<MutableCorpusSyncEvent, never>;
+  readonly registerCorpus: (
+    args: RegisterCorpusArgs,
+  ) => Effect.Effect<RegisterMutableCorpusResponseEnvelope, BrowserRuntimeError>;
+  readonly syncCorpus: (
+    args: SyncCorpusArgs,
+  ) => Effect.Effect<SyncMutableCorpusResponseEnvelope, BrowserRuntimeError>;
+  readonly searchCorpus: (
+    args: SearchCorpusArgs,
+  ) => Effect.Effect<SearchResultsResponseEnvelope, BrowserRuntimeError>;
   readonly searchWithEmbeddings: (
     request: SearchRequestEnvelope,
   ) => Effect.Effect<SearchResultsResponseEnvelope, BrowserRuntimeError>;
@@ -111,6 +185,30 @@ function incompatibleEncoderError(options: {
       expected: options.expected,
       actual: options.actual,
     },
+  });
+}
+
+function syncInProgressError(
+  corpusId: string,
+  operation: string,
+): BrowserRuntimeError {
+  return permanentClientError({
+    cause: "sync_in_progress",
+    message: `mutable corpus "${corpusId}" already has a sync in progress`,
+    operation,
+    details: { corpusId },
+  });
+}
+
+function missingMutableCorpusTrackingError(
+  corpusId: string,
+  operation: string,
+): BrowserRuntimeError {
+  return permanentClientError({
+    cause: "mutable_corpus_tracking_missing",
+    message: `mutable corpus "${corpusId}" was loaded but is missing from wrapper state`,
+    operation,
+    details: { corpusId },
   });
 }
 
@@ -366,6 +464,21 @@ function keywordOnlyRequest(
   };
 }
 
+function mutableCorpusSearchRequest(
+  args: SearchCorpusArgs,
+): SearchRequestEnvelope {
+  return {
+    type: "search",
+    name: args.corpusId,
+    request: {
+      ...args.request,
+      queries: null,
+      alpha: null,
+      fusion: null,
+    },
+  };
+}
+
 function validateSearchRequest(
   indexMetadata: LoadedSearchIndexMetadata,
   request: SearchRequestEnvelope,
@@ -386,10 +499,153 @@ function validateSearchRequest(
 export const makeBrowserSearchRuntime: Effect.Effect<
   BrowserSearchRuntimeApi,
   never,
-  SearchWorkerClient | EncoderWorkerClient
+  SearchWorkerClient | EncoderWorkerClient | Scope.Scope
 > = Effect.gen(function*() {
   const searchClient = yield* SearchWorkerClient;
   const encoderClient = yield* EncoderWorkerClient;
+  const mutableSyncEventPubSub = yield* Effect.acquireRelease(
+    PubSub.unbounded<MutableCorpusSyncEvent>({
+      replay: 16,
+    }),
+    PubSub.shutdown,
+  );
+  const inFlightMutableCorpusSyncs = yield* Ref.make<ReadonlySet<string>>(new Set());
+
+  const publishMutableSyncEvent = (
+    event: MutableCorpusSyncEvent,
+  ): Effect.Effect<void> =>
+    PubSub.publish(mutableSyncEventPubSub, event).pipe(Effect.asVoid);
+
+  const ensureMutableCorpusLoaded = Effect.fn(
+    "BrowserSearchRuntime.ensureMutableCorpusLoaded",
+  )((corpusId: string, operation: string) =>
+    SubscriptionRef.get(searchClient.mutableCorpora).pipe(
+      Effect.flatMap((current) => {
+        const metadata = current.get(corpusId);
+        if (metadata?.loaded) {
+          return Effect.succeed(metadata);
+        }
+
+        return searchClient.loadMutableCorpus({
+          type: "load_mutable_corpus",
+          corpus_id: corpusId,
+        }).pipe(
+          Effect.andThen(SubscriptionRef.get(searchClient.mutableCorpora)),
+          Effect.flatMap((next) => {
+            const loaded = next.get(corpusId);
+            return loaded === undefined
+              ? Effect.fail(missingMutableCorpusTrackingError(corpusId, operation))
+              : Effect.succeed(loaded);
+          }),
+        );
+      }),
+    ));
+
+  const registerCorpus = Effect.fn("BrowserSearchRuntime.registerCorpus")(
+    (args: RegisterCorpusArgs) =>
+      searchClient.registerMutableCorpus({
+        type: "register_mutable_corpus",
+        corpus_id: args.corpusId,
+        encoder: args.encoder,
+        fts_tokenizer: args.ftsTokenizer ?? "unicode61",
+      }).pipe(
+        Effect.withLogSpan("browser_runtime.register_corpus"),
+        Effect.annotateLogs({
+          operation: "browser_runtime.register_corpus",
+          corpus_id: args.corpusId,
+        }),
+      ),
+  );
+
+  const syncCorpus = Effect.fn("BrowserSearchRuntime.syncCorpus")(
+    (args: SyncCorpusArgs) =>
+      Effect.acquireUseRelease(
+        Ref.modify(inFlightMutableCorpusSyncs, (current) => {
+          if (current.has(args.corpusId)) {
+            return [false, current] as const;
+          }
+          const next = new Set(current);
+          next.add(args.corpusId);
+          return [true, next] as const;
+        }),
+        (acquired) =>
+          acquired
+            ? Effect.gen(function*() {
+              yield* publishMutableSyncEvent({
+                type: "sync_started",
+                corpusId: args.corpusId,
+                documentCount: args.snapshot.documents.length,
+              });
+
+              const result = yield* Effect.result(
+                searchClient.syncMutableCorpus({
+                  type: "sync_mutable_corpus",
+                  corpus_id: args.corpusId,
+                  snapshot: args.snapshot,
+                }),
+              );
+              if (result._tag === "Failure") {
+                yield* publishMutableSyncEvent({
+                  type: "sync_failed",
+                  corpusId: args.corpusId,
+                  error: result.failure,
+                });
+                return yield* result.failure;
+              }
+
+              yield* publishMutableSyncEvent({
+                type: result.success.sync.changed ? "sync_committed" : "sync_noop",
+                corpusId: args.corpusId,
+                summary: result.success.summary,
+                sync: result.success.sync,
+              });
+              return result.success;
+            }).pipe(
+              Effect.withLogSpan("browser_runtime.sync_corpus"),
+              Effect.annotateLogs({
+                operation: "browser_runtime.sync_corpus",
+                corpus_id: args.corpusId,
+                document_count: args.snapshot.documents.length,
+              }),
+            )
+            : (() => {
+              const error = syncInProgressError(
+                args.corpusId,
+                "browser_runtime.sync_corpus",
+              );
+              return publishMutableSyncEvent({
+                type: "sync_failed",
+                corpusId: args.corpusId,
+                error,
+              }).pipe(Effect.andThen(Effect.fail(error)));
+            })(),
+        (acquired) =>
+          acquired
+            ? Ref.update(inFlightMutableCorpusSyncs, (current) => {
+              const next = new Set(current);
+              next.delete(args.corpusId);
+              return next;
+            })
+            : Effect.void,
+      ),
+  );
+
+  const searchCorpus = Effect.fn("BrowserSearchRuntime.searchCorpus")(
+    (args: SearchCorpusArgs) =>
+      ensureMutableCorpusLoaded(
+        args.corpusId,
+        "browser_runtime.search_corpus",
+      ).pipe(
+        Effect.andThen(searchClient.search(mutableCorpusSearchRequest(args))),
+        Effect.withLogSpan("browser_runtime.search_corpus"),
+        Effect.annotateLogs({
+          operation: "browser_runtime.search_corpus",
+          corpus_id: args.corpusId,
+          top_k: args.request.params.top_k,
+          has_text_query: args.request.text_query?.length ?? 0,
+        }),
+      ),
+  );
 
   const searchWithEmbeddings = Effect.fn("BrowserSearchRuntime.searchWithEmbeddings")(
     (request: SearchRequestEnvelope) =>
@@ -497,7 +753,12 @@ export const makeBrowserSearchRuntime: Effect.Effect<
   return {
     encoderState: encoderClient.state,
     searchState: searchClient.state,
+    mutableCorpora: searchClient.mutableCorpora,
     encoderEvents: encoderClient.events,
+    mutableSyncEvents: Stream.fromPubSub(mutableSyncEventPubSub),
+    registerCorpus,
+    syncCorpus,
+    searchCorpus,
     searchWithEmbeddings,
     encodeAndSearch,
   } satisfies BrowserSearchRuntimeApi;

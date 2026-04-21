@@ -22,12 +22,19 @@ import type {
 } from "./encoder-worker-client.js";
 import type {
   EncoderIdentity,
+  LoadMutableCorpusRequestEnvelope,
   LoadIndexRequestEnvelope,
   QueryEmbeddingsPayload,
+  RegisterMutableCorpusRequestEnvelope,
   SearchRequestEnvelope,
   SearchResultsResponseEnvelope,
+  SyncMutableCorpusRequestEnvelope,
 } from "../shared/search-contract.js";
-import { BrowserSearchRuntime } from "./browser-search-runtime.js";
+import {
+  BrowserSearchRuntime,
+  type SearchCorpusArgs,
+  type SyncCorpusArgs,
+} from "./browser-search-runtime.js";
 import * as BrowserWorker from "./browser-worker.js";
 import { EncoderWorkerClient } from "./encoder-worker-client.js";
 import type {
@@ -306,6 +313,57 @@ function searchResultsResponse(): SearchResultsResponseEnvelope {
   };
 }
 
+function mutableCorpusSummary(documentCount = 2) {
+  return {
+    corpus_id: "proof-corpus",
+    document_count: documentCount,
+    has_keyword_state: true,
+    encoder: proofEncoder(),
+  } as const;
+}
+
+function registerCorpusResponse(created = true, documentCount = 0) {
+  return {
+    type: "mutable_corpus_registered",
+    corpus_id: "proof-corpus",
+    created,
+    summary: mutableCorpusSummary(documentCount),
+  } as const;
+}
+
+function syncCorpusResponse(
+  options: {
+    readonly documentCount?: number;
+    readonly changed?: boolean;
+    readonly added?: number;
+    readonly updated?: number;
+    readonly deleted?: number;
+    readonly unchanged?: number;
+  } = {},
+) {
+  const changed = options.changed ?? true;
+  return {
+    type: "mutable_corpus_synced",
+    corpus_id: "proof-corpus",
+    summary: mutableCorpusSummary(options.documentCount ?? 2),
+    sync: {
+      changed,
+      added: options.added ?? (changed ? 2 : 0),
+      updated: options.updated ?? 0,
+      deleted: options.deleted ?? 0,
+      unchanged: options.unchanged ?? (changed ? 0 : options.documentCount ?? 2),
+    },
+  } as const;
+}
+
+function loadMutableCorpusResponse(documentCount = 2) {
+  return {
+    type: "mutable_corpus_loaded",
+    corpus_id: "proof-corpus",
+    summary: mutableCorpusSummary(documentCount),
+  } as const;
+}
+
 function searchRequest(
   payload: QueryEmbeddingsPayload,
 ): SearchRequestEnvelope {
@@ -350,6 +408,50 @@ function hybridEncodeAndSearchArgs() {
         filter_condition: null,
         filter_parameters: null,
       },
+    },
+  };
+}
+
+function syncCorpusArgs(): SyncCorpusArgs {
+  return {
+    corpusId: "proof-corpus",
+    snapshot: {
+      documents: [
+        {
+          document_id: "doc-alpha",
+          semantic_text: "alpha semantic body",
+          metadata: {
+            title: "alpha",
+            topic: "edge",
+          },
+        },
+        {
+          document_id: "doc-beta",
+          semantic_text: "beta semantic body",
+          metadata: {
+            title: "beta",
+            topic: "metrics",
+          },
+        },
+      ],
+    },
+  };
+}
+
+function searchCorpusArgs(): SearchCorpusArgs {
+  return {
+    corpusId: "proof-corpus",
+    request: {
+      params: {
+        top_k: 2,
+        n_ivf_probe: null,
+        n_full_scores: null,
+        centroid_score_threshold: null,
+      },
+      subset: null,
+      text_query: ["alpha"],
+      filter_condition: null,
+      filter_parameters: null,
     },
   };
 }
@@ -495,6 +597,173 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime encode and search 
       const result = yield* Fiber.join(searchFiber);
       expect(result.type).toBe("search_results");
       expect(result.results[0]?.document_ids).toEqual([0, 1]);
+    }),
+  );
+});
+
+layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API", (it) => {
+  it.effect("registers mutable corpora through the browser-owned runtime API", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+      harness.searchFake.clearOutbound();
+      harness.encoderFake.clearOutbound();
+
+      const registerFiber = yield* runtime.registerCorpus({
+        corpusId: "proof-corpus",
+        encoder: proofEncoder(),
+      }).pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Effect.yieldNow;
+
+      const request = firstCapturedRequest<RegisterMutableCorpusRequestEnvelope>(harness.searchFake);
+      expect(request.request.type).toBe("register_mutable_corpus");
+      expect(request.request.corpus_id).toBe("proof-corpus");
+      expect(request.request.fts_tokenizer).toBe("unicode61");
+
+      yield* replySuccess(harness.searchFake, request.requestId, registerCorpusResponse());
+
+      const result = yield* Fiber.join(registerFiber);
+      expect(result.type).toBe("mutable_corpus_registered");
+      expect(result.created).toBe(true);
+
+      const mutableCorpora = yield* SubscriptionRef.get(runtime.mutableCorpora);
+      expect(mutableCorpora.get("proof-corpus")).toEqual({
+        corpusId: "proof-corpus",
+        summary: mutableCorpusSummary(0),
+        loaded: false,
+      });
+    }),
+  );
+
+  it.effect("lazy-loads persisted mutable corpora on first mutable search", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+      harness.searchFake.clearOutbound();
+      harness.encoderFake.clearOutbound();
+
+      const searchFiber = yield* runtime.searchCorpus(searchCorpusArgs()).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+
+      const loadRequest = firstCapturedRequest<LoadMutableCorpusRequestEnvelope>(harness.searchFake);
+      expect(loadRequest.request.type).toBe("load_mutable_corpus");
+      expect(loadRequest.request.corpus_id).toBe("proof-corpus");
+      yield* replySuccess(
+        harness.searchFake,
+        loadRequest.requestId,
+        loadMutableCorpusResponse(),
+      );
+      yield* Effect.yieldNow;
+
+      yield* waitForCapturedRequestCount(harness.searchFake, 2);
+      const searchRequestEnvelope =
+        harness.searchFake.capturedRequests<SearchRequestEnvelope>()[1];
+      expect(searchRequestEnvelope).toBeDefined();
+      if (searchRequestEnvelope === undefined) {
+        throw new Error("expected lazy reopen to forward a search request");
+      }
+      expect(searchRequestEnvelope.request.type).toBe("search");
+      expect(searchRequestEnvelope.request.name).toBe("proof-corpus");
+      expect(searchRequestEnvelope.request.request.queries).toBeNull();
+      expect(searchRequestEnvelope.request.request.text_query).toEqual(["alpha"]);
+      expect(searchRequestEnvelope.request.request.alpha).toBeNull();
+      expect(searchRequestEnvelope.request.request.fusion).toBeNull();
+
+      yield* replySuccess(
+        harness.searchFake,
+        searchRequestEnvelope.requestId,
+        searchResultsResponse(),
+      );
+
+      const result = yield* Fiber.join(searchFiber);
+      expect(result.type).toBe("search_results");
+
+      const mutableCorpora = yield* SubscriptionRef.get(runtime.mutableCorpora);
+      expect(mutableCorpora.get("proof-corpus")).toEqual({
+        corpusId: "proof-corpus",
+        summary: mutableCorpusSummary(),
+        loaded: true,
+      });
+    }),
+  );
+
+  it.effect("fails fast for concurrent same-corpus syncs and emits coarse sync lifecycle events", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+      harness.searchFake.clearOutbound();
+      harness.encoderFake.clearOutbound();
+
+      const eventsFiber = yield* runtime.mutableSyncEvents.pipe(
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild({ startImmediately: true }),
+      );
+
+      const firstSyncFiber = yield* runtime.syncCorpus(syncCorpusArgs()).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+
+      const firstRequest = firstCapturedRequest<SyncMutableCorpusRequestEnvelope>(harness.searchFake);
+      expect(firstRequest.request.type).toBe("sync_mutable_corpus");
+      expect(firstRequest.request.corpus_id).toBe("proof-corpus");
+
+      const secondSyncResult = yield* Effect.result(
+        runtime.syncCorpus(syncCorpusArgs()),
+      );
+      expect(secondSyncResult._tag).toBe("Failure");
+      if (secondSyncResult._tag !== "Failure") {
+        throw new Error("expected concurrent sync to fail fast");
+      }
+      expect(secondSyncResult.failure.cause).toBe("sync_in_progress");
+      expect(harness.searchFake.capturedRequests()).toHaveLength(1);
+
+      yield* replySuccess(
+        harness.searchFake,
+        firstRequest.requestId,
+        syncCorpusResponse(),
+      );
+
+      const firstResult = yield* Fiber.join(firstSyncFiber);
+      expect(firstResult.type).toBe("mutable_corpus_synced");
+      expect(firstResult.sync.changed).toBe(true);
+
+      const collectedEvents = [...(yield* Fiber.join(eventsFiber))];
+      expect(collectedEvents).toHaveLength(3);
+      expect(collectedEvents[0]).toEqual({
+        type: "sync_started",
+        corpusId: "proof-corpus",
+        documentCount: 2,
+      });
+      expect(collectedEvents[1]?.type).toBe("sync_failed");
+      if (collectedEvents[1]?.type !== "sync_failed") {
+        throw new Error("expected sync_failed event for concurrent sync");
+      }
+      expect(collectedEvents[1].error.cause).toBe("sync_in_progress");
+      expect(collectedEvents[2]).toEqual({
+        type: "sync_committed",
+        corpusId: "proof-corpus",
+        summary: mutableCorpusSummary(),
+        sync: syncCorpusResponse().sync,
+      });
     }),
   );
 });

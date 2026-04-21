@@ -60,6 +60,7 @@ const PROOF_ENCODER: EncoderIdentity = {
   embedding_dim: 4,
   normalized: true,
 };
+const MUTABLE_CORPUS_ID = "mutable-smoke";
 
 function setStatus(state: string, value: unknown): void {
   statusNode.dataset.state = state;
@@ -144,6 +145,58 @@ function loadEncodedIndexRequest(): LoadIndexRequestEnvelope {
     nbits: 2,
     fts_tokenizer: "unicode61",
     max_documents: null,
+  };
+}
+
+function mutableCorpusRegisterArgs() {
+  return {
+    corpusId: MUTABLE_CORPUS_ID,
+    encoder: DENSE_ENCODER,
+    ftsTokenizer: "unicode61" as const,
+  };
+}
+
+function mutableCorpusSyncArgs() {
+  return {
+    corpusId: MUTABLE_CORPUS_ID,
+    snapshot: {
+      documents: [
+        {
+          document_id: "doc-alpha",
+          semantic_text: "alpha launch semantic body",
+          metadata: {
+            title: "alpha launch memo",
+            topic: "edge",
+          },
+        },
+        {
+          document_id: "doc-beta",
+          semantic_text: "beta report semantic body",
+          metadata: {
+            title: "beta report summary",
+            topic: "metrics",
+          },
+        },
+      ],
+    },
+  };
+}
+
+function mutableCorpusSearchArgs() {
+  return {
+    corpusId: MUTABLE_CORPUS_ID,
+    request: {
+      params: {
+        top_k: 2,
+        n_ivf_probe: null,
+        n_full_scores: null,
+        centroid_score_threshold: null,
+      },
+      subset: null,
+      text_query: ["alpha"],
+      filter_condition: null,
+      filter_parameters: null,
+    },
   };
 }
 
@@ -378,11 +431,15 @@ async function runWrapperSmoke(): Promise<unknown> {
     readonly initialState: unknown;
     readonly initialLoadedIndexCount: number;
     readonly installBundle: BundleInstalledResponseEnvelope;
+    readonly registerCorpus: unknown;
+    readonly syncCorpus: unknown;
+    readonly mutableSearch: unknown;
   };
   try {
     initialPhase = await initialRuntime.runPromise(
       Effect.gen(function*() {
         const searchClient = yield* SearchWorkerClient;
+        const runtimeService = yield* BrowserSearchRuntime;
         const initialState = yield* SubscriptionRef.get(searchClient.state);
         const initialLoadedIndices = yield* SubscriptionRef.get(searchClient.loadedIndices);
         const installBundle = yield* searchClient.installBundle(
@@ -397,10 +454,20 @@ async function runWrapperSmoke(): Promise<unknown> {
               }),
           }),
         );
+        const registerCorpus = yield* runtimeService.registerCorpus(
+          mutableCorpusRegisterArgs(),
+        );
+        const syncCorpus = yield* runtimeService.syncCorpus(mutableCorpusSyncArgs());
+        const mutableSearch = yield* runtimeService.searchCorpus(
+          mutableCorpusSearchArgs(),
+        );
         return {
           initialState,
           initialLoadedIndexCount: initialLoadedIndices.size,
           installBundle,
+          registerCorpus,
+          syncCorpus,
+          mutableSearch,
         };
       }),
     );
@@ -479,6 +546,12 @@ async function runWrapperSmoke(): Promise<unknown> {
               },
             },
           });
+          const mutableReloadedSearch = yield* runtimeService.searchCorpus(
+            mutableCorpusSearchArgs(),
+          );
+          const mutableCorpusState = (yield* SubscriptionRef.get(
+            runtimeService.mutableCorpora,
+          )).get(MUTABLE_CORPUS_ID) ?? null;
 
           return {
             initialHealth: {
@@ -486,6 +559,9 @@ async function runWrapperSmoke(): Promise<unknown> {
             },
             initialState: initialPhase.initialState,
             installBundle: initialPhase.installBundle,
+            registerCorpus: initialPhase.registerCorpus,
+            syncCorpus: initialPhase.syncCorpus,
+            mutableSearch: initialPhase.mutableSearch,
             reloadedInitialHealth,
             searchState,
             loadStoredBundle,
@@ -521,6 +597,8 @@ async function runWrapperSmoke(): Promise<unknown> {
             },
             encodedSearch,
             runtimeEncodedSearch,
+            mutableReloadedSearch,
+            mutableCorpusState,
           };
         }),
       ),

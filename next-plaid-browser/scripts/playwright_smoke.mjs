@@ -200,6 +200,13 @@ async function runSmoke(browserName) {
     const encodedQueryEncoderId = result.encodedQuery?.encoded?.payload?.encoder?.encoder_id;
     const encoderBackend = result.encoderInit?.capabilities?.backend;
     const encoderState = result.encoderHealth?.state;
+    const registerCorpusCreated = result.registerCorpus?.created;
+    const syncCorpusChanged = result.syncCorpus?.sync?.changed;
+    const mutableInitialTopDocumentId = result.mutableSearch?.results?.[0]?.document_ids?.[0];
+    const mutableReloadedTopDocumentId =
+      result.mutableReloadedSearch?.results?.[0]?.document_ids?.[0];
+    const mutableCorpusLoaded = result.mutableCorpusState?.loaded;
+    const mutableCorpusDocumentCount = result.mutableCorpusState?.summary?.document_count;
     const encoderEventStages = Array.isArray(result.encoderInitEvents)
       ? result.encoderInitEvents.map((event) => event?.stage)
       : [];
@@ -215,6 +222,12 @@ async function runSmoke(browserName) {
       storedKeywordTopDocumentId !== 0 ||
       storedHybridTopDocumentId !== 1 ||
       storedFilteredKeywordTopDocumentId !== 1 ||
+      registerCorpusCreated !== true ||
+      syncCorpusChanged !== true ||
+      mutableInitialTopDocumentId !== 0 ||
+      mutableReloadedTopDocumentId !== 0 ||
+      mutableCorpusLoaded !== true ||
+      mutableCorpusDocumentCount !== 2 ||
       semanticTopDocumentId !== 0 ||
       keywordTopDocumentId !== 0 ||
       hybridTopDocumentId !== 1 ||
