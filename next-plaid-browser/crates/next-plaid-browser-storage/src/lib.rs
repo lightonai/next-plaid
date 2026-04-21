@@ -2,9 +2,8 @@
 
 use next_plaid_browser_contract::{
     ArtifactKind, BundleInstalledResponse, BundleManifest, CompressionKind, EncoderIdentity,
-    FtsTokenizer, MetadataMode, MutableCorpusDocument, MutableCorpusSnapshot,
-    MutableCorpusSummary, MutableCorpusSyncSummary, RegisterMutableCorpusResponse,
-    SyncMutableCorpusResponse,
+    FtsTokenizer, MetadataMode, MutableCorpusDocument, MutableCorpusSnapshot, MutableCorpusSummary,
+    MutableCorpusSyncSummary, RegisterMutableCorpusResponse, SyncMutableCorpusResponse,
 };
 use next_plaid_browser_loader::{ArtifactBytesMap, BundleLoaderError, LoadedSearchArtifacts};
 use serde::{Deserialize, Serialize};
@@ -88,6 +87,16 @@ pub enum BrowserStorageError {
         expected: EncoderIdentity,
         /// Requested encoder identity.
         actual: EncoderIdentity,
+    },
+    /// Registration attempted to change the locked tokenizer configuration.
+    #[error("mutable corpus '{corpus_id}' is registered with a different fts tokenizer")]
+    MutableCorpusTokenizerMismatch {
+        /// Stable browser-owned corpus id.
+        corpus_id: String,
+        /// Previously registered tokenizer.
+        expected: FtsTokenizer,
+        /// Requested tokenizer.
+        actual: FtsTokenizer,
     },
     /// Mutable corpus snapshot validation failed.
     #[error("invalid mutable corpus snapshot: {0}")]
@@ -270,9 +279,7 @@ fn decode_metadata_documents(
 }
 
 #[allow(dead_code)]
-fn validate_mutable_snapshot(
-    snapshot: &MutableCorpusSnapshot,
-) -> Result<(), BrowserStorageError> {
+fn validate_mutable_snapshot(snapshot: &MutableCorpusSnapshot) -> Result<(), BrowserStorageError> {
     let mut document_ids = std::collections::HashSet::new();
     for document in &snapshot.documents {
         if document.document_id.is_empty() {
@@ -397,7 +404,12 @@ fn sync_summary(
             snapshot
                 .documents
                 .iter()
-                .map(|document| (document.document_id.as_str(), document.content_hash.as_str()))
+                .map(|document| {
+                    (
+                        document.document_id.as_str(),
+                        document.content_hash.as_str(),
+                    )
+                })
                 .collect::<HashMap<_, _>>()
         })
         .unwrap_or_default();
@@ -405,7 +417,12 @@ fn sync_summary(
     let next_documents = next
         .documents
         .iter()
-        .map(|document| (document.document_id.as_str(), document.content_hash.as_str()))
+        .map(|document| {
+            (
+                document.document_id.as_str(),
+                document.content_hash.as_str(),
+            )
+        })
         .collect::<HashMap<_, _>>();
 
     let mut added = 0;
@@ -611,6 +628,13 @@ mod wasm {
                         actual: encoder.clone(),
                     });
                 }
+                if record.fts_tokenizer != fts_tokenizer {
+                    return Err(BrowserStorageError::MutableCorpusTokenizerMismatch {
+                        corpus_id: corpus_id.to_string(),
+                        expected: record.fts_tokenizer,
+                        actual: fts_tokenizer,
+                    });
+                }
                 (false, record)
             }
             None => {
@@ -646,7 +670,9 @@ mod wasm {
             .ok_or_else(|| BrowserStorageError::MissingMutableCorpus(corpus_id.to_string()))?;
 
         let previous = match record.active_snapshot_key.as_ref() {
-            Some(active_snapshot_key) => Some(load_mutable_snapshot(corpus_id, active_snapshot_key).await?),
+            Some(active_snapshot_key) => {
+                Some(load_mutable_snapshot(corpus_id, active_snapshot_key).await?)
+            }
             None => None,
         };
 
@@ -660,7 +686,7 @@ mod wasm {
         };
         let sync = sync_summary(previous.as_ref(), &next);
 
-        if !sync.changed {
+        if !sync.changed && record.active_snapshot_key.is_some() {
             let stored = load_mutable_corpus_impl(corpus_id).await?;
             return Ok(SyncedMutableCorpus {
                 response: SyncMutableCorpusResponse {
@@ -723,7 +749,8 @@ mod wasm {
             }
         };
 
-        let persisted_snapshot = match load_mutable_snapshot(corpus_id, &active_snapshot_key).await {
+        let persisted_snapshot = match load_mutable_snapshot(corpus_id, &active_snapshot_key).await
+        {
             Ok(snapshot) => snapshot,
             Err(BrowserStorageError::StorageEntryNotFound(_)) => {
                 record.active_snapshot_key = None;
@@ -745,11 +772,7 @@ mod wasm {
         };
 
         Ok(StoredMutableCorpus {
-            summary: mutable_corpus_summary(
-                corpus_id,
-                &record.encoder,
-                snapshot.documents.len(),
-            ),
+            summary: mutable_corpus_summary(corpus_id, &record.encoder, snapshot.documents.len()),
             snapshot,
             fts_tokenizer: record.fts_tokenizer,
         })
@@ -1404,7 +1427,10 @@ mod tests {
             json!({ "rank": 1, "topic": "edge" }),
         );
 
-        assert_eq!(canonical_document_hash(&left), canonical_document_hash(&right));
+        assert_eq!(
+            canonical_document_hash(&left),
+            canonical_document_hash(&right)
+        );
     }
 
     #[test]

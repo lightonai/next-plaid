@@ -9,14 +9,14 @@ use indexed_db_futures::prelude::*;
 use js_sys::{Function, Object, Promise, Reflect};
 use next_plaid_browser_contract::{
     ArtifactEntry, ArtifactKind, BundleArtifactBytesPayload, BundleManifest, CompressionKind,
-    EmbeddingDtype, EmbeddingLayout, EncoderIdentity, ErrorCode, FtsTokenizer,
-    FusionMode, HealthResponse, InstallBundleRequest, LoadMutableCorpusRequest,
-    LoadStoredBundleRequest, MatrixPayload, MetadataMode, MutableCorpusDocument,
-    MutableCorpusSnapshot, QueryEmbeddingsPayload, QueryResultResponse,
-    RegisterMutableCorpusRequest, RuntimeRequest, RuntimeResponse, SearchIndexPayload,
-    SearchParamsRequest, SearchRequest, SearchResponse, StorageErrorResponse, StorageRequest,
-    StorageResponse, SyncMutableCorpusRequest, WorkerLoadIndexRequest, WorkerSearchRequest,
-    RUNTIME_SCHEMA_VERSION, SUPPORTED_BUNDLE_FORMAT_VERSION,
+    EmbeddingDtype, EmbeddingLayout, EncoderIdentity, ErrorCode, FtsTokenizer, FusionMode,
+    HealthResponse, InstallBundleRequest, LoadMutableCorpusRequest, LoadStoredBundleRequest,
+    MatrixPayload, MetadataMode, MutableCorpusDocument, MutableCorpusSnapshot,
+    QueryEmbeddingsPayload, QueryResultResponse, RegisterMutableCorpusRequest, RuntimeRequest,
+    RuntimeResponse, SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse,
+    StorageErrorResponse, StorageRequest, StorageResponse, SyncMutableCorpusRequest,
+    WorkerLoadIndexRequest, WorkerSearchRequest, RUNTIME_SCHEMA_VERSION,
+    SUPPORTED_BUNDLE_FORMAT_VERSION,
 };
 use next_plaid_browser_kernel::{search_one, BrowserIndexView, MatrixView, SearchParameters};
 use next_plaid_browser_wasm::{
@@ -465,10 +465,18 @@ fn storage_load_request(index_id: &str, name: &str) -> StorageRequest {
 }
 
 fn register_mutable_corpus_request(corpus_id: &str, dim: usize) -> StorageRequest {
+    register_mutable_corpus_request_with_tokenizer(corpus_id, dim, FtsTokenizer::Unicode61)
+}
+
+fn register_mutable_corpus_request_with_tokenizer(
+    corpus_id: &str,
+    dim: usize,
+    fts_tokenizer: FtsTokenizer,
+) -> StorageRequest {
     StorageRequest::RegisterMutableCorpus(RegisterMutableCorpusRequest {
         corpus_id: corpus_id.into(),
         encoder: encoder(dim),
-        fts_tokenizer: FtsTokenizer::Unicode61,
+        fts_tokenizer,
     })
 }
 
@@ -942,7 +950,11 @@ async fn browser_storage_mutable_corpus_register_sync_reload_roundtrip() {
         other => panic!("unexpected storage response: {other:?}"),
     }
 
-    let sync = storage_response(sync_mutable_corpus_request(corpus_id, mutable_snapshot_v1())).await;
+    let sync = storage_response(sync_mutable_corpus_request(
+        corpus_id,
+        mutable_snapshot_v1(),
+    ))
+    .await;
     match sync {
         StorageResponse::MutableCorpusSynced(result) => {
             assert_eq!(result.corpus_id, corpus_id);
@@ -967,8 +979,10 @@ async fn browser_storage_mutable_corpus_register_sync_reload_roundtrip() {
     );
 
     reset_runtime_state();
-    let reload_required =
-        runtime_error_response(RuntimeRequest::Search(keyword_search_request(corpus_id, &["alpha"])));
+    let reload_required = runtime_error_response(RuntimeRequest::Search(keyword_search_request(
+        corpus_id,
+        &["alpha"],
+    )));
     assert_eq!(reload_required.code, ErrorCode::IndexNotLoaded);
 
     let load = storage_response(load_mutable_corpus_request(corpus_id)).await;
@@ -1008,9 +1022,17 @@ async fn browser_storage_mutable_corpus_applies_delete_and_noop_sync_semantics()
     let next_snapshot = mutable_snapshot_v2();
 
     let _ = storage_response(register_mutable_corpus_request(corpus_id, 2)).await;
-    let _ = storage_response(sync_mutable_corpus_request(corpus_id, mutable_snapshot_v1())).await;
+    let _ = storage_response(sync_mutable_corpus_request(
+        corpus_id,
+        mutable_snapshot_v1(),
+    ))
+    .await;
 
-    let replace = storage_response(sync_mutable_corpus_request(corpus_id, next_snapshot.clone())).await;
+    let replace = storage_response(sync_mutable_corpus_request(
+        corpus_id,
+        next_snapshot.clone(),
+    ))
+    .await;
     match replace {
         StorageResponse::MutableCorpusSynced(result) => {
             assert_eq!(result.summary.document_count, 2);
@@ -1044,12 +1066,96 @@ async fn browser_storage_mutable_corpus_applies_delete_and_noop_sync_semantics()
 }
 
 #[wasm_bindgen_test]
+async fn browser_storage_mutable_corpus_commits_empty_bootstrap_snapshot() {
+    reset_runtime_state();
+    let corpus_id = "mutable-demo-empty-bootstrap";
+
+    let _ = storage_response(register_mutable_corpus_request(corpus_id, 2)).await;
+
+    let sync = storage_response(sync_mutable_corpus_request(
+        corpus_id,
+        MutableCorpusSnapshot { documents: vec![] },
+    ))
+    .await;
+    match sync {
+        StorageResponse::MutableCorpusSynced(result) => {
+            assert_eq!(result.summary.document_count, 0);
+            assert!(!result.sync.changed);
+            assert_eq!(result.sync.added, 0);
+            assert_eq!(result.sync.updated, 0);
+            assert_eq!(result.sync.deleted, 0);
+            assert_eq!(result.sync.unchanged, 0);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    reset_runtime_state();
+
+    let load = storage_response(load_mutable_corpus_request(corpus_id)).await;
+    match load {
+        StorageResponse::MutableCorpusLoaded(result) => {
+            assert_eq!(result.corpus_id, corpus_id);
+            assert_eq!(result.summary.document_count, 0);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    let keyword = runtime_result(&keyword_search_request(corpus_id, &["alpha"]));
+    assert_eq!(keyword.num_queries, 1);
+    assert!(keyword.results[0].document_ids.is_empty());
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_mutable_corpus_persists_delete_by_omission_across_reload() {
+    reset_runtime_state();
+    let corpus_id = "mutable-demo-delete-reload";
+
+    let _ = storage_response(register_mutable_corpus_request(corpus_id, 2)).await;
+    let _ = storage_response(sync_mutable_corpus_request(
+        corpus_id,
+        mutable_snapshot_v1(),
+    ))
+    .await;
+    let _ = storage_response(sync_mutable_corpus_request(
+        corpus_id,
+        mutable_snapshot_v2(),
+    ))
+    .await;
+
+    reset_runtime_state();
+
+    let load = storage_response(load_mutable_corpus_request(corpus_id)).await;
+    match load {
+        StorageResponse::MutableCorpusLoaded(result) => {
+            assert_eq!(result.summary.document_count, 2);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    let deleted = runtime_result(&keyword_search_request(corpus_id, &["beta"]));
+    assert!(deleted.results[0].document_ids.is_empty());
+
+    let retained = runtime_result(&keyword_search_request(corpus_id, &["alpha"]));
+    assert_eq!(retained.results[0].document_ids, vec![0]);
+    assert_eq!(
+        retained.results[0].metadata[0]
+            .as_ref()
+            .and_then(|value| value.get("title"))
+            .and_then(|value| value.as_str()),
+        Some("alpha launch memo v2")
+    );
+}
+
+#[wasm_bindgen_test]
 async fn browser_storage_mutable_corpus_requires_registration_and_locked_encoder() {
     reset_runtime_state();
     let corpus_id = "mutable-demo-registration-errors";
 
-    let missing_registration =
-        storage_error_response(sync_mutable_corpus_request(corpus_id, mutable_snapshot_v1())).await;
+    let missing_registration = storage_error_response(sync_mutable_corpus_request(
+        corpus_id,
+        mutable_snapshot_v1(),
+    ))
+    .await;
     assert_eq!(missing_registration.code, ErrorCode::InvalidRequest);
     assert!(missing_registration.message.contains("is not registered"));
 
@@ -1057,10 +1163,19 @@ async fn browser_storage_mutable_corpus_requires_registration_and_locked_encoder
 
     let missing_snapshot = storage_error_response(load_mutable_corpus_request(corpus_id)).await;
     assert_eq!(missing_snapshot.code, ErrorCode::InvalidRequest);
-    assert!(missing_snapshot.message.contains("has no committed snapshot"));
+    assert!(missing_snapshot
+        .message
+        .contains("has no committed snapshot"));
 
     let mismatch = storage_error_response(register_mutable_corpus_request(corpus_id, 4)).await;
     assert_eq!(mismatch.code, ErrorCode::EncoderMismatch);
+
+    let tokenizer_mismatch = storage_error_response(
+        register_mutable_corpus_request_with_tokenizer(corpus_id, 2, FtsTokenizer::Trigram),
+    )
+    .await;
+    assert_eq!(tokenizer_mismatch.code, ErrorCode::InvalidRequest);
+    assert!(tokenizer_mismatch.message.contains("fts tokenizer"));
 }
 
 #[wasm_bindgen_test]

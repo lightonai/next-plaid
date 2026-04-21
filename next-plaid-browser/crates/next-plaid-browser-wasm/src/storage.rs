@@ -84,10 +84,17 @@ fn map_mutable_storage_error(error: BrowserStorageError) -> WasmError {
             format!("mutable corpus '{corpus_id}' has no committed snapshot"),
         ),
         BrowserStorageError::MutableCorpusEncoderMismatch {
+            expected, actual, ..
+        } => WasmError::EncoderMismatch { expected, actual },
+        BrowserStorageError::MutableCorpusTokenizerMismatch {
+            corpus_id,
             expected,
             actual,
-            ..
-        } => WasmError::EncoderMismatch { expected, actual },
+        } => WasmError::InvalidRequest(format!(
+            "mutable corpus '{corpus_id}' is registered with fts tokenizer '{}' not '{}'",
+            expected.as_str(),
+            actual.as_str()
+        )),
         BrowserStorageError::InvalidMutableCorpusSnapshot(message) => {
             WasmError::InvalidRequest(message)
         }
