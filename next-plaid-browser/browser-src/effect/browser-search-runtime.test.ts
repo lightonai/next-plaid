@@ -766,6 +766,68 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
       });
     }),
   );
+
+});
+
+layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus noop events", (it) => {
+  it.effect("emits sync_noop when the authoritative snapshot is unchanged", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+      harness.searchFake.clearOutbound();
+      harness.encoderFake.clearOutbound();
+
+      const noopResponse = syncCorpusResponse({ changed: false, documentCount: 2 });
+      const eventsFiber = yield* runtime.mutableSyncEvents.pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild({ startImmediately: true }),
+      );
+
+      const syncFiber = yield* runtime.syncCorpus(syncCorpusArgs()).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+
+      const request = firstCapturedRequest<SyncMutableCorpusRequestEnvelope>(harness.searchFake);
+      expect(request.request.type).toBe("sync_mutable_corpus");
+      expect(request.request.corpus_id).toBe("proof-corpus");
+
+      yield* replySuccess(harness.searchFake, request.requestId, noopResponse);
+
+      const result = yield* Fiber.join(syncFiber);
+      expect(result.type).toBe("mutable_corpus_synced");
+      expect(result.sync.changed).toBe(false);
+      expect(result.sync.unchanged).toBe(2);
+
+      const collectedEvents = [...(yield* Fiber.join(eventsFiber))];
+      expect(collectedEvents).toEqual([
+        {
+          type: "sync_started",
+          corpusId: "proof-corpus",
+          documentCount: 2,
+        },
+        {
+          type: "sync_noop",
+          corpusId: "proof-corpus",
+          summary: mutableCorpusSummary(),
+          sync: noopResponse.sync,
+        },
+      ]);
+
+      const mutableCorpora = yield* SubscriptionRef.get(runtime.mutableCorpora);
+      expect(mutableCorpora.get("proof-corpus")).toEqual({
+        corpusId: "proof-corpus",
+        summary: mutableCorpusSummary(),
+        loaded: true,
+      });
+    }),
+  );
 });
 
 layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime compatibility preflight", (it) => {

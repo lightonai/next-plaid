@@ -203,6 +203,8 @@ async function runSmoke(browserName) {
     const registerCorpusCreated = result.registerCorpus?.created;
     const syncCorpusChanged = result.syncCorpus?.sync?.changed;
     const mutableInitialTopDocumentId = result.mutableSearch?.results?.[0]?.document_ids?.[0];
+    const mutableReloadedSyncChanged = result.mutableReloadedSync?.sync?.changed;
+    const mutableReloadedSyncUnchanged = result.mutableReloadedSync?.sync?.unchanged;
     const mutableReloadedTopDocumentId =
       result.mutableReloadedSearch?.results?.[0]?.document_ids?.[0];
     const mutableCorpusLoaded = result.mutableCorpusState?.loaded;
@@ -225,6 +227,8 @@ async function runSmoke(browserName) {
       registerCorpusCreated !== true ||
       syncCorpusChanged !== true ||
       mutableInitialTopDocumentId !== 0 ||
+      mutableReloadedSyncChanged !== false ||
+      mutableReloadedSyncUnchanged !== 2 ||
       mutableReloadedTopDocumentId !== 0 ||
       mutableCorpusLoaded !== true ||
       mutableCorpusDocumentCount !== 2 ||

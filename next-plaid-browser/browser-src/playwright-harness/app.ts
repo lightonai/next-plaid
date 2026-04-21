@@ -546,6 +546,9 @@ async function runWrapperSmoke(): Promise<unknown> {
               },
             },
           });
+          const mutableReloadedSync = yield* runtimeService.syncCorpus(
+            mutableCorpusSyncArgs(),
+          );
           const mutableReloadedSearch = yield* runtimeService.searchCorpus(
             mutableCorpusSearchArgs(),
           );
@@ -597,6 +600,7 @@ async function runWrapperSmoke(): Promise<unknown> {
             },
             encodedSearch,
             runtimeEncodedSearch,
+            mutableReloadedSync,
             mutableReloadedSearch,
             mutableCorpusState,
           };
