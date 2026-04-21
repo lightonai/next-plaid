@@ -703,6 +703,113 @@ pub struct StoredBundleLoadedResponse {
     pub summary: IndexSummary,
 }
 
+/// One app-managed browser corpus document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MutableCorpusDocument {
+    /// Stable application-owned document identity within one corpus.
+    pub document_id: String,
+    /// Semantic text that will later back dense encoding.
+    pub semantic_text: String,
+    /// Optional metadata used for keyword search, filtering, and result replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "unknown | null")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Authoritative browser-managed snapshot for one mutable corpus.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MutableCorpusSnapshot {
+    /// Full document set for the corpus at one point in time.
+    pub documents: Vec<MutableCorpusDocument>,
+}
+
+/// Compact public summary for one mutable corpus.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct MutableCorpusSummary {
+    /// Stable corpus identity exposed by the browser API.
+    pub corpus_id: String,
+    /// Number of documents in the active snapshot.
+    pub document_count: usize,
+    /// Whether keyword/filter state is available.
+    pub has_keyword_state: bool,
+    /// Locked encoder identity for the corpus.
+    pub encoder: EncoderIdentity,
+}
+
+/// Compact diff summary returned after one mutable-corpus sync.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MutableCorpusSyncSummary {
+    /// Whether the authoritative snapshot changed the committed state.
+    pub changed: bool,
+    /// Number of newly added documents.
+    pub added: usize,
+    /// Number of changed documents.
+    pub updated: usize,
+    /// Number of deleted documents.
+    pub deleted: usize,
+    /// Number of unchanged documents.
+    pub unchanged: usize,
+}
+
+/// Request to register one mutable browser corpus.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct RegisterMutableCorpusRequest {
+    /// Stable corpus identity exposed by the browser API.
+    pub corpus_id: String,
+    /// Locked encoder identity for the corpus.
+    pub encoder: EncoderIdentity,
+    /// FTS tokenizer to use when building the keyword runtime.
+    #[serde(default = "default_fts_tokenizer")]
+    pub fts_tokenizer: FtsTokenizer,
+}
+
+/// Response returned after registering one mutable browser corpus.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct RegisterMutableCorpusResponse {
+    /// Stable corpus identity exposed by the browser API.
+    pub corpus_id: String,
+    /// Whether this call created a new corpus record.
+    pub created: bool,
+    /// Current mutable corpus summary.
+    pub summary: MutableCorpusSummary,
+}
+
+/// Request to sync one authoritative mutable corpus snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct SyncMutableCorpusRequest {
+    /// Stable corpus identity exposed by the browser API.
+    pub corpus_id: String,
+    /// Full authoritative snapshot for the corpus.
+    pub snapshot: MutableCorpusSnapshot,
+}
+
+/// Response returned after syncing one mutable browser corpus.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct SyncMutableCorpusResponse {
+    /// Stable corpus identity exposed by the browser API.
+    pub corpus_id: String,
+    /// Current mutable corpus summary.
+    pub summary: MutableCorpusSummary,
+    /// Compact sync outcome counts.
+    pub sync: MutableCorpusSyncSummary,
+}
+
+/// Request to lazily reopen the active mutable corpus state after reload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct LoadMutableCorpusRequest {
+    /// Stable corpus identity exposed by the browser API.
+    pub corpus_id: String,
+}
+
+/// Response returned after loading a mutable corpus into the runtime.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct LoadMutableCorpusResponse {
+    /// Stable corpus identity exposed by the browser API.
+    pub corpus_id: String,
+    /// Current mutable corpus summary.
+    pub summary: MutableCorpusSummary,
+}
+
 /// Top-level runtime request envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -734,6 +841,12 @@ pub enum StorageRequest {
     InstallBundle(InstallBundleRequest),
     /// Load the active stored bundle back into the runtime.
     LoadStoredBundle(LoadStoredBundleRequest),
+    /// Register one mutable browser corpus.
+    RegisterMutableCorpus(RegisterMutableCorpusRequest),
+    /// Sync one authoritative mutable browser corpus snapshot.
+    SyncMutableCorpus(SyncMutableCorpusRequest),
+    /// Load one mutable corpus back into the runtime.
+    LoadMutableCorpus(LoadMutableCorpusRequest),
 }
 
 /// Top-level runtime response envelope.
@@ -768,6 +881,12 @@ pub enum StorageResponse {
     BundleInstalled(BundleInstalledResponse),
     /// Stored-bundle-loaded response.
     StoredBundleLoaded(StoredBundleLoadedResponse),
+    /// Mutable-corpus-registered response.
+    MutableCorpusRegistered(RegisterMutableCorpusResponse),
+    /// Mutable-corpus-synced response.
+    MutableCorpusSynced(SyncMutableCorpusResponse),
+    /// Mutable-corpus-loaded response.
+    MutableCorpusLoaded(LoadMutableCorpusResponse),
 }
 
 fn default_true() -> bool {
@@ -792,6 +911,29 @@ mod tests {
             encoder_build: "demo-build".into(),
             embedding_dim: 64,
             normalized: true,
+        }
+    }
+
+    fn mutable_snapshot() -> MutableCorpusSnapshot {
+        MutableCorpusSnapshot {
+            documents: vec![
+                MutableCorpusDocument {
+                    document_id: "alpha".into(),
+                    semantic_text: "alpha launch memo".into(),
+                    metadata: Some(serde_json::json!({
+                        "title": "alpha launch memo",
+                        "topic": "edge"
+                    })),
+                },
+                MutableCorpusDocument {
+                    document_id: "beta".into(),
+                    semantic_text: "beta metrics report".into(),
+                    metadata: Some(serde_json::json!({
+                        "title": "beta metrics report",
+                        "topic": "metrics"
+                    })),
+                },
+            ],
         }
     }
 
@@ -1011,6 +1153,18 @@ mod tests {
     }
 
     #[test]
+    fn mutable_storage_requests_roundtrip() {
+        let request = StorageRequest::SyncMutableCorpus(SyncMutableCorpusRequest {
+            corpus_id: "notes".into(),
+            snapshot: mutable_snapshot(),
+        });
+
+        let json = serde_json::to_string(&request).unwrap();
+        let decoded: StorageRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
     fn runtime_error_response_roundtrips() {
         let response = RuntimeResponse::Error(RuntimeErrorResponse {
             code: ErrorCode::EncoderMismatch,
@@ -1037,6 +1191,30 @@ mod tests {
             code: ErrorCode::StorageFailed,
             message: "storage failed".into(),
             context: None,
+        });
+
+        let json = serde_json::to_string(&response).unwrap();
+        let decoded: StorageResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn mutable_storage_responses_roundtrip() {
+        let response = StorageResponse::MutableCorpusSynced(SyncMutableCorpusResponse {
+            corpus_id: "notes".into(),
+            summary: MutableCorpusSummary {
+                corpus_id: "notes".into(),
+                document_count: 2,
+                has_keyword_state: true,
+                encoder: encoder(),
+            },
+            sync: MutableCorpusSyncSummary {
+                changed: true,
+                added: 2,
+                updated: 0,
+                deleted: 0,
+                unchanged: 0,
+            },
         });
 
         let json = serde_json::to_string(&response).unwrap();

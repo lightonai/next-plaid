@@ -17,7 +17,13 @@ import type {
   SearchWorkerResponse,
 } from "../shared/search-contract.js";
 
-const storageRequestTypes = new Set(["install_bundle", "load_stored_bundle"]);
+const storageRequestTypes = new Set([
+  "install_bundle",
+  "load_stored_bundle",
+  "register_mutable_corpus",
+  "sync_mutable_corpus",
+  "load_mutable_corpus",
+]);
 const decodeJsonString = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 const encodeJsonString = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
 

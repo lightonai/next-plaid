@@ -383,6 +383,10 @@ than skipping ahead to the policy layer.
 
 ## References
 
+First implementation slice for this phase:
+
+- `docs/plans/2026-04-21-mutable-sync-slice-1-registry-keyword-reopen.md`
+
 - `docs/ROADMAP.md`
 - `docs/BROWSER_RUNTIME_DECISIONS.md`
 - `docs/RUST_SQLITE_WASM_SPIKE.md`

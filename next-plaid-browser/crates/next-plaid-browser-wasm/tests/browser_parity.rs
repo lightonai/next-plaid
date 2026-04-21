@@ -9,11 +9,13 @@ use indexed_db_futures::prelude::*;
 use js_sys::{Function, Object, Promise, Reflect};
 use next_plaid_browser_contract::{
     ArtifactEntry, ArtifactKind, BundleArtifactBytesPayload, BundleManifest, CompressionKind,
-    EmbeddingDtype, EmbeddingLayout, EncoderIdentity, ErrorCode, FtsTokenizer, FusionMode,
-    HealthResponse, InstallBundleRequest, LoadStoredBundleRequest, MatrixPayload, MetadataMode,
-    QueryEmbeddingsPayload, QueryResultResponse, RuntimeRequest, RuntimeResponse,
-    SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse, StorageErrorResponse,
-    StorageRequest, StorageResponse, WorkerLoadIndexRequest, WorkerSearchRequest,
+    EmbeddingDtype, EmbeddingLayout, EncoderIdentity, ErrorCode, FtsTokenizer,
+    FusionMode, HealthResponse, InstallBundleRequest, LoadMutableCorpusRequest,
+    LoadStoredBundleRequest, MatrixPayload, MetadataMode, MutableCorpusDocument,
+    MutableCorpusSnapshot, QueryEmbeddingsPayload, QueryResultResponse,
+    RegisterMutableCorpusRequest, RuntimeRequest, RuntimeResponse, SearchIndexPayload,
+    SearchParamsRequest, SearchRequest, SearchResponse, StorageErrorResponse, StorageRequest,
+    StorageResponse, SyncMutableCorpusRequest, WorkerLoadIndexRequest, WorkerSearchRequest,
     RUNTIME_SCHEMA_VERSION, SUPPORTED_BUNDLE_FORMAT_VERSION,
 };
 use next_plaid_browser_kernel::{search_one, BrowserIndexView, MatrixView, SearchParameters};
@@ -462,6 +464,77 @@ fn storage_load_request(index_id: &str, name: &str) -> StorageRequest {
     })
 }
 
+fn register_mutable_corpus_request(corpus_id: &str, dim: usize) -> StorageRequest {
+    StorageRequest::RegisterMutableCorpus(RegisterMutableCorpusRequest {
+        corpus_id: corpus_id.into(),
+        encoder: encoder(dim),
+        fts_tokenizer: FtsTokenizer::Unicode61,
+    })
+}
+
+fn sync_mutable_corpus_request(corpus_id: &str, snapshot: MutableCorpusSnapshot) -> StorageRequest {
+    StorageRequest::SyncMutableCorpus(SyncMutableCorpusRequest {
+        corpus_id: corpus_id.into(),
+        snapshot,
+    })
+}
+
+fn load_mutable_corpus_request(corpus_id: &str) -> StorageRequest {
+    StorageRequest::LoadMutableCorpus(LoadMutableCorpusRequest {
+        corpus_id: corpus_id.into(),
+    })
+}
+
+fn mutable_snapshot_v1() -> MutableCorpusSnapshot {
+    MutableCorpusSnapshot {
+        documents: vec![
+            MutableCorpusDocument {
+                document_id: "doc-alpha".into(),
+                semantic_text: "alpha launch semantic body".into(),
+                metadata: Some(serde_json::json!({
+                    "title": "alpha launch memo",
+                    "topic": "edge",
+                    "kind": "memo"
+                })),
+            },
+            MutableCorpusDocument {
+                document_id: "doc-beta".into(),
+                semantic_text: "beta report semantic body".into(),
+                metadata: Some(serde_json::json!({
+                    "title": "beta report summary",
+                    "topic": "metrics",
+                    "kind": "report"
+                })),
+            },
+        ],
+    }
+}
+
+fn mutable_snapshot_v2() -> MutableCorpusSnapshot {
+    MutableCorpusSnapshot {
+        documents: vec![
+            MutableCorpusDocument {
+                document_id: "doc-alpha".into(),
+                semantic_text: "alpha launch semantic body updated".into(),
+                metadata: Some(serde_json::json!({
+                    "title": "alpha launch memo v2",
+                    "topic": "edge",
+                    "kind": "memo"
+                })),
+            },
+            MutableCorpusDocument {
+                document_id: "doc-gamma".into(),
+                semantic_text: "gamma archive semantic body".into(),
+                metadata: Some(serde_json::json!({
+                    "title": "gamma archive note",
+                    "topic": "history",
+                    "kind": "archive"
+                })),
+            },
+        ],
+    }
+}
+
 fn sqlite_sidecar_storage_install_request(index_id: &str, build_id: &str) -> StorageRequest {
     let mut manifest = storage_manifest(index_id, build_id);
     let metadata_json_entry = manifest
@@ -851,6 +924,143 @@ async fn browser_storage_install_and_reload_roundtrip() {
             + health.memory_usage_breakdown.metadata_json_bytes
             + health.memory_usage_breakdown.keyword_runtime_bytes
     );
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_mutable_corpus_register_sync_reload_roundtrip() {
+    reset_runtime_state();
+    let corpus_id = "mutable-demo-roundtrip";
+
+    let register = storage_response(register_mutable_corpus_request(corpus_id, 2)).await;
+    match register {
+        StorageResponse::MutableCorpusRegistered(result) => {
+            assert_eq!(result.corpus_id, corpus_id);
+            assert!(result.created);
+            assert_eq!(result.summary.document_count, 0);
+            assert!(result.summary.has_keyword_state);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    let sync = storage_response(sync_mutable_corpus_request(corpus_id, mutable_snapshot_v1())).await;
+    match sync {
+        StorageResponse::MutableCorpusSynced(result) => {
+            assert_eq!(result.corpus_id, corpus_id);
+            assert_eq!(result.summary.document_count, 2);
+            assert!(result.sync.changed);
+            assert_eq!(result.sync.added, 2);
+            assert_eq!(result.sync.updated, 0);
+            assert_eq!(result.sync.deleted, 0);
+            assert_eq!(result.sync.unchanged, 0);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    let keyword = runtime_result(&keyword_search_request(corpus_id, &["alpha"]));
+    assert_eq!(keyword.results[0].document_ids, vec![0]);
+    assert_eq!(
+        keyword.results[0].metadata[0]
+            .as_ref()
+            .and_then(|value| value.get("title"))
+            .and_then(|value| value.as_str()),
+        Some("alpha launch memo")
+    );
+
+    reset_runtime_state();
+    let reload_required =
+        runtime_error_response(RuntimeRequest::Search(keyword_search_request(corpus_id, &["alpha"])));
+    assert_eq!(reload_required.code, ErrorCode::IndexNotLoaded);
+
+    let load = storage_response(load_mutable_corpus_request(corpus_id)).await;
+    match load {
+        StorageResponse::MutableCorpusLoaded(result) => {
+            assert_eq!(result.corpus_id, corpus_id);
+            assert_eq!(result.summary.document_count, 2);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    let mut filtered = keyword_search_request(corpus_id, &["beta"]);
+    filtered.request.filter_condition = Some("topic = ?".into());
+    filtered.request.filter_parameters = Some(vec![serde_json::json!("metrics")]);
+    let filtered_response = runtime_result(&filtered);
+    assert_eq!(filtered_response.results[0].document_ids, vec![1]);
+
+    let semantic_error = runtime_error_response(RuntimeRequest::Search(worker_search_request(
+        corpus_id,
+        vec![vec![vec![1.0, 0.0], vec![0.7, 0.7]]],
+        None,
+    )));
+    assert_eq!(semantic_error.code, ErrorCode::InvalidRequest);
+    assert!(semantic_error
+        .message
+        .contains("semantic search is not yet supported for mutable corpus"));
+
+    let health = runtime_health_response();
+    assert_eq!(health.loaded_indices, 1);
+    assert!(health.memory_usage_breakdown.keyword_runtime_bytes > 0);
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_mutable_corpus_applies_delete_and_noop_sync_semantics() {
+    reset_runtime_state();
+    let corpus_id = "mutable-demo-delete-noop";
+    let next_snapshot = mutable_snapshot_v2();
+
+    let _ = storage_response(register_mutable_corpus_request(corpus_id, 2)).await;
+    let _ = storage_response(sync_mutable_corpus_request(corpus_id, mutable_snapshot_v1())).await;
+
+    let replace = storage_response(sync_mutable_corpus_request(corpus_id, next_snapshot.clone())).await;
+    match replace {
+        StorageResponse::MutableCorpusSynced(result) => {
+            assert_eq!(result.summary.document_count, 2);
+            assert!(result.sync.changed);
+            assert_eq!(result.sync.added, 1);
+            assert_eq!(result.sync.updated, 1);
+            assert_eq!(result.sync.deleted, 1);
+            assert_eq!(result.sync.unchanged, 0);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    let deleted = runtime_result(&keyword_search_request(corpus_id, &["beta"]));
+    assert!(deleted.results[0].document_ids.is_empty());
+
+    let added = runtime_result(&keyword_search_request(corpus_id, &["gamma"]));
+    assert_eq!(added.results[0].document_ids, vec![1]);
+
+    let noop = storage_response(sync_mutable_corpus_request(corpus_id, next_snapshot)).await;
+    match noop {
+        StorageResponse::MutableCorpusSynced(result) => {
+            assert_eq!(result.summary.document_count, 2);
+            assert!(!result.sync.changed);
+            assert_eq!(result.sync.added, 0);
+            assert_eq!(result.sync.updated, 0);
+            assert_eq!(result.sync.deleted, 0);
+            assert_eq!(result.sync.unchanged, 2);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_mutable_corpus_requires_registration_and_locked_encoder() {
+    reset_runtime_state();
+    let corpus_id = "mutable-demo-registration-errors";
+
+    let missing_registration =
+        storage_error_response(sync_mutable_corpus_request(corpus_id, mutable_snapshot_v1())).await;
+    assert_eq!(missing_registration.code, ErrorCode::InvalidRequest);
+    assert!(missing_registration.message.contains("is not registered"));
+
+    let _ = storage_response(register_mutable_corpus_request(corpus_id, 2)).await;
+
+    let missing_snapshot = storage_error_response(load_mutable_corpus_request(corpus_id)).await;
+    assert_eq!(missing_snapshot.code, ErrorCode::InvalidRequest);
+    assert!(missing_snapshot.message.contains("has no committed snapshot"));
+
+    let mismatch = storage_error_response(register_mutable_corpus_request(corpus_id, 4)).await;
+    assert_eq!(mismatch.code, ErrorCode::EncoderMismatch);
 }
 
 #[wasm_bindgen_test]

@@ -1,10 +1,15 @@
 //! Browser storage installation and reopen logic for NextPlaid bundles.
 
 use next_plaid_browser_contract::{
-    ArtifactKind, BundleInstalledResponse, BundleManifest, CompressionKind, MetadataMode,
+    ArtifactKind, BundleInstalledResponse, BundleManifest, CompressionKind, EncoderIdentity,
+    FtsTokenizer, MetadataMode, MutableCorpusDocument, MutableCorpusSnapshot,
+    MutableCorpusSummary, MutableCorpusSyncSummary, RegisterMutableCorpusResponse,
+    SyncMutableCorpusResponse,
 };
 use next_plaid_browser_loader::{ArtifactBytesMap, BundleLoaderError, LoadedSearchArtifacts};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 #[cfg(target_arch = "wasm32")]
@@ -19,6 +24,26 @@ pub struct StoredBrowserBundle {
     pub search_artifacts: LoadedSearchArtifacts,
     /// Optional metadata rows reconstructed from stored metadata.
     pub metadata: Option<Vec<Option<Value>>>,
+}
+
+/// Stored mutable corpus reopened from browser persistence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredMutableCorpus {
+    /// Public corpus summary reconstructed from persistence.
+    pub summary: MutableCorpusSummary,
+    /// Full authoritative mutable snapshot.
+    pub snapshot: MutableCorpusSnapshot,
+    /// FTS tokenizer used to rebuild the keyword runtime.
+    pub fts_tokenizer: FtsTokenizer,
+}
+
+/// Result returned after syncing a mutable corpus snapshot.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SyncedMutableCorpus {
+    /// Public sync response payload.
+    pub response: SyncMutableCorpusResponse,
+    /// Persisted corpus snapshot reopened from storage after commit.
+    pub stored: StoredMutableCorpus,
 }
 
 /// Errors returned by the browser storage layer.
@@ -48,6 +73,25 @@ pub enum BrowserStorageError {
     /// No active bundle pointer was recorded for the requested index id.
     #[error("no active stored bundle is recorded for index '{0}'")]
     MissingActiveBundle(String),
+    /// No mutable corpus registration exists for the requested id.
+    #[error("mutable corpus '{0}' is not registered")]
+    MissingMutableCorpus(String),
+    /// The mutable corpus exists but has no committed snapshot to reopen.
+    #[error("mutable corpus '{0}' has no committed snapshot")]
+    MissingMutableCorpusSnapshot(String),
+    /// Registration attempted to change the locked encoder identity.
+    #[error("mutable corpus '{corpus_id}' is registered with a different encoder")]
+    MutableCorpusEncoderMismatch {
+        /// Stable browser-owned corpus id.
+        corpus_id: String,
+        /// Previously registered encoder identity.
+        expected: EncoderIdentity,
+        /// Requested encoder identity.
+        actual: EncoderIdentity,
+    },
+    /// Mutable corpus snapshot validation failed.
+    #[error("invalid mutable corpus snapshot: {0}")]
+    InvalidMutableCorpusSnapshot(String),
     /// The manifest uses a metadata mode that the browser storage slice does not support.
     #[error("unsupported metadata mode for browser storage slice: {0:?}")]
     UnsupportedMetadataMode(MetadataMode),
@@ -78,14 +122,36 @@ pub enum BrowserStorageError {
 }
 
 #[cfg(target_arch = "wasm32")]
-use serde::{Deserialize, Serialize};
-
-#[cfg(target_arch = "wasm32")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ActiveBundleRecord {
     index_id: String,
     build_id: String,
     storage_key: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MutableCorpusRecord {
+    corpus_id: String,
+    encoder: EncoderIdentity,
+    fts_tokenizer: FtsTokenizer,
+    active_snapshot_key: Option<String>,
+    document_count: usize,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct PersistedMutableCorpusDocument {
+    document_id: String,
+    semantic_text: String,
+    metadata: Option<Value>,
+    content_hash: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct PersistedMutableCorpusSnapshot {
+    documents: Vec<PersistedMutableCorpusDocument>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -127,6 +193,33 @@ pub async fn load_active_bundle(
     index_id: &str,
 ) -> Result<StoredBrowserBundle, BrowserStorageError> {
     load_active_bundle_impl(index_id).await
+}
+
+/// Registers one mutable browser corpus.
+#[must_use = "registration failures are only visible if the result is checked"]
+pub async fn register_mutable_corpus(
+    corpus_id: &str,
+    encoder: &EncoderIdentity,
+    fts_tokenizer: FtsTokenizer,
+) -> Result<RegisterMutableCorpusResponse, BrowserStorageError> {
+    register_mutable_corpus_impl(corpus_id, encoder, fts_tokenizer).await
+}
+
+/// Syncs one authoritative mutable corpus snapshot into browser storage.
+#[must_use = "sync failures are only visible if the result is checked"]
+pub async fn sync_mutable_corpus(
+    corpus_id: &str,
+    snapshot: &MutableCorpusSnapshot,
+) -> Result<SyncedMutableCorpus, BrowserStorageError> {
+    sync_mutable_corpus_impl(corpus_id, snapshot).await
+}
+
+/// Loads one mutable corpus from browser persistence.
+#[must_use = "load failures are only visible if the result is checked"]
+pub async fn load_mutable_corpus(
+    corpus_id: &str,
+) -> Result<StoredMutableCorpus, BrowserStorageError> {
+    load_mutable_corpus_impl(corpus_id).await
 }
 
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -176,6 +269,171 @@ fn decode_metadata_documents(
     Ok(documents.into_iter().map(Some).collect())
 }
 
+#[allow(dead_code)]
+fn validate_mutable_snapshot(
+    snapshot: &MutableCorpusSnapshot,
+) -> Result<(), BrowserStorageError> {
+    let mut document_ids = std::collections::HashSet::new();
+    for document in &snapshot.documents {
+        if document.document_id.is_empty() {
+            return Err(BrowserStorageError::InvalidMutableCorpusSnapshot(
+                "document_id must not be empty".into(),
+            ));
+        }
+        if !document_ids.insert(document.document_id.clone()) {
+            return Err(BrowserStorageError::InvalidMutableCorpusSnapshot(format!(
+                "duplicate document_id '{}'",
+                document.document_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn mutable_corpus_summary(
+    corpus_id: &str,
+    encoder: &EncoderIdentity,
+    document_count: usize,
+) -> MutableCorpusSummary {
+    MutableCorpusSummary {
+        corpus_id: corpus_id.to_string(),
+        document_count,
+        has_keyword_state: true,
+        encoder: encoder.clone(),
+    }
+}
+
+#[allow(dead_code)]
+fn canonical_document_hash(document: &MutableCorpusDocument) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(document.semantic_text.as_bytes());
+    hasher.update([0]);
+    write_canonical_json_value(document.metadata.as_ref(), &mut hasher);
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    hex
+}
+
+#[allow(dead_code)]
+fn write_canonical_json_value(value: Option<&Value>, output: &mut impl std::io::Write) {
+    match value.unwrap_or(&Value::Null) {
+        Value::Null => {
+            let _ = output.write_all(b"null");
+        }
+        Value::Bool(boolean) => {
+            if *boolean {
+                let _ = output.write_all(b"true");
+            } else {
+                let _ = output.write_all(b"false");
+            }
+        }
+        Value::Number(number) => {
+            let _ = output.write_all(number.to_string().as_bytes());
+        }
+        Value::String(string) => {
+            let _ = output.write_all(serde_json::to_string(string).unwrap().as_bytes());
+        }
+        Value::Array(values) => {
+            let _ = output.write_all(b"[");
+            for (index, item) in values.iter().enumerate() {
+                if index > 0 {
+                    let _ = output.write_all(b",");
+                }
+                write_canonical_json_value(Some(item), output);
+            }
+            let _ = output.write_all(b"]");
+        }
+        Value::Object(object) => {
+            let _ = output.write_all(b"{");
+            let mut entries: Vec<_> = object.iter().collect();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            for (index, (key, item)) in entries.into_iter().enumerate() {
+                if index > 0 {
+                    let _ = output.write_all(b",");
+                }
+                let _ = output.write_all(serde_json::to_string(key).unwrap().as_bytes());
+                let _ = output.write_all(b":");
+                write_canonical_json_value(Some(item), output);
+            }
+            let _ = output.write_all(b"}");
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn persisted_document(document: MutableCorpusDocument) -> PersistedMutableCorpusDocument {
+    let content_hash = canonical_document_hash(&document);
+    PersistedMutableCorpusDocument {
+        document_id: document.document_id,
+        semantic_text: document.semantic_text,
+        metadata: document.metadata,
+        content_hash,
+    }
+}
+
+#[allow(dead_code)]
+fn restore_document(document: PersistedMutableCorpusDocument) -> MutableCorpusDocument {
+    MutableCorpusDocument {
+        document_id: document.document_id,
+        semantic_text: document.semantic_text,
+        metadata: document.metadata,
+    }
+}
+
+#[allow(dead_code)]
+fn sync_summary(
+    previous: Option<&PersistedMutableCorpusSnapshot>,
+    next: &PersistedMutableCorpusSnapshot,
+) -> MutableCorpusSyncSummary {
+    use std::collections::HashMap;
+
+    let previous_documents = previous
+        .map(|snapshot| {
+            snapshot
+                .documents
+                .iter()
+                .map(|document| (document.document_id.as_str(), document.content_hash.as_str()))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+
+    let next_documents = next
+        .documents
+        .iter()
+        .map(|document| (document.document_id.as_str(), document.content_hash.as_str()))
+        .collect::<HashMap<_, _>>();
+
+    let mut added = 0;
+    let mut updated = 0;
+    let mut unchanged = 0;
+
+    for (document_id, next_hash) in &next_documents {
+        match previous_documents.get(document_id) {
+            None => added += 1,
+            Some(previous_hash) if previous_hash == next_hash => unchanged += 1,
+            Some(_) => updated += 1,
+        }
+    }
+
+    let deleted = previous_documents
+        .keys()
+        .filter(|document_id| !next_documents.contains_key(*document_id))
+        .count();
+
+    MutableCorpusSyncSummary {
+        changed: added > 0 || updated > 0 || deleted > 0,
+        added,
+        updated,
+        deleted,
+        unchanged,
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 async fn install_bundle_from_bytes_impl(
     _manifest: &BundleManifest,
@@ -189,6 +447,30 @@ async fn install_bundle_from_bytes_impl(
 async fn load_active_bundle_impl(
     _index_id: &str,
 ) -> Result<StoredBrowserBundle, BrowserStorageError> {
+    Err(BrowserStorageError::UnavailableOnHost)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn register_mutable_corpus_impl(
+    _corpus_id: &str,
+    _encoder: &EncoderIdentity,
+    _fts_tokenizer: FtsTokenizer,
+) -> Result<RegisterMutableCorpusResponse, BrowserStorageError> {
+    Err(BrowserStorageError::UnavailableOnHost)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn sync_mutable_corpus_impl(
+    _corpus_id: &str,
+    _snapshot: &MutableCorpusSnapshot,
+) -> Result<SyncedMutableCorpus, BrowserStorageError> {
+    Err(BrowserStorageError::UnavailableOnHost)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn load_mutable_corpus_impl(
+    _corpus_id: &str,
+) -> Result<StoredMutableCorpus, BrowserStorageError> {
     Err(BrowserStorageError::UnavailableOnHost)
 }
 
@@ -209,7 +491,10 @@ mod wasm {
     const INDEXED_DB_VERSION: u32 = 1;
     const INDEXED_DB_STORE: &str = "runtime_state";
     const ACTIVE_BUNDLE_PREFIX: &str = "active_bundle:";
+    const MUTABLE_CORPUS_PREFIX: &str = "mutable_corpus:";
     const MANIFEST_FILE_NAME: &str = "manifest.json";
+    const MUTABLE_CORPUS_OPFS_ROOT_DIR: &str = "next-plaid-browser-mutable-corpora";
+    const MUTABLE_SNAPSHOT_FILE_NAME: &str = "snapshot.json";
 
     pub(super) async fn install_bundle_from_bytes_impl(
         manifest: &BundleManifest,
@@ -308,11 +593,180 @@ mod wasm {
         }
     }
 
+    pub(super) async fn register_mutable_corpus_impl(
+        corpus_id: &str,
+        encoder: &EncoderIdentity,
+        fts_tokenizer: FtsTokenizer,
+    ) -> Result<RegisterMutableCorpusResponse, BrowserStorageError> {
+        let db = open_indexed_db().await?;
+        let key = mutable_corpus_key(corpus_id);
+        let existing = get_mutable_corpus_record(&db, &key).await?;
+
+        let (created, record) = match existing {
+            Some(record) => {
+                if record.encoder != *encoder {
+                    return Err(BrowserStorageError::MutableCorpusEncoderMismatch {
+                        corpus_id: corpus_id.to_string(),
+                        expected: record.encoder,
+                        actual: encoder.clone(),
+                    });
+                }
+                (false, record)
+            }
+            None => {
+                let record = MutableCorpusRecord {
+                    corpus_id: corpus_id.to_string(),
+                    encoder: encoder.clone(),
+                    fts_tokenizer,
+                    active_snapshot_key: None,
+                    document_count: 0,
+                };
+                put_mutable_corpus_record(&db, &key, &record).await?;
+                (true, record)
+            }
+        };
+
+        Ok(RegisterMutableCorpusResponse {
+            corpus_id: corpus_id.to_string(),
+            created,
+            summary: mutable_corpus_summary(corpus_id, &record.encoder, record.document_count),
+        })
+    }
+
+    pub(super) async fn sync_mutable_corpus_impl(
+        corpus_id: &str,
+        snapshot: &MutableCorpusSnapshot,
+    ) -> Result<SyncedMutableCorpus, BrowserStorageError> {
+        validate_mutable_snapshot(snapshot)?;
+
+        let db = open_indexed_db().await?;
+        let key = mutable_corpus_key(corpus_id);
+        let mut record = get_mutable_corpus_record(&db, &key)
+            .await?
+            .ok_or_else(|| BrowserStorageError::MissingMutableCorpus(corpus_id.to_string()))?;
+
+        let previous = match record.active_snapshot_key.as_ref() {
+            Some(active_snapshot_key) => Some(load_mutable_snapshot(corpus_id, active_snapshot_key).await?),
+            None => None,
+        };
+
+        let next = PersistedMutableCorpusSnapshot {
+            documents: snapshot
+                .documents
+                .clone()
+                .into_iter()
+                .map(persisted_document)
+                .collect(),
+        };
+        let sync = sync_summary(previous.as_ref(), &next);
+
+        if !sync.changed {
+            let stored = load_mutable_corpus_impl(corpus_id).await?;
+            return Ok(SyncedMutableCorpus {
+                response: SyncMutableCorpusResponse {
+                    corpus_id: corpus_id.to_string(),
+                    summary: stored.summary.clone(),
+                    sync,
+                },
+                stored,
+            });
+        }
+
+        let staged_snapshot_key = staged_mutable_snapshot_key();
+        let snapshot_dir =
+            ensure_mutable_snapshot_directory(corpus_id, &staged_snapshot_key).await?;
+        write_bytes_file(
+            &snapshot_dir,
+            MUTABLE_SNAPSHOT_FILE_NAME,
+            &serde_json::to_vec_pretty(&next)?,
+        )
+        .await?;
+
+        let verified_snapshot = load_mutable_snapshot(corpus_id, &staged_snapshot_key).await?;
+        let previous_snapshot_key = record.active_snapshot_key.clone();
+        record.active_snapshot_key = Some(staged_snapshot_key.clone());
+        record.document_count = verified_snapshot.documents.len();
+        put_mutable_corpus_record(&db, &key, &record).await?;
+
+        if let Some(previous_snapshot_key) = previous_snapshot_key {
+            if previous_snapshot_key != staged_snapshot_key {
+                let _ = delete_mutable_snapshot_directory(corpus_id, &previous_snapshot_key).await;
+            }
+        }
+
+        let stored = load_mutable_corpus_impl(corpus_id).await?;
+        Ok(SyncedMutableCorpus {
+            response: SyncMutableCorpusResponse {
+                corpus_id: corpus_id.to_string(),
+                summary: stored.summary.clone(),
+                sync,
+            },
+            stored,
+        })
+    }
+
+    pub(super) async fn load_mutable_corpus_impl(
+        corpus_id: &str,
+    ) -> Result<StoredMutableCorpus, BrowserStorageError> {
+        let db = open_indexed_db().await?;
+        let key = mutable_corpus_key(corpus_id);
+        let mut record = get_mutable_corpus_record(&db, &key)
+            .await?
+            .ok_or_else(|| BrowserStorageError::MissingMutableCorpus(corpus_id.to_string()))?;
+
+        let active_snapshot_key = match &record.active_snapshot_key {
+            Some(active_snapshot_key) => active_snapshot_key.clone(),
+            None => {
+                return Err(BrowserStorageError::MissingMutableCorpusSnapshot(
+                    corpus_id.to_string(),
+                ))
+            }
+        };
+
+        let persisted_snapshot = match load_mutable_snapshot(corpus_id, &active_snapshot_key).await {
+            Ok(snapshot) => snapshot,
+            Err(BrowserStorageError::StorageEntryNotFound(_)) => {
+                record.active_snapshot_key = None;
+                record.document_count = 0;
+                put_mutable_corpus_record(&db, &key, &record).await?;
+                return Err(BrowserStorageError::MissingMutableCorpusSnapshot(
+                    corpus_id.to_string(),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+
+        let snapshot = MutableCorpusSnapshot {
+            documents: persisted_snapshot
+                .documents
+                .into_iter()
+                .map(restore_document)
+                .collect(),
+        };
+
+        Ok(StoredMutableCorpus {
+            summary: mutable_corpus_summary(
+                corpus_id,
+                &record.encoder,
+                snapshot.documents.len(),
+            ),
+            snapshot,
+            fts_tokenizer: record.fts_tokenizer,
+        })
+    }
+
     async fn ensure_bundle_directory(
         index_id: &str,
         storage_key: &str,
     ) -> Result<JsValue, BrowserStorageError> {
         get_bundle_directory(index_id, storage_key, true).await
+    }
+
+    async fn ensure_mutable_snapshot_directory(
+        corpus_id: &str,
+        snapshot_key: &str,
+    ) -> Result<JsValue, BrowserStorageError> {
+        get_mutable_snapshot_directory(corpus_id, snapshot_key, true).await
     }
 
     async fn get_bundle_directory(
@@ -324,6 +778,18 @@ mod wasm {
         let runtime_root = get_directory_handle(&root, OPFS_ROOT_DIR, create).await?;
         let index_dir = get_directory_handle(&runtime_root, index_id, create).await?;
         get_directory_handle(&index_dir, storage_key, create).await
+    }
+
+    async fn get_mutable_snapshot_directory(
+        corpus_id: &str,
+        snapshot_key: &str,
+        create: bool,
+    ) -> Result<JsValue, BrowserStorageError> {
+        let root = opfs_root().await?;
+        let runtime_root =
+            get_directory_handle(&root, MUTABLE_CORPUS_OPFS_ROOT_DIR, create).await?;
+        let corpus_dir = get_directory_handle(&runtime_root, corpus_id, create).await?;
+        get_directory_handle(&corpus_dir, snapshot_key, create).await
     }
 
     async fn load_bundle_from_record(
@@ -364,6 +830,15 @@ mod wasm {
             search_artifacts,
             metadata,
         })
+    }
+
+    async fn load_mutable_snapshot(
+        corpus_id: &str,
+        snapshot_key: &str,
+    ) -> Result<PersistedMutableCorpusSnapshot, BrowserStorageError> {
+        let snapshot_dir = get_mutable_snapshot_directory(corpus_id, snapshot_key, false).await?;
+        let snapshot_bytes = read_bytes_file(&snapshot_dir, MUTABLE_SNAPSHOT_FILE_NAME).await?;
+        Ok(serde_json::from_slice(&snapshot_bytes)?)
     }
 
     async fn opfs_root() -> Result<JsValue, BrowserStorageError> {
@@ -539,6 +1014,16 @@ mod wasm {
         remove_entry(&index_dir, storage_key, true).await
     }
 
+    async fn delete_mutable_snapshot_directory(
+        corpus_id: &str,
+        snapshot_key: &str,
+    ) -> Result<(), BrowserStorageError> {
+        let root = opfs_root().await?;
+        let runtime_root = get_directory_handle(&root, MUTABLE_CORPUS_OPFS_ROOT_DIR, false).await?;
+        let corpus_dir = get_directory_handle(&runtime_root, corpus_id, false).await?;
+        remove_entry(&corpus_dir, snapshot_key, true).await
+    }
+
     async fn cleanup_superseded_bundle(
         previous_record: Option<&ActiveBundleRecord>,
         next_record: &ActiveBundleRecord,
@@ -600,6 +1085,49 @@ mod wasm {
             .map_err(indexed_db_error)
     }
 
+    async fn put_mutable_corpus_record(
+        db: &Database,
+        key: &str,
+        value: &MutableCorpusRecord,
+    ) -> Result<(), BrowserStorageError> {
+        let tx = db
+            .transaction(INDEXED_DB_STORE)
+            .with_mode(TransactionMode::Readwrite)
+            .build()
+            .map_err(indexed_db_error)?;
+        let store = tx
+            .object_store(INDEXED_DB_STORE)
+            .map_err(indexed_db_error)?;
+        store
+            .put(value)
+            .with_key(key.to_string())
+            .serde()
+            .map_err(indexed_db_error)?
+            .await
+            .map_err(indexed_db_error)?;
+        tx.commit().await.map_err(indexed_db_error)?;
+        Ok(())
+    }
+
+    async fn get_mutable_corpus_record(
+        db: &Database,
+        key: &str,
+    ) -> Result<Option<MutableCorpusRecord>, BrowserStorageError> {
+        let tx = db
+            .transaction(INDEXED_DB_STORE)
+            .build()
+            .map_err(indexed_db_error)?;
+        let store = tx
+            .object_store(INDEXED_DB_STORE)
+            .map_err(indexed_db_error)?;
+        store
+            .get(key.to_string())
+            .serde()
+            .map_err(indexed_db_error)?
+            .await
+            .map_err(indexed_db_error)
+    }
+
     async fn clear_runtime_state(db: &Database, key: &str) -> Result<(), BrowserStorageError> {
         let tx = db
             .transaction(INDEXED_DB_STORE)
@@ -623,10 +1151,20 @@ mod wasm {
         format!("{ACTIVE_BUNDLE_PREFIX}{index_id}")
     }
 
+    fn mutable_corpus_key(corpus_id: &str) -> String {
+        format!("{MUTABLE_CORPUS_PREFIX}{corpus_id}")
+    }
+
     fn staged_storage_key(build_id: &str) -> String {
         let timestamp_ms = js_sys::Date::now() as u64;
         let nonce = (js_sys::Math::random() * 1_000_000_000.0) as u64;
         format!("{build_id}--install-{timestamp_ms}-{nonce}")
+    }
+
+    fn staged_mutable_snapshot_key() -> String {
+        let timestamp_ms = js_sys::Date::now() as u64;
+        let nonce = (js_sys::Math::random() * 1_000_000_000.0) as u64;
+        format!("snapshot-{timestamp_ms}-{nonce}")
     }
 
     async fn await_promise(value: JsValue) -> Result<JsValue, BrowserStorageError> {
@@ -695,6 +1233,7 @@ mod tests {
         ArtifactEntry, ArtifactKind, CompressionKind, EncoderIdentity,
         SUPPORTED_BUNDLE_FORMAT_VERSION,
     };
+    use serde_json::json;
 
     fn sha() -> String {
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
@@ -776,6 +1315,18 @@ mod tests {
         }
     }
 
+    fn mutable_document(
+        document_id: &str,
+        semantic_text: &str,
+        metadata: serde_json::Value,
+    ) -> MutableCorpusDocument {
+        MutableCorpusDocument {
+            document_id: document_id.to_string(),
+            semantic_text: semantic_text.to_string(),
+            metadata: Some(metadata),
+        }
+    }
+
     #[test]
     fn accepts_inline_json_uncompressed_manifest_for_storage() {
         validate_storage_manifest_support(&base_manifest()).unwrap();
@@ -822,7 +1373,96 @@ mod tests {
             }
         ));
     }
+
+    #[test]
+    fn rejects_duplicate_document_ids_in_mutable_snapshot() {
+        let snapshot = MutableCorpusSnapshot {
+            documents: vec![
+                mutable_document("alpha", "alpha semantic", json!({ "topic": "edge" })),
+                mutable_document("alpha", "beta semantic", json!({ "topic": "metrics" })),
+            ],
+        };
+
+        let err = validate_mutable_snapshot(&snapshot).unwrap_err();
+        assert!(matches!(
+            err,
+            BrowserStorageError::InvalidMutableCorpusSnapshot(message)
+                if message.contains("duplicate document_id 'alpha'")
+        ));
+    }
+
+    #[test]
+    fn canonical_mutable_document_hash_is_stable_across_object_key_order() {
+        let left = mutable_document(
+            "alpha",
+            "shared semantic text",
+            json!({ "topic": "edge", "rank": 1 }),
+        );
+        let right = mutable_document(
+            "alpha",
+            "shared semantic text",
+            json!({ "rank": 1, "topic": "edge" }),
+        );
+
+        assert_eq!(canonical_document_hash(&left), canonical_document_hash(&right));
+    }
+
+    #[test]
+    fn mutable_sync_summary_counts_adds_updates_deletes_and_unchanged() {
+        let previous = PersistedMutableCorpusSnapshot {
+            documents: vec![
+                persisted_document(mutable_document(
+                    "alpha",
+                    "alpha semantic",
+                    json!({ "topic": "edge" }),
+                )),
+                persisted_document(mutable_document(
+                    "beta",
+                    "beta semantic v1",
+                    json!({ "topic": "metrics" }),
+                )),
+                persisted_document(mutable_document(
+                    "gamma",
+                    "gamma semantic",
+                    json!({ "topic": "history" }),
+                )),
+            ],
+        };
+        let next = PersistedMutableCorpusSnapshot {
+            documents: vec![
+                persisted_document(mutable_document(
+                    "alpha",
+                    "alpha semantic",
+                    json!({ "topic": "edge" }),
+                )),
+                persisted_document(mutable_document(
+                    "beta",
+                    "beta semantic v2",
+                    json!({ "topic": "metrics" }),
+                )),
+                persisted_document(mutable_document(
+                    "delta",
+                    "delta semantic",
+                    json!({ "topic": "fresh" }),
+                )),
+            ],
+        };
+
+        assert_eq!(
+            sync_summary(Some(&previous), &next),
+            MutableCorpusSyncSummary {
+                changed: true,
+                added: 1,
+                updated: 1,
+                deleted: 1,
+                unchanged: 1,
+            }
+        );
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
-use wasm::{install_bundle_from_bytes_impl, load_active_bundle_impl};
+use wasm::{
+    install_bundle_from_bytes_impl, load_active_bundle_impl, load_mutable_corpus_impl,
+    register_mutable_corpus_impl, sync_mutable_corpus_impl,
+};

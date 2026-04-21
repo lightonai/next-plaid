@@ -7,8 +7,13 @@ import type {
   EncoderIdentity,
   IndexLoadedResponseEnvelope,
   InstallBundleRequestEnvelope,
+  LoadMutableCorpusRequestEnvelope,
+  LoadMutableCorpusResponseEnvelope,
   LoadIndexRequestEnvelope,
   LoadStoredBundleRequestEnvelope,
+  MutableCorpusSummary,
+  RegisterMutableCorpusRequestEnvelope,
+  RegisterMutableCorpusResponseEnvelope,
   RuntimeErrorResponseEnvelope,
   SearchRequestEnvelope,
   SearchWorkerRequest,
@@ -16,6 +21,8 @@ import type {
   SearchWorkerResponse,
   StorageErrorResponseEnvelope,
   StoredBundleLoadedResponseEnvelope,
+  SyncMutableCorpusRequestEnvelope,
+  SyncMutableCorpusResponseEnvelope,
 } from "../shared/search-contract.js";
 import type { IndexSummary } from "../generated/IndexSummary.js";
 import {
@@ -42,10 +49,19 @@ export interface LoadedSearchIndexMetadata {
   readonly buildId: string | null;
 }
 
+export interface MutableCorpusMetadata {
+  readonly corpusId: string;
+  readonly summary: MutableCorpusSummary;
+  readonly loaded: boolean;
+}
+
 export interface SearchWorkerClientApi {
   readonly state: SubscriptionRef.SubscriptionRef<SearchWorkerState>;
   readonly loadedIndices: SubscriptionRef.SubscriptionRef<
     ReadonlyMap<string, LoadedSearchIndexMetadata>
+  >;
+  readonly mutableCorpora: SubscriptionRef.SubscriptionRef<
+    ReadonlyMap<string, MutableCorpusMetadata>
   >;
   readonly loadIndex: (
     request: LoadIndexRequestEnvelope,
@@ -59,6 +75,15 @@ export interface SearchWorkerClientApi {
   readonly loadStoredBundle: (
     request: LoadStoredBundleRequestEnvelope,
   ) => Effect.Effect<StoredBundleLoadedResponseEnvelope, SearchClientError>;
+  readonly registerMutableCorpus: (
+    request: RegisterMutableCorpusRequestEnvelope,
+  ) => Effect.Effect<RegisterMutableCorpusResponseEnvelope, SearchClientError>;
+  readonly syncMutableCorpus: (
+    request: SyncMutableCorpusRequestEnvelope,
+  ) => Effect.Effect<SyncMutableCorpusResponseEnvelope, SearchClientError>;
+  readonly loadMutableCorpus: (
+    request: LoadMutableCorpusRequestEnvelope,
+  ) => Effect.Effect<LoadMutableCorpusResponseEnvelope, SearchClientError>;
 }
 
 interface InstalledBundleMetadata {
@@ -202,6 +227,19 @@ function storedBundleLoadedMetadata(
   };
 }
 
+function storeMutableCorpus(
+  mutableCorpora: SubscriptionRef.SubscriptionRef<
+    ReadonlyMap<string, MutableCorpusMetadata>
+  >,
+  metadata: MutableCorpusMetadata,
+): Effect.Effect<void> {
+  return SubscriptionRef.update(mutableCorpora, (current) => {
+    const next = new Map(current);
+    next.set(metadata.corpusId, metadata);
+    return next;
+  });
+}
+
 export const makeSearchWorkerClient = (
   options: SearchWorkerClientOptions = {},
 ): Effect.Effect<
@@ -220,6 +258,12 @@ export const makeSearchWorkerClient = (
           new Map<string, LoadedSearchIndexMetadata>(),
         ),
         (ref) => SubscriptionRef.set(ref, new Map<string, LoadedSearchIndexMetadata>()),
+      );
+      const mutableCorpora = yield* Effect.acquireRelease(
+        SubscriptionRef.make<ReadonlyMap<string, MutableCorpusMetadata>>(
+          new Map<string, MutableCorpusMetadata>(),
+        ),
+        (ref) => SubscriptionRef.set(ref, new Map<string, MutableCorpusMetadata>()),
       );
       const installedBundles = yield* Ref.make<ReadonlyMap<string, InstalledBundleMetadata>>(
         new Map<string, InstalledBundleMetadata>(),
@@ -263,7 +307,10 @@ export const makeSearchWorkerClient = (
             | LoadIndexRequestEnvelope
             | SearchRequestEnvelope
             | InstallBundleRequestEnvelope
-            | LoadStoredBundleRequestEnvelope,
+            | LoadStoredBundleRequestEnvelope
+            | RegisterMutableCorpusRequestEnvelope
+            | SyncMutableCorpusRequestEnvelope
+            | LoadMutableCorpusRequestEnvelope,
         ) =>
           ensureClientUsable(operation).pipe(
             Effect.andThen(
@@ -415,13 +462,117 @@ export const makeSearchWorkerClient = (
           ),
       );
 
+      const registerMutableCorpus = Effect.fn("SearchWorkerClient.registerMutableCorpus")(
+        (request: RegisterMutableCorpusRequestEnvelope) =>
+          requestResponse(
+            "search_worker.register_mutable_corpus",
+            request.type,
+            "storage",
+            request,
+          ).pipe(
+            Effect.flatMap((response) =>
+              expectResponseType<RegisterMutableCorpusResponseEnvelope>(
+                "storage",
+                response,
+                "mutable_corpus_registered",
+                "search_worker.register_mutable_corpus",
+              ).pipe(
+                Effect.tap((decoded) =>
+                  storeMutableCorpus(mutableCorpora, {
+                    corpusId: decoded.corpus_id,
+                    summary: decoded.summary,
+                    loaded: false,
+                  }),
+                ),
+              ),
+            ),
+            Effect.withLogSpan("search_worker.register_mutable_corpus"),
+            Effect.annotateLogs({
+              worker_kind: "search",
+              operation: "search_worker.register_mutable_corpus",
+              corpus_id: request.corpus_id,
+            }),
+          ),
+      );
+
+      const syncMutableCorpus = Effect.fn("SearchWorkerClient.syncMutableCorpus")(
+        (request: SyncMutableCorpusRequestEnvelope) =>
+          requestResponse(
+            "search_worker.sync_mutable_corpus",
+            request.type,
+            "storage",
+            request,
+          ).pipe(
+            Effect.flatMap((response) =>
+              expectResponseType<SyncMutableCorpusResponseEnvelope>(
+                "storage",
+                response,
+                "mutable_corpus_synced",
+                "search_worker.sync_mutable_corpus",
+              ).pipe(
+                Effect.tap((decoded) =>
+                  storeMutableCorpus(mutableCorpora, {
+                    corpusId: decoded.corpus_id,
+                    summary: decoded.summary,
+                    loaded: true,
+                  }),
+                ),
+              ),
+            ),
+            Effect.withLogSpan("search_worker.sync_mutable_corpus"),
+            Effect.annotateLogs({
+              worker_kind: "search",
+              operation: "search_worker.sync_mutable_corpus",
+              corpus_id: request.corpus_id,
+              document_count: request.snapshot.documents.length,
+            }),
+          ),
+      );
+
+      const loadMutableCorpus = Effect.fn("SearchWorkerClient.loadMutableCorpus")(
+        (request: LoadMutableCorpusRequestEnvelope) =>
+          requestResponse(
+            "search_worker.load_mutable_corpus",
+            request.type,
+            "storage",
+            request,
+          ).pipe(
+            Effect.flatMap((response) =>
+              expectResponseType<LoadMutableCorpusResponseEnvelope>(
+                "storage",
+                response,
+                "mutable_corpus_loaded",
+                "search_worker.load_mutable_corpus",
+              ).pipe(
+                Effect.tap((decoded) =>
+                  storeMutableCorpus(mutableCorpora, {
+                    corpusId: decoded.corpus_id,
+                    summary: decoded.summary,
+                    loaded: true,
+                  }),
+                ),
+              ),
+            ),
+            Effect.withLogSpan("search_worker.load_mutable_corpus"),
+            Effect.annotateLogs({
+              worker_kind: "search",
+              operation: "search_worker.load_mutable_corpus",
+              corpus_id: request.corpus_id,
+            }),
+          ),
+      );
+
       return {
         state,
         loadedIndices,
+        mutableCorpora,
         loadIndex,
         search,
         installBundle,
         loadStoredBundle,
+        registerMutableCorpus,
+        syncMutableCorpus,
+        loadMutableCorpus,
       } satisfies SearchWorkerClientApi;
     }),
     "search_worker.client",

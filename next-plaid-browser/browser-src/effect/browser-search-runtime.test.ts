@@ -32,6 +32,7 @@ import * as BrowserWorker from "./browser-worker.js";
 import { EncoderWorkerClient } from "./encoder-worker-client.js";
 import type {
   LoadedSearchIndexMetadata,
+  MutableCorpusMetadata,
   SearchWorkerClientApi,
   SearchWorkerState,
 } from "./search-worker-client.js";
@@ -104,9 +105,15 @@ function makeEncodeFailureFallbackLayer(): Layer.Layer<
       return SearchWorkerClient.of({
         state,
         loadedIndices,
+        mutableCorpora: yield* SubscriptionRef.make<
+          ReadonlyMap<string, MutableCorpusMetadata>
+        >(new Map()),
         loadIndex: () => Effect.die("unused loadIndex in fallback test"),
         installBundle: () => Effect.die("unused installBundle in fallback test"),
         loadStoredBundle: () => Effect.die("unused loadStoredBundle in fallback test"),
+        registerMutableCorpus: () => Effect.die("unused registerMutableCorpus in fallback test"),
+        syncMutableCorpus: () => Effect.die("unused syncMutableCorpus in fallback test"),
+        loadMutableCorpus: () => Effect.die("unused loadMutableCorpus in fallback test"),
         search: (request) =>
           Effect.sync(() => {
             expect(request.request.queries).toBeNull();
