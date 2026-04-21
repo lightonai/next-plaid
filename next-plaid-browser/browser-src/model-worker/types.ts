@@ -1,6 +1,9 @@
 // TypeScript-owned model-worker scaffolding. These types do not cross into the
 // current Rust/Wasm runtime boundary; shared search/storage payloads must come
 // from `../shared/search-contract.ts` so they stay derived from Rust.
+import type * as Effect from "effect/Effect";
+
+import type { WorkerRuntimeError } from "../effect/worker-runtime-errors.js";
 import type { EncoderIdentity, QueryEmbeddingsPayload } from "../shared/search-contract.js";
 
 export type BackendKind = "wasm";
@@ -56,9 +59,8 @@ export interface EncoderCreateInput {
 
 export interface EncoderBackend {
   readonly capabilities: EncoderCapabilities;
-  encode(text: string): Promise<EncodedQuery>;
-  health(): Promise<EncoderHealth>;
-  dispose(): Promise<void>;
+  encode(text: string): Effect.Effect<EncodedQuery, WorkerRuntimeError>;
+  health(): Effect.Effect<EncoderHealth, WorkerRuntimeError>;
 }
 
 export type EncoderInitEvent =

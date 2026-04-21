@@ -4,12 +4,11 @@ import {
   Duration,
   Effect,
   Layer,
-  Queue,
-  Schema,
+  PubSub,
   Scope,
-  Semaphore,
   Stream,
   SubscriptionRef,
+  SynchronizedRef,
 } from "effect";
 import * as Worker from "effect/unstable/workers/Worker";
 
@@ -23,89 +22,16 @@ import type {
   EncoderWorkerRequest,
 } from "../model-worker/types.js";
 import {
+  decodeEncodeResponseSchema,
+  decodeEncoderInitEventSchema,
+  decodeEncoderInitResponseSchema,
+} from "../model-worker/encoder-contract.js";
+import {
   type EncoderClientError,
   permanentClientError,
 } from "./client-errors.js";
+import { EncoderCacheService } from "./encoder-cache-service.js";
 import { makeWorkerTransport } from "./worker-transport.js";
-
-const EncoderIdentitySchema = Schema.Struct({
-  encoder_id: Schema.String,
-  encoder_build: Schema.String,
-  embedding_dim: Schema.Number,
-  normalized: Schema.Boolean,
-});
-
-const EncoderCapabilitiesSchema = Schema.Struct({
-  backend: Schema.Literal("wasm"),
-  threaded: Schema.Boolean,
-  persistentStorage: Schema.Boolean,
-  encoderId: Schema.String,
-  encoderBuild: Schema.String,
-  embeddingDim: Schema.Number,
-  queryLength: Schema.Number,
-  doQueryExpansion: Schema.Boolean,
-  normalized: Schema.Boolean,
-});
-
-const EncodeTimingBreakdownSchema = Schema.Struct({
-  total_ms: Schema.Number,
-  tokenize_ms: Schema.Number,
-  inference_ms: Schema.Number,
-});
-
-const EncodedQuerySchema = Schema.Struct({
-  payload: Schema.Struct({
-    embeddings: Schema.Array(Schema.Array(Schema.Number)),
-    encoder: EncoderIdentitySchema,
-    dtype: Schema.Literal("f32_le"),
-    layout: Schema.Union([Schema.Literal("ragged"), Schema.Literal("padded_query_length")]),
-  }),
-  timing: EncodeTimingBreakdownSchema,
-  input_ids: Schema.Array(Schema.Number),
-  attention_mask: Schema.Array(Schema.Number),
-});
-
-const EncoderInitResponseSchema = Schema.Struct({
-  type: Schema.Literal("encoder_ready"),
-  state: Schema.Literal("ready"),
-  capabilities: EncoderCapabilitiesSchema,
-});
-
-const EncodeResponseSchema = Schema.Struct({
-  type: Schema.Literal("encoded_query"),
-  encoded: EncodedQuerySchema,
-});
-
-const EncoderInitEventSchema = Schema.Union([
-  Schema.Struct({
-    stage: Schema.Literal("fetch_start"),
-    url: Schema.String,
-    expectedBytes: Schema.NullOr(Schema.Number),
-  }),
-  Schema.Struct({
-    stage: Schema.Literal("fetch_complete"),
-    url: Schema.String,
-    bytesReceived: Schema.Number,
-  }),
-  Schema.Struct({
-    stage: Schema.Literal("session_create_start"),
-  }),
-  Schema.Struct({
-    stage: Schema.Literal("session_create_complete"),
-    durationMs: Schema.Number,
-  }),
-  Schema.Struct({
-    stage: Schema.Literal("warmup_start"),
-  }),
-  Schema.Struct({
-    stage: Schema.Literal("warmup_complete"),
-    durationMs: Schema.Number,
-  }),
-  Schema.Struct({
-    stage: Schema.Literal("ready"),
-    capabilities: EncoderCapabilitiesSchema,
-  }),
-]);
 
 export type EncoderStateSnapshot =
   | { status: "empty"; capabilities: null; lastError: null }
@@ -146,7 +72,31 @@ export class EncoderWorkerClient
 
 export interface EncoderWorkerClientOptions {
   readonly requestTimeout?: Duration.Input | undefined;
+  readonly queryCacheCapacity?: number | undefined;
 }
+
+interface EncoderLifecycleControl {
+  readonly initKey: string | null;
+  readonly initDeferred: Deferred.Deferred<EncoderCapabilities, EncoderClientError> | null;
+  readonly readyGate: Deferred.Deferred<void, EncoderClientError> | null;
+}
+
+type EncoderInitControl =
+  | {
+    readonly _tag: "Join";
+    readonly deferred: Deferred.Deferred<EncoderCapabilities, EncoderClientError>;
+  }
+  | {
+    readonly _tag: "Start";
+    readonly deferred: Deferred.Deferred<EncoderCapabilities, EncoderClientError>;
+    readonly readyGate: Deferred.Deferred<void, EncoderClientError>;
+  };
+
+const emptyLifecycleControl: EncoderLifecycleControl = {
+  initKey: null,
+  initDeferred: null,
+  readyGate: null,
+};
 
 function encoderInputKey(input: EncoderCreateInput): string {
   return JSON.stringify({
@@ -159,16 +109,48 @@ function encoderInputKey(input: EncoderCreateInput): string {
 }
 
 function publishEvent(
-  queue: Queue.Queue<EncoderLifecycleEvent>,
+  pubsub: PubSub.PubSub<EncoderLifecycleEvent>,
   event: EncoderLifecycleEvent,
 ): Effect.Effect<void> {
-  return Queue.offer(queue, event).pipe(Effect.asVoid);
+  return PubSub.publish(pubsub, event).pipe(Effect.asVoid);
+}
+
+function encoderQueryCacheKey(
+  capabilities: EncoderCapabilities,
+  text: string,
+): string {
+  return JSON.stringify({
+    encoderId: capabilities.encoderId,
+    encoderBuild: capabilities.encoderBuild,
+    text,
+  });
+}
+
+function decodeEncoderQueryCacheKey(
+  key: string,
+): { readonly text: string } {
+  const parsed = JSON.parse(key) as { readonly text?: unknown };
+  if (typeof parsed.text !== "string") {
+    throw new Error("invalid encoder cache key");
+  }
+  return {
+    text: parsed.text,
+  };
+}
+
+function disposedEncoderError(operation: string): EncoderClientError {
+  return permanentClientError({
+    cause: "encoder_disposed",
+    message: "encoder worker client scope is closed",
+    operation,
+    details: null,
+  });
 }
 
 function decodeEncoderInitResponse(
   value: unknown,
 ): Effect.Effect<EncoderInitResponse, EncoderClientError> {
-  return Schema.decodeUnknownEffect(EncoderInitResponseSchema)(value).pipe(
+  return decodeEncoderInitResponseSchema(value).pipe(
     Effect.mapError((error) =>
       permanentClientError({
         cause: "decode_failed",
@@ -183,25 +165,7 @@ function decodeEncoderInitResponse(
 function decodeEncodedResponse(
   value: unknown,
 ): Effect.Effect<EncodeResponse, EncoderClientError> {
-  return Schema.decodeUnknownEffect(EncodeResponseSchema)(value).pipe(
-    Effect.map((decoded) => ({
-      type: decoded.type,
-      encoded: {
-        payload: {
-          embeddings: decoded.encoded.payload.embeddings.map((row) => [...row]),
-          encoder: decoded.encoded.payload.encoder,
-          dtype: decoded.encoded.payload.dtype,
-          layout: decoded.encoded.payload.layout,
-        },
-        timing: {
-          total_ms: decoded.encoded.timing.total_ms,
-          tokenize_ms: decoded.encoded.timing.tokenize_ms,
-          inference_ms: decoded.encoded.timing.inference_ms,
-        },
-        input_ids: [...decoded.encoded.input_ids],
-        attention_mask: [...decoded.encoded.attention_mask],
-      },
-    })),
+  return decodeEncodeResponseSchema(value).pipe(
     Effect.mapError((error) =>
       permanentClientError({
         cause: "decode_failed",
@@ -216,7 +180,7 @@ function decodeEncodedResponse(
 function decodeEncoderEvent(
   value: unknown,
 ): Effect.Effect<EncoderInitEvent, EncoderClientError> {
-  return Schema.decodeUnknownEffect(EncoderInitEventSchema)(value).pipe(
+  return decodeEncoderInitEventSchema(value).pipe(
     Effect.mapError((error) =>
       permanentClientError({
         cause: "decode_failed",
@@ -238,31 +202,83 @@ export const makeEncoderWorkerClient = (
   Effect.withLogSpan(
     Effect.gen(function*() {
       const clientScope = yield* Effect.scope;
-      const state = yield* Effect.acquireRelease(
-        SubscriptionRef.make<EncoderStateSnapshot>({
-          status: "empty",
-          capabilities: null,
-          lastError: null,
-        }),
-        (ref) =>
-          SubscriptionRef.set(ref, {
-            status: "disposed",
-            capabilities: null,
-            lastError: null,
-          }),
+      const state = yield* SubscriptionRef.make<EncoderStateSnapshot>({
+        status: "empty",
+        capabilities: null,
+        lastError: null,
+      });
+      const eventPubSub = yield* PubSub.unbounded<EncoderLifecycleEvent>({
+        replay: 16,
+      });
+      const controlState = yield* SynchronizedRef.make<EncoderLifecycleControl>(
+        emptyLifecycleControl,
       );
-      const eventQueue = yield* Effect.acquireRelease(
-        Queue.unbounded<EncoderLifecycleEvent>(),
-        (queue) =>
-          publishEvent(queue, { stage: "disposed" }).pipe(
-            Effect.andThen(Queue.shutdown(queue)),
-            Effect.asVoid,
+      let clearQueryCache: Effect.Effect<void> = Effect.void;
+
+      const failDeferred = <A>(
+        deferred: Deferred.Deferred<A, EncoderClientError> | null,
+        error: EncoderClientError,
+      ): Effect.Effect<void> =>
+        deferred === null
+          ? Effect.void
+          : Deferred.fail(deferred, error).pipe(Effect.asVoid);
+
+      const clearLifecycleWaiters = (
+        error: EncoderClientError,
+      ): Effect.Effect<void> =>
+        SynchronizedRef.modifyEffect(controlState, (control) =>
+          failDeferred(control.readyGate, error).pipe(
+            Effect.andThen(failDeferred(control.initDeferred, error)),
+            Effect.as([undefined, emptyLifecycleControl] as const),
           ),
+        );
+
+      const getReadyGate = (): Effect.Effect<
+        Deferred.Deferred<void, EncoderClientError>,
+        EncoderClientError
+      > =>
+        SynchronizedRef.modifyEffect(controlState, (control) =>
+          control.readyGate === null
+            ? Effect.fail(
+              permanentClientError({
+                cause: "encoder_not_initialized",
+                message: "encoder has not been initialized",
+                operation: "encoder_worker.encode",
+                details: null,
+              }),
+            )
+            : Effect.succeed([
+              control.readyGate,
+              control,
+            ] as const),
+        );
+
+      const transitionTerminal = Effect.fn(
+        "EncoderWorkerClient.transitionTerminal",
+      )(
+        (options_: {
+          readonly nextState: EncoderStateSnapshot;
+          readonly lifecycleError: EncoderClientError;
+          readonly event: EncoderLifecycleEvent;
+          readonly logMessage?: string | undefined;
+        }) =>
+          Effect.gen(function*() {
+            const snapshot = yield* SubscriptionRef.get(state);
+            if (
+              snapshot.status === "failed" ||
+              snapshot.status === "disposed"
+            ) {
+              return;
+            }
+
+            yield* SubscriptionRef.set(state, options_.nextState);
+            yield* clearLifecycleWaiters(options_.lifecycleError);
+            yield* publishEvent(eventPubSub, options_.event);
+            if (options_.logMessage !== undefined) {
+              yield* Effect.logError(options_.logMessage);
+            }
+          }).pipe(Effect.asVoid),
       );
-      const lifecycleSemaphore = yield* Semaphore.make(1);
-      let initDeferred: Deferred.Deferred<EncoderCapabilities, EncoderClientError> | null = null;
-      let readyGate: Deferred.Deferred<void, EncoderClientError> | null = null;
-      let currentInitKey: string | null = null;
 
       const failEncoder = Effect.fn("EncoderWorkerClient.failEncoder")(
         (
@@ -270,14 +286,16 @@ export const makeEncoderWorkerClient = (
           error: EncoderClientError,
           capabilities: EncoderCapabilities | null,
         ) =>
-          SubscriptionRef.set(state, {
-            status: "failed",
-            capabilities,
-            lastError: error,
-          }).pipe(
-            Effect.tap(() => publishEvent(eventQueue, { stage: "failed", error })),
-            Effect.tap(() => Effect.logError(`${operation} failed: ${error.message}`)),
-          ),
+          transitionTerminal({
+            nextState: {
+              status: "failed",
+              capabilities,
+              lastError: error,
+            },
+            lifecycleError: error,
+            event: { stage: "failed", error },
+            logMessage: `${operation} failed: ${error.message}`,
+          }),
       );
 
       const transport = yield* makeWorkerTransport<EncoderWorkerRequest>({
@@ -286,73 +304,155 @@ export const makeEncoderWorkerClient = (
         onWorkerFailure: (error) =>
           Effect.gen(function*() {
             const snapshot = yield* SubscriptionRef.get(state);
-            if (snapshot.status !== "ready") {
-              return;
-            }
-            yield* SubscriptionRef.set(state, {
-              status: "failed",
-              capabilities: snapshot.capabilities,
-              lastError: error,
-            });
+            const capabilities =
+              snapshot.status === "ready" ? snapshot.capabilities : null;
+            yield* clearQueryCache;
+            yield* failEncoder(
+              "encoder_worker.transport",
+              error,
+              capabilities,
+            );
           }).pipe(Effect.asVoid),
       });
+
+      const requestEncodedQuery = Effect.fn(
+        "EncoderWorkerClient.requestEncodedQuery",
+      )(
+        (cacheKey: string) =>
+          Effect.gen(function*() {
+            const { text } = yield* Effect.try({
+              try: () => decodeEncoderQueryCacheKey(cacheKey),
+              catch: (error) =>
+                permanentClientError({
+                  cause: "invalid_cache_key",
+                  message: "failed to decode encoder query cache key",
+                  operation: "encoder_worker.encode",
+                  details: error,
+                }),
+            });
+
+            const response = yield* transport.request(
+              { type: "encode", payload: { text } },
+              {
+                operation: "encoder_worker.encode",
+                requestType: "encode",
+                decodeResponse: decodeEncodedResponse,
+              },
+            );
+
+            return response.encoded;
+          }),
+      );
+
+      const encoderCacheContext = yield* Layer.buildWithScope(
+        EncoderCacheService.layer({
+          lookup: requestEncodedQuery,
+          capacity: options.queryCacheCapacity,
+        }),
+        clientScope,
+      );
+      const encoderCache = Context.get(
+        encoderCacheContext,
+        EncoderCacheService,
+      );
+      clearQueryCache = encoderCache.clear();
+
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function*() {
+          yield* encoderCache.clear();
+          const error = disposedEncoderError("encoder_worker.dispose");
+          yield* transitionTerminal({
+            nextState: {
+              status: "disposed",
+              capabilities: null,
+              lastError: null,
+            },
+            lifecycleError: error,
+            event: { stage: "disposed" },
+          });
+          yield* PubSub.shutdown(eventPubSub);
+        }),
+      );
 
       const init = Effect.fn("EncoderWorkerClient.init")(
         (input: EncoderCreateInput) =>
           Effect.gen(function*() {
             const requestedKey = encoderInputKey(input);
-            const control = yield* lifecycleSemaphore.withPermit(
-              Effect.gen(function*() {
-                if (currentInitKey !== null && currentInitKey !== requestedKey) {
-                  return yield* permanentClientError({
-                    cause: "init_requires_new_scope",
-                    message:
-                      "encoder client lifetime is already bound to a different encoder identity",
-                    operation: "encoder_worker.init",
-                    details: { currentInitKey, requestedKey },
-                  });
-                }
+            const control: EncoderInitControl = yield* SynchronizedRef.modifyEffect(
+              controlState,
+              (
+                snapshotControl,
+              ): Effect.Effect<
+                readonly [EncoderInitControl, EncoderLifecycleControl],
+                EncoderClientError
+              > =>
+                Effect.gen(function*() {
+                  const snapshot = yield* SubscriptionRef.get(state);
+                  if (snapshot.status === "disposed") {
+                    return yield* disposedEncoderError("encoder_worker.init");
+                  }
+                  if (snapshot.status === "failed") {
+                    return yield* snapshot.lastError;
+                  }
 
-                if (initDeferred !== null) {
-                  yield* Effect.logWarning("encoder init joined existing lifecycle");
-                  return {
-                    deferred: initDeferred,
-                    ready: readyGate!,
-                    shouldStart: false as const,
+                  if (
+                    snapshotControl.initKey !== null &&
+                    snapshotControl.initKey !== requestedKey
+                  ) {
+                    return yield* permanentClientError({
+                      cause: "init_requires_new_scope",
+                      message:
+                        "encoder client lifetime is already bound to a different encoder identity",
+                      operation: "encoder_worker.init",
+                      details: {
+                        currentInitKey: snapshotControl.initKey,
+                        requestedKey,
+                      },
+                    });
+                  }
+
+                  if (snapshotControl.initDeferred !== null) {
+                    yield* Effect.logWarning("encoder init joined existing lifecycle");
+                    return [
+                      {
+                        _tag: "Join",
+                        deferred: snapshotControl.initDeferred,
+                      },
+                      snapshotControl,
+                    ] as const;
+                  }
+
+                  const createdInitDeferred = yield* Deferred.make<
+                    EncoderCapabilities,
+                    EncoderClientError
+                  >();
+                  const createdReadyGate = yield* Deferred.make<void, EncoderClientError>();
+                  const nextControl: EncoderLifecycleControl = {
+                    initKey: requestedKey,
+                    initDeferred: createdInitDeferred,
+                    readyGate: createdReadyGate,
                   };
-                }
 
-                const createdInitDeferred = yield* Deferred.make<
-                  EncoderCapabilities,
-                  EncoderClientError
-                >();
-                const createdReadyGate = yield* Deferred.make<void, EncoderClientError>();
-
-                initDeferred = createdInitDeferred;
-                readyGate = createdReadyGate;
-                currentInitKey = requestedKey;
-
-                yield* SubscriptionRef.set(state, {
-                  status: "initializing",
-                  capabilities: null,
-                  lastError: null,
-                });
-                yield* Effect.logInfo("encoder init started");
-                return {
-                  deferred: createdInitDeferred,
-                  ready: createdReadyGate,
-                  shouldStart: true as const,
-                };
-              }),
+                  yield* SubscriptionRef.set(state, {
+                    status: "initializing",
+                    capabilities: null,
+                    lastError: null,
+                  });
+                  yield* Effect.logInfo("encoder init started");
+                  return [
+                    {
+                      _tag: "Start",
+                      deferred: createdInitDeferred,
+                      readyGate: createdReadyGate,
+                    },
+                    nextControl,
+                  ] as const;
+                }),
             );
 
-            if (control.shouldStart) {
+            if (control._tag === "Start") {
               const handleInitError = (error: EncoderClientError) =>
-                failEncoder("encoder_worker.init", error, null).pipe(
-                  Effect.andThen(Deferred.fail(control.ready, error)),
-                  Effect.andThen(Deferred.fail(control.deferred, error)),
-                  Effect.asVoid,
-                );
+                failEncoder("encoder_worker.init", error, null);
 
               const initProgram = transport.request(
                 { type: "init", payload: input },
@@ -361,7 +461,7 @@ export const makeEncoderWorkerClient = (
                   requestType: "init",
                   decodeResponse: decodeEncoderInitResponse,
                   decodeEvent: decodeEncoderEvent,
-                  onEvent: (event) => publishEvent(eventQueue, event),
+                  onEvent: (event) => publishEvent(eventPubSub, event),
                 },
               ).pipe(
                 Effect.flatMap((response) =>
@@ -371,7 +471,7 @@ export const makeEncoderWorkerClient = (
                     lastError: null,
                   }).pipe(
                     Effect.tap(() => Effect.logInfo("encoder init completed")),
-                    Effect.tap(() => Deferred.succeed(control.ready, undefined)),
+                    Effect.tap(() => Deferred.succeed(control.readyGate, undefined)),
                     Effect.tap(() => Deferred.succeed(control.deferred, response.capabilities)),
                   ),
                 ),
@@ -409,25 +509,13 @@ export const makeEncoderWorkerClient = (
               });
             }
             if (snapshot.status === "disposed") {
-              return yield* permanentClientError({
-                cause: "encoder_disposed",
-                message: "encoder worker client scope is closed",
-                operation: "encoder_worker.encode",
-                details: null,
-              });
+              return yield* disposedEncoderError("encoder_worker.encode");
             }
             if (snapshot.status === "failed") {
               return yield* snapshot.lastError;
             }
-            if (readyGate === null) {
-              return yield* permanentClientError({
-                cause: "encoder_not_initialized",
-                message: "encoder has not been initialized",
-                operation: "encoder_worker.encode",
-                details: null,
-              });
-            }
 
+            const readyGate = yield* getReadyGate();
             yield* Deferred.await(readyGate);
             const readySnapshot = yield* SubscriptionRef.get(state);
             const logAnnotations: Record<string, string | number> = {
@@ -443,20 +531,32 @@ export const makeEncoderWorkerClient = (
             }
 
             const handleEncodeError = (error: EncoderClientError) =>
-              failEncoder(
-                "encoder_worker.encode",
-                error,
-                snapshot.status === "ready" ? snapshot.capabilities : null,
-              ).pipe(Effect.andThen(Effect.fail(error)));
+              encoderCache.clear().pipe(
+                Effect.andThen(
+                  failEncoder(
+                    "encoder_worker.encode",
+                    error,
+                    snapshot.status === "ready" ? snapshot.capabilities : null,
+                  ),
+                ),
+                Effect.andThen(Effect.fail(error)),
+              );
 
-            const response = yield* transport.request(
-              { type: "encode", payload: { text } },
-              {
+            if (readySnapshot.status !== "ready") {
+              return yield* permanentClientError({
+                cause: "encoder_not_initialized",
+                message: "encoder is not ready",
                 operation: "encoder_worker.encode",
-                requestType: "encode",
-                decodeResponse: decodeEncodedResponse,
-              },
-            ).pipe(
+                details: { state: readySnapshot.status },
+              });
+            }
+
+            const cacheKey = encoderQueryCacheKey(
+              readySnapshot.capabilities,
+              text,
+            );
+
+            const encoded = yield* encoderCache.get(cacheKey).pipe(
               Effect.catchTags({
                 TransientClientError: handleEncodeError,
                 PermanentClientError: handleEncodeError,
@@ -466,13 +566,13 @@ export const makeEncoderWorkerClient = (
               Effect.annotateLogs(logAnnotations),
             );
 
-            return response.encoded;
+            return encoded;
           }),
       );
 
       return {
         state,
-        events: Stream.fromQueue(eventQueue),
+        events: Stream.fromPubSub(eventPubSub),
         init,
         encode,
       } satisfies EncoderWorkerClientApi;

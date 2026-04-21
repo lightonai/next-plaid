@@ -161,8 +161,8 @@ async function runSmoke(browserName) {
   const { installName, launcher, launchOptions } = browserConfig(browserName);
 
   await mkdir(outputRoot, { recursive: true });
-  await buildBrowserHarness();
   await buildWasmHarness();
+  await buildBrowserHarness();
   await ensurePlaywrightBrowser(installName);
 
   const { server, url } = await startHarnessServer();

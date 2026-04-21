@@ -45,7 +45,7 @@ interface WorkerTransportRequestOptions<TResponse, TEvent> {
   readonly requestType: string;
   readonly decodeResponse: (value: unknown) => Effect.Effect<TResponse, ClientError>;
   readonly decodeEvent?: ((value: unknown) => Effect.Effect<TEvent, ClientError>) | undefined;
-  readonly onEvent?: ((event: TEvent) => void) | undefined;
+  readonly onEvent?: ((event: TEvent) => Effect.Effect<void>) | undefined;
 }
 
 export interface WorkerTransport<TRequest> {
@@ -68,7 +68,7 @@ interface PendingEntry {
   readonly requestType: string;
   readonly decodeResponse: (value: unknown) => Effect.Effect<unknown, ClientError>;
   readonly decodeEvent: ((value: unknown) => Effect.Effect<unknown, ClientError>) | undefined;
-  readonly onEvent: ((event: unknown) => void) | undefined;
+  readonly onEvent: ((event: unknown) => Effect.Effect<void>) | undefined;
   readonly deferred: Deferred.Deferred<unknown, ClientError>;
 }
 
@@ -108,13 +108,69 @@ export const makeWorkerTransport = <TRequest>(
           pendingRequests.clear();
         });
 
+      const notifyWorkerFailure = (
+        error: ClientError,
+      ): Effect.Effect<void> =>
+        options.onWorkerFailure
+          ? options.onWorkerFailure(error).pipe(Effect.asVoid)
+          : Effect.void;
+
+      const terminateTransport = (
+        error: ClientError,
+        options_: {
+          readonly notifyWorkerFailure?: boolean | undefined;
+          readonly logMessage?: string | undefined;
+        } = {},
+      ): Effect.Effect<void> =>
+        failAllPending(error).pipe(
+          Effect.andThen(Deferred.fail(transportFailed, error)),
+          Effect.andThen(
+            options_.notifyWorkerFailure === false
+              ? Effect.void
+              : notifyWorkerFailure(error),
+          ),
+          Effect.andThen(
+            options_.logMessage
+              ? Effect.logError(options_.logMessage)
+              : Effect.void,
+          ),
+          Effect.asVoid,
+        );
+
+      const pendingRequestMetadata = (): {
+        readonly requestId: string | null;
+        readonly operation: string;
+      } => {
+        const firstPending = pendingRequests.entries().next().value as
+          | readonly [string, PendingEntry]
+          | undefined;
+        if (firstPending === undefined) {
+          return {
+            requestId: null,
+            operation: "worker_transport.receive",
+          };
+        }
+        return {
+          requestId: firstPending[0],
+          operation: firstPending[1].operation,
+        };
+      };
+
       const handleInbound = (message: unknown): Effect.Effect<void> =>
         Effect.gen(function*() {
           const parsed = yield* Effect.result(decodeEnvelope(message));
           if (parsed._tag === "Failure") {
-            yield* Effect.logWarning(
-              `worker_transport: dropping malformed envelope from ${options.workerKind}`,
-            );
+            const current = pendingRequestMetadata();
+            const error = permanentClientError({
+              cause: "decode_failed",
+              message: `failed to decode ${options.workerKind} worker envelope: ${String(parsed.failure)}`,
+              operation: current.operation,
+              requestId: current.requestId,
+              details: parsed.failure,
+            });
+            yield* terminateTransport(error, {
+              logMessage: `worker_transport: ${options.workerKind} worker emitted an invalid envelope`,
+            });
             return;
           }
           const envelope = parsed.success;
@@ -162,7 +218,7 @@ export const makeWorkerTransport = <TRequest>(
               yield* Deferred.fail(entry.deferred, decoded.failure);
               return;
             }
-            entry.onEvent(decoded.success);
+            yield* entry.onEvent(decoded.success);
             return;
           }
 
@@ -184,30 +240,24 @@ export const makeWorkerTransport = <TRequest>(
               operation: "worker_transport.run",
               details: { workerKind: options.workerKind, cause: String(cause) },
             });
-            const notify = options.onWorkerFailure
-              ? options.onWorkerFailure(crashed)
-              : Effect.void;
-            return failAllPending(crashed).pipe(
-              Effect.andThen(Deferred.fail(transportFailed, crashed)),
-              Effect.andThen(notify),
-              Effect.andThen(
-                Effect.logError(
-                  `worker_transport: ${options.workerKind} worker crashed`,
-                ),
-              ),
-            );
+            return terminateTransport(crashed, {
+              logMessage: `worker_transport: ${options.workerKind} worker crashed`,
+            });
           }),
         ),
       );
 
       yield* Effect.addFinalizer(() =>
-        failAllPending(
+        terminateTransport(
           transientClientError({
             cause: "worker_disposed",
             message: "worker transport scope closed",
             operation: "worker_transport.dispose",
             details: { workerKind: options.workerKind },
           }),
+          {
+            notifyWorkerFailure: false,
+          },
         ),
       );
 
@@ -235,7 +285,9 @@ export const makeWorkerTransport = <TRequest>(
                 decodeEvent: reqOptions.decodeEvent as
                   | ((value: unknown) => Effect.Effect<unknown, ClientError>)
                   | undefined,
-                onEvent: reqOptions.onEvent as ((event: unknown) => void) | undefined,
+                onEvent: reqOptions.onEvent as
+                  | ((event: unknown) => Effect.Effect<void>)
+                  | undefined,
                 deferred,
               });
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { build } from "esbuild";
+import { existsSync } from "node:fs";
 import { cp, mkdir, rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
@@ -13,6 +14,8 @@ const harnessRoot = join(workspaceRoot, "playwright-harness");
 const ortDistRoot = join(workspaceRoot, "node_modules", "onnxruntime-web", "dist");
 const ortOutputRoot = join(harnessRoot, "ort");
 const generatedTypesRoot = join(srcRoot, "generated");
+const wasmPkgRoot = join(harnessRoot, "pkg");
+const wasmBinaryPath = join(wasmPkgRoot, "next_plaid_browser_wasm_bg.wasm");
 
 function runCommand(command, args) {
   return new Promise((resolvePromise, rejectPromise) => {
@@ -65,12 +68,24 @@ async function main() {
   ]);
   await bundle(join(srcRoot, "playwright-harness", "app.ts"), join(harnessRoot, "app.js"));
   await bundle(
+    join(srcRoot, "playwright-harness", "search-worker.ts"),
+    join(harnessRoot, "search-worker.js"),
+  );
+  await bundle(
     join(srcRoot, "model-worker", "encoder-worker.ts"),
     join(harnessRoot, "encoder-worker.js"),
   );
 
   await mkdir(ortOutputRoot, { recursive: true });
   await cp(ortDistRoot, ortOutputRoot, { recursive: true, force: true });
+
+  if (existsSync(wasmBinaryPath)) {
+    await cp(
+      wasmBinaryPath,
+      join(harnessRoot, "next_plaid_browser_wasm_bg.wasm"),
+      { force: true },
+    );
+  }
 }
 
 main().catch((error) => {

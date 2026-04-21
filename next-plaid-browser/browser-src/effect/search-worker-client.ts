@@ -1,8 +1,10 @@
-import { Context, Duration, Effect, Layer, Scope, SubscriptionRef } from "effect";
+import { Context, Duration, Effect, Layer, Ref, Scope, SubscriptionRef } from "effect";
 import * as Worker from "effect/unstable/workers/Worker";
 
 import type {
   BundleInstalledResponseEnvelope,
+  BundleManifest,
+  EncoderIdentity,
   IndexLoadedResponseEnvelope,
   InstallBundleRequestEnvelope,
   LoadIndexRequestEnvelope,
@@ -15,11 +17,13 @@ import type {
   StorageErrorResponseEnvelope,
   StoredBundleLoadedResponseEnvelope,
 } from "../shared/search-contract.js";
+import type { IndexSummary } from "../generated/IndexSummary.js";
 import {
   type SearchClientError,
   degradedClientError,
   isFatalWorkerError,
   permanentClientError,
+  transientClientError,
 } from "./client-errors.js";
 import { decodePassthrough, makeWorkerTransport } from "./worker-transport.js";
 
@@ -29,8 +33,20 @@ export type SearchWorkerState =
   | { status: "failed"; lastError: SearchClientError }
   | { status: "disposed"; lastError: null };
 
+export interface LoadedSearchIndexMetadata {
+  readonly name: string;
+  readonly source: "load_index" | "stored_bundle";
+  readonly summary: IndexSummary;
+  readonly encoder: EncoderIdentity | null;
+  readonly indexId: string | null;
+  readonly buildId: string | null;
+}
+
 export interface SearchWorkerClientApi {
   readonly state: SubscriptionRef.SubscriptionRef<SearchWorkerState>;
+  readonly loadedIndices: SubscriptionRef.SubscriptionRef<
+    ReadonlyMap<string, LoadedSearchIndexMetadata>
+  >;
   readonly loadIndex: (
     request: LoadIndexRequestEnvelope,
   ) => Effect.Effect<IndexLoadedResponseEnvelope, SearchClientError>;
@@ -43,6 +59,12 @@ export interface SearchWorkerClientApi {
   readonly loadStoredBundle: (
     request: LoadStoredBundleRequestEnvelope,
   ) => Effect.Effect<StoredBundleLoadedResponseEnvelope, SearchClientError>;
+}
+
+interface InstalledBundleMetadata {
+  readonly indexId: string;
+  readonly buildId: string;
+  readonly manifest: BundleManifest;
 }
 
 export class SearchWorkerClient
@@ -134,6 +156,52 @@ function expectResponseType<TResponse extends SearchWorkerResponse>(
   return Effect.succeed(response as TResponse);
 }
 
+function storeLoadedIndex(
+  loadedIndices: SubscriptionRef.SubscriptionRef<
+    ReadonlyMap<string, LoadedSearchIndexMetadata>
+  >,
+  metadata: LoadedSearchIndexMetadata,
+): Effect.Effect<void> {
+  return SubscriptionRef.update(loadedIndices, (current) => {
+    const next = new Map(current);
+    next.set(metadata.name, metadata);
+    return next;
+  });
+}
+
+function loadIndexMetadata(
+  request: LoadIndexRequestEnvelope,
+  response: IndexLoadedResponseEnvelope,
+): LoadedSearchIndexMetadata {
+  return {
+    name: response.name,
+    source: "load_index",
+    summary: response.summary,
+    encoder: request.encoder,
+    indexId: null,
+    buildId: null,
+  };
+}
+
+function storedBundleLoadedMetadata(
+  response: StoredBundleLoadedResponseEnvelope,
+  rememberedBundle: InstalledBundleMetadata | null,
+): LoadedSearchIndexMetadata {
+  const encoder =
+    rememberedBundle?.buildId === response.build_id
+      ? rememberedBundle.manifest.encoder
+      : null;
+
+  return {
+    name: response.name,
+    source: "stored_bundle",
+    summary: response.summary,
+    encoder,
+    indexId: response.index_id,
+    buildId: response.build_id,
+  };
+}
+
 export const makeSearchWorkerClient = (
   options: SearchWorkerClientOptions = {},
 ): Effect.Effect<
@@ -147,6 +215,15 @@ export const makeSearchWorkerClient = (
         SubscriptionRef.make<SearchWorkerState>({ status: "starting", lastError: null }),
         (ref) => SubscriptionRef.set(ref, { status: "disposed", lastError: null }),
       );
+      const loadedIndices = yield* Effect.acquireRelease(
+        SubscriptionRef.make<ReadonlyMap<string, LoadedSearchIndexMetadata>>(
+          new Map<string, LoadedSearchIndexMetadata>(),
+        ),
+        (ref) => SubscriptionRef.set(ref, new Map<string, LoadedSearchIndexMetadata>()),
+      );
+      const installedBundles = yield* Ref.make<ReadonlyMap<string, InstalledBundleMetadata>>(
+        new Map<string, InstalledBundleMetadata>(),
+      );
       const transport = yield* makeWorkerTransport<SearchWorkerRequest>({
         workerKind: "search",
         requestTimeout: options.requestTimeout,
@@ -159,6 +236,24 @@ export const makeSearchWorkerClient = (
 
       yield* SubscriptionRef.set(state, { status: "ready", lastError: null });
 
+      const ensureClientUsable = Effect.fn("SearchWorkerClient.ensureClientUsable")(
+        (operation: string) =>
+          Effect.gen(function*() {
+            const snapshot = yield* SubscriptionRef.get(state);
+            if (snapshot.status === "failed") {
+              return yield* snapshot.lastError;
+            }
+            if (snapshot.status === "disposed") {
+              return yield* transientClientError({
+                cause: "worker_disposed",
+                message: "search worker client scope is closed",
+                operation,
+                details: null,
+              });
+            }
+          }),
+      );
+
       const requestResponse = Effect.fn("SearchWorkerClient.requestResponse")(
         (
           operation: string,
@@ -170,13 +265,17 @@ export const makeSearchWorkerClient = (
             | InstallBundleRequestEnvelope
             | LoadStoredBundleRequestEnvelope,
         ) =>
-          fatalAware(
-            state,
-            transport.request<SearchWorkerResponse>(request, {
-              operation,
-              requestType,
-              decodeResponse: decodePassthrough,
-            }),
+          ensureClientUsable(operation).pipe(
+            Effect.andThen(
+              fatalAware(
+                state,
+                transport.request<SearchWorkerResponse>(request, {
+                  operation,
+                  requestType,
+                  decodeResponse: decodePassthrough,
+                }),
+              ),
+            ),
           ),
       );
 
@@ -194,6 +293,13 @@ export const makeSearchWorkerClient = (
                 response,
                 "index_loaded",
                 "search_worker.load_index",
+              ).pipe(
+                Effect.tap((decoded) =>
+                  storeLoadedIndex(
+                    loadedIndices,
+                    loadIndexMetadata(request, decoded),
+                  ),
+                ),
               ),
             ),
             Effect.withLogSpan("search_worker.load_index"),
@@ -246,6 +352,18 @@ export const makeSearchWorkerClient = (
                 response,
                 "bundle_installed",
                 "search_worker.install_bundle",
+              ).pipe(
+                Effect.tap((decoded) =>
+                  Ref.update(installedBundles, (current) => {
+                    const next = new Map(current);
+                    next.set(decoded.index_id, {
+                      indexId: decoded.index_id,
+                      buildId: decoded.build_id,
+                      manifest: request.manifest,
+                    });
+                    return next;
+                  }),
+                ),
               ),
             ),
             Effect.withLogSpan("search_worker.install_bundle"),
@@ -271,6 +389,20 @@ export const makeSearchWorkerClient = (
                 response,
                 "stored_bundle_loaded",
                 "search_worker.load_stored_bundle",
+              ).pipe(
+                Effect.tap((decoded) =>
+                  Ref.get(installedBundles).pipe(
+                    Effect.flatMap((current) =>
+                      storeLoadedIndex(
+                        loadedIndices,
+                        storedBundleLoadedMetadata(
+                          decoded,
+                          current.get(decoded.index_id) ?? null,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
             Effect.withLogSpan("search_worker.load_stored_bundle"),
@@ -285,6 +417,7 @@ export const makeSearchWorkerClient = (
 
       return {
         state,
+        loadedIndices,
         loadIndex,
         search,
         installBundle,
