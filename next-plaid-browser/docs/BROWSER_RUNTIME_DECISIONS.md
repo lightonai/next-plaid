@@ -59,6 +59,34 @@ Acceptable host shells for the browser-owned API include:
 
 The host shell may vary; the worker-owned runtime contract should not.
 
+## Mutable corpus sync direction
+
+The first mutable browser corpus slice is now locked to the following public
+contract:
+
+- the browser-owned API is snapshot-driven rather than file-scan-driven
+- corpora are app-managed document sets, not page-crawl state and not native
+  file-path parity as the first browser slice
+- `syncCorpus(corpusId, snapshot)` takes one authoritative full snapshot per
+  call
+- omission from that snapshot means delete on commit
+- `registerCorpus(...)` is the explicit registration boundary; sync does not
+  implicitly create corpora
+- registration locks encoder identity for the corpus; changing encoders is a
+  rebuild boundary, not a normal sync
+- sync is a blocking operation that returns a compact summary rather than a
+  per-document diff
+- reload uses lazy reopen on first `searchCorpus(...)` or `syncCorpus(...)`
+  rather than a required explicit open step
+- sync visibility is atomic per corpus; readers keep seeing the last committed
+  state until the new snapshot is fully committed
+- same-corpus concurrent sync attempts fail fast with a typed
+  `sync_in_progress` error rather than queueing or cancel-and-replace behavior
+- v1 supports coarse lifecycle events for sync status, but not detailed
+  internal progress accounting
+- query-time freshness parity remains a later policy layer built on top of the
+  mutable sync primitives; it is not the first implementation target
+
 ## Agent adapter rule
 
 Harness-specific integration should stay thin. The preferred model is to let
@@ -213,8 +241,10 @@ The next concrete work after this is:
 Product-surface follow-up after the storage-backed baseline:
 
 1. define the stable embeddable browser API for website-hosted callers
-2. expose install / sync / search / status as browser-owned operations
-3. only after that, prove a thin adapter path against a browser-driver
+2. lock the mutable corpus contract around
+   `register -> sync -> search -> reload -> search`
+3. expose install / sync / search / status as browser-owned operations
+4. only after that, prove a thin adapter path against a browser-driver
    environment
 
 ## Supporting research
