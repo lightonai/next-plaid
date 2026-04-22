@@ -923,15 +923,15 @@ fn search_single_path(
     let parallel_sessions = config.configured_parallel_sessions();
     let batch_size = config.configured_batch_size();
 
-    // Check if index already exists (suppress model output if so)
+    // Check if index already exists for this model (suppress model output if so)
     let has_existing_index =
-        index_exists(&search_path) || find_parent_index(&search_path)?.is_some();
+        index_exists(&search_path, &model) || find_parent_index(&search_path, &model)?.is_some();
 
     // Ensure model is downloaded (quiet if we already have an index)
     let model_path = ensure_model(Some(&model), has_existing_index)?;
 
-    // Check for parent index unless the resolved path is outside
-    // the current directory (external project)
+    // Check for parent index (scoped to current model) unless the resolved path
+    // is outside the current directory (external project)
     let parent_info = {
         let current_dir = std::env::current_dir().ok();
         let is_external_project = is_external_project_path(&search_path, current_dir.as_deref());
@@ -939,7 +939,7 @@ fn search_single_path(
         if is_external_project {
             None
         } else {
-            find_parent_index(&search_path)?
+            find_parent_index(&search_path, &model)?
         }
     };
 
@@ -981,6 +981,7 @@ fn search_single_path(
     {
         let mut builder = IndexBuilder::with_options(
             &effective_root,
+            &model,
             &model_path,
             quantized,
             pool_factor,
@@ -988,7 +989,6 @@ fn search_single_path(
             batch_size,
         )?;
         builder.set_auto_confirm(auto_confirm);
-        builder.set_model_name(&model);
         builder.set_dynamic_batch(!static_batch);
 
         // Try non-blocking index update
@@ -1036,7 +1036,7 @@ fn search_single_path(
                         eprintln!("⚠️  Index corrupted, rebuilding...");
                     }
 
-                    let index_dir = get_index_dir_for_project(&effective_root)?;
+                    let index_dir = get_index_dir_for_project(&effective_root, &model)?;
                     if index_dir.exists() {
                         let _lock = acquire_index_lock(&index_dir)?;
                         std::fs::remove_dir_all(&index_dir)?;
@@ -1044,6 +1044,7 @@ fn search_single_path(
 
                     let mut new_builder = IndexBuilder::with_options(
                         &effective_root,
+                        &model,
                         &model_path,
                         quantized,
                         pool_factor,
@@ -1051,7 +1052,6 @@ fn search_single_path(
                         batch_size,
                     )?;
                     new_builder.set_auto_confirm(auto_confirm);
-                    new_builder.set_model_name(&model);
                     new_builder.set_dynamic_batch(!static_batch);
                     new_builder.index(None, false)?;
                 } else {
@@ -1062,7 +1062,7 @@ fn search_single_path(
     }
 
     // Verify index exists (at least partially)
-    let index_dir = get_index_dir_for_project(&effective_root)?;
+    let index_dir = get_index_dir_for_project(&effective_root, &model)?;
     let vector_index_path = get_vector_index_path(&index_dir);
     if !vector_index_path.join("metadata.json").exists() {
         if index_locked {
@@ -1092,7 +1092,7 @@ fn search_single_path(
                 &model_path,
                 quantized,
             ),
-            None => Searcher::load_with_quantized(&effective_root, &model_path, quantized),
+            None => Searcher::load_with_quantized(&effective_root, &model, &model_path, quantized),
         }
     };
 
@@ -1155,6 +1155,7 @@ fn search_single_path(
 
             let mut builder = IndexBuilder::with_options(
                 &effective_root,
+                &model,
                 &model_path,
                 quantized,
                 pool_factor,
@@ -1162,7 +1163,6 @@ fn search_single_path(
                 batch_size,
             )?;
             builder.set_auto_confirm(auto_confirm);
-            builder.set_model_name(&model);
             builder.set_dynamic_batch(!static_batch);
             builder.index(None, false)?;
 
@@ -1477,7 +1477,7 @@ fn search_single_path(
     });
 
     // Increment search count
-    let index_dir = get_index_dir_for_project(&effective_root)?;
+    let index_dir = get_index_dir_for_project(&effective_root, &model)?;
     if let Ok(mut state) = IndexState::load(&index_dir) {
         state.increment_search_count();
         let _ = state.save(&index_dir);

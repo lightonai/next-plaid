@@ -694,29 +694,45 @@ pub struct IndexBuilder {
     dynamic_batch: bool,
     /// If true, skip user confirmation for large indexes
     auto_confirm: bool,
-    /// Model name/id for display (e.g., "lightonai/LateOn-Code-edge")
-    model_name: Option<String>,
+    /// Model id (e.g., "lightonai/LateOn-Code-edge"). Used both to scope the index
+    /// directory (per-model indexes) and for "🤖 Model:" display.
+    model_id: String,
 }
 
 impl IndexBuilder {
-    pub fn new(project_root: &Path, model_path: &Path) -> Result<Self> {
-        Self::with_options(project_root, model_path, false, None, None, None)
+    pub fn new(project_root: &Path, model_id: &str, model_path: &Path) -> Result<Self> {
+        Self::with_options(project_root, model_id, model_path, false, None, None, None)
     }
 
-    pub fn with_quantized(project_root: &Path, model_path: &Path, quantized: bool) -> Result<Self> {
-        Self::with_options(project_root, model_path, quantized, None, None, None)
+    pub fn with_quantized(
+        project_root: &Path,
+        model_id: &str,
+        model_path: &Path,
+        quantized: bool,
+    ) -> Result<Self> {
+        Self::with_options(
+            project_root,
+            model_id,
+            model_path,
+            quantized,
+            None,
+            None,
+            None,
+        )
     }
 
     pub fn with_options(
         project_root: &Path,
+        model_id: &str,
         model_path: &Path,
         quantized: bool,
         pool_factor: Option<usize>,
         parallel_sessions: Option<usize>,
         batch_size: Option<usize>,
     ) -> Result<Self> {
-        // Store parameters for lazy model creation - don't create the model yet
-        let index_dir = get_index_dir_for_project(project_root)?;
+        // Index directory is scoped to (path, model) so different models keep
+        // separate indexes and switching models doesn't corrupt the existing one.
+        let index_dir = get_index_dir_for_project(project_root, model_id)?;
 
         Ok(Self {
             model: None, // Lazily created when needed
@@ -731,18 +747,13 @@ impl IndexBuilder {
             index_chunk_size: None,
             dynamic_batch: true,
             auto_confirm: false, // Prompt by default for large indexes
-            model_name: None,
+            model_id: model_id.to_string(),
         })
     }
 
     /// Set whether to automatically confirm indexing for large codebases (> 10K code units)
     pub fn set_auto_confirm(&mut self, auto_confirm: bool) {
         self.auto_confirm = auto_confirm;
-    }
-
-    /// Set the model name for display purposes
-    pub fn set_model_name(&mut self, name: &str) {
-        self.model_name = Some(name.to_string());
     }
 
     pub fn set_encode_batch_size(&mut self, encode_batch_size: usize) {
@@ -854,9 +865,7 @@ impl IndexBuilder {
             };
 
             // Print model info after ONNX runtime is initialized (and any potential re-exec)
-            if let Some(ref name) = self.model_name {
-                eprintln!("🤖 Model: {}", name);
-            }
+            eprintln!("🤖 Model: {}", self.model_id);
             eprintln!("📂 Building index...");
 
             // Use runtime default for batch size (respects cuDNN availability)
@@ -1689,7 +1698,7 @@ impl IndexBuilder {
 
         // Save state and project metadata only on successful completion
         state.save(&self.index_dir)?;
-        ProjectMetadata::new(&self.project_root).save(&self.index_dir)?;
+        ProjectMetadata::new(&self.project_root, &self.model_id).save(&self.index_dir)?;
 
         Ok(UpdateStats {
             added: files.len(),
@@ -2808,16 +2817,17 @@ pub struct Searcher {
 }
 
 impl Searcher {
-    pub fn load(project_root: &Path, model_path: &Path) -> Result<Self> {
-        Self::load_with_quantized(project_root, model_path, false)
+    pub fn load(project_root: &Path, model_id: &str, model_path: &Path) -> Result<Self> {
+        Self::load_with_quantized(project_root, model_id, model_path, false)
     }
 
     pub fn load_with_quantized(
         project_root: &Path,
+        model_id: &str,
         model_path: &Path,
         quantized: bool,
     ) -> Result<Self> {
-        let index_dir = get_index_dir_for_project(project_root)?;
+        let index_dir = get_index_dir_for_project(project_root, model_id)?;
         let vector_dir = get_vector_index_path(&index_dir);
         let index_path = vector_dir.to_str().unwrap().to_string();
 
@@ -3403,9 +3413,9 @@ fn fix_sqlite_types(meta: &mut serde_json::Value) {
     }
 }
 
-/// Check if an index exists for the given project
-pub fn index_exists(project_root: &Path) -> bool {
-    paths::index_exists(project_root)
+/// Check if an index exists for the given project built with `model`.
+pub fn index_exists(project_root: &Path, model: &str) -> bool {
+    paths::index_exists(project_root, model)
 }
 
 /// Prompt the user for confirmation before indexing a large number of code units.

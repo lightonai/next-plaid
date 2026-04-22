@@ -54,6 +54,26 @@ Regex meets semantics:
 colgrep -e "async.*await" "error handling"
 ```
 
+### Change the model
+
+The default is [`lightonai/LateOn-Code-edge`](https://huggingface.co/lightonai/LateOn-Code-edge). Switch to any other ColBERT-style model on HuggingFace:
+
+```bash
+# Persist as the default (existing indexes for other models are kept)
+colgrep set-model lightonai/LateOn-Code
+
+# One-shot override for a single query or init
+colgrep --model lightonai/LateOn-Code "database connection pooling"
+
+# See which model an index was built with
+colgrep status
+
+# Private HuggingFace model
+HF_TOKEN=hf_xxx colgrep set-model myorg/private-model
+```
+
+Each (project, model) pair has its own index directory, so switching models never corrupts existing indexes and you can flip back and forth without re-indexing. `colgrep clear` scopes to the active model; `colgrep clear --all` wipes every index.
+
 ### Agent integrations
 
 | Tool        | Install                         |
