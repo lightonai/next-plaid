@@ -2,7 +2,9 @@
 
 use std::error::Error;
 
-use next_plaid_browser_contract::{RuntimeRequest, RuntimeResponse, StorageRequest, StorageResponse};
+use next_plaid_browser_contract::{
+    RuntimeRequest, RuntimeResponse, StorageRequest, StorageResponse,
+};
 use ts_rs::{Config, TS};
 
 /// Writes the shared contract bindings into the configured TypeScript output directory.

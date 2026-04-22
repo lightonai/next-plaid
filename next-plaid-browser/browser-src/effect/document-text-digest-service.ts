@@ -50,7 +50,7 @@ function makeDocumentTextDigestService(): Effect.Effect<
       sha256Hex: Effect.fn("DocumentTextDigestService.sha256Hex")(function*(text: string) {
         const subtle = globalThis.crypto?.subtle;
         if (subtle === undefined) {
-          return yield* Effect.fail(subtleUnavailableError());
+          return yield* subtleUnavailableError();
         }
 
         const digest = yield* Effect.promise(() =>

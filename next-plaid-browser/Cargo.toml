@@ -3,6 +3,7 @@ members = [
     "crates/next-plaid-browser-contract",
     "crates/next-plaid-browser-kernel",
     "crates/next-plaid-browser-loader",
+    "crates/next-plaid-browser-preprocess-wasm",
     "crates/next-plaid-browser-storage",
     "crates/spike-tokenizer-wasm",
     "crates/next-plaid-browser-sqlite-spike",

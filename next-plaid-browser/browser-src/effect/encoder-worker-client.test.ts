@@ -144,8 +144,19 @@ function encodeDocumentResponse() {
 function initEvents(): ReadonlyArray<EncoderInitEvent> {
   return [
     {
-      stage: "asset_cache_miss",
+      stage: "asset_store_miss",
       url: encoderInput().modelUrl,
+      storeKind: "opfs",
+    },
+    {
+      stage: "asset_store_miss",
+      url: encoderInput().tokenizerUrl,
+      storeKind: "opfs",
+    },
+    {
+      stage: "asset_store_miss",
+      url: encoderInput().onnxConfigUrl,
+      storeKind: "opfs",
     },
     {
       stage: "asset_fetch_start",
@@ -158,10 +169,6 @@ function initEvents(): ReadonlyArray<EncoderInitEvent> {
       bytesReceived: 1024,
     },
     {
-      stage: "asset_cache_miss",
-      url: encoderInput().tokenizerUrl,
-    },
-    {
       stage: "asset_fetch_start",
       url: encoderInput().tokenizerUrl,
       expectedBytes: 1024,
@@ -172,10 +179,6 @@ function initEvents(): ReadonlyArray<EncoderInitEvent> {
       bytesReceived: 1024,
     },
     {
-      stage: "asset_cache_miss",
-      url: encoderInput().onnxConfigUrl,
-    },
-    {
       stage: "asset_fetch_start",
       url: encoderInput().onnxConfigUrl,
       expectedBytes: 1024,
@@ -183,6 +186,42 @@ function initEvents(): ReadonlyArray<EncoderInitEvent> {
     {
       stage: "asset_fetch_complete",
       url: encoderInput().onnxConfigUrl,
+      bytesReceived: 1024,
+    },
+    {
+      stage: "asset_store_write_start",
+      url: encoderInput().modelUrl,
+      storeKind: "opfs",
+      bytesReceived: 1024,
+    },
+    {
+      stage: "asset_store_write_start",
+      url: encoderInput().tokenizerUrl,
+      storeKind: "opfs",
+      bytesReceived: 1024,
+    },
+    {
+      stage: "asset_store_write_start",
+      url: encoderInput().onnxConfigUrl,
+      storeKind: "opfs",
+      bytesReceived: 1024,
+    },
+    {
+      stage: "asset_store_write_complete",
+      url: encoderInput().modelUrl,
+      storeKind: "opfs",
+      bytesReceived: 1024,
+    },
+    {
+      stage: "asset_store_write_complete",
+      url: encoderInput().tokenizerUrl,
+      storeKind: "opfs",
+      bytesReceived: 1024,
+    },
+    {
+      stage: "asset_store_write_complete",
+      url: encoderInput().onnxConfigUrl,
+      storeKind: "opfs",
       bytesReceived: 1024,
     },
     {

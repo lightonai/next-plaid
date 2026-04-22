@@ -12,7 +12,10 @@ import {
   EncoderInitEventSink,
   EncoderRuntimeConfig,
 } from "./encoder-runtime-config.js";
-import type { FixtureTokenizer } from "./fixture-tokenizer.js";
+import {
+  EncoderPreprocessor,
+  type EncoderPreprocessorApi,
+} from "./encoder-preprocessor.js";
 import {
   buildWarmupFeeds,
   deriveEncoderCapabilities,
@@ -24,7 +27,7 @@ import type { EncoderCapabilities, EncoderCreateInput, EncoderHealth } from "./t
 export interface EncoderInferenceEngineApi {
   readonly capabilities: EncoderCapabilities;
   readonly plan: EncoderEffectiveEncodePlan;
-  readonly tokenizer: FixtureTokenizer;
+  readonly preprocessor: EncoderPreprocessorApi;
   readonly run: (
     feeds: ort.InferenceSession.FeedsType,
   ) => Effect.Effect<ort.InferenceSession.ReturnType, WorkerRuntimeError>;
@@ -84,12 +87,17 @@ function validateEncodePlan(
 function makeEncoderInferenceEngine(): Effect.Effect<
   EncoderInferenceEngineApi,
   WorkerRuntimeError,
-  EncoderInitEventSink | EncoderModelAssets | EncoderRuntimeConfig | Scope.Scope
+  | EncoderInitEventSink
+  | EncoderModelAssets
+  | EncoderPreprocessor
+  | EncoderRuntimeConfig
+  | Scope.Scope
 > {
   return Effect.gen(function*() {
     const { input } = yield* EncoderRuntimeConfig;
     const eventSink = yield* EncoderInitEventSink;
     const assets = yield* EncoderModelAssets;
+    const preprocessor = yield* EncoderPreprocessor;
 
     yield* configureOrt();
 
@@ -205,7 +213,7 @@ function makeEncoderInferenceEngine(): Effect.Effect<
     return EncoderInferenceEngine.of({
       capabilities,
       plan,
-      tokenizer: assets.tokenizer,
+      preprocessor,
       run,
       health,
     });

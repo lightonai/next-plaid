@@ -98,6 +98,39 @@ npm run smoke:chrome
 directly. `chrome` is useful as a branded-browser regression lane when Google
 Chrome is installed locally or in CI.
 
+### 3.5 Real-model probe
+
+Use the real-model probe when you want to pressure the browser encoder with
+live upstream model assets rather than the tiny local proof fixture.
+
+This probe is intentionally separate from the normal smoke lane:
+
+- it fetches real Hugging Face model assets at runtime
+- it syncs a small natural-language corpus into a mutable browser corpus
+- it verifies semantic search before and after reload
+- it is intended for manual validation and measurement, not the fast default CI
+  gate
+
+Current status:
+
+- the probe is now the right lane for real upstream model trials
+- with the current proof-only tokenizer runtime, live Hugging Face tokenizers
+  still fail at load time
+- that failure is expected to remain until the fixture tokenizer is replaced by
+  the planned real tokenizer runtime
+
+Primary command:
+
+```bash
+npm run probe:real-models
+```
+
+To include the heavier accuracy-oriented model as well:
+
+```bash
+node ./scripts/playwright_real_model_probe.mjs chromium --all
+```
+
 ### 4. Safari verification
 
 Real Safari still matters.

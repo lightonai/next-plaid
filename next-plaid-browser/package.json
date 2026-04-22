@@ -5,6 +5,7 @@
     "@effect/vitest": "^4.0.0-beta.52",
     "@typescript/native-preview": "^7.0.0-dev.20260420.1",
     "esbuild": "^0.28.0",
+    "fake-indexeddb": "^6.2.5",
     "onnxruntime-web": "^1.24.3",
     "playwright": "^1.54.0",
     "typescript": "^6.0.3",
@@ -23,7 +24,8 @@
     "smoke:chromium": "node ./scripts/playwright_smoke.mjs chromium",
     "smoke:webkit": "node ./scripts/playwright_smoke.mjs webkit",
     "smoke:firefox": "node ./scripts/playwright_smoke.mjs firefox",
-    "smoke:chrome": "node ./scripts/playwright_smoke.mjs chrome"
+    "smoke:chrome": "node ./scripts/playwright_smoke.mjs chrome",
+    "probe:real-models": "node ./scripts/playwright_real_model_probe.mjs chromium"
   },
   "type": "module",
   "dependencies": {

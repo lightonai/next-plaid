@@ -1,0 +1,38 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "Whitespace"
+  },
+  "post_processor": {
+    "type": "BertProcessing",
+    "sep": [
+      "[SEP]",
+      3
+    ],
+    "cls": [
+      "[CLS]",
+      2
+    ]
+  },
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {
+      "[PAD]": 0,
+      "[UNK]": 1,
+      "[CLS]": 2,
+      "[SEP]": 3,
+      "[MASK]": 4,
+      "[unused0]": 5,
+      "[unused1]": 6,
+      "alpha": 7,
+      "beta": 8,
+      "gamma": 9
+    },
+    "unk_token": "[UNK]"
+  }
+}

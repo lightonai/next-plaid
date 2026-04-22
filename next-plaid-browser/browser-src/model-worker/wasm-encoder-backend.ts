@@ -10,7 +10,12 @@ import { measureDurationMs } from "./effect-timing.js";
 import { EncoderModelAssetCache } from "./encoder-model-asset-cache.js";
 import { EncoderModelAssets } from "./encoder-model-assets.js";
 import { EncoderInferenceEngine } from "./encoder-inference-engine.js";
-import type { TokenizedEncoderInput } from "./fixture-tokenizer.js";
+import type {
+  PreparedDocumentInput,
+  PreparedEncoderInput,
+} from "./encoder-preprocessor.js";
+import { EncoderPreprocessor } from "./encoder-preprocessor.js";
+import { ModelAssetStore } from "./model-asset-store.js";
 import {
   EncoderInitEventSink,
   EncoderRuntimeConfig,
@@ -50,13 +55,24 @@ export const makeWasmEncoderBackendLayer = (
     eventSinkLayer,
   );
   const modelAssetCacheLayer = EncoderModelAssetCache.layer;
+  const modelAssetStoreLayer = ModelAssetStore.layerAuto;
   const modelAssetsLayer = EncoderModelAssets.layer.pipe(
-    Layer.provide(Layer.mergeAll(bootstrapDependenciesLayer, modelAssetCacheLayer)),
+    Layer.provide(
+      Layer.mergeAll(
+        bootstrapDependenciesLayer,
+        modelAssetCacheLayer,
+        modelAssetStoreLayer,
+      ),
+    ),
+  );
+  const preprocessorLayer = EncoderPreprocessor.layer.pipe(
+    Layer.provide(modelAssetsLayer),
   );
   const inferenceEngineDependenciesLayer = Layer.mergeAll(
     runtimeConfigLayer,
     eventSinkLayer,
     modelAssetsLayer,
+    preprocessorLayer,
   );
   const inferenceEngineLayer = EncoderInferenceEngine.layer.pipe(
     Layer.provide(inferenceEngineDependenciesLayer),
@@ -137,10 +153,7 @@ function decodeOutput(
 }
 
 function buildEncodedQuery(
-  tokenized: {
-    readonly inputIdValues: number[];
-    readonly attentionMaskValues: number[];
-  },
+  tokenized: PreparedEncoderInput,
   embeddings: number[][],
   encoder: EncoderCreateInput["encoder"],
   queryLength: number,
@@ -172,35 +185,63 @@ function buildEncodedQuery(
 }
 
 function buildEncodedDocument(
-  tokenized: {
-    readonly inputIdValues: number[];
-    readonly attentionMaskValues: number[];
-  },
+  tokenized: PreparedDocumentInput,
   embeddings: number[][],
   total_ms: number,
   tokenize_ms: number,
   inference_ms: number,
-): EncodedDocument {
-  const rowCount = tokenized.attentionMaskValues.reduce(
-    (total, value) => total + (value > 0 ? 1 : 0),
-    0,
-  );
-  const activeEmbeddings = embeddings.slice(0, rowCount);
+): Effect.Effect<EncodedDocument, WorkerRuntimeError> {
+  return Effect.gen(function*() {
+    const retainedEmbeddings: number[][] = [];
+    const retainedInputIds: number[] = [];
+    const retainedAttentionMask: number[] = [];
 
-  return {
-    payload: {
-      values: activeEmbeddings.flat(),
-      rows: rowCount,
-      dim: activeEmbeddings[0]?.length ?? 0,
-    },
-    timing: buildTiming(
-      total_ms,
-      tokenize_ms,
-      inference_ms,
-    ),
-    input_ids: tokenized.inputIdValues.slice(0, rowCount),
-    attention_mask: tokenized.attentionMaskValues.slice(0, rowCount),
-  };
+    for (const rowIndex of tokenized.retainRowIndices) {
+      const embedding = embeddings[rowIndex];
+      if (embedding === undefined) {
+        return yield* workerRuntimeError({
+          operation: "wasm_encoder_backend.build_encoded_document",
+          message: "document retain_row_indices exceeded encoder output rows",
+          details: {
+            rowIndex,
+            outputRows: embeddings.length,
+            activeLength: tokenized.activeLength,
+          },
+        });
+      }
+      const inputId = tokenized.inputIdValues[rowIndex];
+      const attentionMask = tokenized.attentionMaskValues[rowIndex];
+      if (inputId === undefined || attentionMask === undefined) {
+        return yield* workerRuntimeError({
+          operation: "wasm_encoder_backend.build_encoded_document",
+          message: "document retain_row_indices exceeded prepared input rows",
+          details: {
+            rowIndex,
+            inputLength: tokenized.inputIdValues.length,
+            attentionLength: tokenized.attentionMaskValues.length,
+          },
+        });
+      }
+      retainedEmbeddings.push(embedding);
+      retainedInputIds.push(inputId);
+      retainedAttentionMask.push(attentionMask);
+    }
+
+    return {
+      payload: {
+        values: retainedEmbeddings.flat(),
+        rows: retainedEmbeddings.length,
+        dim: retainedEmbeddings[0]?.length ?? 0,
+      },
+      timing: buildTiming(
+        total_ms,
+        tokenize_ms,
+        inference_ms,
+      ),
+      input_ids: retainedInputIds,
+      attention_mask: retainedAttentionMask,
+    };
+  });
 }
 
 function makeWasmEncoderBackend(): Effect.Effect<
@@ -212,7 +253,7 @@ function makeWasmEncoderBackend(): Effect.Effect<
     const engine = yield* EncoderInferenceEngine;
 
     const runSequence = (
-      tokenized: TokenizedEncoderInput,
+      tokenized: PreparedEncoderInput,
       options: {
         readonly sequenceLength: number;
         readonly operation: string;
@@ -248,15 +289,7 @@ function makeWasmEncoderBackend(): Effect.Effect<
     const encodeQuery = Effect.fn("WasmEncoderBackend.encodeQuery")(function*(text: string) {
       const totalStartedAt = yield* Clock.currentTimeNanos;
       const [tokenized, tokenize_ms] = yield* measureDurationMs(
-        Effect.try({
-          try: () => engine.tokenizer.encodeQuery(text, engine.plan),
-          catch: (error) =>
-            workerRuntimeErrorFromUnknown(
-              "wasm_encoder_backend.tokenize",
-              error,
-              "failed to tokenize encoder input",
-            ),
-        }),
+        engine.preprocessor.prepareQuery(text),
       );
 
       const { embeddings, inference_ms } = yield* runSequence(
@@ -284,15 +317,7 @@ function makeWasmEncoderBackend(): Effect.Effect<
     const encodeDocument = Effect.fn("WasmEncoderBackend.encodeDocument")(function*(text: string) {
       const totalStartedAt = yield* Clock.currentTimeNanos;
       const [tokenized, tokenize_ms] = yield* measureDurationMs(
-        Effect.try({
-          try: () => engine.tokenizer.encodeDocument(text, engine.plan),
-          catch: (error) =>
-            workerRuntimeErrorFromUnknown(
-              "wasm_encoder_backend.tokenize_document",
-              error,
-              "failed to tokenize encoder document input",
-            ),
-        }),
+        engine.preprocessor.prepareDocument(text),
       );
 
       const { embeddings, inference_ms } = yield* runSequence(
@@ -305,7 +330,7 @@ function makeWasmEncoderBackend(): Effect.Effect<
       const total_ms =
         Number((yield* Clock.currentTimeNanos) - totalStartedAt) / 1_000_000;
 
-      return buildEncodedDocument(
+      return yield* buildEncodedDocument(
         tokenized,
         embeddings,
         total_ms,

@@ -201,7 +201,9 @@ export const makeEncoderWorkerClient = (
         lastError: null,
       });
       const eventPubSub = yield* PubSub.unbounded<EncoderLifecycleEvent>({
-        replay: 16,
+        // Init now emits more asset lifecycle events, so keep enough replay
+        // headroom for late subscribers to observe a full init sequence.
+        replay: 32,
       });
       const controlState = yield* SynchronizedRef.make<EncoderLifecycleControl>(
         emptyLifecycleControl,

@@ -144,6 +144,16 @@ impl ColbertConfig {
     pub fn model_name(&self) -> Option<&str> {
         self.model_name.as_deref()
     }
+
+    /// Get the resolved query prefix token id override, if explicitly configured.
+    pub fn query_prefix_id(&self) -> Option<u32> {
+        self.query_prefix_id
+    }
+
+    /// Get the resolved document prefix token id override, if explicitly configured.
+    pub fn document_prefix_id(&self) -> Option<u32> {
+        self.document_prefix_id
+    }
 }
 
 #[cfg(feature = "native")]

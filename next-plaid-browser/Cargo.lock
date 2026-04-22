@@ -970,6 +970,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "next-plaid-browser-preprocess-wasm"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "next-plaid-preprocess",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "tokenizers",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+]
+
+[[package]]
 name = "next-plaid-browser-sqlite-spike"
 version = "0.1.0"
 dependencies = [
@@ -1016,6 +1030,16 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+]
+
+[[package]]
+name = "next-plaid-preprocess"
+version = "1.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokenizers",
 ]
 
 [[package]]

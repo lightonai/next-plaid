@@ -11,6 +11,7 @@ import {
   InlineQueryEmbeddingsPayloadSchema,
   normalizeQueryEmbeddingsPayload,
 } from "../shared/search-contract-schema.js";
+import { DurableModelAssetStoreKindSchema, ModelAssetStoreKindSchema } from "./model-asset-store-schema.js";
 
 export const MatrixPayloadSchema = Schema.Struct({
   values: Schema.Array(Schema.Finite),
@@ -78,13 +79,32 @@ export const EncodeDocumentResponseSchema = Schema.Struct({
 
 export const EncoderInitEventSchema = Schema.Union([
   Schema.Struct({
-    stage: Schema.Literal("asset_cache_hit"),
+    stage: Schema.Literal("asset_memory_hit"),
     url: Schema.String,
     bytesReceived: Schema.Number,
   }),
   Schema.Struct({
-    stage: Schema.Literal("asset_cache_miss"),
+    stage: Schema.Literal("asset_store_hit"),
     url: Schema.String,
+    storeKind: ModelAssetStoreKindSchema,
+    bytesReceived: Schema.Number,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("asset_store_miss"),
+    url: Schema.String,
+    storeKind: ModelAssetStoreKindSchema,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("asset_store_write_start"),
+    url: Schema.String,
+    storeKind: DurableModelAssetStoreKindSchema,
+    bytesReceived: Schema.Number,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("asset_store_write_complete"),
+    url: Schema.String,
+    storeKind: DurableModelAssetStoreKindSchema,
+    bytesReceived: Schema.Number,
   }),
   Schema.Struct({
     stage: Schema.Literal("asset_fetch_start"),

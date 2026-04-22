@@ -1,0 +1,27 @@
+[package]
+name = "next-plaid-browser-preprocess-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+console_error_panic_hook = "0.1"
+next-plaid-preprocess = { path = "../../../next-plaid-preprocess", default-features = false, features = ["wasm"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde-wasm-bindgen = "0.6"
+tokenizers = { version = "=0.21.1", default-features = false, features = ["unstable_wasm"] }
+wasm-bindgen = { workspace = true }
+
+[dev-dependencies]
+wasm-bindgen-test = { workspace = true }
+
+[lints]
+workspace = true
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

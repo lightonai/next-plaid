@@ -34,6 +34,11 @@ function readNumber(record: Record<string, unknown>, key: string, fallback: numb
   return fallback;
 }
 
+function readOptionalNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function readBoolean(record: Record<string, unknown>, key: string, fallback: boolean): boolean {
   const value = record[key];
   return typeof value === "boolean" ? value : fallback;
@@ -45,6 +50,9 @@ export function parseOnnxConfig(value: unknown): OnnxConfig {
   const skiplist_words = Array.isArray(skiplistValue)
     ? skiplistValue.filter((item): item is string => typeof item === "string")
     : DEFAULTS.skiplist_words;
+
+  const query_prefix_id = readOptionalNumber(record, "query_prefix_id");
+  const document_prefix_id = readOptionalNumber(record, "document_prefix_id");
 
   return {
     query_prefix: readString(record, "query_prefix", DEFAULTS.query_prefix),
@@ -60,6 +68,8 @@ export function parseOnnxConfig(value: unknown): OnnxConfig {
     ),
     mask_token_id: readNumber(record, "mask_token_id", DEFAULTS.mask_token_id),
     pad_token_id: readNumber(record, "pad_token_id", DEFAULTS.pad_token_id),
+    ...(query_prefix_id === undefined ? {} : { query_prefix_id }),
+    ...(document_prefix_id === undefined ? {} : { document_prefix_id }),
     skiplist_words,
     do_lower_case: readBoolean(record, "do_lower_case", DEFAULTS.do_lower_case),
   };

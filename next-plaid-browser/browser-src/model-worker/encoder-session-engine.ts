@@ -1,7 +1,7 @@
 import * as ort from "onnxruntime-web";
 
 import { workerRuntimeError } from "../effect/worker-runtime-errors.js";
-import type { TokenizedEncoderInput } from "./fixture-tokenizer.js";
+import type { PreparedEncoderInput } from "./encoder-preprocessor.js";
 import type {
   EncodeTimingBreakdown,
   EncoderCapabilities,
@@ -68,7 +68,7 @@ export function buildTiming(
 }
 
 export function buildFeeds(
-  tokenized: TokenizedEncoderInput,
+  tokenized: PreparedEncoderInput,
   sequenceLength: number,
   usesTokenTypeIds: boolean,
 ): ort.InferenceSession.FeedsType {
@@ -136,7 +136,6 @@ export function deriveEncoderEffectiveEncodePlan(
 ): EncoderEffectiveEncodePlan {
   return {
     ...config,
-    do_query_expansion: false,
     encoder: input.encoder,
   };
 }

@@ -1,13 +1,15 @@
 {
-  "query_prefix": "",
-  "document_prefix": "",
+  "query_prefix": "[unused0]",
+  "document_prefix": "[unused1]",
   "query_length": 4,
   "document_length": 4,
   "do_query_expansion": false,
   "embedding_dim": 4,
   "uses_token_type_ids": false,
-  "mask_token_id": 0,
+  "mask_token_id": 4,
   "pad_token_id": 0,
+  "query_prefix_id": 5,
+  "document_prefix_id": 6,
   "skiplist_words": [],
   "do_lower_case": true
 }
