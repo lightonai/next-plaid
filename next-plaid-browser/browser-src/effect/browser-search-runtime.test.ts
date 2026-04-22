@@ -296,10 +296,34 @@ function encodedDocument(): EncodedDocument {
   };
 }
 
+function emptyEncodedDocument(): EncodedDocument {
+  return {
+    payload: {
+      values: [],
+      rows: 0,
+      dim: 0,
+    },
+    timing: {
+      total_ms: 2,
+      tokenize_ms: 1,
+      inference_ms: 1,
+    },
+    input_ids: [],
+    attention_mask: [],
+  };
+}
+
 function encodeDocumentResponse() {
   return {
     type: "encoded_document",
     encoded: encodedDocument(),
+  } as const;
+}
+
+function emptyEncodeDocumentResponse() {
+  return {
+    type: "encoded_document",
+    encoded: emptyEncodedDocument(),
   } as const;
 }
 
@@ -800,10 +824,6 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
       yield* waitForWorkerStart(harness.encoderFake);
       harness.searchFake.dispatchReady();
       harness.encoderFake.dispatchReady();
-      yield* SubscriptionRef.set(
-        runtime.mutableCorpora,
-        new Map([["proof-corpus", persistedMutableCorpusMetadata()]]),
-      );
       harness.searchFake.clearOutbound();
       harness.encoderFake.clearOutbound();
 
@@ -914,6 +934,142 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
         summary: mutableCorpusSummary(2, { hasDenseState: true }),
         loaded: true,
       });
+    }),
+  );
+
+  it.effect("reloads mutable corpus metadata from storage before first sync after wrapper state resets", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const encoderClient = yield* EncoderWorkerClient;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+
+      yield* registerMutableCorpus(runtime, harness.searchFake);
+      yield* initEncoder(encoderClient, harness.encoderFake);
+      yield* SubscriptionRef.set(runtime.mutableCorpora, new Map());
+      harness.searchFake.clearOutbound();
+      harness.encoderFake.clearOutbound();
+
+      const syncFiber = yield* runtime.syncCorpus(syncCorpusArgs()).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+
+      const loadRequest = yield* waitForCapturedRequestType<LoadMutableCorpusRequestEnvelope>(
+        harness.searchFake,
+        "load_mutable_corpus",
+      );
+      expect(loadRequest.request.corpus_id).toBe("proof-corpus");
+      yield* replySuccess(
+        harness.searchFake,
+        loadRequest.requestId,
+        loadMutableCorpusResponse(0),
+      );
+      yield* Effect.yieldNow;
+
+      yield* waitForCapturedRequestCount(harness.encoderFake, 1);
+      const firstEncodeRequest = firstCapturedRequest<{
+        readonly type: "encode_document";
+        readonly payload: { readonly text: string };
+      }>(harness.encoderFake);
+      expect(firstEncodeRequest.request.type).toBe("encode_document");
+      expect(firstEncodeRequest.request.payload.text).toBe("alpha semantic body");
+      yield* replySuccess(
+        harness.encoderFake,
+        firstEncodeRequest.requestId,
+        encodeDocumentResponse(),
+      );
+      yield* Effect.yieldNow;
+
+      yield* waitForCapturedRequestCount(harness.encoderFake, 2);
+      const secondEncodeRequest = harness.encoderFake.capturedRequests<{
+        readonly type: "encode_document";
+        readonly payload: { readonly text: string };
+      }>()[1];
+      expect(secondEncodeRequest).toBeDefined();
+      if (secondEncodeRequest === undefined) {
+        throw new Error("expected second captured document encode request");
+      }
+      expect(secondEncodeRequest.request.payload.text).toBe("beta semantic body");
+      yield* replySuccess(
+        harness.encoderFake,
+        secondEncodeRequest.requestId,
+        encodeDocumentResponse(),
+      );
+      yield* Effect.yieldNow;
+
+      yield* waitForCapturedRequestCount(harness.searchFake, 2);
+      const syncRequest = harness.searchFake.capturedRequests<SyncMutableCorpusRequestEnvelope>()[1];
+      expect(syncRequest).toBeDefined();
+      if (syncRequest === undefined) {
+        throw new Error("expected sync request after metadata reload");
+      }
+      expect(syncRequest.request.type).toBe("sync_mutable_corpus");
+      yield* replySuccess(
+        harness.searchFake,
+        syncRequest.requestId,
+        syncCorpusResponse({ hasDenseState: true }),
+      );
+
+      const result = yield* Fiber.join(syncFiber);
+      expect(result.type).toBe("mutable_corpus_synced");
+      expect(result.summary.has_dense_state).toBe(true);
+
+      const mutableCorpora = yield* SubscriptionRef.get(runtime.mutableCorpora);
+      expect(mutableCorpora.get("proof-corpus")).toEqual({
+        corpusId: "proof-corpus",
+        summary: mutableCorpusSummary(2, { hasDenseState: true }),
+        loaded: true,
+      });
+    }),
+  );
+
+  it.effect("fails sync with a document-specific error when encoded document rows are empty", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const encoderClient = yield* EncoderWorkerClient;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+
+      yield* registerMutableCorpus(runtime, harness.searchFake);
+      yield* initEncoder(encoderClient, harness.encoderFake);
+
+      const syncFiber = yield* runtime.syncCorpus(syncCorpusArgs()).pipe(
+        Effect.result,
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+
+      yield* waitForCapturedRequestCount(harness.encoderFake, 1);
+      const encodeRequest = firstCapturedRequest<{
+        readonly type: "encode_document";
+        readonly payload: { readonly text: string };
+      }>(harness.encoderFake);
+      expect(encodeRequest.request.type).toBe("encode_document");
+      expect(encodeRequest.request.payload.text).toBe("alpha semantic body");
+      yield* replySuccess(
+        harness.encoderFake,
+        encodeRequest.requestId,
+        emptyEncodeDocumentResponse(),
+      );
+
+      const syncResult = yield* Fiber.join(syncFiber);
+      expect(syncResult._tag).toBe("Failure");
+      if (syncResult._tag !== "Failure") {
+        throw new Error("expected sync to fail for empty encoded document rows");
+      }
+      expect(syncResult.failure.cause).toBe("invalid_document_embeddings");
+      expect(syncResult.failure.message).toContain("doc-alpha");
+      expect(harness.searchFake.capturedRequests()).toHaveLength(0);
+      expect(harness.encoderFake.capturedRequests()).toHaveLength(1);
     }),
   );
 

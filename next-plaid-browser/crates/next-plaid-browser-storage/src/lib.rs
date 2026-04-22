@@ -845,9 +845,16 @@ mod wasm {
         let active_snapshot_key = match &record.active_snapshot_key {
             Some(active_snapshot_key) => active_snapshot_key.clone(),
             None => {
-                return Err(BrowserStorageError::MissingMutableCorpusSnapshot(
-                    corpus_id.to_string(),
-                ))
+                return Ok(StoredMutableCorpus {
+                    summary: mutable_corpus_summary(
+                        corpus_id,
+                        &record.encoder,
+                        record.document_count,
+                        false,
+                    ),
+                    snapshot: MutableCorpusSnapshot { documents: vec![] },
+                    fts_tokenizer: record.fts_tokenizer,
+                })
             }
         };
 

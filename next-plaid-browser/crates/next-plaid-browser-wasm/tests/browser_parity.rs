@@ -1589,11 +1589,18 @@ async fn browser_storage_mutable_corpus_requires_registration_and_locked_encoder
 
     let _ = storage_response(register_mutable_corpus_request(corpus_id, 2)).await;
 
-    let missing_snapshot = storage_error_response(load_mutable_corpus_request(corpus_id)).await;
-    assert_eq!(missing_snapshot.code, ErrorCode::InvalidRequest);
-    assert!(missing_snapshot
-        .message
-        .contains("has no committed snapshot"));
+    reset_runtime_state();
+
+    let load = storage_response(load_mutable_corpus_request(corpus_id)).await;
+    match load {
+        StorageResponse::MutableCorpusLoaded(result) => {
+            assert_eq!(result.corpus_id, corpus_id);
+            assert_eq!(result.summary.document_count, 0);
+            assert!(result.summary.has_keyword_state);
+            assert!(!result.summary.has_dense_state);
+        }
+        other => panic!("expected mutable_corpus_loaded response, got {other:?}"),
+    }
 
     let mismatch = storage_error_response(register_mutable_corpus_request(corpus_id, 4)).await;
     assert_eq!(mismatch.code, ErrorCode::EncoderMismatch);

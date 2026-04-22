@@ -507,6 +507,56 @@ function mutableCorpusHasDenseState(
   return summary.has_dense_state;
 }
 
+function invalidMutableDocumentEmbeddingsError(
+  corpusId: string,
+  document: MutableCorpusDocument,
+  operation: string,
+  payload: {
+    readonly rows: number;
+    readonly dim: number;
+    readonly values: ReadonlyArray<number>;
+  },
+): BrowserRuntimeError {
+  return permanentClientError({
+    cause: "invalid_document_embeddings",
+    message:
+      `mutable corpus document "${document.document_id}" produced no semantic embeddings; ensure semantic_text contains at least one non-skipped token`,
+    operation,
+    details: {
+      corpusId,
+      documentId: document.document_id,
+      semanticTextLength: document.semantic_text.length,
+      rows: payload.rows,
+      dim: payload.dim,
+      valueCount: payload.values.length,
+    },
+  });
+}
+
+function validateEncodedMutableDocument(
+  corpusId: string,
+  document: MutableCorpusDocument,
+  operation: string,
+  payload: {
+    readonly rows: number;
+    readonly dim: number;
+    readonly values: ReadonlyArray<number>;
+  },
+): Effect.Effect<void, BrowserRuntimeError> {
+  if (payload.rows <= 0 || payload.dim <= 0 || payload.values.length === 0) {
+    return Effect.fail(
+      invalidMutableDocumentEmbeddingsError(
+        corpusId,
+        document,
+        operation,
+        payload,
+      ),
+    );
+  }
+
+  return Effect.void;
+}
+
 function mutableCorpusSearchRequest(
   args: SearchCorpusArgs,
   queries: QueryEmbeddingsPayload[] | null,
@@ -651,6 +701,14 @@ export const makeBrowserSearchRuntime: Effect.Effect<
           hasMutableDocumentEmbeddings(document)
             ? Effect.succeed(document)
             : encoderClient.encodeDocument({ text: document.semantic_text }).pipe(
+              Effect.tap((encoded) =>
+                validateEncodedMutableDocument(
+                  metadata.corpusId,
+                  document,
+                  operation,
+                  encoded.payload,
+                )
+              ),
               Effect.map((encoded) => ({
                 ...document,
                 semantic_embeddings: encoded.payload,
