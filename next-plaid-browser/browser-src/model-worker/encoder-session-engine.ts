@@ -1,7 +1,7 @@
 import * as ort from "onnxruntime-web";
 
 import { workerRuntimeError } from "../effect/worker-runtime-errors.js";
-import type { TokenizedQuery } from "./fixture-tokenizer.js";
+import type { TokenizedEncoderInput } from "./fixture-tokenizer.js";
 import type {
   EncodeTimingBreakdown,
   EncoderCapabilities,
@@ -68,34 +68,35 @@ export function buildTiming(
 }
 
 export function buildFeeds(
-  tokenized: TokenizedQuery,
-  plan: EncoderEffectiveEncodePlan,
+  tokenized: TokenizedEncoderInput,
+  sequenceLength: number,
+  usesTokenTypeIds: boolean,
 ): ort.InferenceSession.FeedsType {
   const feeds: Record<string, ort.Tensor> = {
     input_ids: new ort.Tensor(
       "int64",
       tokenized.inputIds,
-      [1, plan.query_length],
+      [1, sequenceLength],
     ),
     attention_mask: new ort.Tensor(
       "int64",
       tokenized.attentionMask,
-      [1, plan.query_length],
+      [1, sequenceLength],
     ),
   };
 
-  if (plan.uses_token_type_ids) {
+  if (usesTokenTypeIds) {
     if (tokenized.tokenTypeIds === null) {
       throw workerRuntimeError({
         operation: "encoder_session_engine.build_feeds",
         message: "token type ids are required by the encode plan",
-        details: plan,
+        details: { sequenceLength, usesTokenTypeIds },
       });
     }
     feeds.token_type_ids = new ort.Tensor(
       "int64",
       tokenized.tokenTypeIds,
-      [1, plan.query_length],
+      [1, sequenceLength],
     );
   }
 

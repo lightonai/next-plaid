@@ -347,14 +347,11 @@ fn validate_mutable_matrix_payload(
             )));
         }
     }
-    let expected_len = payload
-        .rows
-        .checked_mul(payload.dim)
-        .ok_or_else(|| {
-            BrowserStorageError::InvalidMutableCorpusSnapshot(
-                "semantic_embeddings.rows * semantic_embeddings.dim overflowed".into(),
-            )
-        })?;
+    let expected_len = payload.rows.checked_mul(payload.dim).ok_or_else(|| {
+        BrowserStorageError::InvalidMutableCorpusSnapshot(
+            "semantic_embeddings.rows * semantic_embeddings.dim overflowed".into(),
+        )
+    })?;
     if payload.values.len() != expected_len {
         return Err(BrowserStorageError::InvalidMutableCorpusSnapshot(format!(
             "semantic_embeddings.values length mismatch: expected {expected_len}, found {}",
@@ -374,13 +371,24 @@ fn mutable_corpus_summary(
     corpus_id: &str,
     encoder: &EncoderIdentity,
     document_count: usize,
+    has_dense_state: bool,
 ) -> MutableCorpusSummary {
     MutableCorpusSummary {
         corpus_id: corpus_id.to_string(),
         document_count,
         has_keyword_state: true,
+        has_dense_state,
         encoder: encoder.clone(),
     }
+}
+
+#[allow(dead_code)]
+fn mutable_snapshot_has_dense_state(snapshot: &MutableCorpusSnapshot) -> bool {
+    !snapshot.documents.is_empty()
+        && snapshot
+            .documents
+            .iter()
+            .all(|document| document.semantic_embeddings.is_some())
 }
 
 #[allow(dead_code)]
@@ -391,8 +399,8 @@ fn canonical_document_hash(document: &MutableCorpusDocument) -> String {
     match &document.semantic_embeddings {
         Some(semantic_embeddings) => {
             hasher.update([1]);
-            hasher.update(semantic_embeddings.rows.to_le_bytes());
-            hasher.update(semantic_embeddings.dim.to_le_bytes());
+            hasher.update((semantic_embeddings.rows as u64).to_le_bytes());
+            hasher.update((semantic_embeddings.dim as u64).to_le_bytes());
             for value in &semantic_embeddings.values {
                 hasher.update(value.to_le_bytes());
             }
@@ -739,7 +747,12 @@ mod wasm {
         Ok(RegisterMutableCorpusResponse {
             corpus_id: corpus_id.to_string(),
             created,
-            summary: mutable_corpus_summary(corpus_id, &record.encoder, record.document_count),
+            summary: mutable_corpus_summary(
+                corpus_id,
+                &record.encoder,
+                record.document_count,
+                false,
+            ),
         })
     }
 
@@ -799,6 +812,10 @@ mod wasm {
         record.document_count = verified_snapshot.documents.len();
         put_mutable_corpus_record(&db, &key, &record).await?;
 
+        // TODO(mutable-sync-concurrency): same-corpus sync is still serialized
+        // at the wrapper layer rather than here. If direct concurrent storage
+        // callers appear before fail-fast `sync_in_progress` lands in Rust,
+        // staged snapshot directories can be leaked.
         if let Some(previous_snapshot_key) = previous_snapshot_key {
             if previous_snapshot_key != staged_snapshot_key {
                 let _ = delete_mutable_snapshot_directory(corpus_id, &previous_snapshot_key).await;
@@ -857,7 +874,12 @@ mod wasm {
         };
 
         Ok(StoredMutableCorpus {
-            summary: mutable_corpus_summary(corpus_id, &record.encoder, snapshot.documents.len()),
+            summary: mutable_corpus_summary(
+                corpus_id,
+                &record.encoder,
+                snapshot.documents.len(),
+                mutable_snapshot_has_dense_state(&snapshot),
+            ),
             snapshot,
             fts_tokenizer: record.fts_tokenizer,
         })
@@ -1436,6 +1458,26 @@ mod tests {
         }
     }
 
+    fn mutable_dense_document(
+        document_id: &str,
+        semantic_text: &str,
+        embeddings: &[f32],
+        rows: usize,
+        dim: usize,
+        metadata: serde_json::Value,
+    ) -> MutableCorpusDocument {
+        MutableCorpusDocument {
+            document_id: document_id.to_string(),
+            semantic_text: semantic_text.to_string(),
+            semantic_embeddings: Some(MatrixPayload {
+                values: embeddings.to_vec(),
+                rows,
+                dim,
+            }),
+            metadata: Some(metadata),
+        }
+    }
+
     #[test]
     fn accepts_inline_json_uncompressed_manifest_for_storage() {
         validate_storage_manifest_support(&base_manifest()).unwrap();
@@ -1517,6 +1559,115 @@ mod tests {
             canonical_document_hash(&left),
             canonical_document_hash(&right)
         );
+    }
+
+    #[test]
+    fn canonical_mutable_document_hash_with_embeddings_is_portable() {
+        let document = mutable_dense_document(
+            "alpha",
+            "shared semantic text",
+            &[1.0, 0.0, 0.7, 0.7],
+            2,
+            2,
+            json!({ "topic": "edge", "rank": 1 }),
+        );
+
+        assert_eq!(
+            canonical_document_hash(&document),
+            "70080d55ba278e1c845755e87843007c29d1ef7a7f530513a5cd88a3bf809ed5"
+        );
+    }
+
+    #[test]
+    fn rejects_partial_semantic_embeddings_in_mutable_snapshot() {
+        let snapshot = MutableCorpusSnapshot {
+            documents: vec![
+                mutable_dense_document(
+                    "alpha",
+                    "alpha semantic",
+                    &[1.0, 0.0, 0.7, 0.7],
+                    2,
+                    2,
+                    json!({ "topic": "edge" }),
+                ),
+                mutable_document("beta", "beta semantic", json!({ "topic": "metrics" })),
+            ],
+        };
+
+        let err = validate_mutable_snapshot(&snapshot).unwrap_err();
+        assert!(matches!(
+            err,
+            BrowserStorageError::InvalidMutableCorpusSnapshot(message)
+                if message.contains("semantic_embeddings must be present for every document")
+        ));
+    }
+
+    #[test]
+    fn rejects_non_finite_semantic_embeddings_in_mutable_snapshot() {
+        let nan_snapshot = MutableCorpusSnapshot {
+            documents: vec![mutable_dense_document(
+                "alpha",
+                "alpha semantic",
+                &[f32::NAN, 0.0, 0.7, 0.7],
+                2,
+                2,
+                json!({ "topic": "edge" }),
+            )],
+        };
+        let nan_err = validate_mutable_snapshot(&nan_snapshot).unwrap_err();
+        assert!(matches!(
+            nan_err,
+            BrowserStorageError::InvalidMutableCorpusSnapshot(message)
+                if message.contains("semantic_embeddings must not contain NaN or Infinity")
+        ));
+
+        let infinity_snapshot = MutableCorpusSnapshot {
+            documents: vec![mutable_dense_document(
+                "alpha",
+                "alpha semantic",
+                &[f32::INFINITY, 0.0, 0.7, 0.7],
+                2,
+                2,
+                json!({ "topic": "edge" }),
+            )],
+        };
+        let infinity_err = validate_mutable_snapshot(&infinity_snapshot).unwrap_err();
+        assert!(matches!(
+            infinity_err,
+            BrowserStorageError::InvalidMutableCorpusSnapshot(message)
+                if message.contains("semantic_embeddings must not contain NaN or Infinity")
+        ));
+    }
+
+    #[test]
+    fn mutable_sync_summary_detects_embedding_only_change() {
+        let previous = PersistedMutableCorpusSnapshot {
+            documents: vec![persisted_document(mutable_dense_document(
+                "alpha",
+                "alpha semantic",
+                &[1.0, 0.0, 0.7, 0.7],
+                2,
+                2,
+                json!({ "topic": "edge" }),
+            ))],
+        };
+        let next = PersistedMutableCorpusSnapshot {
+            documents: vec![persisted_document(mutable_dense_document(
+                "alpha",
+                "alpha semantic",
+                &[0.0, 1.0, 0.7, 0.7],
+                2,
+                2,
+                json!({ "topic": "edge" }),
+            ))],
+        };
+
+        let summary = sync_summary(Some(&previous), &next);
+        assert!(summary.changed);
+        assert_eq!(summary.added, 0);
+        assert_eq!(summary.updated, 1);
+        assert_eq!(summary.deleted, 0);
+        assert_eq!(summary.unchanged, 0);
     }
 
     #[test]

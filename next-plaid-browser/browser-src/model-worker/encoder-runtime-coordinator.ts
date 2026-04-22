@@ -143,14 +143,14 @@ export const EncoderRuntimeCoordinatorLive = Layer.effect(
                     return response;
                   }
 
-                  case "encode": {
+                  case "encode_query": {
                     const snapshot = yield* Ref.get(stateRef);
                     if (
                       snapshot.backend === null ||
                       snapshot.state !== "ready"
                     ) {
                       return yield* workerRuntimeError({
-                        operation: "encoder_runtime_coordinator.encode",
+                        operation: "encoder_runtime_coordinator.encode_query",
                         message: "encoder worker is not ready",
                         details: { state: snapshot.state },
                       });
@@ -158,7 +158,28 @@ export const EncoderRuntimeCoordinatorLive = Layer.effect(
 
                     return {
                       type: "encoded_query",
-                      encoded: yield* snapshot.backend.encode(
+                      encoded: yield* snapshot.backend.encodeQuery(
+                        request.payload.text,
+                      ),
+                    } satisfies EncoderWorkerResponse;
+                  }
+
+                  case "encode_document": {
+                    const snapshot = yield* Ref.get(stateRef);
+                    if (
+                      snapshot.backend === null ||
+                      snapshot.state !== "ready"
+                    ) {
+                      return yield* workerRuntimeError({
+                        operation: "encoder_runtime_coordinator.encode_document",
+                        message: "encoder worker is not ready",
+                        details: { state: snapshot.state },
+                      });
+                    }
+
+                    return {
+                      type: "encoded_document",
+                      encoded: yield* snapshot.backend.encodeDocument(
                         request.payload.text,
                       ),
                     } satisfies EncoderWorkerResponse;

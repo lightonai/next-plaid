@@ -7,13 +7,11 @@ use next_plaid_browser_contract::{
     MatrixPayload, MemoryUsageBreakdown, MutableCorpusSnapshot, MutableCorpusSummary,
     QueryEmbeddingsPayload, QueryResultResponse, RankedResultsPayload, SearchIndexPayload,
     SearchParamsRequest, SearchRequest, SearchResponse, SearchTimingBreakdown,
-    WorkerLoadIndexRequest, WorkerLoadIndexResponse, WorkerSearchRequest,
-    RUNTIME_SCHEMA_VERSION,
+    WorkerLoadIndexRequest, WorkerLoadIndexResponse, WorkerSearchRequest, RUNTIME_SCHEMA_VERSION,
 };
 use next_plaid_browser_kernel::{
     fuse_relative_score, fuse_rrf, maxsim_score, search_one, search_one_compressed, MatrixView,
-    SearchParameters,
-    KERNEL_VERSION,
+    SearchParameters, KERNEL_VERSION,
 };
 
 use crate::convert;
@@ -133,24 +131,23 @@ pub(crate) fn runtime_health() -> HealthResponse {
             .map(|loaded| loaded.summary.clone())
             .collect();
         summaries.sort_by(|left, right| left.name.cmp(&right.name));
-        let mutable_memory_usage_breakdown =
-            LOADED_MUTABLE_CORPORA.with(|corpora| {
-                corpora
-                    .borrow()
-                    .values()
-                    .fold(MemoryUsageBreakdown::default(), |mut breakdown, loaded| {
-                        breakdown.index_bytes = breakdown
-                            .index_bytes
-                            .saturating_add(loaded.memory_usage_breakdown.index_bytes);
-                        breakdown.metadata_json_bytes = breakdown
-                            .metadata_json_bytes
-                            .saturating_add(loaded.memory_usage_breakdown.metadata_json_bytes);
-                        breakdown.keyword_runtime_bytes = breakdown
-                            .keyword_runtime_bytes
-                            .saturating_add(loaded.memory_usage_breakdown.keyword_runtime_bytes);
-                        breakdown
-                    })
-            });
+        let mutable_memory_usage_breakdown = LOADED_MUTABLE_CORPORA.with(|corpora| {
+            corpora.borrow().values().fold(
+                MemoryUsageBreakdown::default(),
+                |mut breakdown, loaded| {
+                    breakdown.index_bytes = breakdown
+                        .index_bytes
+                        .saturating_add(loaded.memory_usage_breakdown.index_bytes);
+                    breakdown.metadata_json_bytes = breakdown
+                        .metadata_json_bytes
+                        .saturating_add(loaded.memory_usage_breakdown.metadata_json_bytes);
+                    breakdown.keyword_runtime_bytes = breakdown
+                        .keyword_runtime_bytes
+                        .saturating_add(loaded.memory_usage_breakdown.keyword_runtime_bytes);
+                    breakdown
+                },
+            )
+        });
         let memory_usage_breakdown =
             indices
                 .values()
@@ -178,8 +175,7 @@ pub(crate) fn runtime_health() -> HealthResponse {
                 .saturating_add(mutable_memory_usage_breakdown.keyword_runtime_bytes),
         };
         let memory_usage_bytes = saturating_memory_usage_total_bytes(&memory_usage_breakdown);
-        let loaded_mutable_corpora =
-            LOADED_MUTABLE_CORPORA.with(|corpora| corpora.borrow().len());
+        let loaded_mutable_corpora = LOADED_MUTABLE_CORPORA.with(|corpora| corpora.borrow().len());
 
         HealthResponse {
             status: "healthy".into(),
@@ -346,129 +342,126 @@ fn search_loaded_immutable_index(
     request: &SearchRequest,
     total_started_at: SearchTimer,
 ) -> Result<SearchResponse, WasmError> {
-        let subset_started_at = SearchTimer::start();
-        let subset = resolve_subset(loaded, request)?;
-        let top_k = request.params.top_k.unwrap_or(10);
-        let has_queries = validation::has_semantic_queries(request);
-        let has_text_query = validation::has_text_queries(request);
-        let subset_us = if request.subset.is_some()
-            || validation::has_filter_condition(request)
+    let subset_started_at = SearchTimer::start();
+    let subset = resolve_subset(loaded, request)?;
+    let top_k = request.params.top_k.unwrap_or(10);
+    let has_queries = validation::has_semantic_queries(request);
+    let has_text_query = validation::has_text_queries(request);
+    let subset_us = if request.subset.is_some() || validation::has_filter_condition(request) {
+        Some(elapsed_us(subset_started_at))
+    } else {
+        None
+    };
+
+    if has_queries && has_text_query {
+        let queries = request.queries.as_deref().unwrap_or(&[]);
+        validation::validate_encoder_identity(&loaded.encoder, &queries[0].encoder)?;
+        let decode_started_at = SearchTimer::start();
+        let decoded_queries = decode_query_payloads(queries)?;
+        let text_queries = request.text_query.as_deref().unwrap_or(&[]);
+        let fetch_k = top_k.saturating_mul(3);
+        let query_decode_us = Some(elapsed_us(decode_started_at));
+        let semantic_started_at = SearchTimer::start();
+        let semantic_results = semantic_ranked_results(
+            loaded,
+            &decoded_queries,
+            &request.params,
+            fetch_k,
+            subset.as_deref(),
+        )?;
+        let semantic_us = Some(elapsed_us(semantic_started_at));
+        let keyword_started_at = SearchTimer::start();
+        let keyword_results =
+            keyword_ranked_results(loaded, text_queries, fetch_k, subset.as_deref())?;
+        let keyword_us = Some(elapsed_us(keyword_started_at));
+
+        let mut results = Vec::with_capacity(queries.len());
+        let fusion_started_at = SearchTimer::start();
+        for (query_id, (semantic, keyword)) in semantic_results
+            .iter()
+            .zip(keyword_results.iter())
+            .enumerate()
         {
-            Some(elapsed_us(subset_started_at))
-        } else {
-            None
-        };
+            let fused = fuse_results(FusionRequest {
+                semantic: Some(semantic.clone()),
+                keyword: Some(keyword.clone()),
+                alpha: request.alpha,
+                fusion: request.fusion,
+                top_k,
+            })?;
 
-        if has_queries && has_text_query {
-            let queries = request.queries.as_deref().unwrap_or(&[]);
-            validation::validate_encoder_identity(&loaded.encoder, &queries[0].encoder)?;
-            let decode_started_at = SearchTimer::start();
-            let decoded_queries = decode_query_payloads(queries)?;
-            let text_queries = request.text_query.as_deref().unwrap_or(&[]);
-            let fetch_k = top_k.saturating_mul(3);
-            let query_decode_us = Some(elapsed_us(decode_started_at));
-            let semantic_started_at = SearchTimer::start();
-            let semantic_results = semantic_ranked_results(
-                loaded,
-                &decoded_queries,
-                &request.params,
-                fetch_k,
-                subset.as_deref(),
-            )?;
-            let semantic_us = Some(elapsed_us(semantic_started_at));
-            let keyword_started_at = SearchTimer::start();
-            let keyword_results =
-                keyword_ranked_results(loaded, text_queries, fetch_k, subset.as_deref())?;
-            let keyword_us = Some(elapsed_us(keyword_started_at));
-
-            let mut results = Vec::with_capacity(queries.len());
-            let fusion_started_at = SearchTimer::start();
-            for (query_id, (semantic, keyword)) in semantic_results
-                .iter()
-                .zip(keyword_results.iter())
-                .enumerate()
-            {
-                let fused = fuse_results(FusionRequest {
-                    semantic: Some(semantic.clone()),
-                    keyword: Some(keyword.clone()),
-                    alpha: request.alpha,
-                    fusion: request.fusion,
-                    top_k,
-                })?;
-
-                results.push(QueryResultResponse {
-                    query_id,
-                    metadata: metadata_for_results(loaded.metadata.as_deref(), &fused.document_ids),
-                    document_ids: fused.document_ids,
-                    scores: fused.scores,
-                });
-            }
-            let fusion_us = Some(elapsed_us(fusion_started_at));
-            validate_query_result_scores(&results)?;
-
-            return Ok(SearchResponse {
-                num_queries: results.len(),
-                results,
-                timing: Some(SearchTimingBreakdown {
-                    total_us: elapsed_us(total_started_at),
-                    query_decode_us,
-                    subset_us,
-                    semantic_us,
-                    keyword_us,
-                    fusion_us,
-                }),
+            results.push(QueryResultResponse {
+                query_id,
+                metadata: metadata_for_results(loaded.metadata.as_deref(), &fused.document_ids),
+                document_ids: fused.document_ids,
+                scores: fused.scores,
             });
         }
+        let fusion_us = Some(elapsed_us(fusion_started_at));
+        validate_query_result_scores(&results)?;
 
-        if has_queries {
-            let queries = request.queries.as_deref().unwrap_or(&[]);
-            validation::validate_encoder_identity(&loaded.encoder, &queries[0].encoder)?;
-            let decode_started_at = SearchTimer::start();
-            let decoded_queries = decode_query_payloads(queries)?;
-            let query_decode_us = Some(elapsed_us(decode_started_at));
-            let semantic_started_at = SearchTimer::start();
-            let ranked_results = semantic_ranked_results(
-                loaded,
-                &decoded_queries,
-                &request.params,
-                top_k,
-                subset.as_deref(),
-            )?;
-            return Ok(search_response_from_ranked_results(
-                loaded.metadata.as_deref(),
-                ranked_results,
-                Some(SearchTimingBreakdown {
-                    total_us: elapsed_us(total_started_at),
-                    query_decode_us,
-                    subset_us,
-                    semantic_us: Some(elapsed_us(semantic_started_at)),
-                    keyword_us: None,
-                    fusion_us: None,
-                }),
-            )?);
-        }
+        return Ok(SearchResponse {
+            num_queries: results.len(),
+            results,
+            timing: Some(SearchTimingBreakdown {
+                total_us: elapsed_us(total_started_at),
+                query_decode_us,
+                subset_us,
+                semantic_us,
+                keyword_us,
+                fusion_us,
+            }),
+        });
+    }
 
-        let text_queries = request.text_query.as_deref().unwrap_or(&[]);
-        let keyword_started_at = SearchTimer::start();
-        let ranked_results =
-            keyword_ranked_results_for_keyword_index(
-                loaded.keyword_index.as_ref(),
-                text_queries,
-                top_k,
-                subset.as_deref(),
-            )?;
-        Ok(search_response_from_ranked_results(
+    if has_queries {
+        let queries = request.queries.as_deref().unwrap_or(&[]);
+        validation::validate_encoder_identity(&loaded.encoder, &queries[0].encoder)?;
+        let decode_started_at = SearchTimer::start();
+        let decoded_queries = decode_query_payloads(queries)?;
+        let query_decode_us = Some(elapsed_us(decode_started_at));
+        let semantic_started_at = SearchTimer::start();
+        let ranked_results = semantic_ranked_results(
+            loaded,
+            &decoded_queries,
+            &request.params,
+            top_k,
+            subset.as_deref(),
+        )?;
+        return Ok(search_response_from_ranked_results(
             loaded.metadata.as_deref(),
             ranked_results,
             Some(SearchTimingBreakdown {
                 total_us: elapsed_us(total_started_at),
-                query_decode_us: None,
+                query_decode_us,
                 subset_us,
-                semantic_us: None,
-                keyword_us: Some(elapsed_us(keyword_started_at)),
+                semantic_us: Some(elapsed_us(semantic_started_at)),
+                keyword_us: None,
                 fusion_us: None,
             }),
-        )?)
+        )?);
+    }
+
+    let text_queries = request.text_query.as_deref().unwrap_or(&[]);
+    let keyword_started_at = SearchTimer::start();
+    let ranked_results = keyword_ranked_results_for_keyword_index(
+        loaded.keyword_index.as_ref(),
+        text_queries,
+        top_k,
+        subset.as_deref(),
+    )?;
+    Ok(search_response_from_ranked_results(
+        loaded.metadata.as_deref(),
+        ranked_results,
+        Some(SearchTimingBreakdown {
+            total_us: elapsed_us(total_started_at),
+            query_decode_us: None,
+            subset_us,
+            semantic_us: None,
+            keyword_us: Some(elapsed_us(keyword_started_at)),
+            fusion_us: None,
+        }),
+    )?)
 }
 
 fn search_loaded_mutable_corpus(
@@ -667,7 +660,12 @@ fn keyword_ranked_results(
     top_k: usize,
     subset: Option<&[i64]>,
 ) -> Result<Vec<RankedResultsPayload>, WasmError> {
-    keyword_ranked_results_for_keyword_index(loaded.keyword_index.as_ref(), text_queries, top_k, subset)
+    keyword_ranked_results_for_keyword_index(
+        loaded.keyword_index.as_ref(),
+        text_queries,
+        top_k,
+        subset,
+    )
 }
 
 fn keyword_ranked_results_for_keyword_index(
@@ -730,7 +728,9 @@ fn resolve_mutable_subset(
     if validation::has_filter_condition(request) {
         let condition = request.filter_condition.as_deref().unwrap_or_default();
         let parameters: &[serde_json::Value] = request.filter_parameters.as_deref().unwrap_or(&[]);
-        let subset = loaded.keyword_index.filter_document_ids(condition, parameters)?;
+        let subset = loaded
+            .keyword_index
+            .filter_document_ids(condition, parameters)?;
         return Ok(Some(subset));
     }
 
@@ -951,6 +951,11 @@ fn build_mutable_dense_index(
                 "mutable corpus semantic_embeddings must be present for every document".into(),
             ));
         };
+        if semantic_embeddings.rows == 0 {
+            return Err(WasmError::InvalidRequest(
+                "mutable corpus semantic_embeddings rows must be greater than zero".into(),
+            ));
+        }
         if semantic_embeddings.dim != encoder.embedding_dim {
             return Err(WasmError::InvalidRequest(format!(
                 "mutable corpus semantic_embeddings dim must match encoder.embedding_dim: expected {}, found {}",
@@ -1004,7 +1009,7 @@ fn semantic_ranked_results_for_mutable_corpus(
     top_k: usize,
     subset: Option<&[i64]>,
 ) -> Result<Vec<RankedResultsPayload>, WasmError> {
-    let candidate_ids: Vec<usize> = match subset {
+    let mut candidate_ids: Vec<usize> = match subset {
         Some(subset) => subset
             .iter()
             .filter_map(|document_id| usize::try_from(*document_id).ok())
@@ -1012,6 +1017,8 @@ fn semantic_ranked_results_for_mutable_corpus(
             .collect(),
         None => (0..dense_index.document_count()).collect(),
     };
+    candidate_ids.sort_unstable();
+    candidate_ids.dedup();
 
     let mut results = Vec::with_capacity(queries.len());
     for query_payload in queries {
@@ -1029,13 +1036,7 @@ fn semantic_ranked_results_for_mutable_corpus(
                 ranked.push((*document_id as i64, maxsim_score(query, document)));
             }
         }
-        ranked.sort_by(|left, right| {
-            right
-                .1
-                .partial_cmp(&left.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| left.0.cmp(&right.0))
-        });
+        ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
         ranked.truncate(top_k);
 
         results.push(RankedResultsPayload {

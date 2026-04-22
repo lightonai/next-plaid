@@ -18,6 +18,10 @@ document_count: number,
  */
 has_keyword_state: boolean, 
 /**
+ * Whether dense semantic search state is available.
+ */
+has_dense_state: boolean, 
+/**
  * Locked encoder identity for the corpus.
  */
 encoder: EncoderIdentity, };

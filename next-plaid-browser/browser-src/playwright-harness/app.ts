@@ -151,7 +151,7 @@ function loadEncodedIndexRequest(): LoadIndexRequestEnvelope {
 function mutableCorpusRegisterArgs() {
   return {
     corpusId: MUTABLE_CORPUS_ID,
-    encoder: DENSE_ENCODER,
+    encoder: PROOF_ENCODER,
     ftsTokenizer: "unicode61" as const,
   };
 }
@@ -185,15 +185,18 @@ function mutableCorpusSyncArgs() {
 function mutableCorpusSearchArgs() {
   return {
     corpusId: MUTABLE_CORPUS_ID,
+    queryText: "alpha",
     request: {
       params: {
         top_k: 2,
-        n_ivf_probe: null,
-        n_full_scores: null,
+        n_ivf_probe: 2,
+        n_full_scores: 2,
         centroid_score_threshold: null,
       },
       subset: null,
-      text_query: ["alpha"],
+      text_query: null,
+      alpha: null,
+      fusion: null,
       filter_condition: null,
       filter_parameters: null,
     },
@@ -432,6 +435,7 @@ async function runWrapperSmoke(): Promise<unknown> {
     readonly initialLoadedIndexCount: number;
     readonly installBundle: BundleInstalledResponseEnvelope;
     readonly registerCorpus: unknown;
+    readonly encoderCapabilities: unknown;
     readonly syncCorpus: unknown;
     readonly mutableSearch: unknown;
   };
@@ -439,6 +443,7 @@ async function runWrapperSmoke(): Promise<unknown> {
     initialPhase = await initialRuntime.runPromise(
       Effect.gen(function*() {
         const searchClient = yield* SearchWorkerClient;
+        const encoderClient = yield* EncoderWorkerClient;
         const runtimeService = yield* BrowserSearchRuntime;
         const initialState = yield* SubscriptionRef.get(searchClient.state);
         const initialLoadedIndices = yield* SubscriptionRef.get(searchClient.loadedIndices);
@@ -457,6 +462,7 @@ async function runWrapperSmoke(): Promise<unknown> {
         const registerCorpus = yield* runtimeService.registerCorpus(
           mutableCorpusRegisterArgs(),
         );
+        const encoderCapabilities = yield* encoderClient.init(encoderInitRequest().payload);
         const syncCorpus = yield* runtimeService.syncCorpus(mutableCorpusSyncArgs());
         const mutableSearch = yield* runtimeService.searchCorpus(
           mutableCorpusSearchArgs(),
@@ -466,6 +472,7 @@ async function runWrapperSmoke(): Promise<unknown> {
           initialLoadedIndexCount: initialLoadedIndices.size,
           installBundle,
           registerCorpus,
+          encoderCapabilities,
           syncCorpus,
           mutableSearch,
         };
@@ -521,7 +528,7 @@ async function runWrapperSmoke(): Promise<unknown> {
 
           const encoderCapabilities = yield* encoderClient.init(encoderInitRequest().payload);
           const encoderState = yield* SubscriptionRef.get(runtimeService.encoderState);
-          const encodedQueryValue = yield* encoderClient.encode({ text: "alpha" });
+          const encodedQueryValue = yield* encoderClient.encodeQuery({ text: "alpha" });
           const encodedSearch = yield* runtimeService.searchWithEmbeddings(
             encodedSearchRequest(encodedQueryValue.payload),
           );
@@ -563,6 +570,7 @@ async function runWrapperSmoke(): Promise<unknown> {
             initialState: initialPhase.initialState,
             installBundle: initialPhase.installBundle,
             registerCorpus: initialPhase.registerCorpus,
+            initialEncoderCapabilities: initialPhase.encoderCapabilities,
             syncCorpus: initialPhase.syncCorpus,
             mutableSearch: initialPhase.mutableSearch,
             reloadedInitialHealth,

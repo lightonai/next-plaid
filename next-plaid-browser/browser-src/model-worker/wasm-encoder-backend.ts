@@ -7,10 +7,10 @@ import {
   workerRuntimeErrorFromUnknown,
 } from "../effect/worker-runtime-errors.js";
 import { measureDurationMs } from "./effect-timing.js";
-import type { TokenizedQuery } from "./fixture-tokenizer.js";
 import { EncoderModelAssetCache } from "./encoder-model-asset-cache.js";
 import { EncoderModelAssets } from "./encoder-model-assets.js";
 import { EncoderInferenceEngine } from "./encoder-inference-engine.js";
+import type { TokenizedEncoderInput } from "./fixture-tokenizer.js";
 import {
   EncoderInitEventSink,
   EncoderRuntimeConfig,
@@ -24,6 +24,7 @@ import {
 import type {
   EncoderBackend,
   EncoderCreateInput,
+  EncodedDocument,
   EncodedQuery,
   EncoderInitEvent,
 } from "./types.js";
@@ -65,7 +66,7 @@ export const makeWasmEncoderBackendLayer = (
 };
 function decodeOutput(
   results: ort.InferenceSession.ReturnType,
-  expectedQueryLength: number,
+  expectedRows: number,
   expectedEmbeddingDim: number,
 ): Effect.Effect<number[][], WorkerRuntimeError> {
   return Effect.gen(function*() {
@@ -111,14 +112,14 @@ function decodeOutput(
     }
 
     const [, rows, dim] = output.dims;
-    if (rows !== expectedQueryLength || dim !== expectedEmbeddingDim) {
+    if (rows !== expectedRows || dim !== expectedEmbeddingDim) {
       return yield* workerRuntimeError({
         operation: "wasm_encoder_backend.validate_output_shape",
         message:
-          `unexpected encoder output shape ${output.dims.join("x")} expected 1x${expectedQueryLength}x${expectedEmbeddingDim}`,
+          `unexpected encoder output shape ${output.dims.join("x")} expected 1x${expectedRows}x${expectedEmbeddingDim}`,
         details: {
           actual: output.dims,
-          expected: [1, expectedQueryLength, expectedEmbeddingDim],
+          expected: [1, expectedRows, expectedEmbeddingDim],
         },
       });
     }
@@ -136,7 +137,10 @@ function decodeOutput(
 }
 
 function buildEncodedQuery(
-  tokenized: TokenizedQuery,
+  tokenized: {
+    readonly inputIdValues: number[];
+    readonly attentionMaskValues: number[];
+  },
   embeddings: number[][],
   encoder: EncoderCreateInput["encoder"],
   queryLength: number,
@@ -167,6 +171,38 @@ function buildEncodedQuery(
   };
 }
 
+function buildEncodedDocument(
+  tokenized: {
+    readonly inputIdValues: number[];
+    readonly attentionMaskValues: number[];
+  },
+  embeddings: number[][],
+  total_ms: number,
+  tokenize_ms: number,
+  inference_ms: number,
+): EncodedDocument {
+  const rowCount = tokenized.attentionMaskValues.reduce(
+    (total, value) => total + (value > 0 ? 1 : 0),
+    0,
+  );
+  const activeEmbeddings = embeddings.slice(0, rowCount);
+
+  return {
+    payload: {
+      values: activeEmbeddings.flat(),
+      rows: rowCount,
+      dim: activeEmbeddings[0]?.length ?? 0,
+    },
+    timing: buildTiming(
+      total_ms,
+      tokenize_ms,
+      inference_ms,
+    ),
+    input_ids: tokenized.inputIdValues.slice(0, rowCount),
+    attention_mask: tokenized.attentionMaskValues.slice(0, rowCount),
+  };
+}
+
 function makeWasmEncoderBackend(): Effect.Effect<
   EncoderBackend,
   WorkerRuntimeError,
@@ -174,7 +210,42 @@ function makeWasmEncoderBackend(): Effect.Effect<
 > {
   return Effect.gen(function*() {
     const engine = yield* EncoderInferenceEngine;
-    const encode = Effect.fn("WasmEncoderBackend.encode")(function*(text: string) {
+
+    const runSequence = (
+      tokenized: TokenizedEncoderInput,
+      options: {
+        readonly sequenceLength: number;
+        readonly operation: string;
+      },
+    ) =>
+      Effect.gen(function*() {
+        const feeds = yield* Effect.try({
+          try: () =>
+            buildFeeds(
+              tokenized,
+              options.sequenceLength,
+              engine.plan.uses_token_type_ids,
+            ),
+          catch: (error) =>
+            workerRuntimeErrorFromUnknown(
+              `${options.operation}.build_feeds`,
+              error,
+              "failed to build encoder feeds",
+            ),
+        });
+
+        const [results, inference_ms] = yield* measureDurationMs(
+          engine.run(feeds),
+        );
+        const embeddings = yield* decodeOutput(
+          results,
+          options.sequenceLength,
+          engine.plan.embedding_dim,
+        );
+        return { embeddings, inference_ms };
+      });
+
+    const encodeQuery = Effect.fn("WasmEncoderBackend.encodeQuery")(function*(text: string) {
       const totalStartedAt = yield* Clock.currentTimeNanos;
       const [tokenized, tokenize_ms] = yield* measureDurationMs(
         Effect.try({
@@ -188,23 +259,12 @@ function makeWasmEncoderBackend(): Effect.Effect<
         }),
       );
 
-      const feeds = yield* Effect.try({
-        try: () => buildFeeds(tokenized, engine.plan),
-        catch: (error) =>
-          workerRuntimeErrorFromUnknown(
-            "wasm_encoder_backend.build_feeds",
-            error,
-            "failed to build encoder feeds",
-          ),
-      });
-
-      const [results, inference_ms] = yield* measureDurationMs(
-        engine.run(feeds),
-      );
-      const embeddings = yield* decodeOutput(
-        results,
-        engine.plan.query_length,
-        engine.plan.embedding_dim,
+      const { embeddings, inference_ms } = yield* runSequence(
+        tokenized,
+        {
+          sequenceLength: engine.plan.query_length,
+          operation: "wasm_encoder_backend.encode_query",
+        },
       );
       const total_ms =
         Number((yield* Clock.currentTimeNanos) - totalStartedAt) / 1_000_000;
@@ -220,13 +280,48 @@ function makeWasmEncoderBackend(): Effect.Effect<
         inference_ms,
       );
     });
+
+    const encodeDocument = Effect.fn("WasmEncoderBackend.encodeDocument")(function*(text: string) {
+      const totalStartedAt = yield* Clock.currentTimeNanos;
+      const [tokenized, tokenize_ms] = yield* measureDurationMs(
+        Effect.try({
+          try: () => engine.tokenizer.encodeDocument(text, engine.plan),
+          catch: (error) =>
+            workerRuntimeErrorFromUnknown(
+              "wasm_encoder_backend.tokenize_document",
+              error,
+              "failed to tokenize encoder document input",
+            ),
+        }),
+      );
+
+      const { embeddings, inference_ms } = yield* runSequence(
+        tokenized,
+        {
+          sequenceLength: engine.plan.document_length,
+          operation: "wasm_encoder_backend.encode_document",
+        },
+      );
+      const total_ms =
+        Number((yield* Clock.currentTimeNanos) - totalStartedAt) / 1_000_000;
+
+      return buildEncodedDocument(
+        tokenized,
+        embeddings,
+        total_ms,
+        tokenize_ms,
+        inference_ms,
+      );
+    });
+
     const health = Effect.fn("WasmEncoderBackend.health")(function*() {
       return yield* engine.health();
     });
 
     return WasmEncoderBackend.of({
       capabilities: engine.capabilities,
-      encode,
+      encodeQuery,
+      encodeDocument,
       health,
     });
   });

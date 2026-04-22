@@ -19,6 +19,7 @@ import type {
 import { EncoderWorkerClient } from "./encoder-worker-client.js";
 import type {
   EncoderIdentity,
+  MutableCorpusDocument,
   MutableCorpusSnapshot,
   MutableCorpusSummary,
   MutableCorpusSyncSummary,
@@ -68,10 +69,8 @@ export interface SyncCorpusArgs {
 
 export interface SearchCorpusArgs {
   readonly corpusId: string;
-  readonly request: Omit<
-    SearchRequestEnvelope["request"],
-    "queries" | "alpha" | "fusion"
-  >;
+  readonly queryText?: string | undefined;
+  readonly request: Omit<SearchRequestEnvelope["request"], "queries">;
 }
 
 export type MutableCorpusSyncEvent =
@@ -207,6 +206,18 @@ function missingMutableCorpusTrackingError(
   return permanentClientError({
     cause: "mutable_corpus_tracking_missing",
     message: `mutable corpus "${corpusId}" was loaded but is missing from wrapper state`,
+    operation,
+    details: { corpusId },
+  });
+}
+
+function mutableCorpusDenseStateMissingError(
+  corpusId: string,
+  operation: string,
+): BrowserRuntimeError {
+  return permanentClientError({
+    cause: "mutable_corpus_dense_state_missing",
+    message: `mutable corpus "${corpusId}" does not currently have dense state`,
     operation,
     details: { corpusId },
   });
@@ -405,6 +416,25 @@ function ensureEncoderCompatibleWithIndex(
   return Effect.void;
 }
 
+function ensureEncoderCompatibleWithMutableCorpus(
+  metadata: MutableCorpusMetadata,
+  encoder: EncoderIdentity,
+  operation: string,
+): Effect.Effect<void, BrowserRuntimeError> {
+  if (!sameEncoderIdentity(metadata.summary.encoder, encoder)) {
+    return Effect.fail(
+      incompatibleEncoderError({
+        operation,
+        indexName: metadata.corpusId,
+        expected: metadata.summary.encoder,
+        actual: encoder,
+      }),
+    );
+  }
+
+  return Effect.void;
+}
+
 function loadedIndexMetadata(
   loadedIndices: SubscriptionRef.SubscriptionRef<
     ReadonlyMap<string, LoadedSearchIndexMetadata>
@@ -464,17 +494,29 @@ function keywordOnlyRequest(
   };
 }
 
+function hasMutableDocumentEmbeddings(
+  document: MutableCorpusDocument,
+): boolean {
+  return document.semantic_embeddings !== undefined &&
+    document.semantic_embeddings !== null;
+}
+
+function mutableCorpusHasDenseState(
+  summary: MutableCorpusSummary,
+): boolean {
+  return summary.has_dense_state;
+}
+
 function mutableCorpusSearchRequest(
   args: SearchCorpusArgs,
+  queries: QueryEmbeddingsPayload[] | null,
 ): SearchRequestEnvelope {
   return {
     type: "search",
     name: args.corpusId,
     request: {
       ...args.request,
-      queries: null,
-      alpha: null,
-      fusion: null,
+      queries,
     },
   };
 }
@@ -504,9 +546,7 @@ export const makeBrowserSearchRuntime: Effect.Effect<
   const searchClient = yield* SearchWorkerClient;
   const encoderClient = yield* EncoderWorkerClient;
   const mutableSyncEventPubSub = yield* Effect.acquireRelease(
-    PubSub.unbounded<MutableCorpusSyncEvent>({
-      replay: 16,
-    }),
+    PubSub.unbounded<MutableCorpusSyncEvent>(),
     PubSub.shutdown,
   );
   const inFlightMutableCorpusSyncs = yield* Ref.make<ReadonlySet<string>>(new Set());
@@ -540,6 +580,89 @@ export const makeBrowserSearchRuntime: Effect.Effect<
         );
       }),
     ));
+
+  const resolveMutableCorpusMetadata = Effect.fn(
+    "BrowserSearchRuntime.resolveMutableCorpusMetadata",
+  )((corpusId: string, operation: string) =>
+    SubscriptionRef.get(searchClient.mutableCorpora).pipe(
+      Effect.flatMap((current) => {
+        const metadata = current.get(corpusId);
+        if (metadata !== undefined) {
+          return Effect.succeed(metadata);
+        }
+
+        return searchClient.loadMutableCorpus({
+          type: "load_mutable_corpus",
+          corpus_id: corpusId,
+        }).pipe(
+          Effect.andThen(SubscriptionRef.get(searchClient.mutableCorpora)),
+          Effect.flatMap((next) => {
+            const loaded = next.get(corpusId);
+            return loaded === undefined
+              ? Effect.fail(missingMutableCorpusTrackingError(corpusId, operation))
+              : Effect.succeed(loaded);
+          }),
+        );
+      }),
+    ));
+
+  const ensureMutableCorpusEncoderReady = Effect.fn(
+    "BrowserSearchRuntime.ensureMutableCorpusEncoderReady",
+  )((metadata: MutableCorpusMetadata, operation: string) =>
+    Effect.gen(function*() {
+      const snapshot = yield* SubscriptionRef.get(encoderClient.state);
+      if (snapshot.status !== "ready") {
+        return yield* permanentClientError({
+          cause: "encoder_not_initialized",
+          message: `encoder is not ready for mutable corpus "${metadata.corpusId}"`,
+          operation,
+          details: {
+            corpusId: metadata.corpusId,
+            state: snapshot.status,
+          },
+        });
+      }
+
+      const encoder = encoderIdentityFromCapabilities(snapshot.capabilities);
+      yield* ensureEncoderCompatibleWithMutableCorpus(
+        metadata,
+        encoder,
+        operation,
+      );
+      return encoder;
+    }));
+
+  const enrichMutableCorpusSnapshot = Effect.fn(
+    "BrowserSearchRuntime.enrichMutableCorpusSnapshot",
+  )((metadata: MutableCorpusMetadata, snapshot: MutableCorpusSnapshot, operation: string) =>
+    Effect.gen(function*() {
+      const needsEncoding = snapshot.documents.some((document) =>
+        !hasMutableDocumentEmbeddings(document)
+      );
+      if (!needsEncoding) {
+        return snapshot;
+      }
+
+      yield* ensureMutableCorpusEncoderReady(metadata, operation);
+
+      const documents = yield* Effect.forEach(
+        snapshot.documents,
+        (document) =>
+          hasMutableDocumentEmbeddings(document)
+            ? Effect.succeed(document)
+            : encoderClient.encodeDocument({ text: document.semantic_text }).pipe(
+              Effect.map((encoded) => ({
+                ...document,
+                semantic_embeddings: encoded.payload,
+              })),
+            ),
+        {
+          concurrency: 1,
+        },
+      );
+
+      return { documents };
+    }));
 
   const registerCorpus = Effect.fn("BrowserSearchRuntime.registerCorpus")(
     (args: RegisterCorpusArgs) =>
@@ -577,11 +700,21 @@ export const makeBrowserSearchRuntime: Effect.Effect<
                 documentCount: args.snapshot.documents.length,
               });
 
+              const metadata = yield* resolveMutableCorpusMetadata(
+                args.corpusId,
+                "browser_runtime.sync_corpus",
+              );
+              const snapshot = yield* enrichMutableCorpusSnapshot(
+                metadata,
+                args.snapshot,
+                "browser_runtime.sync_corpus",
+              );
+
               const result = yield* Effect.result(
                 searchClient.syncMutableCorpus({
                   type: "sync_mutable_corpus",
                   corpus_id: args.corpusId,
-                  snapshot: args.snapshot,
+                  snapshot,
                 }),
               );
               if (result._tag === "Failure") {
@@ -632,16 +765,39 @@ export const makeBrowserSearchRuntime: Effect.Effect<
 
   const searchCorpus = Effect.fn("BrowserSearchRuntime.searchCorpus")(
     (args: SearchCorpusArgs) =>
-      ensureMutableCorpusLoaded(
-        args.corpusId,
-        "browser_runtime.search_corpus",
-      ).pipe(
-        Effect.andThen(searchClient.search(mutableCorpusSearchRequest(args))),
+      ensureMutableCorpusLoaded(args.corpusId, "browser_runtime.search_corpus").pipe(
+        Effect.flatMap((metadata) =>
+          Effect.gen(function*() {
+            let queries: QueryEmbeddingsPayload[] | null = null;
+            if (args.queryText !== undefined) {
+              if (!mutableCorpusHasDenseState(metadata.summary)) {
+                return yield* mutableCorpusDenseStateMissingError(
+                  args.corpusId,
+                  "browser_runtime.search_corpus",
+                );
+              }
+
+              yield* ensureMutableCorpusEncoderReady(
+                metadata,
+                "browser_runtime.search_corpus",
+              );
+              const encoded = yield* encoderClient.encodeQuery({
+                text: args.queryText,
+              });
+              queries = [encoded.payload];
+            }
+
+            return yield* searchClient.search(
+              mutableCorpusSearchRequest(args, queries),
+            );
+          })
+        ),
         Effect.withLogSpan("browser_runtime.search_corpus"),
         Effect.annotateLogs({
           operation: "browser_runtime.search_corpus",
           corpus_id: args.corpusId,
           top_k: args.request.params.top_k,
+          has_dense_query_text: args.queryText === undefined ? 0 : args.queryText.length,
           has_text_query: args.request.text_query?.length ?? 0,
         }),
       ),
@@ -715,7 +871,7 @@ export const makeBrowserSearchRuntime: Effect.Effect<
         }
 
         const encodedResult = yield* Effect.result(
-          encoderClient.encode(
+          encoderClient.encodeQuery(
             args.requestId === undefined
               ? { text: args.text }
               : { text: args.text, requestId: args.requestId },

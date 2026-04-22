@@ -498,9 +498,16 @@ pub struct ModelHealthInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 pub struct MemoryUsageBreakdown {
     /// Bytes retained by dense or compressed index payloads.
+    ///
+    /// For mutable corpora this tracks the rebuilt dense runtime buffers, not
+    /// the full persisted snapshot body or all heap overhead retained by serde
+    /// metadata trees.
     #[serde(default)]
     pub index_bytes: u64,
     /// Bytes retained by replayable metadata JSON.
+    ///
+    /// This is the serialized JSON footprint, not a full accounting of the
+    /// in-memory `serde_json::Value` tree.
     #[serde(default)]
     pub metadata_json_bytes: u64,
     /// Bytes retained by the keyword-runtime SQLite / FTS copy.
@@ -738,6 +745,8 @@ pub struct MutableCorpusSummary {
     pub document_count: usize,
     /// Whether keyword/filter state is available.
     pub has_keyword_state: bool,
+    /// Whether dense semantic search state is available.
+    pub has_dense_state: bool,
     /// Locked encoder identity for the corpus.
     pub encoder: EncoderIdentity,
 }
@@ -1214,6 +1223,7 @@ mod tests {
                 corpus_id: "notes".into(),
                 document_count: 2,
                 has_keyword_state: true,
+                has_dense_state: true,
                 encoder: encoder(),
             },
             sync: MutableCorpusSyncSummary {

@@ -2,6 +2,7 @@ import { expect, layer } from "@effect/vitest";
 import { Context, Effect, Fiber, Layer, Stream, SubscriptionRef } from "effect";
 
 import type {
+  EncodedDocument,
   EncodedQuery,
   EncoderCapabilities,
   EncoderCreateInput,
@@ -32,6 +33,7 @@ import type {
 } from "../shared/search-contract.js";
 import {
   BrowserSearchRuntime,
+  type BrowserSearchRuntimeApi,
   type SearchCorpusArgs,
   type SyncCorpusArgs,
 } from "./browser-search-runtime.js";
@@ -145,15 +147,16 @@ function makeEncodeFailureFallbackLayer(): Layer.Layer<
         state,
         events: Stream.empty,
         init: () => Effect.die("unused init in fallback test"),
-        encode: () =>
+        encodeQuery: () =>
           Effect.fail(
             permanentClientError({
               cause: "synthetic_encode_failure",
               message: "encode failed in fallback test",
-              operation: "encoder_worker.encode",
+              operation: "encoder_worker.encode_query",
               details: null,
             }),
           ),
+        encodeDocument: () => Effect.die("unused encodeDocument in fallback test"),
       });
     }),
   );
@@ -276,6 +279,30 @@ function encodeResponse(encoder: EncoderIdentity = proofEncoder()) {
   } as const;
 }
 
+function encodedDocument(): EncodedDocument {
+  return {
+    payload: {
+      values: [0.1, 0.2, 0.3, 0.4],
+      rows: 1,
+      dim: 4,
+    },
+    timing: {
+      total_ms: 2,
+      tokenize_ms: 1,
+      inference_ms: 1,
+    },
+    input_ids: [201],
+    attention_mask: [1],
+  };
+}
+
+function encodeDocumentResponse() {
+  return {
+    type: "encoded_document",
+    encoded: encodedDocument(),
+  } as const;
+}
+
 function malformedEncodeResponseWithNaN(encoder: EncoderIdentity = proofEncoder()) {
   return {
     type: "encoded_query",
@@ -313,21 +340,35 @@ function searchResultsResponse(): SearchResultsResponseEnvelope {
   };
 }
 
-function mutableCorpusSummary(documentCount = 2) {
+function mutableCorpusSummary(
+  documentCount = 2,
+  options: {
+    readonly hasDenseState?: boolean;
+    readonly encoder?: EncoderIdentity;
+  } = {},
+) {
   return {
     corpus_id: "proof-corpus",
     document_count: documentCount,
     has_keyword_state: true,
-    encoder: proofEncoder(),
+    has_dense_state: options.hasDenseState ?? false,
+    encoder: options.encoder ?? proofEncoder(),
   } as const;
 }
 
-function registerCorpusResponse(created = true, documentCount = 0) {
+function registerCorpusResponse(
+  created = true,
+  documentCount = 0,
+  options: {
+    readonly hasDenseState?: boolean;
+    readonly encoder?: EncoderIdentity;
+  } = {},
+) {
   return {
     type: "mutable_corpus_registered",
     corpus_id: "proof-corpus",
     created,
-    summary: mutableCorpusSummary(documentCount),
+    summary: mutableCorpusSummary(documentCount, options),
   } as const;
 }
 
@@ -339,13 +380,21 @@ function syncCorpusResponse(
     readonly updated?: number;
     readonly deleted?: number;
     readonly unchanged?: number;
+    readonly hasDenseState?: boolean;
+    readonly encoder?: EncoderIdentity;
   } = {},
 ) {
   const changed = options.changed ?? true;
   return {
     type: "mutable_corpus_synced",
     corpus_id: "proof-corpus",
-    summary: mutableCorpusSummary(options.documentCount ?? 2),
+    summary: mutableCorpusSummary(
+      options.documentCount ?? 2,
+      {
+        ...(options.hasDenseState === undefined ? {} : { hasDenseState: options.hasDenseState }),
+        ...(options.encoder === undefined ? {} : { encoder: options.encoder }),
+      },
+    ),
     sync: {
       changed,
       added: options.added ?? (changed ? 2 : 0),
@@ -356,11 +405,23 @@ function syncCorpusResponse(
   } as const;
 }
 
-function loadMutableCorpusResponse(documentCount = 2) {
+function loadMutableCorpusResponse(
+  documentCount = 2,
+  options: {
+    readonly hasDenseState?: boolean;
+    readonly encoder?: EncoderIdentity;
+  } = {},
+) {
   return {
     type: "mutable_corpus_loaded",
     corpus_id: "proof-corpus",
-    summary: mutableCorpusSummary(documentCount),
+    summary: mutableCorpusSummary(
+      documentCount,
+      {
+        ...(options.hasDenseState === undefined ? {} : { hasDenseState: options.hasDenseState }),
+        ...(options.encoder === undefined ? {} : { encoder: options.encoder }),
+      },
+    ),
   } as const;
 }
 
@@ -438,6 +499,18 @@ function syncCorpusArgs(): SyncCorpusArgs {
   };
 }
 
+function syncCorpusArgsWithEmbeddings(): SyncCorpusArgs {
+  return {
+    corpusId: "proof-corpus",
+    snapshot: {
+      documents: syncCorpusArgs().snapshot.documents.map((document) => ({
+        ...document,
+        semantic_embeddings: encodedDocument().payload,
+      })),
+    },
+  };
+}
+
 function searchCorpusArgs(): SearchCorpusArgs {
   return {
     corpusId: "proof-corpus",
@@ -450,6 +523,50 @@ function searchCorpusArgs(): SearchCorpusArgs {
       },
       subset: null,
       text_query: ["alpha"],
+      alpha: null,
+      fusion: null,
+      filter_condition: null,
+      filter_parameters: null,
+    },
+  };
+}
+
+function denseSearchCorpusArgs(): SearchCorpusArgs {
+  return {
+    corpusId: "proof-corpus",
+    queryText: "alpha dense",
+    request: {
+      params: {
+        top_k: 2,
+        n_ivf_probe: 2,
+        n_full_scores: 2,
+        centroid_score_threshold: null,
+      },
+      subset: null,
+      text_query: null,
+      alpha: null,
+      fusion: null,
+      filter_condition: null,
+      filter_parameters: null,
+    },
+  };
+}
+
+function hybridSearchCorpusArgs(): SearchCorpusArgs {
+  return {
+    corpusId: "proof-corpus",
+    queryText: "alpha hybrid",
+    request: {
+      params: {
+        top_k: 2,
+        n_ivf_probe: 2,
+        n_full_scores: 2,
+        centroid_score_threshold: null,
+      },
+      subset: null,
+      text_query: ["alpha hybrid"],
+      alpha: 0.25,
+      fusion: "relative_score",
       filter_condition: null,
       filter_parameters: null,
     },
@@ -481,6 +598,25 @@ function waitForCapturedRequestCount(
 ): Effect.Effect<void> {
   return Effect.gen(function*() {
     while (fake.capturedRequests().length < expectedMinimum) {
+      yield* Effect.yieldNow;
+    }
+  });
+}
+
+function waitForCapturedRequestType<
+  TRequest extends { readonly type: string },
+>(
+  fake: FakeSpawner,
+  requestType: TRequest["type"],
+): Effect.Effect<CapturedRequest<TRequest>> {
+  return Effect.gen(function*() {
+    while (true) {
+      const request = fake.capturedRequests<TRequest>().find((captured) =>
+        captured.request.type === requestType
+      );
+      if (request !== undefined) {
+        return request;
+      }
       yield* Effect.yieldNow;
     }
   });
@@ -531,12 +667,64 @@ function initEncoder(
     );
     yield* Effect.yieldNow;
 
-    const request = firstCapturedRequest<{ readonly type: "init" }>(fake);
-    expect(request.request.type).toBe("init");
-    yield* replySuccess(fake, request.requestId, initResponse(encoder));
+    const snapshot = yield* SubscriptionRef.get(encoderClient.state);
+    if (snapshot.status !== "ready") {
+      yield* waitForCapturedRequestCount(fake, 1);
+      const request = firstCapturedRequest<{ readonly type: "init" }>(fake);
+      expect(request.request.type).toBe("init");
+      yield* replySuccess(fake, request.requestId, initResponse(encoder));
+    }
+
     const capabilities = yield* Fiber.join(initFiber);
     expect(capabilities).toEqual(encoderCapabilities(encoder));
 
+    fake.clearOutbound();
+  });
+}
+
+function persistedMutableCorpusMetadata(
+  documentCount = 2,
+  options: {
+    readonly hasDenseState?: boolean;
+    readonly encoder?: EncoderIdentity;
+  } = {},
+): MutableCorpusMetadata {
+  return {
+    corpusId: "proof-corpus",
+    summary: mutableCorpusSummary(documentCount, options),
+    loaded: false,
+  };
+}
+
+function registerMutableCorpus(
+  runtime: BrowserSearchRuntimeApi,
+  fake: FakeSpawner,
+  options: {
+    readonly encoder?: EncoderIdentity;
+    readonly hasDenseState?: boolean;
+  } = {},
+): Effect.Effect<void, SearchClientError | EncoderClientError> {
+  return Effect.gen(function*() {
+    fake.clearOutbound();
+
+    const registerFiber = yield* runtime.registerCorpus({
+      corpusId: "proof-corpus",
+      encoder: options.encoder ?? proofEncoder(),
+    }).pipe(Effect.forkChild({ startImmediately: true }));
+    yield* Effect.yieldNow;
+
+    const request = firstCapturedRequest<RegisterMutableCorpusRequestEnvelope>(fake);
+    expect(request.request.type).toBe("register_mutable_corpus");
+    yield* replySuccess(
+      fake,
+      request.requestId,
+      registerCorpusResponse(true, 0, {
+        ...(options.hasDenseState === undefined ? {} : { hasDenseState: options.hasDenseState }),
+        ...(options.encoder === undefined ? {} : { encoder: options.encoder }),
+      }),
+    );
+    const result = yield* Fiber.join(registerFiber);
+    expect(result.type).toBe("mutable_corpus_registered");
     fake.clearOutbound();
   });
 }
@@ -580,8 +768,9 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime encode and search 
       }).pipe(Effect.forkChild({ startImmediately: true }));
       yield* Effect.yieldNow;
 
-      const encodeRequest = firstCapturedRequest<{ readonly type: "encode" }>(harness.encoderFake);
-      expect(encodeRequest.request.type).toBe("encode");
+      const encodeRequest =
+        firstCapturedRequest<{ readonly type: "encode_query" }>(harness.encoderFake);
+      expect(encodeRequest.request.type).toBe("encode_query");
       yield* replySuccess(harness.encoderFake, encodeRequest.requestId, encodeResponse());
       yield* Effect.yieldNow;
 
@@ -611,6 +800,10 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
       yield* waitForWorkerStart(harness.encoderFake);
       harness.searchFake.dispatchReady();
       harness.encoderFake.dispatchReady();
+      yield* SubscriptionRef.set(
+        runtime.mutableCorpora,
+        new Map([["proof-corpus", persistedMutableCorpusMetadata()]]),
+      );
       harness.searchFake.clearOutbound();
       harness.encoderFake.clearOutbound();
 
@@ -640,6 +833,90 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
     }),
   );
 
+  it.effect("encodes missing mutable document embeddings before syncing through storage", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const encoderClient = yield* EncoderWorkerClient;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+
+      yield* registerMutableCorpus(runtime, harness.searchFake);
+      yield* initEncoder(encoderClient, harness.encoderFake);
+
+      const syncFiber = yield* runtime.syncCorpus(syncCorpusArgs()).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+
+      yield* waitForCapturedRequestCount(harness.encoderFake, 1);
+      const firstEncodeRequest = firstCapturedRequest<{
+        readonly type: "encode_document";
+        readonly payload: { readonly text: string };
+      }>(harness.encoderFake);
+      expect(firstEncodeRequest.request.type).toBe("encode_document");
+      expect(firstEncodeRequest.request.payload.text).toBe("alpha semantic body");
+      expect(harness.searchFake.capturedRequests()).toHaveLength(0);
+      yield* replySuccess(
+        harness.encoderFake,
+        firstEncodeRequest.requestId,
+        encodeDocumentResponse(),
+      );
+      yield* Effect.yieldNow;
+
+      yield* waitForCapturedRequestCount(harness.encoderFake, 2);
+      const secondEncodeRequest = harness.encoderFake.capturedRequests<{
+        readonly type: "encode_document";
+        readonly payload: { readonly text: string };
+      }>()[1];
+      expect(secondEncodeRequest).toBeDefined();
+      if (secondEncodeRequest === undefined) {
+        throw new Error("expected second captured document encode request");
+      }
+      expect(secondEncodeRequest.request.type).toBe("encode_document");
+      expect(secondEncodeRequest.request.payload.text).toBe("beta semantic body");
+      yield* replySuccess(
+        harness.encoderFake,
+        secondEncodeRequest.requestId,
+        encodeDocumentResponse(),
+      );
+      yield* Effect.yieldNow;
+
+      yield* waitForCapturedRequestCount(harness.searchFake, 1);
+      const syncRequest = firstCapturedRequest<SyncMutableCorpusRequestEnvelope>(harness.searchFake);
+      expect(syncRequest.request.type).toBe("sync_mutable_corpus");
+      expect(syncRequest.request.snapshot.documents).toEqual([
+        {
+          ...syncCorpusArgs().snapshot.documents[0],
+          semantic_embeddings: encodedDocument().payload,
+        },
+        {
+          ...syncCorpusArgs().snapshot.documents[1],
+          semantic_embeddings: encodedDocument().payload,
+        },
+      ]);
+      yield* replySuccess(
+        harness.searchFake,
+        syncRequest.requestId,
+        syncCorpusResponse({ hasDenseState: true }),
+      );
+
+      const result = yield* Fiber.join(syncFiber);
+      expect(result.type).toBe("mutable_corpus_synced");
+      expect(result.summary.has_dense_state).toBe(true);
+
+      const mutableCorpora = yield* SubscriptionRef.get(runtime.mutableCorpora);
+      expect(mutableCorpora.get("proof-corpus")).toEqual({
+        corpusId: "proof-corpus",
+        summary: mutableCorpusSummary(2, { hasDenseState: true }),
+        loaded: true,
+      });
+    }),
+  );
+
   it.effect("lazy-loads persisted mutable corpora on first mutable search", () =>
     Effect.gen(function*() {
       const harness = yield* BrowserRuntimeHarness;
@@ -649,6 +926,10 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
       yield* waitForWorkerStart(harness.encoderFake);
       harness.searchFake.dispatchReady();
       harness.encoderFake.dispatchReady();
+      yield* SubscriptionRef.set(
+        runtime.mutableCorpora,
+        new Map([["proof-corpus", persistedMutableCorpusMetadata()]]),
+      );
       harness.searchFake.clearOutbound();
       harness.encoderFake.clearOutbound();
 
@@ -657,7 +938,10 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
       );
       yield* Effect.yieldNow;
 
-      const loadRequest = firstCapturedRequest<LoadMutableCorpusRequestEnvelope>(harness.searchFake);
+      const loadRequest = yield* waitForCapturedRequestType<LoadMutableCorpusRequestEnvelope>(
+        harness.searchFake,
+        "load_mutable_corpus",
+      );
       expect(loadRequest.request.type).toBe("load_mutable_corpus");
       expect(loadRequest.request.corpus_id).toBe("proof-corpus");
       yield* replySuccess(
@@ -667,13 +951,10 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
       );
       yield* Effect.yieldNow;
 
-      yield* waitForCapturedRequestCount(harness.searchFake, 2);
-      const searchRequestEnvelope =
-        harness.searchFake.capturedRequests<SearchRequestEnvelope>()[1];
-      expect(searchRequestEnvelope).toBeDefined();
-      if (searchRequestEnvelope === undefined) {
-        throw new Error("expected lazy reopen to forward a search request");
-      }
+      const searchRequestEnvelope = yield* waitForCapturedRequestType<SearchRequestEnvelope>(
+        harness.searchFake,
+        "search",
+      );
       expect(searchRequestEnvelope.request.type).toBe("search");
       expect(searchRequestEnvelope.request.name).toBe("proof-corpus");
       expect(searchRequestEnvelope.request.request.queries).toBeNull();
@@ -699,6 +980,133 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
     }),
   );
 
+  it.effect("encodes query text for dense mutable-corpus search after lazy reopen", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const encoderClient = yield* EncoderWorkerClient;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+
+      yield* initEncoder(encoderClient, harness.encoderFake);
+      yield* SubscriptionRef.set(
+        runtime.mutableCorpora,
+        new Map([["proof-corpus", persistedMutableCorpusMetadata(2, { hasDenseState: true })]]),
+      );
+      harness.searchFake.clearOutbound();
+
+      const searchFiber = yield* runtime.searchCorpus(denseSearchCorpusArgs()).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+
+      const loadRequest = firstCapturedRequest<LoadMutableCorpusRequestEnvelope>(harness.searchFake);
+      expect(loadRequest.request.type).toBe("load_mutable_corpus");
+      yield* replySuccess(
+        harness.searchFake,
+        loadRequest.requestId,
+        loadMutableCorpusResponse(2, { hasDenseState: true }),
+      );
+      yield* Effect.yieldNow;
+
+      yield* waitForCapturedRequestCount(harness.encoderFake, 1);
+      const encodeRequest = firstCapturedRequest<{
+        readonly type: "encode_query";
+        readonly payload: { readonly text: string };
+      }>(harness.encoderFake);
+      expect(encodeRequest.request.type).toBe("encode_query");
+      expect(encodeRequest.request.payload.text).toBe("alpha dense");
+      yield* replySuccess(harness.encoderFake, encodeRequest.requestId, encodeResponse());
+      yield* Effect.yieldNow;
+
+      yield* waitForCapturedRequestCount(harness.searchFake, 2);
+      const searchRequestEnvelope =
+        harness.searchFake.capturedRequests<SearchRequestEnvelope>()[1];
+      expect(searchRequestEnvelope).toBeDefined();
+      if (searchRequestEnvelope === undefined) {
+        throw new Error("expected mutable dense search request after query encoding");
+      }
+      expect(searchRequestEnvelope.request.type).toBe("search");
+      expect(searchRequestEnvelope.request.request.queries).toEqual([encodedQuery().payload]);
+      expect(searchRequestEnvelope.request.request.text_query).toBeNull();
+      yield* replySuccess(
+        harness.searchFake,
+        searchRequestEnvelope.requestId,
+        searchResultsResponse(),
+      );
+
+      const result = yield* Fiber.join(searchFiber);
+      expect(result.type).toBe("search_results");
+      expect(result.results[0]?.document_ids).toEqual([0, 1]);
+    }),
+  );
+
+  it.effect("preserves keyword fusion fields for hybrid mutable-corpus search", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const encoderClient = yield* EncoderWorkerClient;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+
+      yield* initEncoder(encoderClient, harness.encoderFake);
+      yield* SubscriptionRef.set(
+        runtime.mutableCorpora,
+        new Map([["proof-corpus", persistedMutableCorpusMetadata(2, { hasDenseState: true })]]),
+      );
+      harness.searchFake.clearOutbound();
+
+      const searchFiber = yield* runtime.searchCorpus(hybridSearchCorpusArgs()).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+
+      const loadRequest = firstCapturedRequest<LoadMutableCorpusRequestEnvelope>(harness.searchFake);
+      yield* replySuccess(
+        harness.searchFake,
+        loadRequest.requestId,
+        loadMutableCorpusResponse(2, { hasDenseState: true }),
+      );
+      yield* Effect.yieldNow;
+
+      yield* waitForCapturedRequestCount(harness.encoderFake, 1);
+      const encodeRequest = firstCapturedRequest<{
+        readonly type: "encode_query";
+        readonly payload: { readonly text: string };
+      }>(harness.encoderFake);
+      expect(encodeRequest.request.type).toBe("encode_query");
+      expect(encodeRequest.request.payload.text).toBe("alpha hybrid");
+      yield* replySuccess(harness.encoderFake, encodeRequest.requestId, encodeResponse());
+      yield* Effect.yieldNow;
+
+      yield* waitForCapturedRequestCount(harness.searchFake, 2);
+      const searchRequestEnvelope =
+        harness.searchFake.capturedRequests<SearchRequestEnvelope>()[1];
+      expect(searchRequestEnvelope).toBeDefined();
+      if (searchRequestEnvelope === undefined) {
+        throw new Error("expected mutable hybrid search request after query encoding");
+      }
+      expect(searchRequestEnvelope.request.request.queries).toEqual([encodedQuery().payload]);
+      expect(searchRequestEnvelope.request.request.text_query).toEqual(["alpha hybrid"]);
+      expect(searchRequestEnvelope.request.request.alpha).toBe(0.25);
+      expect(searchRequestEnvelope.request.request.fusion).toBe("relative_score");
+      yield* replySuccess(
+        harness.searchFake,
+        searchRequestEnvelope.requestId,
+        searchResultsResponse(),
+      );
+
+      const result = yield* Fiber.join(searchFiber);
+      expect(result.type).toBe("search_results");
+    }),
+  );
+
   it.effect("fails fast for concurrent same-corpus syncs and emits coarse sync lifecycle events", () =>
     Effect.gen(function*() {
       const harness = yield* BrowserRuntimeHarness;
@@ -711,13 +1119,17 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
       harness.searchFake.clearOutbound();
       harness.encoderFake.clearOutbound();
 
+      yield* registerMutableCorpus(runtime, harness.searchFake, {
+        hasDenseState: true,
+      });
+
       const eventsFiber = yield* runtime.mutableSyncEvents.pipe(
         Stream.take(3),
         Stream.runCollect,
         Effect.forkChild({ startImmediately: true }),
       );
 
-      const firstSyncFiber = yield* runtime.syncCorpus(syncCorpusArgs()).pipe(
+      const firstSyncFiber = yield* runtime.syncCorpus(syncCorpusArgsWithEmbeddings()).pipe(
         Effect.forkChild({ startImmediately: true }),
       );
       yield* Effect.yieldNow;
@@ -727,7 +1139,7 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
       expect(firstRequest.request.corpus_id).toBe("proof-corpus");
 
       const secondSyncResult = yield* Effect.result(
-        runtime.syncCorpus(syncCorpusArgs()),
+        runtime.syncCorpus(syncCorpusArgsWithEmbeddings()),
       );
       expect(secondSyncResult._tag).toBe("Failure");
       if (secondSyncResult._tag !== "Failure") {
@@ -739,7 +1151,7 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
       yield* replySuccess(
         harness.searchFake,
         firstRequest.requestId,
-        syncCorpusResponse(),
+        syncCorpusResponse({ hasDenseState: true }),
       );
 
       const firstResult = yield* Fiber.join(firstSyncFiber);
@@ -761,8 +1173,8 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
       expect(collectedEvents[2]).toEqual({
         type: "sync_committed",
         corpusId: "proof-corpus",
-        summary: mutableCorpusSummary(),
-        sync: syncCorpusResponse().sync,
+        summary: mutableCorpusSummary(2, { hasDenseState: true }),
+        sync: syncCorpusResponse({ hasDenseState: true }).sync,
       });
     }),
   );
@@ -782,14 +1194,22 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus noo
       harness.searchFake.clearOutbound();
       harness.encoderFake.clearOutbound();
 
-      const noopResponse = syncCorpusResponse({ changed: false, documentCount: 2 });
+      yield* registerMutableCorpus(runtime, harness.searchFake, {
+        hasDenseState: true,
+      });
+
+      const noopResponse = syncCorpusResponse({
+        changed: false,
+        documentCount: 2,
+        hasDenseState: true,
+      });
       const eventsFiber = yield* runtime.mutableSyncEvents.pipe(
         Stream.take(2),
         Stream.runCollect,
         Effect.forkChild({ startImmediately: true }),
       );
 
-      const syncFiber = yield* runtime.syncCorpus(syncCorpusArgs()).pipe(
+      const syncFiber = yield* runtime.syncCorpus(syncCorpusArgsWithEmbeddings()).pipe(
         Effect.forkChild({ startImmediately: true }),
       );
       yield* Effect.yieldNow;
@@ -815,7 +1235,7 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus noo
         {
           type: "sync_noop",
           corpusId: "proof-corpus",
-          summary: mutableCorpusSummary(),
+          summary: mutableCorpusSummary(2, { hasDenseState: true }),
           sync: noopResponse.sync,
         },
       ]);
@@ -823,7 +1243,7 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus noo
       const mutableCorpora = yield* SubscriptionRef.get(runtime.mutableCorpora);
       expect(mutableCorpora.get("proof-corpus")).toEqual({
         corpusId: "proof-corpus",
-        summary: mutableCorpusSummary(),
+        summary: mutableCorpusSummary(2, { hasDenseState: true }),
         loaded: true,
       });
     }),
@@ -1098,8 +1518,9 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime malformed encoder 
       ).pipe(Effect.forkChild({ startImmediately: true }));
       yield* Effect.yieldNow;
 
-      const encodeRequest = firstCapturedRequest<{ readonly type: "encode" }>(harness.encoderFake);
-      expect(encodeRequest.request.type).toBe("encode");
+      const encodeRequest =
+        firstCapturedRequest<{ readonly type: "encode_query" }>(harness.encoderFake);
+      expect(encodeRequest.request.type).toBe("encode_query");
       yield* replySuccess(
         harness.encoderFake,
         encodeRequest.requestId,

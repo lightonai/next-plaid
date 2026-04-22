@@ -61,7 +61,7 @@ function parseFixtureTokenizer(value: unknown): FixtureTokenizerDocument {
   };
 }
 
-export interface TokenizedQuery {
+export interface TokenizedEncoderInput {
   inputIds: BigInt64Array;
   attentionMask: BigInt64Array;
   tokenTypeIds: BigInt64Array | null;
@@ -112,8 +112,16 @@ export class FixtureTokenizer {
     }).pipe(Effect.flatMap((value) => FixtureTokenizer.fromJson(value)));
   }
 
-  encodeQuery(text: string, config: OnnxConfig): TokenizedQuery {
-    const prefixed = `${config.query_prefix}${text}`;
+  #encodeText(
+    text: string,
+    options: {
+      readonly prefix: string;
+      readonly length: number;
+      readonly config: OnnxConfig;
+    },
+  ): TokenizedEncoderInput {
+    const prefixed = `${options.prefix}${text}`;
+    const config = options.config;
     const normalized = config.do_lower_case ? prefixed.toLowerCase() : prefixed;
     const skiplist = new Set(
       config.skiplist_words.map((word) =>
@@ -124,12 +132,12 @@ export class FixtureTokenizer {
       .trim()
       .split(/\s+/u)
       .filter((token) => token.length > 0 && !skiplist.has(token))
-      .slice(0, config.query_length);
+      .slice(0, options.length);
 
-    const inputIdValues: number[] = Array.from({ length: config.query_length }, () => config.pad_token_id);
-    const attentionMaskValues: number[] = Array.from({ length: config.query_length }, () => 0);
+    const inputIdValues: number[] = Array.from({ length: options.length }, () => config.pad_token_id);
+    const attentionMaskValues: number[] = Array.from({ length: options.length }, () => 0);
     const tokenTypeIdValues = config.uses_token_type_ids
-      ? Array.from({ length: config.query_length }, () => 0)
+      ? Array.from({ length: options.length }, () => 0)
       : null;
 
     for (let index = 0; index < rawTokens.length; index += 1) {
@@ -149,5 +157,21 @@ export class FixtureTokenizer {
       attentionMaskValues,
       tokenTypeIdValues,
     };
+  }
+
+  encodeQuery(text: string, config: OnnxConfig): TokenizedEncoderInput {
+    return this.#encodeText(text, {
+      prefix: config.query_prefix,
+      length: config.query_length,
+      config,
+    });
+  }
+
+  encodeDocument(text: string, config: OnnxConfig): TokenizedEncoderInput {
+    return this.#encodeText(text, {
+      prefix: config.document_prefix,
+      length: config.document_length,
+      config,
+    });
   }
 }

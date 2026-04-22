@@ -11,6 +11,7 @@ import {
 import * as Exit from "effect/Exit";
 
 import type {
+  EncodedDocument,
   EncodedQuery,
   EncoderCapabilities,
   EncoderCreateInput,
@@ -113,6 +114,30 @@ function encodeResponse() {
   return {
     type: "encoded_query",
     encoded: encodedQuery(),
+  } as const;
+}
+
+function encodedDocument(): EncodedDocument {
+  return {
+    payload: {
+      values: [0.1, 0.2, 0.3, 0.4],
+      rows: 1,
+      dim: 4,
+    },
+    timing: {
+      total_ms: 2,
+      tokenize_ms: 1,
+      inference_ms: 1,
+    },
+    input_ids: [201],
+    attention_mask: [1],
+  };
+}
+
+function encodeDocumentResponse() {
+  return {
+    type: "encoded_document",
+    encoded: encodedDocument(),
   } as const;
 }
 
@@ -258,14 +283,14 @@ function encodeThroughWorker(
 ): Effect.Effect<void, EncoderClientError> {
   return Effect.gen(function*() {
     const beforeCount = harness.fake.capturedRequests().length;
-    const encodeFiber = yield* Effect.result(client.encode({ text })).pipe(
+    const encodeFiber = yield* Effect.result(client.encodeQuery({ text })).pipe(
       Effect.forkChild({ startImmediately: true }),
     );
     yield* Effect.yieldNow;
 
     const encodeRequest = yield* waitForCapturedRequestType<
-      { readonly type: "encode" }
-    >(harness.fake, "encode");
+      { readonly type: "encode_query" }
+    >(harness.fake, "encode_query");
     expect(harness.fake.capturedRequests()).toHaveLength(beforeCount + 1);
 
     harness.fake.dispatchEnvelope({
@@ -430,7 +455,7 @@ layer(makeEncoderHarnessLayer())("EncoderWorkerClient readiness gating", (it) =>
       yield* Effect.yieldNow;
 
       const initRequest = firstCapturedRequest<{ readonly type: "init" }>(harness.fake);
-      const encodeFiber = yield* Effect.result(client.encode({ text: "alpha" })).pipe(
+      const encodeFiber = yield* Effect.result(client.encodeQuery({ text: "alpha" })).pipe(
         Effect.forkChild({ startImmediately: true }),
       );
       yield* Effect.yieldNow;
@@ -443,12 +468,13 @@ layer(makeEncoderHarnessLayer())("EncoderWorkerClient readiness gating", (it) =>
       yield* Effect.yieldNow;
 
       expect(harness.fake.capturedRequests()).toHaveLength(2);
-      const encodeRequest = harness.fake.capturedRequests<{ readonly type: "encode" }>()[1];
+      const encodeRequest =
+        harness.fake.capturedRequests<{ readonly type: "encode_query" }>()[1];
       expect(encodeRequest).toBeDefined();
       if (encodeRequest === undefined) {
         throw new Error("expected a captured encode request");
       }
-      expect(encodeRequest.request.type).toBe("encode");
+      expect(encodeRequest.request.type).toBe("encode_query");
 
       harness.fake.dispatchEnvelope({
         requestId: encodeRequest.requestId,
@@ -469,6 +495,44 @@ layer(makeEncoderHarnessLayer())("EncoderWorkerClient readiness gating", (it) =>
         throw new Error("expected successful encode result");
       }
       expect(encodeResult.success).toEqual(encodedQuery());
+    }),
+  );
+
+  it.effect("routes document encoding through a distinct worker request", () =>
+    Effect.gen(function*() {
+      const harness = yield* EncoderHarness;
+      const client = yield* EncoderWorkerClient;
+
+      yield* initEncoderClient(harness, client);
+
+      const encodeFiber = yield* Effect.result(client.encodeDocument({ text: "alpha beta" })).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+
+      const encodeRequest = yield* waitForCapturedRequestType<{
+        readonly type: "encode_document";
+        readonly payload: { readonly text: string };
+      }>(harness.fake, "encode_document");
+      expect(encodeRequest).toBeDefined();
+      if (encodeRequest === undefined) {
+        throw new Error("expected one captured document encode request");
+      }
+      expect(encodeRequest.request.type).toBe("encode_document");
+      expect(encodeRequest.request.payload.text).toBe("alpha beta");
+
+      harness.fake.dispatchEnvelope({
+        requestId: encodeRequest.requestId,
+        ok: true,
+        response: encodeDocumentResponse(),
+      });
+
+      const encodeResult = yield* Fiber.join(encodeFiber);
+      expect(encodeResult._tag).toBe("Success");
+      if (encodeResult._tag !== "Success") {
+        throw new Error("expected successful document encode result");
+      }
+      expect(encodeResult.success).toEqual(encodedDocument());
     }),
   );
 });
@@ -496,7 +560,7 @@ layer(
       yield* Effect.yieldNow;
 
       const initRequest = firstCapturedRequest<{ readonly type: "init" }>(harness.fake);
-      const encodeFiber = yield* Effect.result(client.encode({ text: "beta" })).pipe(
+      const encodeFiber = yield* Effect.result(client.encodeQuery({ text: "beta" })).pipe(
         Effect.forkChild({ startImmediately: true }),
       );
       yield* Effect.yieldNow;
@@ -509,8 +573,8 @@ layer(
       yield* Effect.yieldNow;
 
       const encodeRequest = yield* waitForCapturedRequestType<
-        { readonly type: "encode" }
-      >(harness.fake, "encode");
+        { readonly type: "encode_query" }
+      >(harness.fake, "encode_query");
 
       harness.fake.dispatchEnvelope({
         requestId: encodeRequest.requestId,
@@ -724,7 +788,7 @@ it.effect("marks the client disposed and rejects new calls after scope close", (
     const state = yield* SubscriptionRef.get(client.state);
     expect(state.status).toBe("disposed");
 
-    const encodeResult = yield* Effect.result(client.encode({ text: "alpha" }));
+    const encodeResult = yield* Effect.result(client.encodeQuery({ text: "alpha" }));
     expect(encodeResult._tag).toBe("Failure");
     if (encodeResult._tag !== "Failure") {
       throw new Error("expected disposed encoder encode call to fail");
@@ -807,21 +871,22 @@ describe("Deferred wrapper invariants", () => {
             throw new Error("expected successful init result");
           }
 
-          const firstFiber = yield* Effect.result(client.encode({ text: "alpha" })).pipe(
+          const firstFiber = yield* Effect.result(client.encodeQuery({ text: "alpha" })).pipe(
             Effect.forkChild({ startImmediately: true }),
           );
-          const secondFiber = yield* Effect.result(client.encode({ text: "alpha" })).pipe(
+          const secondFiber = yield* Effect.result(client.encodeQuery({ text: "alpha" })).pipe(
             Effect.forkChild({ startImmediately: true }),
           );
           yield* Effect.yieldNow;
 
           expect(harness.fake.capturedRequests()).toHaveLength(2);
-          const encodeRequest = harness.fake.capturedRequests<{ readonly type: "encode" }>()[1];
+          const encodeRequest =
+            harness.fake.capturedRequests<{ readonly type: "encode_query" }>()[1];
           expect(encodeRequest).toBeDefined();
           if (encodeRequest === undefined) {
             throw new Error("expected one captured encode request");
           }
-          expect(encodeRequest.request.type).toBe("encode");
+          expect(encodeRequest.request.type).toBe("encode_query");
 
           harness.fake.dispatchEnvelope({
             requestId: encodeRequest.requestId,
@@ -866,13 +931,14 @@ describe("Deferred wrapper invariants", () => {
             throw new Error("expected successful init result");
           }
 
-          const firstEncodeFiber = yield* Effect.result(client.encode({ text: "alpha" })).pipe(
+          const firstEncodeFiber = yield* Effect.result(client.encodeQuery({ text: "alpha" })).pipe(
             Effect.forkChild({ startImmediately: true }),
           );
           yield* Effect.yieldNow;
 
           expect(harness.fake.capturedRequests()).toHaveLength(2);
-          const encodeRequest = harness.fake.capturedRequests<{ readonly type: "encode" }>()[1];
+          const encodeRequest =
+            harness.fake.capturedRequests<{ readonly type: "encode_query" }>()[1];
           expect(encodeRequest).toBeDefined();
           if (encodeRequest === undefined) {
             throw new Error("expected one captured encode request");
@@ -892,7 +958,7 @@ describe("Deferred wrapper invariants", () => {
           }
           expect(firstResult.success).toEqual(encodedQuery());
 
-          const secondResult = yield* Effect.result(client.encode({ text: "alpha" }));
+          const secondResult = yield* Effect.result(client.encodeQuery({ text: "alpha" }));
           expect(secondResult._tag).toBe("Success");
           if (secondResult._tag !== "Success") {
             throw new Error("expected successful repeated cached encode result");

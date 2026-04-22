@@ -70,3 +70,26 @@ it.effect("applies query prefixes before token lookup", () =>
     expect(tokenized.tokenTypeIds).toBeNull();
   }),
 );
+
+it.effect("applies document prefixes and document length independently from query settings", () =>
+  Effect.gen(function*() {
+    const tokenizer = yield* FixtureTokenizer.fromJson({
+      ...tokenizerDocument,
+      vocab: {
+        ...tokenizerDocument.vocab,
+        "[d]": 8,
+      },
+    });
+
+    const tokenized = tokenizer.encodeDocument("alpha beta gamma", {
+      ...defaultConfig,
+      document_prefix: "[D] ",
+      document_length: 2,
+      do_lower_case: true,
+    });
+
+    expect(tokenized.inputIdValues).toEqual([8, 1]);
+    expect(tokenized.attentionMaskValues).toEqual([1, 1]);
+    expect(tokenized.tokenTypeIds).toBeNull();
+  }),
+);

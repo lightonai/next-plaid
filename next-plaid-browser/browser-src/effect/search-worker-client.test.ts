@@ -120,6 +120,7 @@ function mutableCorpusSummary(documentCount: number) {
     corpus_id: "proof-corpus",
     document_count: documentCount,
     has_keyword_state: true,
+    has_dense_state: false,
     encoder: proofEncoder(),
   } as const;
 }

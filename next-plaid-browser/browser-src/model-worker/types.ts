@@ -4,6 +4,7 @@
 import type * as Effect from "effect/Effect";
 
 import type { WorkerRuntimeError } from "../effect/worker-runtime-errors.js";
+import type { MatrixPayload } from "../generated/MatrixPayload.js";
 import type { EncoderIdentity, QueryEmbeddingsPayload } from "../shared/search-contract.js";
 
 export type BackendKind = "wasm";
@@ -49,6 +50,13 @@ export interface EncodedQuery {
   attention_mask: number[];
 }
 
+export interface EncodedDocument {
+  payload: MatrixPayload;
+  timing: EncodeTimingBreakdown;
+  input_ids: number[];
+  attention_mask: number[];
+}
+
 export interface EncoderCreateInput {
   encoder: EncoderIdentity;
   modelUrl: string;
@@ -59,7 +67,8 @@ export interface EncoderCreateInput {
 
 export interface EncoderBackend {
   readonly capabilities: EncoderCapabilities;
-  encode(text: string): Effect.Effect<EncodedQuery, WorkerRuntimeError>;
+  encodeQuery(text: string): Effect.Effect<EncodedQuery, WorkerRuntimeError>;
+  encodeDocument(text: string): Effect.Effect<EncodedDocument, WorkerRuntimeError>;
   health(): Effect.Effect<EncoderHealth, WorkerRuntimeError>;
 }
 
@@ -94,6 +103,11 @@ export interface EncodeResponse {
   encoded: EncodedQuery;
 }
 
+export interface EncodeDocumentResponse {
+  type: "encoded_document";
+  encoded: EncodedDocument;
+}
+
 export interface EncoderDisposeResponse {
   type: "encoder_disposed";
 }
@@ -103,8 +117,13 @@ export interface EncoderInitRequest {
   payload: EncoderCreateInput;
 }
 
-export interface EncoderEncodeRequest {
-  type: "encode";
+export interface EncoderEncodeQueryRequest {
+  type: "encode_query";
+  payload: { text: string };
+}
+
+export interface EncoderEncodeDocumentRequest {
+  type: "encode_document";
   payload: { text: string };
 }
 
@@ -118,7 +137,8 @@ export interface EncoderDisposeRequest {
 
 export type EncoderWorkerRequest =
   | EncoderInitRequest
-  | EncoderEncodeRequest
+  | EncoderEncodeQueryRequest
+  | EncoderEncodeDocumentRequest
   | EncoderHealthRequest
   | EncoderDisposeRequest;
 
@@ -126,4 +146,5 @@ export type EncoderWorkerResponse =
   | EncoderInitResponse
   | EncoderHealthResponse
   | EncodeResponse
+  | EncodeDocumentResponse
   | EncoderDisposeResponse;

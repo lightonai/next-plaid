@@ -215,6 +215,9 @@ async function runSmoke(browserName) {
     const loadedIndices = result.health?.loaded_indices;
     const runtimeEncodedTopDocumentId =
       result.runtimeEncodedSearch?.results?.[0]?.document_ids?.[0];
+    const sawAssetLoad =
+      encoderEventStages.includes("asset_fetch_start") ||
+      encoderEventStages.includes("asset_cache_hit");
 
     if (
       installActivated !== true ||
@@ -242,7 +245,7 @@ async function runSmoke(browserName) {
       encodedQueryEncoderId !== "tiny-encoder-proof" ||
       encoderBackend !== "wasm" ||
       encoderState !== "ready" ||
-      !encoderEventStages.includes("asset_fetch_start") ||
+      !sawAssetLoad ||
       !encoderEventStages.includes("session_create_complete") ||
       !encoderEventStages.includes("warmup_complete") ||
       !encoderEventStages.includes("ready") ||

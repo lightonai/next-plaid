@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect";
 
 import type {
+  EncodeDocumentResponse,
   EncodeResponse,
   EncoderCreateInput,
   EncoderWorkerRequest,
@@ -10,6 +11,12 @@ import {
   InlineQueryEmbeddingsPayloadSchema,
   normalizeQueryEmbeddingsPayload,
 } from "../shared/search-contract-schema.js";
+
+export const MatrixPayloadSchema = Schema.Struct({
+  values: Schema.Array(Schema.Finite),
+  rows: Schema.Number,
+  dim: Schema.Number,
+});
 
 export const EncoderCapabilitiesSchema = Schema.Struct({
   backend: Schema.Literal("wasm"),
@@ -36,6 +43,13 @@ export const EncodedQuerySchema = Schema.Struct({
   attention_mask: Schema.Array(Schema.Number),
 });
 
+export const EncodedDocumentSchema = Schema.Struct({
+  payload: MatrixPayloadSchema,
+  timing: EncodeTimingBreakdownSchema,
+  input_ids: Schema.Array(Schema.Number),
+  attention_mask: Schema.Array(Schema.Number),
+});
+
 export const EncoderCreateInputSchema = Schema.Struct({
   encoder: EncoderIdentitySchema,
   modelUrl: Schema.String,
@@ -55,6 +69,11 @@ export const EncoderInitResponseSchema = Schema.Struct({
 export const EncodeResponseSchema = Schema.Struct({
   type: Schema.Literal("encoded_query"),
   encoded: EncodedQuerySchema,
+});
+
+export const EncodeDocumentResponseSchema = Schema.Struct({
+  type: Schema.Literal("encoded_document"),
+  encoded: EncodedDocumentSchema,
 });
 
 export const EncoderInitEventSchema = Schema.Union([
@@ -111,7 +130,13 @@ export const EncoderWorkerRequestSchema = Schema.Union([
     type: Schema.Literal("health"),
   }),
   Schema.Struct({
-    type: Schema.Literal("encode"),
+    type: Schema.Literal("encode_query"),
+    payload: Schema.Struct({
+      text: Schema.String,
+    }),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("encode_document"),
     payload: Schema.Struct({
       text: Schema.String,
     }),
@@ -125,6 +150,7 @@ export const isEncodedQuery = Schema.is(EncodedQuerySchema);
 export const isEncoderWorkerRequest = Schema.is(EncoderWorkerRequestSchema);
 export const isEncoderInitResponse = Schema.is(EncoderInitResponseSchema);
 export const isEncodeResponse = Schema.is(EncodeResponseSchema);
+export const isEncodeDocumentResponse = Schema.is(EncodeDocumentResponseSchema);
 export const isEncoderInitEvent = Schema.is(EncoderInitEventSchema);
 
 function normalizeEncoderCreateInput(
@@ -166,6 +192,28 @@ function normalizeEncodeResponse(
   };
 }
 
+function normalizeEncodeDocumentResponse(
+  response: Schema.Schema.Type<typeof EncodeDocumentResponseSchema>,
+): EncodeDocumentResponse {
+  return {
+    type: response.type,
+    encoded: {
+      payload: {
+        values: [...response.encoded.payload.values],
+        rows: response.encoded.payload.rows,
+        dim: response.encoded.payload.dim,
+      },
+      timing: {
+        total_ms: response.encoded.timing.total_ms,
+        tokenize_ms: response.encoded.timing.tokenize_ms,
+        inference_ms: response.encoded.timing.inference_ms,
+      },
+      input_ids: [...response.encoded.input_ids],
+      attention_mask: [...response.encoded.attention_mask],
+    },
+  };
+}
+
 function normalizeEncoderWorkerRequest(
   request: Schema.Schema.Type<typeof EncoderWorkerRequestSchema>,
 ): EncoderWorkerRequest {
@@ -195,6 +243,13 @@ export const decodeEncodeResponseSchema = (
 ): Effect.Effect<EncodeResponse, unknown> =>
   Schema.decodeUnknownEffect(EncodeResponseSchema)(value).pipe(
     Effect.map(normalizeEncodeResponse),
+  );
+
+export const decodeEncodeDocumentResponseSchema = (
+  value: unknown,
+): Effect.Effect<EncodeDocumentResponse, unknown> =>
+  Schema.decodeUnknownEffect(EncodeDocumentResponseSchema)(value).pipe(
+    Effect.map(normalizeEncodeDocumentResponse),
   );
 
 export const decodeEncoderInitEventSchema = Schema.decodeUnknownEffect(
