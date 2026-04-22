@@ -53,11 +53,10 @@ function makeDocumentTextDigestService(): Effect.Effect<
           return yield* subtleUnavailableError();
         }
 
-        const digest = yield* Effect.promise(() =>
-          subtle.digest("SHA-256", textEncoder.encode(text))
-        ).pipe(
-          Effect.mapError(digestFailedError),
-        );
+        const digest = yield* Effect.tryPromise({
+          try: () => subtle.digest("SHA-256", textEncoder.encode(text)),
+          catch: digestFailedError,
+        });
 
         return bytesToHex(new Uint8Array(digest));
       }),
