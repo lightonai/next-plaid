@@ -16,6 +16,10 @@ import type {
   EncoderLifecycleEvent,
   EncoderStateSnapshot,
 } from "./encoder-worker-client.js";
+import {
+  DocumentEmbeddingCacheService,
+  getInvalidDocumentEmbeddingPayloadDetails,
+} from "./document-embedding-cache-service.js";
 import { EncoderWorkerClient } from "./encoder-worker-client.js";
 import type {
   EncoderIdentity,
@@ -136,7 +140,10 @@ export class BrowserSearchRuntime
   static layer = (): Layer.Layer<
     BrowserSearchRuntime,
     never,
-    SearchMetadataCatalog | SearchWorkerClient | EncoderWorkerClient
+    | SearchMetadataCatalog
+    | SearchWorkerClient
+    | EncoderWorkerClient
+    | DocumentEmbeddingCacheService
   > => Layer.effect(BrowserSearchRuntime)(makeBrowserSearchRuntime);
 }
 
@@ -520,7 +527,7 @@ function invalidMutableDocumentEmbeddingsError(
   payload: {
     readonly rows: number;
     readonly dim: number;
-    readonly values: ReadonlyArray<number>;
+    readonly valueCount: number;
   },
 ): BrowserRuntimeError {
   return permanentClientError({
@@ -534,33 +541,9 @@ function invalidMutableDocumentEmbeddingsError(
       semanticTextLength: document.semantic_text.length,
       rows: payload.rows,
       dim: payload.dim,
-      valueCount: payload.values.length,
+      valueCount: payload.valueCount,
     },
   });
-}
-
-function validateEncodedMutableDocument(
-  corpusId: string,
-  document: MutableCorpusDocument,
-  operation: string,
-  payload: {
-    readonly rows: number;
-    readonly dim: number;
-    readonly values: ReadonlyArray<number>;
-  },
-): Effect.Effect<void, BrowserRuntimeError> {
-  if (payload.rows <= 0 || payload.dim <= 0 || payload.values.length === 0) {
-    return Effect.fail(
-      invalidMutableDocumentEmbeddingsError(
-        corpusId,
-        document,
-        operation,
-        payload,
-      ),
-    );
-  }
-
-  return Effect.void;
 }
 
 function mutableCorpusSearchRequest(
@@ -597,11 +580,16 @@ function validateSearchRequest(
 export const makeBrowserSearchRuntime: Effect.Effect<
   BrowserSearchRuntimeApi,
   never,
-  SearchMetadataCatalog | SearchWorkerClient | EncoderWorkerClient | Scope.Scope
+  | SearchMetadataCatalog
+  | SearchWorkerClient
+  | EncoderWorkerClient
+  | DocumentEmbeddingCacheService
+  | Scope.Scope
 > = Effect.gen(function*() {
   const metadataCatalog = yield* SearchMetadataCatalog;
   const searchClient = yield* SearchWorkerClient;
   const encoderClient = yield* EncoderWorkerClient;
+  const documentEmbeddingCache = yield* DocumentEmbeddingCacheService;
   const mutableSyncEventPubSub = yield* Effect.acquireRelease(
     PubSub.unbounded<MutableCorpusSyncEvent>(),
     PubSub.shutdown,
@@ -686,7 +674,7 @@ export const makeBrowserSearchRuntime: Effect.Effect<
         encoder,
         operation,
       );
-      return encoder;
+      return snapshot.capabilities;
     }));
 
   const enrichMutableCorpusSnapshot = Effect.fn(
@@ -700,25 +688,36 @@ export const makeBrowserSearchRuntime: Effect.Effect<
         return snapshot;
       }
 
-      yield* ensureMutableCorpusEncoderReady(metadata, operation);
+      const capabilities = yield* ensureMutableCorpusEncoderReady(
+        metadata,
+        operation,
+      );
 
       const documents = yield* Effect.forEach(
         snapshot.documents,
         (document) =>
           hasMutableDocumentEmbeddings(document)
             ? Effect.succeed(document)
-            : encoderClient.encodeDocument({ text: document.semantic_text }).pipe(
-              Effect.tap((encoded) =>
-                validateEncodedMutableDocument(
-                  metadata.corpusId,
-                  document,
-                  operation,
-                  encoded.payload,
-                )
-              ),
-              Effect.map((encoded) => ({
+            : documentEmbeddingCache.get({
+              capabilities,
+              text: document.semantic_text,
+            }).pipe(
+              Effect.catchTag("PermanentClientError", (error) => {
+                const payload = getInvalidDocumentEmbeddingPayloadDetails(error);
+                return payload === null
+                  ? Effect.fail(error)
+                  : Effect.fail(
+                    invalidMutableDocumentEmbeddingsError(
+                      metadata.corpusId,
+                      document,
+                      operation,
+                      payload,
+                    ),
+                  );
+              }),
+              Effect.map((payload) => ({
                 ...document,
-                semantic_embeddings: encoded.payload,
+                semantic_embeddings: payload,
               })),
             ),
         {

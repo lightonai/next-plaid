@@ -83,6 +83,9 @@ fn map_mutable_storage_error(error: BrowserStorageError) -> WasmError {
         BrowserStorageError::MissingMutableCorpusSnapshot(corpus_id) => WasmError::InvalidRequest(
             format!("mutable corpus '{corpus_id}' has no committed snapshot"),
         ),
+        BrowserStorageError::MutableCorpusSyncInProgress(corpus_id) => WasmError::InvalidRequest(
+            format!("mutable corpus '{corpus_id}' already has a sync_in_progress operation"),
+        ),
         BrowserStorageError::MutableCorpusEncoderMismatch {
             expected, actual, ..
         } => WasmError::EncoderMismatch { expected, actual },

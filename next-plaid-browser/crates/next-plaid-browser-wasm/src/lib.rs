@@ -190,12 +190,12 @@ async fn handle_storage_request(request: StorageRequest) -> Result<StorageRespon
         StorageRequest::RegisterMutableCorpus(request) => StorageResponse::MutableCorpusRegistered(
             storage::register_browser_mutable_corpus(request).await?,
         ),
-        StorageRequest::SyncMutableCorpus(request) => {
-            StorageResponse::MutableCorpusSynced(storage::sync_browser_mutable_corpus(request).await?)
-        }
-        StorageRequest::LoadMutableCorpus(request) => {
-            StorageResponse::MutableCorpusLoaded(storage::load_browser_mutable_corpus(request).await?)
-        }
+        StorageRequest::SyncMutableCorpus(request) => StorageResponse::MutableCorpusSynced(
+            storage::sync_browser_mutable_corpus(request).await?,
+        ),
+        StorageRequest::LoadMutableCorpus(request) => StorageResponse::MutableCorpusLoaded(
+            storage::load_browser_mutable_corpus(request).await?,
+        ),
     })
 }
 

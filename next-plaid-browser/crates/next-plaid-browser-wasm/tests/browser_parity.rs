@@ -21,11 +21,14 @@ use next_plaid_browser_contract::{
 use next_plaid_browser_kernel::{
     maxsim_score, search_one, BrowserIndexView, MatrixView, SearchParameters,
 };
+use next_plaid_browser_storage::{
+    load_mutable_corpus, register_mutable_corpus, sync_mutable_corpus, BrowserStorageError,
+};
 use next_plaid_browser_wasm::{
     handle_runtime_request_json, handle_storage_request_json, reset_runtime_state,
 };
 use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::JsFuture;
+use wasm_bindgen_futures::{future_to_promise, JsFuture};
 use wasm_bindgen_test::*;
 
 const DEFAULT_BATCH_SIZE: usize = 2000;
@@ -976,6 +979,10 @@ async fn try_await_promise(value: JsValue) -> Result<JsValue, JsValue> {
     JsFuture::from(promise).await
 }
 
+async fn next_microtask() {
+    let _ = await_promise(Promise::resolve(&JsValue::UNDEFINED).into()).await;
+}
+
 fn call_method0(target: &JsValue, name: &str) -> JsValue {
     let method = Reflect::get(target, &JsValue::from_str(name)).unwrap();
     let function = method.dyn_into::<Function>().unwrap();
@@ -1611,6 +1618,45 @@ async fn browser_storage_mutable_corpus_requires_registration_and_locked_encoder
     .await;
     assert_eq!(tokenizer_mismatch.code, ErrorCode::InvalidRequest);
     assert!(tokenizer_mismatch.message.contains("fts tokenizer"));
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_direct_same_corpus_sync_fails_fast() {
+    reset_runtime_state();
+    let corpus_id = "mutable-demo-direct-sync-in-progress";
+    let snapshot = mutable_snapshot_v1_dense();
+
+    let register = register_mutable_corpus(corpus_id, &encoder(2), FtsTokenizer::Unicode61).await;
+    assert!(register.is_ok());
+
+    let first_sync = future_to_promise({
+        let snapshot = snapshot.clone();
+        async move {
+            sync_mutable_corpus(corpus_id, &snapshot)
+                .await
+                .map(|_| JsValue::UNDEFINED)
+                .map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+    });
+    next_microtask().await;
+
+    let second_sync = sync_mutable_corpus(corpus_id, &snapshot).await;
+    match second_sync {
+        Err(BrowserStorageError::MutableCorpusSyncInProgress(actual_corpus_id)) => {
+            assert_eq!(actual_corpus_id, corpus_id);
+        }
+        other => panic!("expected direct sync_in_progress error, got {other:?}"),
+    }
+
+    JsFuture::from(first_sync)
+        .await
+        .expect("first direct sync should complete successfully");
+
+    let stored = load_mutable_corpus(corpus_id)
+        .await
+        .expect("stored mutable corpus should reload after direct sync");
+    assert_eq!(stored.summary.document_count, 2);
+    assert!(stored.summary.has_dense_state);
 }
 
 #[wasm_bindgen_test]

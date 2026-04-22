@@ -102,6 +102,9 @@ pub enum BrowserStorageError {
     /// Mutable corpus snapshot validation failed.
     #[error("invalid mutable corpus snapshot: {0}")]
     InvalidMutableCorpusSnapshot(String),
+    /// Same-corpus sync was attempted while another sync was still in flight.
+    #[error("mutable corpus '{0}' already has a sync_in_progress operation")]
+    MutableCorpusSyncInProgress(String),
     /// The manifest uses a metadata mode that the browser storage slice does not support.
     #[error("unsupported metadata mode for browser storage slice: {0:?}")]
     UnsupportedMetadataMode(MetadataMode),
@@ -588,6 +591,9 @@ async fn load_mutable_corpus_impl(
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use super::*;
+    use std::cell::RefCell;
+    use std::collections::HashSet;
+
     use indexed_db_futures::database::Database;
     use indexed_db_futures::prelude::*;
     use indexed_db_futures::transaction::TransactionMode;
@@ -606,6 +612,47 @@ mod wasm {
     const MANIFEST_FILE_NAME: &str = "manifest.json";
     const MUTABLE_CORPUS_OPFS_ROOT_DIR: &str = "next-plaid-browser-mutable-corpora";
     const MUTABLE_SNAPSHOT_FILE_NAME: &str = "snapshot.json";
+
+    thread_local! {
+        static IN_FLIGHT_MUTABLE_CORPUS_SYNCS: RefCell<HashSet<String>> =
+            RefCell::new(HashSet::new());
+    }
+
+    struct MutableCorpusSyncGuard {
+        corpus_id: String,
+    }
+
+    impl Drop for MutableCorpusSyncGuard {
+        fn drop(&mut self) {
+            IN_FLIGHT_MUTABLE_CORPUS_SYNCS.with(|in_flight| {
+                in_flight.borrow_mut().remove(&self.corpus_id);
+            });
+        }
+    }
+
+    fn acquire_mutable_corpus_sync_guard(
+        corpus_id: &str,
+    ) -> Result<MutableCorpusSyncGuard, BrowserStorageError> {
+        let acquired = IN_FLIGHT_MUTABLE_CORPUS_SYNCS.with(|in_flight| {
+            let mut in_flight = in_flight.borrow_mut();
+            if in_flight.contains(corpus_id) {
+                false
+            } else {
+                in_flight.insert(corpus_id.to_string());
+                true
+            }
+        });
+
+        if acquired {
+            Ok(MutableCorpusSyncGuard {
+                corpus_id: corpus_id.to_string(),
+            })
+        } else {
+            Err(BrowserStorageError::MutableCorpusSyncInProgress(
+                corpus_id.to_string(),
+            ))
+        }
+    }
 
     pub(super) async fn install_bundle_from_bytes_impl(
         manifest: &BundleManifest,
@@ -760,6 +807,7 @@ mod wasm {
         corpus_id: &str,
         snapshot: &MutableCorpusSnapshot,
     ) -> Result<SyncedMutableCorpus, BrowserStorageError> {
+        let _sync_guard = acquire_mutable_corpus_sync_guard(corpus_id)?;
         let db = open_indexed_db().await?;
         let key = mutable_corpus_key(corpus_id);
         let mut record = get_mutable_corpus_record(&db, &key)
@@ -812,10 +860,6 @@ mod wasm {
         record.document_count = verified_snapshot.documents.len();
         put_mutable_corpus_record(&db, &key, &record).await?;
 
-        // TODO(mutable-sync-concurrency): same-corpus sync is still serialized
-        // at the wrapper layer rather than here. If direct concurrent storage
-        // callers appear before fail-fast `sync_in_progress` lands in Rust,
-        // staged snapshot directories can be leaked.
         if let Some(previous_snapshot_key) = previous_snapshot_key {
             if previous_snapshot_key != staged_snapshot_key {
                 let _ = delete_mutable_snapshot_directory(corpus_id, &previous_snapshot_key).await;
