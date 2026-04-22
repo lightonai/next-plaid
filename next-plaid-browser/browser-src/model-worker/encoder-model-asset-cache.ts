@@ -11,17 +11,20 @@ import {
   workerRuntimeError,
   workerRuntimeErrorFromUnknown,
 } from "../effect/worker-runtime-errors.js";
+import type { EncoderInitEvent } from "./types.js";
 
 const MODEL_CACHE_NAME = "next-plaid-browser-model-worker-v1";
 const textDecoder = new TextDecoder();
 const ASSET_CACHE_CAPACITY = 16;
 
+export interface EncoderAssetTelemetry {
+  readonly emit: (event: EncoderInitEvent) => Effect.Effect<void>;
+}
+
 export interface EncoderModelAssetCacheApi {
-  readonly readCachedBytes: (
+  readonly loadBytesWithTelemetry: (
     url: string,
-  ) => Effect.Effect<Uint8Array | null, WorkerRuntimeError>;
-  readonly fetchAndCacheBytes: (
-    url: string,
+    telemetry: EncoderAssetTelemetry,
   ) => Effect.Effect<Uint8Array, WorkerRuntimeError>;
   readonly loadBytes: (url: string) => Effect.Effect<Uint8Array, WorkerRuntimeError>;
   readonly loadText: (url: string) => Effect.Effect<string, WorkerRuntimeError>;
@@ -184,6 +187,33 @@ function makeEncoderModelAssetCache(): Effect.Effect<
       yield* persistResponse(browserCache, url, response);
       return yield* readBytes(response, url);
     });
+    const loadBytesWithTelemetry = Effect.fn(
+      "EncoderModelAssetCache.loadBytesWithTelemetry",
+    )(function*(url: string, telemetry: EncoderAssetTelemetry) {
+      const cachedBytes = yield* readCachedBytes_(url);
+      if (cachedBytes !== null) {
+        yield* telemetry.emit({
+          stage: "asset_cache_hit",
+          url,
+          bytesReceived: cachedBytes.byteLength,
+        });
+        return cachedBytes;
+      }
+
+      yield* telemetry.emit({ stage: "asset_cache_miss", url });
+      yield* telemetry.emit({
+        stage: "asset_fetch_start",
+        url,
+        expectedBytes: null,
+      });
+      const fetchedBytes = yield* fetchAndCacheBytes_(url);
+      yield* telemetry.emit({
+        stage: "asset_fetch_complete",
+        url,
+        bytesReceived: fetchedBytes.byteLength,
+      });
+      return fetchedBytes;
+    });
     const bytesCache = yield* EffectCache.make<string, Uint8Array, WorkerRuntimeError>({
       capacity: ASSET_CACHE_CAPACITY,
       lookup: (url) =>
@@ -215,8 +245,7 @@ function makeEncoderModelAssetCache(): Effect.Effect<
     });
 
     return EncoderModelAssetCache.of({
-      readCachedBytes: readCachedBytes_,
-      fetchAndCacheBytes: fetchAndCacheBytes_,
+      loadBytesWithTelemetry,
       loadBytes,
       loadText,
       persistentStorage,

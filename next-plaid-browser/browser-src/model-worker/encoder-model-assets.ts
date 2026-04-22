@@ -37,30 +37,10 @@ export class EncoderModelAssets
 
 function loadAssetBytes(
   url: string,
-  emitEvent: (event: EncoderInitEvent) => Effect.Effect<void>,
   modelAssetCache: EncoderModelAssetCacheApi,
+  emitEvent: (event: EncoderInitEvent) => Effect.Effect<void>,
 ): Effect.Effect<Uint8Array, WorkerRuntimeError> {
-  return Effect.gen(function*() {
-    const cachedBytes = yield* modelAssetCache.readCachedBytes(url);
-    if (cachedBytes !== null) {
-      yield* emitEvent({
-        stage: "asset_cache_hit",
-        url,
-        bytesReceived: cachedBytes.byteLength,
-      });
-      return cachedBytes;
-    }
-
-    yield* emitEvent({ stage: "asset_cache_miss", url });
-    yield* emitEvent({ stage: "asset_fetch_start", url, expectedBytes: null });
-    const fetchedBytes = yield* modelAssetCache.fetchAndCacheBytes(url);
-    yield* emitEvent({
-      stage: "asset_fetch_complete",
-      url,
-      bytesReceived: fetchedBytes.byteLength,
-    });
-    return fetchedBytes;
-  });
+  return modelAssetCache.loadBytesWithTelemetry(url, { emit: emitEvent });
 }
 
 function loadAssetJson<T>(
@@ -69,7 +49,7 @@ function loadAssetJson<T>(
   modelAssetCache: EncoderModelAssetCacheApi,
   parse: (value: unknown) => Effect.Effect<T, WorkerRuntimeError>,
 ): Effect.Effect<T, WorkerRuntimeError> {
-  return loadAssetBytes(url, emitEvent, modelAssetCache).pipe(
+  return loadAssetBytes(url, modelAssetCache, emitEvent).pipe(
     Effect.map((bytes) => new TextDecoder().decode(bytes)),
     Effect.flatMap((text) =>
       decodeJsonString(text).pipe(
@@ -91,7 +71,7 @@ function loadTokenizer(
   emitEvent: (event: EncoderInitEvent) => Effect.Effect<void>,
   modelAssetCache: EncoderModelAssetCacheApi,
 ): Effect.Effect<FixtureTokenizer, WorkerRuntimeError> {
-  return loadAssetBytes(url, emitEvent, modelAssetCache).pipe(
+  return loadAssetBytes(url, modelAssetCache, emitEvent).pipe(
     Effect.map((bytes) => new TextDecoder().decode(bytes)),
     Effect.flatMap((text) =>
       decodeJsonString(text).pipe(
@@ -137,8 +117,8 @@ function makeEncoderModelAssets(): Effect.Effect<
     const modelAssetCache = yield* EncoderModelAssetCache;
     const modelBytes = yield* loadAssetBytes(
       input.modelUrl,
-      eventSink.emit,
       modelAssetCache,
+      eventSink.emit,
     );
     const tokenizer = yield* loadTokenizer(
       input.tokenizerUrl,
