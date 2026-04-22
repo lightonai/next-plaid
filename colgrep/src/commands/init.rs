@@ -44,14 +44,16 @@ pub fn cmd_init(path: &PathBuf, options: InitOptions<'_>) -> Result<()> {
     let (parallel_sessions, batch_size) =
         resolve_index_runtime_overrides(&config, options.batch_size);
 
-    // Check if index already exists
-    let has_existing_index = index_exists(&path) || find_parent_index(&path)?.is_some();
+    // Check if index already exists (for the currently selected model)
+    let has_existing_index =
+        index_exists(&path, &model) || find_parent_index(&path, &model)?.is_some();
 
     // Ensure model is downloaded
     let model_path = ensure_model(Some(&model), has_existing_index)?;
 
     let mut builder = IndexBuilder::with_options(
         &path,
+        &model,
         &model_path,
         quantized,
         pool_factor,
@@ -59,7 +61,6 @@ pub fn cmd_init(path: &PathBuf, options: InitOptions<'_>) -> Result<()> {
         batch_size,
     )?;
     builder.set_auto_confirm(options.auto_confirm);
-    builder.set_model_name(&model);
     builder.set_dynamic_batch(!options.static_batch);
     if let Some(encode_batch_size) = options.encode_batch_size {
         builder.set_encode_batch_size(encode_batch_size.max(1));

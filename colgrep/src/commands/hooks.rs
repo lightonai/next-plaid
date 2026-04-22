@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 use ignore::WalkBuilder;
 
-use colgrep::{find_parent_index, index_exists};
+use colgrep::{find_parent_index, index_exists, Config, DEFAULT_MODEL};
 
 /// Maximum number of files for a "small project" where we enable colgrep
 /// even without a pre-existing index, so the first search auto-creates one quickly.
@@ -11,11 +11,16 @@ const SMALL_PROJECT_FILE_LIMIT: usize = 50;
 
 /// Check if colgrep context should be injected.
 /// Returns true if:
-/// - An index already exists for this project or a parent project, OR
+/// - An index (for the currently selected model) already exists for this project
+///   or a parent project, OR
 /// - The project is small enough that auto-indexing on first search is fast
 fn should_inject_colgrep_context(project_root: &Path) -> bool {
-    index_exists(project_root)
-        || matches!(find_parent_index(project_root), Ok(Some(_)))
+    let model = Config::load()
+        .ok()
+        .and_then(|c| c.get_default_model().map(|s| s.to_string()))
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    index_exists(project_root, &model)
+        || matches!(find_parent_index(project_root, &model), Ok(Some(_)))
         || is_small_project(project_root)
 }
 

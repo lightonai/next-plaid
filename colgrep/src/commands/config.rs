@@ -1,8 +1,8 @@
 use anyhow::Result;
 
 use colgrep::{
-    ensure_model, ensure_onnx_runtime, get_colgrep_data_dir, Config, DEFAULT_MAX_RECURSION_DEPTH,
-    DEFAULT_MODEL, DEFAULT_POOL_FACTOR,
+    ensure_model, ensure_onnx_runtime, Config, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MODEL,
+    DEFAULT_POOL_FACTOR,
 };
 
 fn format_parallel_setting(config: &Config) -> String {
@@ -71,29 +71,17 @@ pub fn cmd_set_model(model: &str) -> Result<()> {
         }
     }
 
-    // Model is valid - clear existing indexes if we had a previous model
+    // Indexes are now scoped per (project, model), so switching models does not
+    // corrupt existing indexes. We keep them intact: the new model will reuse
+    // its own index if one exists, or build one on the next run. Previously
+    // built indexes for other models remain searchable if the user switches back.
     if current_model.is_some() {
-        let data_dir = get_colgrep_data_dir()?;
-        if data_dir.exists() {
-            let index_dirs: Vec<_> = std::fs::read_dir(&data_dir)?
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().is_dir())
-                .collect();
-
-            if !index_dirs.is_empty() {
-                eprintln!(
-                    "🔄 Switching model from {} to {}",
-                    current_model.as_deref().unwrap_or(DEFAULT_MODEL),
-                    model
-                );
-                eprintln!("   Clearing {} existing index(es)...", index_dirs.len());
-
-                for entry in &index_dirs {
-                    let index_path = entry.path();
-                    std::fs::remove_dir_all(&index_path)?;
-                }
-            }
-        }
+        eprintln!(
+            "🔄 Switching model from {} to {}",
+            current_model.as_deref().unwrap_or(DEFAULT_MODEL),
+            model
+        );
+        eprintln!("   Existing indexes for other models are kept (each model has its own index).");
     }
 
     // Save new model preference

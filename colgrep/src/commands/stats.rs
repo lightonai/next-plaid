@@ -40,10 +40,11 @@ pub fn cmd_stats() -> Result<()> {
     for entry in &index_dirs {
         let index_path = entry.path();
 
-        // Load project metadata
-        let project_path = ProjectMetadata::load(&index_path)
-            .map(|m| m.project_path.display().to_string())
-            .unwrap_or_else(|_| "Unknown".to_string());
+        // Load project metadata (path + optional model)
+        let (project_path, model) = match ProjectMetadata::load(&index_path) {
+            Ok(m) => (m.project_path.display().to_string(), m.model),
+            Err(_) => ("Unknown".to_string(), None),
+        };
 
         // Load state for search count
         let state = IndexState::load(&index_path).unwrap_or_default();
@@ -53,6 +54,10 @@ pub fn cmd_stats() -> Result<()> {
         let num_functions = get_index_document_count(&vector_index_path);
 
         println!("Project: {}", project_path);
+        match model {
+            Some(m) => println!("  Model: {}", m),
+            None => println!("  Model: (unknown — legacy index)"),
+        }
         println!("  Functions indexed: {}", num_functions);
         println!("  Search count: {}", state.search_count);
         println!();
