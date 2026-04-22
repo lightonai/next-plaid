@@ -1,7 +1,7 @@
 //! Minimal browser-wasm spike for testing tokenizer viability.
 
-use std::cell::RefCell;
 use serde::Deserialize;
+use std::cell::RefCell;
 use tokenizers::Tokenizer;
 use wasm_bindgen::prelude::*;
 
@@ -29,9 +29,7 @@ fn state_not_initialized() -> JsError {
     JsError::new("tokenizer spike is not initialized")
 }
 
-fn with_state<T>(
-    f: impl FnOnce(&InitializedState) -> Result<T, JsError>,
-) -> Result<T, JsError> {
+fn with_state<T>(f: impl FnOnce(&InitializedState) -> Result<T, JsError>) -> Result<T, JsError> {
     STATE.with(|state| {
         let borrowed = state.borrow();
         let initialized = borrowed.as_ref().ok_or_else(state_not_initialized)?;
