@@ -2,8 +2,9 @@
 
 use next_plaid_browser_contract::{
     ArtifactKind, BundleInstalledResponse, BundleManifest, CompressionKind, EncoderIdentity,
-    FtsTokenizer, MetadataMode, MutableCorpusDocument, MutableCorpusSnapshot, MutableCorpusSummary,
-    MutableCorpusSyncSummary, RegisterMutableCorpusResponse, SyncMutableCorpusResponse,
+    FtsTokenizer, MatrixPayload, MetadataMode, MutableCorpusDocument, MutableCorpusSnapshot,
+    MutableCorpusSummary, MutableCorpusSyncSummary, RegisterMutableCorpusResponse,
+    SyncMutableCorpusResponse,
 };
 use next_plaid_browser_loader::{ArtifactBytesMap, BundleLoaderError, LoadedSearchArtifacts};
 use serde::{Deserialize, Serialize};
@@ -153,6 +154,7 @@ struct MutableCorpusRecord {
 struct PersistedMutableCorpusDocument {
     document_id: String,
     semantic_text: String,
+    semantic_embeddings: Option<MatrixPayload>,
     metadata: Option<Value>,
     content_hash: String,
 }
@@ -281,6 +283,7 @@ fn decode_metadata_documents(
 #[allow(dead_code)]
 fn validate_mutable_snapshot(snapshot: &MutableCorpusSnapshot) -> Result<(), BrowserStorageError> {
     let mut document_ids = std::collections::HashSet::new();
+    let mut documents_with_embeddings = 0usize;
     for document in &snapshot.documents {
         if document.document_id.is_empty() {
             return Err(BrowserStorageError::InvalidMutableCorpusSnapshot(
@@ -293,6 +296,75 @@ fn validate_mutable_snapshot(snapshot: &MutableCorpusSnapshot) -> Result<(), Bro
                 document.document_id
             )));
         }
+        if let Some(semantic_embeddings) = &document.semantic_embeddings {
+            validate_mutable_matrix_payload(semantic_embeddings, None)?;
+            documents_with_embeddings += 1;
+        }
+    }
+    if documents_with_embeddings > 0 && documents_with_embeddings != snapshot.documents.len() {
+        return Err(BrowserStorageError::InvalidMutableCorpusSnapshot(
+            "semantic_embeddings must be present for every document or omitted for every document"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn validate_mutable_snapshot_for_encoder(
+    snapshot: &MutableCorpusSnapshot,
+    encoder: &EncoderIdentity,
+) -> Result<(), BrowserStorageError> {
+    validate_mutable_snapshot(snapshot)?;
+    for document in &snapshot.documents {
+        if let Some(semantic_embeddings) = &document.semantic_embeddings {
+            validate_mutable_matrix_payload(semantic_embeddings, Some(encoder.embedding_dim))?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn validate_mutable_matrix_payload(
+    payload: &MatrixPayload,
+    expected_dim: Option<usize>,
+) -> Result<(), BrowserStorageError> {
+    if payload.rows == 0 {
+        return Err(BrowserStorageError::InvalidMutableCorpusSnapshot(
+            "semantic_embeddings.rows must be greater than zero".into(),
+        ));
+    }
+    if payload.dim == 0 {
+        return Err(BrowserStorageError::InvalidMutableCorpusSnapshot(
+            "semantic_embeddings.dim must be greater than zero".into(),
+        ));
+    }
+    if let Some(expected_dim) = expected_dim {
+        if payload.dim != expected_dim {
+            return Err(BrowserStorageError::InvalidMutableCorpusSnapshot(format!(
+                "semantic_embeddings.dim must match encoder.embedding_dim: expected {expected_dim}, found {}",
+                payload.dim
+            )));
+        }
+    }
+    let expected_len = payload
+        .rows
+        .checked_mul(payload.dim)
+        .ok_or_else(|| {
+            BrowserStorageError::InvalidMutableCorpusSnapshot(
+                "semantic_embeddings.rows * semantic_embeddings.dim overflowed".into(),
+            )
+        })?;
+    if payload.values.len() != expected_len {
+        return Err(BrowserStorageError::InvalidMutableCorpusSnapshot(format!(
+            "semantic_embeddings.values length mismatch: expected {expected_len}, found {}",
+            payload.values.len()
+        )));
+    }
+    if payload.values.iter().any(|value| !value.is_finite()) {
+        return Err(BrowserStorageError::InvalidMutableCorpusSnapshot(
+            "semantic_embeddings must not contain NaN or Infinity".into(),
+        ));
     }
     Ok(())
 }
@@ -315,6 +387,18 @@ fn mutable_corpus_summary(
 fn canonical_document_hash(document: &MutableCorpusDocument) -> String {
     let mut hasher = Sha256::new();
     hasher.update(document.semantic_text.as_bytes());
+    hasher.update([0]);
+    match &document.semantic_embeddings {
+        Some(semantic_embeddings) => {
+            hasher.update([1]);
+            hasher.update(semantic_embeddings.rows.to_le_bytes());
+            hasher.update(semantic_embeddings.dim.to_le_bytes());
+            for value in &semantic_embeddings.values {
+                hasher.update(value.to_le_bytes());
+            }
+        }
+        None => hasher.update([0]),
+    }
     hasher.update([0]);
     write_canonical_json_value(document.metadata.as_ref(), &mut hasher);
     let digest = hasher.finalize();
@@ -378,6 +462,7 @@ fn persisted_document(document: MutableCorpusDocument) -> PersistedMutableCorpus
     PersistedMutableCorpusDocument {
         document_id: document.document_id,
         semantic_text: document.semantic_text,
+        semantic_embeddings: document.semantic_embeddings,
         metadata: document.metadata,
         content_hash,
     }
@@ -388,6 +473,7 @@ fn restore_document(document: PersistedMutableCorpusDocument) -> MutableCorpusDo
     MutableCorpusDocument {
         document_id: document.document_id,
         semantic_text: document.semantic_text,
+        semantic_embeddings: document.semantic_embeddings,
         metadata: document.metadata,
     }
 }
@@ -661,13 +747,12 @@ mod wasm {
         corpus_id: &str,
         snapshot: &MutableCorpusSnapshot,
     ) -> Result<SyncedMutableCorpus, BrowserStorageError> {
-        validate_mutable_snapshot(snapshot)?;
-
         let db = open_indexed_db().await?;
         let key = mutable_corpus_key(corpus_id);
         let mut record = get_mutable_corpus_record(&db, &key)
             .await?
             .ok_or_else(|| BrowserStorageError::MissingMutableCorpus(corpus_id.to_string()))?;
+        validate_mutable_snapshot_for_encoder(snapshot, &record.encoder)?;
 
         let previous = match record.active_snapshot_key.as_ref() {
             Some(active_snapshot_key) => {
@@ -1346,6 +1431,7 @@ mod tests {
         MutableCorpusDocument {
             document_id: document_id.to_string(),
             semantic_text: semantic_text.to_string(),
+            semantic_embeddings: None,
             metadata: Some(metadata),
         }
     }

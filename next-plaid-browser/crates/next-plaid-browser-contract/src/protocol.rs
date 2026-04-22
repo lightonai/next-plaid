@@ -710,6 +710,12 @@ pub struct MutableCorpusDocument {
     pub document_id: String,
     /// Semantic text that will later back dense encoding.
     pub semantic_text: String,
+    /// Optional pre-encoded token embeddings for dense mutable-corpus search.
+    ///
+    /// When present for every document in the snapshot, the runtime can
+    /// immediately serve semantic and hybrid search over the mutable corpus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_embeddings: Option<MatrixPayload>,
     /// Optional metadata used for keyword search, filtering, and result replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "unknown | null")]
@@ -920,6 +926,7 @@ mod tests {
                 MutableCorpusDocument {
                     document_id: "alpha".into(),
                     semantic_text: "alpha launch memo".into(),
+                    semantic_embeddings: None,
                     metadata: Some(serde_json::json!({
                         "title": "alpha launch memo",
                         "topic": "edge"
@@ -928,6 +935,7 @@ mod tests {
                 MutableCorpusDocument {
                     document_id: "beta".into(),
                     semantic_text: "beta metrics report".into(),
+                    semantic_embeddings: None,
                     metadata: Some(serde_json::json!({
                         "title": "beta metrics report",
                         "topic": "metrics"

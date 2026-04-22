@@ -493,12 +493,17 @@ fn load_mutable_corpus_request(corpus_id: &str) -> StorageRequest {
     })
 }
 
+fn matrix_payload(values: Vec<f32>, rows: usize, dim: usize) -> MatrixPayload {
+    MatrixPayload { values, rows, dim }
+}
+
 fn mutable_snapshot_v1() -> MutableCorpusSnapshot {
     MutableCorpusSnapshot {
         documents: vec![
             MutableCorpusDocument {
                 document_id: "doc-alpha".into(),
                 semantic_text: "alpha launch semantic body".into(),
+                semantic_embeddings: None,
                 metadata: Some(serde_json::json!({
                     "title": "alpha launch memo",
                     "topic": "edge",
@@ -508,6 +513,7 @@ fn mutable_snapshot_v1() -> MutableCorpusSnapshot {
             MutableCorpusDocument {
                 document_id: "doc-beta".into(),
                 semantic_text: "beta report semantic body".into(),
+                semantic_embeddings: None,
                 metadata: Some(serde_json::json!({
                     "title": "beta report summary",
                     "topic": "metrics",
@@ -524,6 +530,7 @@ fn mutable_snapshot_v2() -> MutableCorpusSnapshot {
             MutableCorpusDocument {
                 document_id: "doc-alpha".into(),
                 semantic_text: "alpha launch semantic body updated".into(),
+                semantic_embeddings: None,
                 metadata: Some(serde_json::json!({
                     "title": "alpha launch memo v2",
                     "topic": "edge",
@@ -533,10 +540,52 @@ fn mutable_snapshot_v2() -> MutableCorpusSnapshot {
             MutableCorpusDocument {
                 document_id: "doc-gamma".into(),
                 semantic_text: "gamma archive semantic body".into(),
+                semantic_embeddings: None,
                 metadata: Some(serde_json::json!({
                     "title": "gamma archive note",
                     "topic": "history",
                     "kind": "archive"
+                })),
+            },
+        ],
+    }
+}
+
+fn mutable_snapshot_v1_dense() -> MutableCorpusSnapshot {
+    MutableCorpusSnapshot {
+        documents: vec![
+            MutableCorpusDocument {
+                document_id: "doc-alpha".into(),
+                semantic_text: "alpha launch semantic body".into(),
+                semantic_embeddings: Some(matrix_payload(
+                    vec![
+                        1.0, 0.0, //
+                        0.7, 0.7,
+                    ],
+                    2,
+                    2,
+                )),
+                metadata: Some(serde_json::json!({
+                    "title": "alpha launch memo",
+                    "topic": "edge",
+                    "kind": "memo"
+                })),
+            },
+            MutableCorpusDocument {
+                document_id: "doc-beta".into(),
+                semantic_text: "beta report semantic body".into(),
+                semantic_embeddings: Some(matrix_payload(
+                    vec![
+                        0.0, 1.0, //
+                        0.7, 0.7,
+                    ],
+                    2,
+                    2,
+                )),
+                metadata: Some(serde_json::json!({
+                    "title": "beta report summary",
+                    "topic": "metrics",
+                    "kind": "report"
                 })),
             },
         ],
@@ -952,7 +1001,7 @@ async fn browser_storage_mutable_corpus_register_sync_reload_roundtrip() {
 
     let sync = storage_response(sync_mutable_corpus_request(
         corpus_id,
-        mutable_snapshot_v1(),
+        mutable_snapshot_v1_dense(),
     ))
     .await;
     match sync {
@@ -1000,6 +1049,34 @@ async fn browser_storage_mutable_corpus_register_sync_reload_roundtrip() {
     let filtered_response = runtime_result(&filtered);
     assert_eq!(filtered_response.results[0].document_ids, vec![1]);
 
+    let semantic = runtime_result(&worker_search_request(
+        corpus_id,
+        vec![vec![vec![1.0, 0.0], vec![0.7, 0.7]]],
+        None,
+    ));
+    assert_eq!(semantic.results[0].document_ids, vec![0, 1]);
+
+    let hybrid = runtime_result(&hybrid_search_request(corpus_id));
+    assert_eq!(hybrid.results[0].document_ids[0], 1);
+
+    let health = runtime_health_response();
+    assert_eq!(health.loaded_indices, 1);
+    assert!(health.memory_usage_breakdown.index_bytes > 0);
+    assert!(health.memory_usage_breakdown.keyword_runtime_bytes > 0);
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_keyword_only_mutable_corpus_rejects_semantic_queries() {
+    reset_runtime_state();
+    let corpus_id = "mutable-demo-keyword-only";
+
+    let _ = storage_response(register_mutable_corpus_request(corpus_id, 2)).await;
+    let _ = storage_response(sync_mutable_corpus_request(
+        corpus_id,
+        mutable_snapshot_v1(),
+    ))
+    .await;
+
     let semantic_error = runtime_error_response(RuntimeRequest::Search(worker_search_request(
         corpus_id,
         vec![vec![vec![1.0, 0.0], vec![0.7, 0.7]]],
@@ -1008,11 +1085,7 @@ async fn browser_storage_mutable_corpus_register_sync_reload_roundtrip() {
     assert_eq!(semantic_error.code, ErrorCode::InvalidRequest);
     assert!(semantic_error
         .message
-        .contains("semantic search is not yet supported for mutable corpus"));
-
-    let health = runtime_health_response();
-    assert_eq!(health.loaded_indices, 1);
-    assert!(health.memory_usage_breakdown.keyword_runtime_bytes > 0);
+        .contains("semantic search requires semantic_embeddings"));
 }
 
 #[wasm_bindgen_test]
