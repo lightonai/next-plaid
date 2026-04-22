@@ -446,7 +446,7 @@ async function runWrapperSmoke(): Promise<unknown> {
         const encoderClient = yield* EncoderWorkerClient;
         const runtimeService = yield* BrowserSearchRuntime;
         const initialState = yield* SubscriptionRef.get(searchClient.state);
-        const initialLoadedIndices = yield* SubscriptionRef.get(searchClient.loadedIndices);
+        const initialLoadedIndices = yield* SubscriptionRef.get(runtimeService.loadedIndices);
         const installBundle = yield* searchClient.installBundle(
           yield* Effect.tryPromise({
             try: () => installStoredBundleRequest(),
@@ -491,7 +491,7 @@ async function runWrapperSmoke(): Promise<unknown> {
           const encoderClient = yield* EncoderWorkerClient;
           const runtimeService = yield* BrowserSearchRuntime;
           const reloadedInitialHealth = {
-            loaded_indices: (yield* SubscriptionRef.get(searchClient.loadedIndices)).size,
+            loaded_indices: (yield* SubscriptionRef.get(runtimeService.loadedIndices)).size,
           };
           const searchState = yield* SubscriptionRef.get(runtimeService.searchState);
 
@@ -514,7 +514,7 @@ async function runWrapperSmoke(): Promise<unknown> {
             filteredKeywordSearchRequest(),
           );
           const health = {
-            loaded_indices: (yield* SubscriptionRef.get(searchClient.loadedIndices)).size,
+            loaded_indices: (yield* SubscriptionRef.get(runtimeService.loadedIndices)).size,
           };
 
           const encoderEvents: EncoderInitEvent[] = [];

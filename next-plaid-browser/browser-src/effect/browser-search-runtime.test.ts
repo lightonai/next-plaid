@@ -42,6 +42,9 @@ import { EncoderWorkerClient } from "./encoder-worker-client.js";
 import type {
   LoadedSearchIndexMetadata,
   MutableCorpusMetadata,
+} from "./search-metadata-catalog.js";
+import { SearchMetadataCatalog } from "./search-metadata-catalog.js";
+import type {
   SearchWorkerClientApi,
   SearchWorkerState,
 } from "./search-worker-client.js";
@@ -87,12 +90,8 @@ function makeEncodeFailureFallbackLayer(): Layer.Layer<
   BrowserSearchRuntime,
   never
 > {
-  const searchLayer = Layer.effect(SearchWorkerClient)(
+  const catalogLayer = Layer.effect(SearchMetadataCatalog)(
     Effect.gen(function*() {
-      const state = yield* SubscriptionRef.make<SearchWorkerState>({
-        status: "ready" as const,
-        lastError: null,
-      });
       const loadedIndices = yield* SubscriptionRef.make<
         ReadonlyMap<string, LoadedSearchIndexMetadata>
       >(
@@ -111,12 +110,31 @@ function makeEncodeFailureFallbackLayer(): Layer.Layer<
         ]),
       );
 
-      return SearchWorkerClient.of({
-        state,
+      return SearchMetadataCatalog.of({
         loadedIndices,
         mutableCorpora: yield* SubscriptionRef.make<
           ReadonlyMap<string, MutableCorpusMetadata>
         >(new Map()),
+        rememberLoadedIndex: () => Effect.die("unused rememberLoadedIndex in fallback test"),
+        rememberInstalledBundle: () =>
+          Effect.die("unused rememberInstalledBundle in fallback test"),
+        rememberStoredBundleLoad: () =>
+          Effect.die("unused rememberStoredBundleLoad in fallback test"),
+        rememberMutableCorpus: () =>
+          Effect.die("unused rememberMutableCorpus in fallback test"),
+      });
+    }),
+  );
+
+  const searchLayer = Layer.effect(SearchWorkerClient)(
+    Effect.gen(function*() {
+      const state = yield* SubscriptionRef.make<SearchWorkerState>({
+        status: "ready" as const,
+        lastError: null,
+      });
+
+      return SearchWorkerClient.of({
+        state,
         loadIndex: () => Effect.die("unused loadIndex in fallback test"),
         installBundle: () => Effect.die("unused installBundle in fallback test"),
         loadStoredBundle: () => Effect.die("unused loadStoredBundle in fallback test"),
@@ -161,7 +179,7 @@ function makeEncodeFailureFallbackLayer(): Layer.Layer<
     }),
   );
 
-  const appLayer = Layer.mergeAll(searchLayer, encoderLayer);
+  const appLayer = Layer.mergeAll(searchLayer, encoderLayer, catalogLayer);
   return BrowserSearchRuntime.layer().pipe(Layer.provide(appLayer));
 }
 

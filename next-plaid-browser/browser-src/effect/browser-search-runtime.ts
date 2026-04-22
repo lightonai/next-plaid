@@ -38,6 +38,9 @@ import {
 import {
   type LoadedSearchIndexMetadata,
   type MutableCorpusMetadata,
+  SearchMetadataCatalog,
+} from "./search-metadata-catalog.js";
+import {
   SearchWorkerClient,
   type SearchWorkerState,
 } from "./search-worker-client.js";
@@ -100,6 +103,9 @@ export type MutableCorpusSyncEvent =
 export interface BrowserSearchRuntimeApi {
   readonly encoderState: SubscriptionRef.SubscriptionRef<EncoderStateSnapshot>;
   readonly searchState: SubscriptionRef.SubscriptionRef<SearchWorkerState>;
+  readonly loadedIndices: SubscriptionRef.SubscriptionRef<
+    ReadonlyMap<string, LoadedSearchIndexMetadata>
+  >;
   readonly mutableCorpora: SubscriptionRef.SubscriptionRef<
     ReadonlyMap<string, MutableCorpusMetadata>
   >;
@@ -130,7 +136,7 @@ export class BrowserSearchRuntime
   static layer = (): Layer.Layer<
     BrowserSearchRuntime,
     never,
-    SearchWorkerClient | EncoderWorkerClient
+    SearchMetadataCatalog | SearchWorkerClient | EncoderWorkerClient
   > => Layer.effect(BrowserSearchRuntime)(makeBrowserSearchRuntime);
 }
 
@@ -591,8 +597,9 @@ function validateSearchRequest(
 export const makeBrowserSearchRuntime: Effect.Effect<
   BrowserSearchRuntimeApi,
   never,
-  SearchWorkerClient | EncoderWorkerClient | Scope.Scope
+  SearchMetadataCatalog | SearchWorkerClient | EncoderWorkerClient | Scope.Scope
 > = Effect.gen(function*() {
+  const metadataCatalog = yield* SearchMetadataCatalog;
   const searchClient = yield* SearchWorkerClient;
   const encoderClient = yield* EncoderWorkerClient;
   const mutableSyncEventPubSub = yield* Effect.acquireRelease(
@@ -609,7 +616,7 @@ export const makeBrowserSearchRuntime: Effect.Effect<
   const ensureMutableCorpusLoaded = Effect.fn(
     "BrowserSearchRuntime.ensureMutableCorpusLoaded",
   )((corpusId: string, operation: string) =>
-    SubscriptionRef.get(searchClient.mutableCorpora).pipe(
+    SubscriptionRef.get(metadataCatalog.mutableCorpora).pipe(
       Effect.flatMap((current) => {
         const metadata = current.get(corpusId);
         if (metadata?.loaded) {
@@ -620,7 +627,7 @@ export const makeBrowserSearchRuntime: Effect.Effect<
           type: "load_mutable_corpus",
           corpus_id: corpusId,
         }).pipe(
-          Effect.andThen(SubscriptionRef.get(searchClient.mutableCorpora)),
+          Effect.andThen(SubscriptionRef.get(metadataCatalog.mutableCorpora)),
           Effect.flatMap((next) => {
             const loaded = next.get(corpusId);
             return loaded === undefined
@@ -634,7 +641,7 @@ export const makeBrowserSearchRuntime: Effect.Effect<
   const resolveMutableCorpusMetadata = Effect.fn(
     "BrowserSearchRuntime.resolveMutableCorpusMetadata",
   )((corpusId: string, operation: string) =>
-    SubscriptionRef.get(searchClient.mutableCorpora).pipe(
+    SubscriptionRef.get(metadataCatalog.mutableCorpora).pipe(
       Effect.flatMap((current) => {
         const metadata = current.get(corpusId);
         if (metadata !== undefined) {
@@ -645,7 +652,7 @@ export const makeBrowserSearchRuntime: Effect.Effect<
           type: "load_mutable_corpus",
           corpus_id: corpusId,
         }).pipe(
-          Effect.andThen(SubscriptionRef.get(searchClient.mutableCorpora)),
+          Effect.andThen(SubscriptionRef.get(metadataCatalog.mutableCorpora)),
           Effect.flatMap((next) => {
             const loaded = next.get(corpusId);
             return loaded === undefined
@@ -864,7 +871,7 @@ export const makeBrowserSearchRuntime: Effect.Effect<
   const searchWithEmbeddings = Effect.fn("BrowserSearchRuntime.searchWithEmbeddings")(
     (request: SearchRequestEnvelope) =>
       loadedIndexMetadata(
-        searchClient.loadedIndices,
+        metadataCatalog.loadedIndices,
         request.name,
         "browser_runtime.search_with_embeddings",
       ).pipe(
@@ -890,7 +897,7 @@ export const makeBrowserSearchRuntime: Effect.Effect<
     (args: EncodeAndSearchArgs) =>
       Effect.gen(function*() {
         const indexMetadata = yield* loadedIndexMetadata(
-          searchClient.loadedIndices,
+          metadataCatalog.loadedIndices,
           args.searchRequest.name,
           "browser_runtime.encode_and_search",
         );
@@ -967,7 +974,8 @@ export const makeBrowserSearchRuntime: Effect.Effect<
   return {
     encoderState: encoderClient.state,
     searchState: searchClient.state,
-    mutableCorpora: searchClient.mutableCorpora,
+    loadedIndices: metadataCatalog.loadedIndices,
+    mutableCorpora: metadataCatalog.mutableCorpora,
     encoderEvents: encoderClient.events,
     mutableSyncEvents: Stream.fromPubSub(mutableSyncEventPubSub),
     registerCorpus,

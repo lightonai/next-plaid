@@ -13,6 +13,7 @@ import {
   EncoderWorkerClient,
   type EncoderWorkerClientOptions,
 } from "./encoder-worker-client.js";
+import { SearchMetadataCatalog } from "./search-metadata-catalog.js";
 import {
   SearchWorkerClient,
   type SearchWorkerClientOptions,
@@ -49,6 +50,23 @@ export interface BrowserRuntimeCompositionOptions extends BrowserRuntimeWorkerLa
   readonly encoderClientOptions?: EncoderWorkerClientOptions | undefined;
 }
 
+function makeBrowserWorkerClientLayerWithCatalog(
+  options: BrowserRuntimeCompositionOptions,
+  metadataCatalogLayer: Layer.Layer<SearchMetadataCatalog, never>,
+): Layer.Layer<
+  SearchWorkerClient | EncoderWorkerClient,
+  BrowserRuntimeAppError
+> {
+  const searchClientLayer = SearchWorkerClient.layer(options.searchClientOptions).pipe(
+    Layer.provide(Layer.mergeAll(options.searchWorkerLayer, metadataCatalogLayer)),
+  );
+  const encoderClientLayer = EncoderWorkerClient.layer(options.encoderClientOptions).pipe(
+    Layer.provide(options.encoderWorkerLayer),
+  );
+
+  return Layer.mergeAll(searchClientLayer, encoderClientLayer);
+}
+
 export function makeBrowserRuntimeWorkerLayers(
   factories: BrowserWorkerFactories,
 ): BrowserRuntimeWorkerLayers {
@@ -64,14 +82,10 @@ export function makeBrowserWorkerClientLayer(
   SearchWorkerClient | EncoderWorkerClient,
   BrowserRuntimeAppError
 > {
-  const searchClientLayer = SearchWorkerClient.layer(options.searchClientOptions).pipe(
-    Layer.provide(options.searchWorkerLayer),
+  return makeBrowserWorkerClientLayerWithCatalog(
+    options,
+    SearchMetadataCatalog.layer,
   );
-  const encoderClientLayer = EncoderWorkerClient.layer(options.encoderClientOptions).pipe(
-    Layer.provide(options.encoderWorkerLayer),
-  );
-
-  return Layer.mergeAll(searchClientLayer, encoderClientLayer);
 }
 
 export function makeBrowserSearchRuntimeLayer(
@@ -80,9 +94,13 @@ export function makeBrowserSearchRuntimeLayer(
   BrowserRuntimeAppServices,
   BrowserRuntimeAppError
 > {
-  const workerClientLayer = makeBrowserWorkerClientLayer(options);
+  const metadataCatalogLayer = SearchMetadataCatalog.layer;
+  const workerClientLayer = makeBrowserWorkerClientLayerWithCatalog(
+    options,
+    metadataCatalogLayer,
+  );
   const runtimeLayer = BrowserSearchRuntime.layer().pipe(
-    Layer.provide(workerClientLayer),
+    Layer.provide(Layer.mergeAll(workerClientLayer, metadataCatalogLayer)),
   );
 
   return Layer.mergeAll(workerClientLayer, runtimeLayer);

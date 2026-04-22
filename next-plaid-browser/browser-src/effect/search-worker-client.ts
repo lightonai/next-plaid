@@ -1,17 +1,14 @@
-import { Context, Duration, Effect, Layer, Ref, Scope, SubscriptionRef } from "effect";
+import { Context, Duration, Effect, Layer, Scope, SubscriptionRef } from "effect";
 import * as Worker from "effect/unstable/workers/Worker";
 
 import type {
   BundleInstalledResponseEnvelope,
-  BundleManifest,
-  EncoderIdentity,
   IndexLoadedResponseEnvelope,
   InstallBundleRequestEnvelope,
   LoadMutableCorpusRequestEnvelope,
   LoadMutableCorpusResponseEnvelope,
   LoadIndexRequestEnvelope,
   LoadStoredBundleRequestEnvelope,
-  MutableCorpusSummary,
   RegisterMutableCorpusRequestEnvelope,
   RegisterMutableCorpusResponseEnvelope,
   RuntimeErrorResponseEnvelope,
@@ -24,7 +21,6 @@ import type {
   SyncMutableCorpusRequestEnvelope,
   SyncMutableCorpusResponseEnvelope,
 } from "../shared/search-contract.js";
-import type { IndexSummary } from "../generated/IndexSummary.js";
 import {
   type SearchClientError,
   degradedClientError,
@@ -32,6 +28,9 @@ import {
   permanentClientError,
   transientClientError,
 } from "./client-errors.js";
+import {
+  SearchMetadataCatalog,
+} from "./search-metadata-catalog.js";
 import { decodePassthrough, makeWorkerTransport } from "./worker-transport.js";
 
 export type SearchWorkerState =
@@ -40,29 +39,8 @@ export type SearchWorkerState =
   | { status: "failed"; lastError: SearchClientError }
   | { status: "disposed"; lastError: null };
 
-export interface LoadedSearchIndexMetadata {
-  readonly name: string;
-  readonly source: "load_index" | "stored_bundle";
-  readonly summary: IndexSummary;
-  readonly encoder: EncoderIdentity | null;
-  readonly indexId: string | null;
-  readonly buildId: string | null;
-}
-
-export interface MutableCorpusMetadata {
-  readonly corpusId: string;
-  readonly summary: MutableCorpusSummary;
-  readonly loaded: boolean;
-}
-
 export interface SearchWorkerClientApi {
   readonly state: SubscriptionRef.SubscriptionRef<SearchWorkerState>;
-  readonly loadedIndices: SubscriptionRef.SubscriptionRef<
-    ReadonlyMap<string, LoadedSearchIndexMetadata>
-  >;
-  readonly mutableCorpora: SubscriptionRef.SubscriptionRef<
-    ReadonlyMap<string, MutableCorpusMetadata>
-  >;
   readonly loadIndex: (
     request: LoadIndexRequestEnvelope,
   ) => Effect.Effect<IndexLoadedResponseEnvelope, SearchClientError>;
@@ -86,12 +64,6 @@ export interface SearchWorkerClientApi {
   ) => Effect.Effect<LoadMutableCorpusResponseEnvelope, SearchClientError>;
 }
 
-interface InstalledBundleMetadata {
-  readonly indexId: string;
-  readonly buildId: string;
-  readonly manifest: BundleManifest;
-}
-
 export class SearchWorkerClient
   extends Context.Service<SearchWorkerClient, SearchWorkerClientApi>()(
     "next-plaid-browser/SearchWorkerClient",
@@ -102,7 +74,7 @@ export class SearchWorkerClient
   ): Layer.Layer<
     SearchWorkerClient,
     SearchClientError,
-    Worker.WorkerPlatform | Worker.Spawner
+    SearchMetadataCatalog | Worker.WorkerPlatform | Worker.Spawner
   > => Layer.effect(SearchWorkerClient)(makeSearchWorkerClient(options));
 }
 
@@ -181,92 +153,19 @@ function expectResponseType<TResponse extends SearchWorkerResponse>(
   return Effect.succeed(response as TResponse);
 }
 
-function storeLoadedIndex(
-  loadedIndices: SubscriptionRef.SubscriptionRef<
-    ReadonlyMap<string, LoadedSearchIndexMetadata>
-  >,
-  metadata: LoadedSearchIndexMetadata,
-): Effect.Effect<void> {
-  return SubscriptionRef.update(loadedIndices, (current) => {
-    const next = new Map(current);
-    next.set(metadata.name, metadata);
-    return next;
-  });
-}
-
-function loadIndexMetadata(
-  request: LoadIndexRequestEnvelope,
-  response: IndexLoadedResponseEnvelope,
-): LoadedSearchIndexMetadata {
-  return {
-    name: response.name,
-    source: "load_index",
-    summary: response.summary,
-    encoder: request.encoder,
-    indexId: null,
-    buildId: null,
-  };
-}
-
-function storedBundleLoadedMetadata(
-  response: StoredBundleLoadedResponseEnvelope,
-  rememberedBundle: InstalledBundleMetadata | null,
-): LoadedSearchIndexMetadata {
-  const encoder =
-    rememberedBundle?.buildId === response.build_id
-      ? rememberedBundle.manifest.encoder
-      : null;
-
-  return {
-    name: response.name,
-    source: "stored_bundle",
-    summary: response.summary,
-    encoder,
-    indexId: response.index_id,
-    buildId: response.build_id,
-  };
-}
-
-function storeMutableCorpus(
-  mutableCorpora: SubscriptionRef.SubscriptionRef<
-    ReadonlyMap<string, MutableCorpusMetadata>
-  >,
-  metadata: MutableCorpusMetadata,
-): Effect.Effect<void> {
-  return SubscriptionRef.update(mutableCorpora, (current) => {
-    const next = new Map(current);
-    next.set(metadata.corpusId, metadata);
-    return next;
-  });
-}
-
 export const makeSearchWorkerClient = (
   options: SearchWorkerClientOptions = {},
 ): Effect.Effect<
   SearchWorkerClientApi,
   SearchClientError,
-  Worker.WorkerPlatform | Worker.Spawner | Scope.Scope
+  SearchMetadataCatalog | Worker.WorkerPlatform | Worker.Spawner | Scope.Scope
 > =>
   Effect.withLogSpan(
     Effect.gen(function*() {
+      const metadataCatalog = yield* SearchMetadataCatalog;
       const state = yield* Effect.acquireRelease(
         SubscriptionRef.make<SearchWorkerState>({ status: "starting", lastError: null }),
         (ref) => SubscriptionRef.set(ref, { status: "disposed", lastError: null }),
-      );
-      const loadedIndices = yield* Effect.acquireRelease(
-        SubscriptionRef.make<ReadonlyMap<string, LoadedSearchIndexMetadata>>(
-          new Map<string, LoadedSearchIndexMetadata>(),
-        ),
-        (ref) => SubscriptionRef.set(ref, new Map<string, LoadedSearchIndexMetadata>()),
-      );
-      const mutableCorpora = yield* Effect.acquireRelease(
-        SubscriptionRef.make<ReadonlyMap<string, MutableCorpusMetadata>>(
-          new Map<string, MutableCorpusMetadata>(),
-        ),
-        (ref) => SubscriptionRef.set(ref, new Map<string, MutableCorpusMetadata>()),
-      );
-      const installedBundles = yield* Ref.make<ReadonlyMap<string, InstalledBundleMetadata>>(
-        new Map<string, InstalledBundleMetadata>(),
       );
       const transport = yield* makeWorkerTransport<SearchWorkerRequest>({
         workerKind: "search",
@@ -342,10 +241,7 @@ export const makeSearchWorkerClient = (
                 "search_worker.load_index",
               ).pipe(
                 Effect.tap((decoded) =>
-                  storeLoadedIndex(
-                    loadedIndices,
-                    loadIndexMetadata(request, decoded),
-                  ),
+                  metadataCatalog.rememberLoadedIndex(request, decoded),
                 ),
               ),
             ),
@@ -401,15 +297,10 @@ export const makeSearchWorkerClient = (
                 "search_worker.install_bundle",
               ).pipe(
                 Effect.tap((decoded) =>
-                  Ref.update(installedBundles, (current) => {
-                    const next = new Map(current);
-                    next.set(decoded.index_id, {
-                      indexId: decoded.index_id,
-                      buildId: decoded.build_id,
-                      manifest: request.manifest,
-                    });
-                    return next;
-                  }),
+                  metadataCatalog.rememberInstalledBundle(
+                    decoded,
+                    request.manifest,
+                  ),
                 ),
               ),
             ),
@@ -438,17 +329,7 @@ export const makeSearchWorkerClient = (
                 "search_worker.load_stored_bundle",
               ).pipe(
                 Effect.tap((decoded) =>
-                  Ref.get(installedBundles).pipe(
-                    Effect.flatMap((current) =>
-                      storeLoadedIndex(
-                        loadedIndices,
-                        storedBundleLoadedMetadata(
-                          decoded,
-                          current.get(decoded.index_id) ?? null,
-                        ),
-                      ),
-                    ),
-                  ),
+                  metadataCatalog.rememberStoredBundleLoad(decoded),
                 ),
               ),
             ),
@@ -478,7 +359,7 @@ export const makeSearchWorkerClient = (
                 "search_worker.register_mutable_corpus",
               ).pipe(
                 Effect.tap((decoded) =>
-                  storeMutableCorpus(mutableCorpora, {
+                  metadataCatalog.rememberMutableCorpus({
                     corpusId: decoded.corpus_id,
                     summary: decoded.summary,
                     loaded: false,
@@ -511,7 +392,7 @@ export const makeSearchWorkerClient = (
                 "search_worker.sync_mutable_corpus",
               ).pipe(
                 Effect.tap((decoded) =>
-                  storeMutableCorpus(mutableCorpora, {
+                  metadataCatalog.rememberMutableCorpus({
                     corpusId: decoded.corpus_id,
                     summary: decoded.summary,
                     loaded: true,
@@ -545,7 +426,7 @@ export const makeSearchWorkerClient = (
                 "search_worker.load_mutable_corpus",
               ).pipe(
                 Effect.tap((decoded) =>
-                  storeMutableCorpus(mutableCorpora, {
+                  metadataCatalog.rememberMutableCorpus({
                     corpusId: decoded.corpus_id,
                     summary: decoded.summary,
                     loaded: true,
@@ -564,8 +445,6 @@ export const makeSearchWorkerClient = (
 
       return {
         state,
-        loadedIndices,
-        mutableCorpora,
         loadIndex,
         search,
         installBundle,

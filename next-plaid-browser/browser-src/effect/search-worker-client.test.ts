@@ -18,6 +18,7 @@ import type {
   SyncMutableCorpusRequestEnvelope,
 } from "../shared/search-contract.js";
 import type { SearchClientError } from "./client-errors.js";
+import { SearchMetadataCatalog } from "./search-metadata-catalog.js";
 import {
   SearchWorkerClient,
   type SearchWorkerState,
@@ -39,19 +40,22 @@ class SearchHarness
 {}
 
 function makeSearchHarnessLayer(): Layer.Layer<
-  SearchHarness | SearchWorkerClient,
+  SearchHarness | SearchWorkerClient | SearchMetadataCatalog,
   SearchClientError
 > {
   const fake = makeFakeSpawner();
   const workerLayer = BrowserWorker.layer((id) => fake.spawn(id));
-  const clientLayer = SearchWorkerClient.layer().pipe(Layer.provide(workerLayer));
+  const catalogLayer = SearchMetadataCatalog.layer;
+  const clientLayer = SearchWorkerClient.layer().pipe(
+    Layer.provide(Layer.mergeAll(workerLayer, catalogLayer)),
+  );
   const harnessLayer = Layer.succeed(SearchHarness)(
     SearchHarness.of({
       fake,
     }),
   );
 
-  return Layer.mergeAll(clientLayer, harnessLayer);
+  return Layer.mergeAll(clientLayer, catalogLayer, harnessLayer);
 }
 
 function searchRequest(): SearchRequestEnvelope {
@@ -261,6 +265,7 @@ layer(makeSearchHarnessLayer())("SearchWorkerClient loaded index catalog", (it) 
     Effect.gen(function*() {
       const harness = yield* SearchHarness;
       const client = yield* SearchWorkerClient;
+      const metadataCatalog = yield* SearchMetadataCatalog;
 
       yield* waitForWorkerStart(harness.fake);
       harness.fake.dispatchReady();
@@ -286,7 +291,7 @@ layer(makeSearchHarnessLayer())("SearchWorkerClient loaded index catalog", (it) 
       const response = yield* Fiber.join(loadFiber);
       expect(response.type).toBe("index_loaded");
 
-      const loadedIndices = yield* SubscriptionRef.get(client.loadedIndices);
+      const loadedIndices = yield* SubscriptionRef.get(metadataCatalog.loadedIndices);
       const metadata = loadedIndices.get("proof-index");
       expect(metadata).toBeDefined();
       expect(metadata?.encoder).toEqual(proofEncoder());
@@ -301,6 +306,7 @@ layer(makeSearchHarnessLayer())("SearchWorkerClient mutable corpus catalog", (it
     Effect.gen(function*() {
       const harness = yield* SearchHarness;
       const client = yield* SearchWorkerClient;
+      const metadataCatalog = yield* SearchMetadataCatalog;
 
       yield* waitForWorkerStart(harness.fake);
       harness.fake.dispatchReady();
@@ -332,7 +338,7 @@ layer(makeSearchHarnessLayer())("SearchWorkerClient mutable corpus catalog", (it
       const registerResponse = yield* Fiber.join(registerFiber);
       expect(registerResponse.type).toBe("mutable_corpus_registered");
 
-      let mutableCorpora = yield* SubscriptionRef.get(client.mutableCorpora);
+      let mutableCorpora = yield* SubscriptionRef.get(metadataCatalog.mutableCorpora);
       expect(mutableCorpora.get("proof-corpus")).toEqual({
         corpusId: "proof-corpus",
         summary: mutableCorpusSummary(0),
@@ -375,7 +381,7 @@ layer(makeSearchHarnessLayer())("SearchWorkerClient mutable corpus catalog", (it
       const syncResponse = yield* Fiber.join(syncFiber);
       expect(syncResponse.type).toBe("mutable_corpus_synced");
 
-      mutableCorpora = yield* SubscriptionRef.get(client.mutableCorpora);
+      mutableCorpora = yield* SubscriptionRef.get(metadataCatalog.mutableCorpora);
       expect(mutableCorpora.get("proof-corpus")).toEqual({
         corpusId: "proof-corpus",
         summary: mutableCorpusSummary(1),
@@ -411,7 +417,7 @@ layer(makeSearchHarnessLayer())("SearchWorkerClient mutable corpus catalog", (it
       const loadResponse = yield* Fiber.join(loadFiber);
       expect(loadResponse.type).toBe("mutable_corpus_loaded");
 
-      mutableCorpora = yield* SubscriptionRef.get(client.mutableCorpora);
+      mutableCorpora = yield* SubscriptionRef.get(metadataCatalog.mutableCorpora);
       expect(mutableCorpora.get("proof-corpus")).toEqual({
         corpusId: "proof-corpus",
         summary: mutableCorpusSummary(1),
