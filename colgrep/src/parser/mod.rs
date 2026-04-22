@@ -17,6 +17,7 @@ mod call_graph;
 mod extract;
 mod html;
 mod language;
+mod qml;
 mod svelte;
 mod text;
 pub mod types;
@@ -99,6 +100,10 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
     // Handle Svelte components with special extraction logic
     if lang == Language::Svelte {
         return svelte::extract_svelte_units(path, source);
+    }
+
+    if lang == Language::Qml {
+        return qml::extract_qml_units(path, source);
     }
 
     // Handle HTML files with special extraction logic

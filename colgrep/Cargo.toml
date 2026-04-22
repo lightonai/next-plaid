@@ -46,6 +46,7 @@ tree-sitter-zig = "1.1"
 tree-sitter-julia = "0.23"
 tree-sitter-sequel = "0.3"
 tree-sitter-html = "0.23"
+tree-sitter-qmljs = "0.3"
 
 # === Model download ===
 hf-hub = "0.4"

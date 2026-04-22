@@ -17,40 +17,16 @@ use crate::PrettyJson;
 
 /// Convert a Vec<Vec<f32>> to an ndarray::Array2<f32>.
 fn to_ndarray(embeddings: &[Vec<f32>]) -> ApiResult<Array2<f32>> {
-    if embeddings.is_empty() {
-        return Err(ApiError::BadRequest(
-            "Empty embeddings provided".to_string(),
-        ));
-    }
-
-    let rows = embeddings.len();
-    let cols = embeddings[0].len();
-
-    // Validate all rows have same dimension
-    for (i, row) in embeddings.iter().enumerate() {
-        if row.len() != cols {
-            return Err(ApiError::BadRequest(format!(
-                "Inconsistent embedding dimensions: row 0 has {} elements, row {} has {}",
-                cols,
-                i,
-                row.len()
-            )));
-        }
-    }
-
-    let flat: Vec<f32> = embeddings.iter().flatten().copied().collect();
-    Array2::from_shape_vec((rows, cols), flat)
-        .map_err(|e| ApiError::Internal(format!("Failed to create ndarray: {}", e)))
+    crate::models::json_embeddings_to_array2(embeddings, "query", "Query")
+        .map_err(ApiError::BadRequest)
 }
 
 /// Convert DocumentEmbeddings (JSON or base64) to an ndarray::Array2<f32>.
 fn doc_to_ndarray(doc: &crate::models::DocumentEmbeddings) -> ApiResult<Array2<f32>> {
     // Prefer base64 if provided
     if let (Some(b64), Some(shape)) = (&doc.embeddings_b64, &doc.shape) {
-        let floats =
-            crate::models::decode_b64_embeddings(b64, *shape).map_err(ApiError::BadRequest)?;
-        return Array2::from_shape_vec((shape[0], shape[1]), floats)
-            .map_err(|e| ApiError::Internal(format!("Failed to create ndarray: {}", e)));
+        return crate::models::decode_b64_embeddings_to_array2(b64, *shape, "document")
+            .map_err(ApiError::BadRequest);
     }
 
     // Fall back to JSON
@@ -59,7 +35,17 @@ fn doc_to_ndarray(doc: &crate::models::DocumentEmbeddings) -> ApiResult<Array2<f
             "Must provide either 'embeddings' or 'embeddings_b64' + 'shape'".to_string(),
         )
     })?;
-    to_ndarray(embeddings)
+    crate::models::json_embeddings_to_array2(embeddings, "document", "Document")
+        .map_err(ApiError::BadRequest)
+}
+
+fn score_desc_cmp(a: f32, b: f32) -> std::cmp::Ordering {
+    match (a.is_finite(), b.is_finite()) {
+        (true, true) => b.total_cmp(&a),
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        (false, false) => std::cmp::Ordering::Equal,
+    }
 }
 
 /// Compute ColBERT MaxSim score between a query and a document.
@@ -68,7 +54,7 @@ fn doc_to_ndarray(doc: &crate::models::DocumentEmbeddings) -> ApiResult<Array2<f
 /// then sum these maximum similarities.
 ///
 /// Assumes embeddings are already L2-normalized (as ColBERT models produce).
-fn compute_maxsim(query: &Array2<f32>, document: &Array2<f32>) -> f32 {
+fn compute_maxsim(query: &Array2<f32>, document: &Array2<f32>) -> ApiResult<f32> {
     let mut total_score = 0.0f32;
 
     // For each query token
@@ -83,6 +69,11 @@ fn compute_maxsim(query: &Array2<f32>, document: &Array2<f32>) -> f32 {
                 .zip(doc_row.iter())
                 .map(|(q, d)| q * d)
                 .sum();
+            if !sim.is_finite() {
+                return Err(ApiError::BadRequest(
+                    "Rerank score contains non-finite value".to_string(),
+                ));
+            }
             if sim > max_sim {
                 max_sim = sim;
             }
@@ -91,10 +82,15 @@ fn compute_maxsim(query: &Array2<f32>, document: &Array2<f32>) -> f32 {
         // Sum the max similarities
         if max_sim > f32::NEG_INFINITY {
             total_score += max_sim;
+            if !total_score.is_finite() {
+                return Err(ApiError::BadRequest(
+                    "Rerank score contains non-finite value".to_string(),
+                ));
+            }
         }
     }
 
-    total_score
+    Ok(total_score)
 }
 
 /// Rerank documents given pre-computed query and document embeddings.
@@ -126,14 +122,9 @@ pub async fn rerank(
 
     // Convert query to ndarray (base64 or JSON)
     let query = if let (Some(b64), Some(shape)) = (&request.query_b64, &request.query_shape) {
-        let floats =
-            crate::models::decode_b64_embeddings(b64, *shape).map_err(ApiError::BadRequest)?;
-        Array2::from_shape_vec((shape[0], shape[1]), floats)
-            .map_err(|e| ApiError::BadRequest(format!("Failed to create query array: {}", e)))?
+        crate::models::decode_b64_embeddings_to_array2(b64, *shape, "query")
+            .map_err(ApiError::BadRequest)?
     } else if let Some(ref q) = request.query {
-        if q.is_empty() {
-            return Err(ApiError::BadRequest("Empty query embeddings".to_string()));
-        }
         to_ndarray(q)?
     } else {
         return Err(ApiError::BadRequest(
@@ -166,19 +157,12 @@ pub async fn rerank(
     let mut results: Vec<RerankResult> = documents
         .iter()
         .enumerate()
-        .map(|(index, doc)| {
-            let score = compute_maxsim(&query, doc);
-            RerankResult { index, score }
-        })
-        .collect();
+        .map(|(index, doc)| compute_maxsim(&query, doc).map(|score| RerankResult { index, score }))
+        .collect::<ApiResult<Vec<_>>>()?;
     let scoring_ms = scoring_start.elapsed().as_millis() as u64;
 
     // Sort by score descending
-    results.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    results.sort_by(|a, b| score_desc_cmp(a.score, b.score));
 
     let total_ms = start.elapsed().as_millis() as u64;
 
@@ -270,19 +254,12 @@ pub async fn rerank_with_encoding(
     let mut results: Vec<RerankResult> = doc_embeddings
         .iter()
         .enumerate()
-        .map(|(index, doc)| {
-            let score = compute_maxsim(&query, doc);
-            RerankResult { index, score }
-        })
-        .collect();
+        .map(|(index, doc)| compute_maxsim(&query, doc).map(|score| RerankResult { index, score }))
+        .collect::<ApiResult<Vec<_>>>()?;
     let scoring_ms = scoring_start.elapsed().as_millis() as u64;
 
     // Sort by score descending
-    results.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    results.sort_by(|a, b| score_desc_cmp(a.score, b.score));
 
     let total_ms = start.elapsed().as_millis() as u64;
 
@@ -319,4 +296,60 @@ pub async fn rerank_with_encoding(
     Json(_request): Json<crate::models::RerankWithEncodingRequest>,
 ) -> ApiResult<PrettyJson<RerankResponse>> {
     Err(ApiError::ModelNotLoaded)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::error::ApiError;
+    use crate::models::DocumentEmbeddings;
+
+    #[test]
+    fn rerank_query_to_ndarray_rejects_non_finite_values() {
+        let error = super::to_ndarray(&[vec![1.0, f32::NAN]])
+            .expect_err("non-finite query embeddings must fail");
+
+        match error {
+            ApiError::BadRequest(message) => {
+                assert!(message.contains("non-finite value"), "{message}");
+                assert!(message.contains("row 0, col 1"), "{message}");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn rerank_document_to_ndarray_rejects_zero_dimension_b64_shape() {
+        let error = super::doc_to_ndarray(&DocumentEmbeddings {
+            embeddings: None,
+            embeddings_b64: Some(String::new()),
+            shape: Some([1, 0]),
+        })
+        .expect_err("zero-dimension b64 document must fail");
+
+        match error {
+            ApiError::BadRequest(message) => {
+                assert!(
+                    message.contains("Zero dimension document embeddings"),
+                    "{message}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn rerank_compute_maxsim_rejects_non_finite_scores() {
+        let query = ndarray::arr2(&[[f32::MAX, f32::MAX]]);
+        let document = ndarray::arr2(&[[f32::MAX, f32::MAX]]);
+
+        let error =
+            super::compute_maxsim(&query, &document).expect_err("overflowing score must fail");
+
+        match error {
+            ApiError::BadRequest(message) => {
+                assert!(message.contains("non-finite value"), "{message}");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
 }

@@ -31,6 +31,7 @@ pub enum Language {
     Sql,
     Vue,
     Svelte,
+    Qml,
     // Text/config formats (no tree-sitter, indexed as documents)
     Html,
     Markdown,
@@ -78,6 +79,7 @@ impl FromStr for Language {
             "vue" => Ok(Language::Vue),
             "svelte" => Ok(Language::Svelte),
             // Text/config formats
+            "qml" => Ok(Language::Qml),
             "html" | "htm" => Ok(Language::Html),
             "markdown" | "md" => Ok(Language::Markdown),
             "text" | "txt" => Ok(Language::Text),
