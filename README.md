@@ -67,7 +67,6 @@ colgrep --model lightonai/LateOn-Code "database connection pooling"
 
 # See which model an index was built with
 colgrep status
-colgrep --stats
 
 # Private HuggingFace model
 HF_TOKEN=hf_xxx colgrep set-model myorg/private-model
