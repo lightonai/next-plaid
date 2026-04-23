@@ -4,19 +4,19 @@ import type { IndexSummary } from "./IndexSummary";
 /**
  * Response returned after loading a stored bundle into the runtime.
  */
-export type StoredBundleLoadedResponse = { 
+export type StoredBundleLoadedResponse = {
 /**
  * Logical index id for the stored bundle.
  */
-index_id: string, 
+index_id: string,
 /**
  * Build id for the reopened bundle.
  */
-build_id: string, 
+build_id: string,
 /**
  * Runtime-local name assigned to the loaded bundle.
  */
-name: string, 
+name: string,
 /**
  * Summary of the loaded bundle.
  */

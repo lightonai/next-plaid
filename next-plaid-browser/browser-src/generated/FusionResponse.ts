@@ -3,11 +3,11 @@
 /**
  * Response for a fusion request.
  */
-export type FusionResponse = { 
+export type FusionResponse = {
 /**
  * Ranked fused document ids.
  */
-document_ids: number[], 
+document_ids: number[],
 /**
  * Scores aligned with `document_ids`.
  */

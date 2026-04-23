@@ -6,39 +6,39 @@ import type { MetadataMode } from "./MetadataMode";
 /**
  * Top-level manifest for a browser-search bundle.
  */
-export type BundleManifest = { 
+export type BundleManifest = {
 /**
  * Exact schema version for the bundle format.
  */
-format_version: number, 
+format_version: number,
 /**
  * Stable logical id for the indexed corpus.
  */
-index_id: string, 
+index_id: string,
 /**
  * Unique build id for one concrete bundle version.
  */
-build_id: string, 
+build_id: string,
 /**
  * Embedding dimension for centroids and document vectors.
  */
-embedding_dim: number, 
+embedding_dim: number,
 /**
  * Residual quantization bit-width.
  */
-nbits: number, 
+nbits: number,
 /**
  * Number of indexed documents represented by the bundle.
  */
-document_count: number, 
+document_count: number,
 /**
  * Encoder identity expected by this bundle.
  */
-encoder: EncoderIdentity, 
+encoder: EncoderIdentity,
 /**
  * Metadata representation carried by the bundle.
  */
-metadata_mode: MetadataMode, 
+metadata_mode: MetadataMode,
 /**
  * Artifact entries required to load the bundle.
  */

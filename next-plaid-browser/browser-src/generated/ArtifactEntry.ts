@@ -5,23 +5,23 @@ import type { CompressionKind } from "./CompressionKind";
 /**
  * Manifest entry describing one named artifact file.
  */
-export type ArtifactEntry = { 
+export type ArtifactEntry = {
 /**
  * The artifact's logical kind.
  */
-kind: ArtifactKind, 
+kind: ArtifactKind,
 /**
  * Relative path to the artifact inside the bundle root.
  */
-path: string, 
+path: string,
 /**
  * Expected byte length of the on-disk artifact.
  */
-byte_size: number, 
+byte_size: number,
 /**
  * Expected SHA-256 digest of the artifact bytes.
  */
-sha256: string, 
+sha256: string,
 /**
  * Compression applied to the stored artifact bytes.
  */

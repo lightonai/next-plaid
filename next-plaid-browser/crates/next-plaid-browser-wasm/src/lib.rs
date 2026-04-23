@@ -59,6 +59,14 @@ pub(crate) enum WasmError {
         document_count: usize,
     },
 
+    #[error(
+        "source_spans length {source_spans_len} does not match document count {document_count}"
+    )]
+    SourceSpansLengthMismatch {
+        source_spans_len: usize,
+        document_count: usize,
+    },
+
     #[error("index byte count overflow")]
     ByteCountOverflow,
 
@@ -221,9 +229,9 @@ fn storage_error_response(error: &WasmError) -> StorageErrorResponse {
 
 fn error_code(error: &WasmError) -> ErrorCode {
     match error {
-        WasmError::InvalidRequest(_) | WasmError::MetadataLengthMismatch { .. } => {
-            ErrorCode::InvalidRequest
-        }
+        WasmError::InvalidRequest(_)
+        | WasmError::MetadataLengthMismatch { .. }
+        | WasmError::SourceSpansLengthMismatch { .. } => ErrorCode::InvalidRequest,
         WasmError::IndexNotLoaded(_) => ErrorCode::IndexNotLoaded,
         WasmError::EncoderMismatch { .. } => ErrorCode::EncoderMismatch,
         WasmError::QueryDimensionMismatch { .. }
@@ -264,6 +272,13 @@ fn error_context(error: &WasmError) -> Option<serde_json::Value> {
             document_count,
         } => Some(serde_json::json!({
             "metadata_len": metadata_len,
+            "document_count": document_count,
+        })),
+        WasmError::SourceSpansLengthMismatch {
+            source_spans_len,
+            document_count,
+        } => Some(serde_json::json!({
+            "source_spans_len": source_spans_len,
             "document_count": document_count,
         })),
         WasmError::QueryShapeMismatch {
@@ -417,6 +432,7 @@ mod tests {
                 Some(serde_json::json!({"title": "doc-1"})),
                 None,
             ]),
+            source_spans: None,
             nbits: 2,
             fts_tokenizer: FtsTokenizer::Unicode61,
             max_documents: None,
@@ -433,6 +449,7 @@ mod tests {
                 Some(serde_json::json!({"title": "beta report summary", "topic": "metrics"})),
                 Some(serde_json::json!({"title": "gamma archive note", "topic": "history"})),
             ]),
+            source_spans: None,
             nbits: 2,
             fts_tokenizer: FtsTokenizer::Unicode61,
             max_documents: None,

@@ -205,6 +205,55 @@ mod tests {
     }
 
     #[test]
+    fn keyword_index_preserves_valid_fts_expressions() {
+        let index = KeywordIndex::new(
+            &[
+                Some(json!({"title": "alpha launch memo"})),
+                Some(json!({"title": "beta report summary"})),
+                Some(json!({"title": "gamma archive note"})),
+            ],
+            FtsTokenizer::Unicode61,
+        )
+        .unwrap();
+
+        let results = index
+            .search_many(&["alpha OR gamma".to_string()], 3, None)
+            .expect("valid FTS expressions should still be accepted");
+
+        assert_eq!(results[0].document_ids, vec![0, 2]);
+    }
+
+    #[test]
+    fn keyword_index_treats_question_punctuation_as_plain_text() {
+        let index = KeywordIndex::new(
+            &[
+                Some(json!({"title": "Marie Curie won Nobel Prize radiation research"})),
+                Some(json!({"title": "Alan Turing cracked Enigma code"})),
+            ],
+            FtsTokenizer::Unicode61,
+        )
+        .unwrap();
+
+        let results = index
+            .search_many(&["Nobel Prize radiation?".to_string()], 3, None)
+            .expect("keyword search should ignore natural-language punctuation");
+
+        assert_eq!(results[0].document_ids, vec![0]);
+    }
+
+    #[test]
+    fn keyword_index_returns_empty_results_for_punctuation_only_query() {
+        let index = KeywordIndex::new(&demo_metadata(), FtsTokenizer::Unicode61).unwrap();
+
+        let results = index
+            .search_many(&["???".to_string()], 3, None)
+            .expect("punctuation-only keyword search should not reach FTS syntax errors");
+
+        assert!(results[0].document_ids.is_empty());
+        assert!(results[0].scores.is_empty());
+    }
+
+    #[test]
     fn keyword_index_respects_subset_filtering() {
         let index = KeywordIndex::new(
             &[

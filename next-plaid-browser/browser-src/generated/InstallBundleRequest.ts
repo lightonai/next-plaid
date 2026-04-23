@@ -5,15 +5,15 @@ import type { BundleManifest } from "./BundleManifest";
 /**
  * Request to install a browser bundle into persistent storage.
  */
-export type InstallBundleRequest = { 
+export type InstallBundleRequest = {
 /**
  * Manifest describing the bundle.
  */
-manifest: BundleManifest, 
+manifest: BundleManifest,
 /**
  * Artifact byte payloads keyed by artifact kind.
  */
-artifacts: Array<BundleArtifactBytesPayload>, 
+artifacts: Array<BundleArtifactBytesPayload>,
 /**
  * Whether the installed bundle should become the active bundle immediately.
  */

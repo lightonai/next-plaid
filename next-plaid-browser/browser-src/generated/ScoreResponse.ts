@@ -3,7 +3,7 @@
 /**
  * Response for a direct score request.
  */
-export type ScoreResponse = { 
+export type ScoreResponse = {
 /**
  * Scores for each input document.
  */

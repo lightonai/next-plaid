@@ -3,11 +3,11 @@
 /**
  * Ranked result list used as an input to fusion.
  */
-export type RankedResultsPayload = { 
+export type RankedResultsPayload = {
 /**
  * Ranked document ids.
  */
-document_ids: number[], 
+document_ids: number[],
 /**
  * Scores aligned with `document_ids`.
  */

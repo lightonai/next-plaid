@@ -4,11 +4,11 @@ import type { IndexSummary } from "./IndexSummary";
 /**
  * Response returned after an index is loaded into the runtime.
  */
-export type WorkerLoadIndexResponse = { 
+export type WorkerLoadIndexResponse = {
 /**
  * Runtime-local name of the loaded index.
  */
-name: string, 
+name: string,
 /**
  * Summary of the loaded index.
  */

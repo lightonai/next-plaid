@@ -3,7 +3,7 @@
 use next_plaid_browser_contract::{
     ArtifactKind, BundleInstalledResponse, BundleManifest, CompressionKind, EncoderIdentity,
     FtsTokenizer, MatrixPayload, MetadataMode, MutableCorpusDocument, MutableCorpusSnapshot,
-    MutableCorpusSummary, MutableCorpusSyncSummary, RegisterMutableCorpusResponse,
+    MutableCorpusSummary, MutableCorpusSyncSummary, RegisterMutableCorpusResponse, SourceSpan,
     SyncMutableCorpusResponse,
 };
 use next_plaid_browser_loader::{ArtifactBytesMap, BundleLoaderError, LoadedSearchArtifacts};
@@ -24,6 +24,8 @@ pub struct StoredBrowserBundle {
     pub search_artifacts: LoadedSearchArtifacts,
     /// Optional metadata rows reconstructed from stored metadata.
     pub metadata: Option<Vec<Option<Value>>>,
+    /// Optional source spans reconstructed from stored source-span artifacts.
+    pub source_spans: Option<Vec<Option<SourceSpan>>>,
 }
 
 /// Stored mutable corpus reopened from browser persistence.
@@ -159,6 +161,7 @@ struct PersistedMutableCorpusDocument {
     semantic_text: String,
     semantic_embeddings: Option<MatrixPayload>,
     metadata: Option<Value>,
+    source_span: Option<SourceSpan>,
     content_hash: String,
 }
 
@@ -299,6 +302,14 @@ fn validate_mutable_snapshot(snapshot: &MutableCorpusSnapshot) -> Result<(), Bro
                 document.document_id
             )));
         }
+        if let Some(source_span) = &document.source_span {
+            source_span.validate().map_err(|error| {
+                BrowserStorageError::InvalidMutableCorpusSnapshot(format!(
+                    "source_span for document_id '{}' is invalid: {error}",
+                    document.document_id
+                ))
+            })?;
+        }
         if let Some(semantic_embeddings) = &document.semantic_embeddings {
             validate_mutable_matrix_payload(semantic_embeddings, None)?;
             documents_with_embeddings += 1;
@@ -412,6 +423,8 @@ fn canonical_document_hash(document: &MutableCorpusDocument) -> String {
     }
     hasher.update([0]);
     write_canonical_json_value(document.metadata.as_ref(), &mut hasher);
+    hasher.update([0]);
+    write_canonical_serializable_value(document.source_span.as_ref(), &mut hasher);
     let digest = hasher.finalize();
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -419,6 +432,18 @@ fn canonical_document_hash(document: &MutableCorpusDocument) -> String {
         let _ = write!(&mut hex, "{byte:02x}");
     }
     hex
+}
+
+#[allow(dead_code)]
+fn write_canonical_serializable_value<T: Serialize>(
+    value: Option<&T>,
+    output: &mut impl std::io::Write,
+) {
+    let value = value
+        .map(serde_json::to_value)
+        .transpose()
+        .expect("source spans serialize to JSON values");
+    write_canonical_json_value(value.as_ref(), output);
 }
 
 #[allow(dead_code)]
@@ -475,6 +500,7 @@ fn persisted_document(document: MutableCorpusDocument) -> PersistedMutableCorpus
         semantic_text: document.semantic_text,
         semantic_embeddings: document.semantic_embeddings,
         metadata: document.metadata,
+        source_span: document.source_span,
         content_hash,
     }
 }
@@ -486,6 +512,7 @@ fn restore_document(document: PersistedMutableCorpusDocument) -> MutableCorpusDo
         semantic_text: document.semantic_text,
         semantic_embeddings: document.semantic_embeddings,
         metadata: document.metadata,
+        source_span: document.source_span,
     }
 }
 
@@ -599,7 +626,8 @@ mod wasm {
     use indexed_db_futures::transaction::TransactionMode;
     use js_sys::{Function, Object, Promise, Reflect, Uint8Array};
     use next_plaid_browser_loader::{
-        parse_inline_metadata_json, parse_search_artifacts, verify_artifact_bytes,
+        parse_inline_metadata_json, parse_search_artifacts, parse_source_spans_json,
+        verify_artifact_bytes,
     };
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
@@ -993,6 +1021,7 @@ mod wasm {
 
         verify_artifact_bytes(&manifest, &artifact_bytes)?;
         let search_artifacts = parse_search_artifacts(&manifest, &artifact_bytes)?;
+        let source_spans = parse_source_spans_json(&manifest, &artifact_bytes)?;
         let metadata = match manifest.metadata_mode {
             MetadataMode::None => None,
             MetadataMode::InlineJson => Some(decode_metadata_documents(
@@ -1010,6 +1039,7 @@ mod wasm {
             manifest,
             search_artifacts,
             metadata,
+            source_spans,
         })
     }
 
@@ -1411,7 +1441,7 @@ mod wasm {
 mod tests {
     use super::*;
     use next_plaid_browser_contract::{
-        ArtifactEntry, ArtifactKind, CompressionKind, EncoderIdentity,
+        ArtifactEntry, ArtifactKind, CompressionKind, EncoderIdentity, SourceLocator, SourceSpan,
         SUPPORTED_BUNDLE_FORMAT_VERSION,
     };
     use serde_json::json;
@@ -1506,6 +1536,7 @@ mod tests {
             semantic_text: semantic_text.to_string(),
             semantic_embeddings: None,
             metadata: Some(metadata),
+            source_span: None,
         }
     }
 
@@ -1526,6 +1557,20 @@ mod tests {
                 dim,
             }),
             metadata: Some(metadata),
+            source_span: None,
+        }
+    }
+
+    fn source_span(excerpt: &str) -> SourceSpan {
+        SourceSpan {
+            source_id: Some("guide.md".into()),
+            source_uri: Some("https://example.test/guide".into()),
+            title: Some("Guide".into()),
+            excerpt: Some(excerpt.into()),
+            locator: SourceLocator::Section {
+                path: vec!["Guide".into(), "Search".into()],
+                anchor: Some("search".into()),
+            },
         }
     }
 
@@ -1613,6 +1658,20 @@ mod tests {
     }
 
     #[test]
+    fn canonical_mutable_document_hash_includes_source_span() {
+        let mut left =
+            mutable_document("alpha", "shared semantic text", json!({ "topic": "edge" }));
+        left.source_span = Some(source_span("old excerpt"));
+        let mut right = left.clone();
+        right.source_span = Some(source_span("new excerpt"));
+
+        assert_ne!(
+            canonical_document_hash(&left),
+            canonical_document_hash(&right)
+        );
+    }
+
+    #[test]
     fn canonical_mutable_document_hash_with_embeddings_is_portable() {
         let document = mutable_dense_document(
             "alpha",
@@ -1625,7 +1684,7 @@ mod tests {
 
         assert_eq!(
             canonical_document_hash(&document),
-            "70080d55ba278e1c845755e87843007c29d1ef7a7f530513a5cd88a3bf809ed5"
+            "521b635a4d38e20891e3207adf5cd7482d8fd42ff811d4c500f5782526c17e51"
         );
     }
 
@@ -1711,6 +1770,29 @@ mod tests {
                 2,
                 json!({ "topic": "edge" }),
             ))],
+        };
+
+        let summary = sync_summary(Some(&previous), &next);
+        assert!(summary.changed);
+        assert_eq!(summary.added, 0);
+        assert_eq!(summary.updated, 1);
+        assert_eq!(summary.deleted, 0);
+        assert_eq!(summary.unchanged, 0);
+    }
+
+    #[test]
+    fn mutable_sync_summary_detects_source_span_only_change() {
+        let mut previous_document =
+            mutable_document("alpha", "alpha semantic", json!({ "topic": "edge" }));
+        previous_document.source_span = Some(source_span("old excerpt"));
+        let mut next_document = previous_document.clone();
+        next_document.source_span = Some(source_span("new excerpt"));
+
+        let previous = PersistedMutableCorpusSnapshot {
+            documents: vec![persisted_document(previous_document)],
+        };
+        let next = PersistedMutableCorpusSnapshot {
+            documents: vec![persisted_document(next_document)],
         };
 
         let summary = sync_summary(Some(&previous), &next);

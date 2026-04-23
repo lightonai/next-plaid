@@ -3,27 +3,27 @@
 /**
  * Inline search parameters for one-off searches that do not use the runtime cache.
  */
-export type InlineSearchParamsRequest = { 
+export type InlineSearchParamsRequest = {
 /**
  * Query batch size for the scoring loop.
  */
-batch_size: number, 
+batch_size: number,
 /**
  * Number of candidates to exact-score.
  */
-n_full_scores: number, 
+n_full_scores: number,
 /**
  * Maximum number of hits to return.
  */
-top_k: number, 
+top_k: number,
 /**
  * Number of IVF centroids to probe.
  */
-n_ivf_probe: number, 
+n_ivf_probe: number,
 /**
  * Threshold for switching to batched centroid probing.
  */
-centroid_batch_size: number, 
+centroid_batch_size: number,
 /**
  * Optional centroid-score threshold used during probing.
  */

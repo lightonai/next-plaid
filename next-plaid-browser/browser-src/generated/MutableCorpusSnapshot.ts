@@ -4,7 +4,7 @@ import type { MutableCorpusDocument } from "./MutableCorpusDocument";
 /**
  * Authoritative browser-managed snapshot for one mutable corpus.
  */
-export type MutableCorpusSnapshot = { 
+export type MutableCorpusSnapshot = {
 /**
  * Full document set for the corpus at one point in time.
  */

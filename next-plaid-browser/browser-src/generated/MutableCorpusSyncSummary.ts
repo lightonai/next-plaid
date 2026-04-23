@@ -3,23 +3,23 @@
 /**
  * Compact diff summary returned after one mutable-corpus sync.
  */
-export type MutableCorpusSyncSummary = { 
+export type MutableCorpusSyncSummary = {
 /**
  * Whether the authoritative snapshot changed the committed state.
  */
-changed: boolean, 
+changed: boolean,
 /**
  * Number of newly added documents.
  */
-added: number, 
+added: number,
 /**
  * Number of changed documents.
  */
-updated: number, 
+updated: number,
 /**
  * Number of deleted documents.
  */
-deleted: number, 
+deleted: number,
 /**
  * Number of unchanged documents.
  */

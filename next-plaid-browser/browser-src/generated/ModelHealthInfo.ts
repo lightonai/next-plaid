@@ -3,59 +3,59 @@
 /**
  * Health details for the configured embedding model, when present.
  */
-export type ModelHealthInfo = { 
+export type ModelHealthInfo = {
 /**
  * Human-readable model name, when available.
  */
-name?: string | null, 
+name?: string | null,
 /**
  * Model path or identifier.
  */
-path: string, 
+path: string,
 /**
  * Whether the model is quantized.
  */
-quantized: boolean, 
+quantized: boolean,
 /**
  * Embedding dimension produced by the model.
  */
-embedding_dim: number, 
+embedding_dim: number,
 /**
  * Batch size used by the model runtime.
  */
-batch_size: number, 
+batch_size: number,
 /**
  * Number of model sessions currently held open.
  */
-num_sessions: number, 
+num_sessions: number,
 /**
  * Prefix applied to query texts before encoding.
  */
-query_prefix: string, 
+query_prefix: string,
 /**
  * Prefix applied to document texts before encoding.
  */
-document_prefix: string, 
+document_prefix: string,
 /**
  * Maximum query token length.
  */
-query_length: number, 
+query_length: number,
 /**
  * Maximum document token length.
  */
-document_length: number, 
+document_length: number,
 /**
  * Whether the model performs query expansion.
  */
-do_query_expansion: boolean, 
+do_query_expansion: boolean,
 /**
  * Whether token type ids are supplied to the model.
  */
-uses_token_type_ids: boolean, 
+uses_token_type_ids: boolean,
 /**
  * Mask token id from the tokenizer vocabulary.
  */
-mask_token_id: number, 
+mask_token_id: number,
 /**
  * Padding token id from the tokenizer vocabulary.
  */

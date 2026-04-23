@@ -5,15 +5,15 @@ import type { FtsTokenizer } from "./FtsTokenizer";
 /**
  * Request to register one mutable browser corpus.
  */
-export type RegisterMutableCorpusRequest = { 
+export type RegisterMutableCorpusRequest = {
 /**
  * Stable corpus identity exposed by the browser API.
  */
-corpus_id: string, 
+corpus_id: string,
 /**
  * Locked encoder identity for the corpus.
  */
-encoder: EncoderIdentity, 
+encoder: EncoderIdentity,
 /**
  * FTS tokenizer to use when building the keyword runtime.
  */

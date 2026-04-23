@@ -4,27 +4,27 @@ import type { MatrixPayload } from "./MatrixPayload";
 /**
  * Dense search index payload delivered directly over the wire.
  */
-export type SearchIndexPayload = { 
+export type SearchIndexPayload = {
 /**
  * Centroid matrix for the index.
  */
-centroids: MatrixPayload, 
+centroids: MatrixPayload,
 /**
  * Flattened IVF posting-list document ids.
  */
-ivf_doc_ids: number[], 
+ivf_doc_ids: number[],
 /**
  * Posting-list lengths per centroid.
  */
-ivf_lengths: Array<number>, 
+ivf_lengths: Array<number>,
 /**
  * Per-document token offsets into `doc_codes` and `doc_values`.
  */
-doc_offsets: Array<number>, 
+doc_offsets: Array<number>,
 /**
  * Flattened centroid-assignment codes for every token.
  */
-doc_codes: number[], 
+doc_codes: number[],
 /**
  * Flattened dense document token vectors.
  */

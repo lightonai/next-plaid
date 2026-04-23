@@ -3,7 +3,7 @@
 /**
  * Request to lazily reopen the active mutable corpus state after reload.
  */
-export type LoadMutableCorpusRequest = { 
+export type LoadMutableCorpusRequest = {
 /**
  * Stable corpus identity exposed by the browser API.
  */

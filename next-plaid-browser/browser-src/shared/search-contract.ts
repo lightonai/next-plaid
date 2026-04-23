@@ -20,6 +20,8 @@ export type { RuntimeErrorResponse } from "../generated/RuntimeErrorResponse";
 export type { RuntimeRequest } from "../generated/RuntimeRequest";
 export type { RuntimeResponse } from "../generated/RuntimeResponse";
 export type { SearchResponse } from "../generated/SearchResponse";
+export type { SourceLocator } from "../generated/SourceLocator";
+export type { SourceSpan } from "../generated/SourceSpan";
 export type { StorageRequest } from "../generated/StorageRequest";
 export type { StorageResponse } from "../generated/StorageResponse";
 export type { StoredBundleLoadedResponse } from "../generated/StoredBundleLoadedResponse";

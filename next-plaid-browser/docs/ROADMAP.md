@@ -387,6 +387,23 @@ Exit criteria:
 - exact model/runtime choice is fixed
 - parity harness exists against native query embeddings
 
+Status:
+
+- the browser encoder worker now owns:
+  - model-package loading and local reopen
+  - Rust/Wasm preprocessing for query and document inputs
+  - ONNX Runtime Web session creation and warmup
+  - browser-side document enrichment for mutable corpus sync
+- the proof smoke lane is green on the unified tokenizer path
+- the real-model probe is green for:
+  - `lightonai/mxbai-edge-colbert-v0-32m-onnx`
+  - `lightonai/answerai-colbert-small-v1-onnx`
+- remaining work is now product-surface and package-breadth work rather than
+  first-principles browser encoding bring-up:
+  - broader preset and manifest handling
+  - wider model-package support such as the heavier GTE package
+  - broader browser-lane verification after the Chromium-first path
+
 ## Phase 8: Optimization lanes
 
 Goal:

@@ -1,4 +1,5 @@
 import { Effect, Stream, SubscriptionRef } from "effect";
+import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 
 import type {
   BundleInstalledResponseEnvelope,
@@ -10,6 +11,7 @@ import type {
   QueryEmbeddingsPayload,
   SearchRequestEnvelope,
   SearchResultsResponseEnvelope,
+  SourceSpan,
 } from "../shared/search-contract.js";
 import type { EncoderInitEvent, EncoderInitRequest } from "../model-worker/types.js";
 import {
@@ -26,6 +28,8 @@ function makeHarnessRuntime() {
     encoderWorker: () => new Worker("./encoder-worker.js", { type: "module" }),
   });
 }
+
+type HarnessScenario = "interactive-demo" | "wrapper-smoke" | "real-model-probe";
 
 declare global {
   interface Window {
@@ -79,6 +83,7 @@ interface RealCorpusDocumentFixture {
     readonly title: string;
     readonly source: string;
   };
+  readonly source_span: SourceSpan;
 }
 
 interface RealCorpusQueryFixture {
@@ -117,6 +122,27 @@ const REAL_MODEL_PRESETS: readonly RealModelPreset[] = [
   },
 ] as const;
 
+function sectionSourceSpan(args: {
+  readonly sourceId: string;
+  readonly sourceUri: string;
+  readonly title: string;
+  readonly excerpt: string;
+  readonly path: readonly string[];
+  readonly anchor: string;
+}): SourceSpan {
+  return {
+    source_id: args.sourceId,
+    source_uri: args.sourceUri,
+    title: args.title,
+    excerpt: args.excerpt,
+    locator: {
+      type: "section",
+      path: [...args.path],
+      anchor: args.anchor,
+    },
+  };
+}
+
 const REAL_CORPUS_NEXT_PLAID_DOCS: RealCorpusFixture = {
   id: "next-plaid-docs-v1",
   documents: [
@@ -129,6 +155,15 @@ const REAL_CORPUS_NEXT_PLAID_DOCS: RealCorpusFixture = {
         title: "Why Multi-Vector Retrieval Matters",
         source: "README.md",
       },
+      source_span: sectionSourceSpan({
+        sourceId: "README.md#why_multi_vector",
+        sourceUri: "https://github.com/lightonai/next-plaid#why-multi-vector-retrieval-matters",
+        title: "Why Multi-Vector Retrieval Matters",
+        excerpt:
+          "Standard vector search collapses an entire document into one embedding, which is a lossy summary. Multi-vector retrieval keeps many embeddings per document instead of one.",
+        path: ["README.md", "Why Multi-Vector Retrieval Matters"],
+        anchor: "why_multi_vector",
+      }),
     },
     {
       document_id: "api-cpu-quickstart",
@@ -139,6 +174,16 @@ const REAL_CORPUS_NEXT_PLAID_DOCS: RealCorpusFixture = {
         title: "API CPU Quick Start",
         source: "next-plaid-api/README.md",
       },
+      source_span: sectionSourceSpan({
+        sourceId: "next-plaid-api/README.md#api_cpu_quickstart",
+        sourceUri:
+          "https://github.com/lightonai/next-plaid/tree/main/next-plaid-api#cpu-quick-start",
+        title: "API CPU Quick Start",
+        excerpt:
+          "Run NextPlaid API with Docker on CPU using a built-in model. The quick start mounts a local data directory, exposes port 8080, and passes the model flag.",
+        path: ["next-plaid-api/README.md", "CPU Quick Start"],
+        anchor: "api_cpu_quickstart",
+      }),
     },
     {
       document_id: "api-two-modes",
@@ -149,6 +194,15 @@ const REAL_CORPUS_NEXT_PLAID_DOCS: RealCorpusFixture = {
         title: "API With Model Versus Without Model",
         source: "next-plaid-api/README.md",
       },
+      source_span: sectionSourceSpan({
+        sourceId: "next-plaid-api/README.md#api_two_modes",
+        sourceUri: "https://github.com/lightonai/next-plaid/tree/main/next-plaid-api",
+        title: "API With Model Versus Without Model",
+        excerpt:
+          "The API has two modes depending on whether you pass a model. With a model, callers send text and the server encodes it through ONNX Runtime.",
+        path: ["next-plaid-api/README.md", "API Modes"],
+        anchor: "api_two_modes",
+      }),
     },
     {
       document_id: "ready-to-use-models",
@@ -159,6 +213,15 @@ const REAL_CORPUS_NEXT_PLAID_DOCS: RealCorpusFixture = {
         title: "Ready To Use Model Guide",
         source: "README.md",
       },
+      source_span: sectionSourceSpan({
+        sourceId: "README.md#ready_to_use_models",
+        sourceUri: "https://github.com/lightonai/next-plaid#ready-to-use-models",
+        title: "Ready To Use Model Guide",
+        excerpt:
+          "Ready-to-use models include mxbai-edge-colbert and answerai-colbert-small for lightweight text retrieval, and GTE-ModernColBERT for more accurate retrieval.",
+        path: ["README.md", "Ready To Use Models"],
+        anchor: "ready_to_use_models",
+      }),
     },
     {
       document_id: "colgrep-overview",
@@ -169,6 +232,15 @@ const REAL_CORPUS_NEXT_PLAID_DOCS: RealCorpusFixture = {
         title: "ColGREP Overview",
         source: "README.md",
       },
+      source_span: sectionSourceSpan({
+        sourceId: "README.md#colgrep_overview",
+        sourceUri: "https://github.com/lightonai/next-plaid#colgrep",
+        title: "ColGREP Overview",
+        excerpt:
+          "ColGREP is semantic code search for the terminal and coding agents. Searches combine regex filtering with semantic ranking and stay fully local.",
+        path: ["README.md", "ColGREP"],
+        anchor: "colgrep_overview",
+      }),
     },
   ],
   queries: [
@@ -205,8 +277,44 @@ function setStatus(state: string, value: unknown): void {
   statusNode.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
-function currentScenario(): string {
-  return new URLSearchParams(window.location.search).get("scenario") ?? "wrapper-smoke";
+function currentScenario(): HarnessScenario {
+  const requested = new URLSearchParams(window.location.search).get("scenario");
+  switch (requested) {
+    case "wrapper-smoke":
+    case "real-model-probe":
+    case "interactive-demo":
+      return requested;
+    default:
+      return "interactive-demo";
+  }
+}
+
+function getRequiredElement<ElementType extends Element>(
+  id: string,
+  expected: { new (...args: never[]): ElementType },
+): ElementType {
+  const node = document.getElementById(id);
+  if (!(node instanceof expected)) {
+    throw new Error(`expected ${id} to be a ${expected.name}`);
+  }
+  return node;
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.stack ?? error.message : String(error);
+}
+
+function formatDuration(durationMs: number | null | undefined): string {
+  return typeof durationMs === "number" ? `${durationMs.toFixed(1)} ms` : "n/a";
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function currentRealModelPreset(): RealModelPreset {
@@ -284,6 +392,32 @@ function loadIndexRequest(): LoadIndexRequestEnvelope {
       { title: "beta report summary", topic: "metrics" },
       { title: "gamma archive note", topic: "history" },
     ],
+    source_spans: [
+      sectionSourceSpan({
+        sourceId: "demo-alpha.md",
+        sourceUri: "https://example.test/demo-alpha",
+        title: "alpha launch memo",
+        excerpt: "Alpha launch memo excerpt for display-only result context.",
+        path: ["demo", "alpha"],
+        anchor: "demo-alpha",
+      }),
+      sectionSourceSpan({
+        sourceId: "demo-beta.md",
+        sourceUri: "https://example.test/demo-beta",
+        title: "beta report summary",
+        excerpt: "Beta report summary excerpt for display-only result context.",
+        path: ["demo", "beta"],
+        anchor: "demo-beta",
+      }),
+      sectionSourceSpan({
+        sourceId: "demo-gamma.md",
+        sourceUri: "https://example.test/demo-gamma",
+        title: "gamma archive note",
+        excerpt: "Gamma archive excerpt for display-only result context.",
+        path: ["demo", "gamma"],
+        anchor: "demo-gamma",
+      }),
+    ],
     nbits: 2,
     fts_tokenizer: "unicode61",
     max_documents: null,
@@ -320,6 +454,32 @@ function loadEncodedIndexRequest(): LoadIndexRequestEnvelope {
       { title: "beta proof doc", topic: "tokens" },
       { title: "gamma proof doc", topic: "tokens" },
     ],
+    source_spans: [
+      sectionSourceSpan({
+        sourceId: "proof-alpha.md",
+        sourceUri: "https://example.test/proof-alpha",
+        title: "alpha proof doc",
+        excerpt: "Alpha proof document excerpt.",
+        path: ["proof", "alpha"],
+        anchor: "proof-alpha",
+      }),
+      sectionSourceSpan({
+        sourceId: "proof-beta.md",
+        sourceUri: "https://example.test/proof-beta",
+        title: "beta proof doc",
+        excerpt: "Beta proof document excerpt.",
+        path: ["proof", "beta"],
+        anchor: "proof-beta",
+      }),
+      sectionSourceSpan({
+        sourceId: "proof-gamma.md",
+        sourceUri: "https://example.test/proof-gamma",
+        title: "gamma proof doc",
+        excerpt: "Gamma proof document excerpt.",
+        path: ["proof", "gamma"],
+        anchor: "proof-gamma",
+      }),
+    ],
     nbits: 2,
     fts_tokenizer: "unicode61",
     max_documents: null,
@@ -346,6 +506,14 @@ function mutableCorpusSyncArgs() {
             title: "alpha launch memo",
             topic: "edge",
           },
+          source_span: sectionSourceSpan({
+            sourceId: "mutable-alpha.md",
+            sourceUri: "https://example.test/mutable-alpha",
+            title: "alpha launch memo",
+            excerpt: "Alpha mutable corpus source excerpt.",
+            path: ["mutable smoke", "alpha"],
+            anchor: "mutable-alpha",
+          }),
         },
         {
           document_id: "doc-beta",
@@ -354,6 +522,14 @@ function mutableCorpusSyncArgs() {
             title: "beta report summary",
             topic: "metrics",
           },
+          source_span: sectionSourceSpan({
+            sourceId: "mutable-beta.md",
+            sourceUri: "https://example.test/mutable-beta",
+            title: "beta report summary",
+            excerpt: "Beta mutable corpus source excerpt.",
+            path: ["mutable smoke", "beta"],
+            anchor: "mutable-beta",
+          }),
         },
       ],
     },
@@ -646,6 +822,9 @@ function summarizeRealCorpusSearch(
 ) {
   const firstResult = response.results[0];
   const returnedMetadata = Array.isArray(firstResult?.metadata) ? firstResult.metadata : [];
+  const returnedSourceSpans = Array.isArray(firstResult?.source_spans)
+    ? firstResult.source_spans
+    : [];
   const returnedSlugs = returnedMetadata.map((entry) =>
     entry &&
       typeof entry === "object" &&
@@ -662,6 +841,7 @@ function summarizeRealCorpusSearch(
       ? entry.title
       : null
   );
+  const returnedExcerpts = returnedSourceSpans.map((span) => span?.excerpt ?? null);
 
   return {
     queryId: query.id,
@@ -669,8 +849,841 @@ function summarizeRealCorpusSearch(
     expectedSlug: query.expectedSlug,
     returnedSlugs,
     returnedTitles,
+    returnedExcerpts,
     scores: firstResult?.scores ?? [],
   };
+}
+
+const demoRuntime = makeHarnessRuntime();
+
+function metadataField(value: unknown, key: string): string | null {
+  if (value && typeof value === "object" && key in value) {
+    const candidate = value[key as keyof typeof value];
+    return typeof candidate === "string" ? candidate : null;
+  }
+  return null;
+}
+
+function setAutomationStatusVisible(visible: boolean): void {
+  const section = statusNode.closest("[data-status-section]");
+  if (section instanceof HTMLElement) {
+    section.hidden = !visible;
+  }
+}
+
+function setDemoVisible(visible: boolean): void {
+  const shell = document.getElementById("demo-shell");
+  if (shell instanceof HTMLElement) {
+    shell.hidden = !visible;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Wikipedia corpus fixture loader
+// -----------------------------------------------------------------------------
+
+interface WikiDoc {
+  readonly document_id: string;
+  readonly semantic_text: string;
+  readonly metadata: {
+    readonly slug: string;
+    readonly title: string;
+    readonly source: string;
+    readonly url: string;
+    readonly description: string | null;
+  };
+  readonly source_span: SourceSpan;
+}
+
+interface WikiQuery {
+  readonly id: string;
+  readonly text: string;
+  readonly expectedSlug: string;
+}
+
+interface WikiFixture {
+  readonly id: string;
+  readonly attribution: string;
+  readonly documents: readonly WikiDoc[];
+  readonly queries: readonly WikiQuery[];
+}
+
+async function loadWikiFixture(): Promise<WikiFixture> {
+  const response = await fetch("./fixtures/wiki-corpus.json");
+  if (!response.ok) {
+    throw new Error(
+      `failed to load corpus fixture: ${response.status} ${response.statusText}`,
+    );
+  }
+  return (await response.json()) as WikiFixture;
+}
+
+// -----------------------------------------------------------------------------
+// UI state — single writable atom, rendered via AtomRegistry.subscribe.
+// -----------------------------------------------------------------------------
+
+type DemoPhase =
+  | { readonly tag: "idle" }
+  | { readonly tag: "loading_corpus" }
+  | { readonly tag: "initializing" }
+  | { readonly tag: "ready" }
+  | { readonly tag: "searching"; readonly query: string }
+  | { readonly tag: "error"; readonly message: string };
+
+interface InitStage {
+  readonly id: string;
+  readonly label: string;
+  readonly status: "pending" | "running" | "done" | "failed";
+  readonly durationMs: number | null;
+}
+
+interface EventEntry {
+  readonly id: number;
+  readonly time: string;
+  readonly kind: "info" | "success" | "error" | "encoder" | "sync" | "search";
+  readonly label: string;
+}
+
+interface ResultRow {
+  readonly rank: number;
+  readonly documentId: string | number;
+  readonly title: string;
+  readonly description: string | null;
+  readonly excerpt: string;
+  readonly url: string | null;
+  readonly slug: string;
+  readonly score: number | null;
+}
+
+interface SearchSnapshot {
+  readonly query: string;
+  readonly rows: readonly ResultRow[];
+  readonly elapsedMs: number | null;
+}
+
+type SearchMode = "semantic" | "hybrid";
+
+interface UiState {
+  readonly phase: DemoPhase;
+  readonly corpus: WikiFixture | null;
+  readonly selectedPresetId: string;
+  readonly activeCorpusId: string | null;
+  readonly initStages: readonly InitStage[];
+  readonly events: readonly EventEntry[];
+  readonly latestSearch: SearchSnapshot | null;
+  readonly runtimeDetail: unknown;
+  readonly banner: { readonly tone: "info" | "success" | "error"; readonly text: string } | null;
+  readonly searchMode: SearchMode;
+  readonly hybridAlpha: number;
+}
+
+const INIT_STAGE_DEFS: ReadonlyArray<{ readonly id: string; readonly label: string }> = [
+  { id: "fetch_corpus", label: "Load corpus fixture" },
+  { id: "session_create_complete", label: "Create encoder session" },
+  { id: "warmup_complete", label: "Warm up encoder" },
+  { id: "register_corpus", label: "Register corpus" },
+  { id: "sync_corpus", label: "Sync documents" },
+];
+
+function initialStages(): readonly InitStage[] {
+  return INIT_STAGE_DEFS.map((def) => ({
+    id: def.id,
+    label: def.label,
+    status: "pending" as const,
+    durationMs: null,
+  }));
+}
+
+function updateStage(
+  stages: readonly InitStage[],
+  id: string,
+  patch: Partial<InitStage>,
+): readonly InitStage[] {
+  return stages.map((stage) => (stage.id === id ? { ...stage, ...patch } : stage));
+}
+
+const INITIAL_UI_STATE: UiState = {
+  phase: { tag: "idle" },
+  corpus: null,
+  selectedPresetId: REAL_MODEL_PRESETS[0].id,
+  activeCorpusId: null,
+  initStages: initialStages(),
+  events: [],
+  latestSearch: null,
+  runtimeDetail: null,
+  banner: null,
+  searchMode: "semantic",
+  hybridAlpha: 0.25,
+};
+
+let eventSequence = 0;
+
+function pushEvent(
+  registry: AtomRegistry.AtomRegistry,
+  atom: Atom.Writable<UiState>,
+  kind: EventEntry["kind"],
+  label: string,
+): void {
+  const entry: EventEntry = {
+    id: ++eventSequence,
+    time: new Date().toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }),
+    kind,
+    label,
+  };
+  registry.update(atom, (state): UiState => ({
+    ...state,
+    events: [entry, ...state.events].slice(0, 60),
+  }));
+}
+
+function mapResponseToRows(response: SearchResultsResponseEnvelope): readonly ResultRow[] {
+  const first = response.results[0];
+  if (!first) return [];
+  const documentIds = Array.isArray(first.document_ids) ? first.document_ids : [];
+  const scores = Array.isArray(first.scores) ? first.scores : [];
+  const metadata = Array.isArray(first.metadata) ? first.metadata : [];
+  const sourceSpans = Array.isArray(first.source_spans) ? first.source_spans : [];
+
+  return documentIds.map((documentId, index) => {
+    const entry = metadata[index];
+    const sourceSpan = sourceSpans[index] ?? null;
+    const title = sourceSpan?.title ?? metadataField(entry, "title") ?? String(documentId);
+    const description = metadataField(entry, "description");
+    const excerpt = sourceSpan?.excerpt ?? "";
+    const url = sourceSpan?.source_uri ?? metadataField(entry, "url");
+    const slug = metadataField(entry, "slug") ?? sourceSpan?.source_id ?? `doc-${documentId}`;
+    const rawScore = scores[index];
+    const score = typeof rawScore === "number" ? rawScore : null;
+    return {
+      rank: index + 1,
+      documentId,
+      title,
+      description,
+      excerpt,
+      url,
+      slug,
+      score,
+    };
+  });
+}
+
+// -----------------------------------------------------------------------------
+// Render layer
+// -----------------------------------------------------------------------------
+
+interface DemoNodes {
+  readonly shell: HTMLElement;
+  readonly modelSelect: HTMLSelectElement;
+  readonly initializeButton: HTMLButtonElement;
+  readonly clearLogButton: HTMLButtonElement;
+  readonly statusIndicator: HTMLElement;
+  readonly statusText: HTMLElement;
+  readonly searchForm: HTMLFormElement;
+  readonly searchInput: HTMLInputElement;
+  readonly searchSubmit: HTMLButtonElement;
+  readonly queryButtons: HTMLElement;
+  readonly banner: HTMLElement;
+  readonly searchResults: HTMLElement;
+  readonly resultsMeta: HTMLElement;
+  readonly initStages: HTMLElement;
+  readonly initMeta: HTMLElement;
+  readonly eventLog: HTMLElement;
+  readonly runtimeSummary: HTMLElement;
+  readonly documents: HTMLElement;
+  readonly corpusCount: HTMLElement;
+  readonly corpusDetail: HTMLDetailsElement;
+  readonly modeButtons: readonly HTMLButtonElement[];
+  readonly alphaGroup: HTMLElement;
+  readonly alphaSlider: HTMLInputElement;
+  readonly alphaValue: HTMLElement;
+}
+
+function getDemoNodes(): DemoNodes {
+  const statusIndicator = getRequiredElement("demo-status-indicator", HTMLElement);
+  const statusTextNode = statusIndicator.querySelector(".status-text");
+  if (!(statusTextNode instanceof HTMLElement)) {
+    throw new Error("expected .status-text inside status indicator");
+  }
+  return {
+    shell: getRequiredElement("demo-shell", HTMLElement),
+    modelSelect: getRequiredElement("demo-model-select", HTMLSelectElement),
+    initializeButton: getRequiredElement("demo-initialize", HTMLButtonElement),
+    clearLogButton: getRequiredElement("demo-clear-log", HTMLButtonElement),
+    statusIndicator,
+    statusText: statusTextNode,
+    searchForm: getRequiredElement("demo-search-form", HTMLFormElement),
+    searchInput: getRequiredElement("demo-search-input", HTMLInputElement),
+    searchSubmit: getRequiredElement("demo-search-submit", HTMLButtonElement),
+    queryButtons: getRequiredElement("demo-query-buttons", HTMLElement),
+    banner: getRequiredElement("demo-banner", HTMLElement),
+    searchResults: getRequiredElement("demo-search-results", HTMLElement),
+    resultsMeta: getRequiredElement("demo-results-meta", HTMLElement),
+    initStages: getRequiredElement("demo-init-stages", HTMLElement),
+    initMeta: getRequiredElement("demo-init-meta", HTMLElement),
+    eventLog: getRequiredElement("demo-event-log", HTMLElement),
+    runtimeSummary: getRequiredElement("demo-runtime-summary", HTMLElement),
+    documents: getRequiredElement("demo-documents", HTMLElement),
+    corpusCount: getRequiredElement("demo-corpus-count", HTMLElement),
+    corpusDetail: getRequiredElement("demo-corpus-detail", HTMLDetailsElement),
+    modeButtons: [
+      getRequiredElement("demo-mode-semantic", HTMLButtonElement),
+      getRequiredElement("demo-mode-hybrid", HTMLButtonElement),
+    ],
+    alphaGroup: getRequiredElement("demo-alpha-slider-group", HTMLElement),
+    alphaSlider: getRequiredElement("demo-alpha-slider", HTMLInputElement),
+    alphaValue: getRequiredElement("demo-alpha-value", HTMLElement),
+  };
+}
+
+function phaseToStatusAttr(phase: DemoPhase): string {
+  switch (phase.tag) {
+    case "ready":
+      return "ready";
+    case "initializing":
+    case "loading_corpus":
+      return "initializing";
+    case "searching":
+      return "searching";
+    case "error":
+      return "error";
+    default:
+      return "idle";
+  }
+}
+
+function phaseToStatusText(phase: DemoPhase): string {
+  switch (phase.tag) {
+    case "idle":
+      return "Not initialized";
+    case "loading_corpus":
+      return "Loading corpus";
+    case "initializing":
+      return "Initializing encoder";
+    case "ready":
+      return "Ready";
+    case "searching":
+      return "Searching";
+    case "error":
+      return "Error";
+  }
+}
+
+function renderDemo(state: UiState, nodes: DemoNodes): void {
+  nodes.statusIndicator.dataset.status = phaseToStatusAttr(state.phase);
+  nodes.statusText.textContent = phaseToStatusText(state.phase);
+
+  const busy =
+    state.phase.tag === "loading_corpus" ||
+    state.phase.tag === "initializing" ||
+    state.phase.tag === "searching";
+  nodes.initializeButton.disabled = busy || state.corpus === null;
+  nodes.searchInput.disabled = busy || state.activeCorpusId === null;
+  nodes.searchSubmit.disabled = busy || state.activeCorpusId === null;
+  for (const btn of nodes.queryButtons.querySelectorAll("button")) {
+    if (btn instanceof HTMLButtonElement) {
+      btn.disabled = busy || state.activeCorpusId === null;
+    }
+  }
+
+  if (nodes.modelSelect.value !== state.selectedPresetId) {
+    nodes.modelSelect.value = state.selectedPresetId;
+  }
+
+  for (const btn of nodes.modeButtons) {
+    const mode = btn.dataset.mode as SearchMode | undefined;
+    const active = mode === state.searchMode;
+    btn.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+  nodes.alphaGroup.hidden = state.searchMode !== "hybrid";
+  const alphaStr = state.hybridAlpha.toFixed(2);
+  if (nodes.alphaSlider.value !== alphaStr) {
+    nodes.alphaSlider.value = alphaStr;
+  }
+  nodes.alphaValue.textContent = `α ${alphaStr}`;
+
+  if (state.banner === null) {
+    nodes.banner.hidden = true;
+    nodes.banner.textContent = "";
+  } else {
+    nodes.banner.hidden = false;
+    nodes.banner.dataset.tone = state.banner.tone;
+    nodes.banner.textContent = state.banner.text;
+  }
+
+  nodes.initStages.innerHTML = state.initStages
+    .map(
+      (stage) => `
+      <li class="stage-row" data-status="${stage.status}">
+        <span class="stage-glyph" aria-hidden="true"></span>
+        <span class="stage-label">${escapeHtml(stage.label)}</span>
+        <span class="stage-duration">${stage.durationMs !== null ? escapeHtml(formatDuration(stage.durationMs)) : ""}</span>
+      </li>
+    `,
+    )
+    .join("");
+  const doneCount = state.initStages.filter((s) => s.status === "done").length;
+  nodes.initMeta.textContent = `${doneCount} / ${state.initStages.length}`;
+
+  if (state.events.length === 0) {
+    nodes.eventLog.innerHTML = `<li class="empty-hint">No events yet.</li>`;
+  } else {
+    nodes.eventLog.innerHTML = state.events
+      .map(
+        (event) => `
+        <li class="event-row" data-kind="${event.kind}">
+          <span class="event-time">${escapeHtml(event.time)}</span>
+          <span class="event-label">${escapeHtml(event.label)}</span>
+        </li>
+      `,
+      )
+      .join("");
+  }
+
+  nodes.runtimeSummary.textContent =
+    state.runtimeDetail === null
+      ? "Run Initialize to populate the runtime snapshot."
+      : JSON.stringify(state.runtimeDetail, null, 2);
+
+  if (state.latestSearch === null) {
+    const hint =
+      state.corpus === null
+        ? "Loading corpus fixture…"
+        : state.activeCorpusId === null
+          ? "Initialize the demo, then type a question or pick a preset."
+          : "Type a question or pick a preset query.";
+    nodes.resultsMeta.textContent = "—";
+    nodes.searchResults.innerHTML = `
+      <li class="result-empty">
+        <h3>No query yet</h3>
+        <p>${escapeHtml(hint)}</p>
+      </li>
+    `;
+  } else {
+    const rows = state.latestSearch.rows;
+    const elapsed =
+      state.latestSearch.elapsedMs !== null
+        ? ` · ${formatDuration(state.latestSearch.elapsedMs)}`
+        : "";
+    nodes.resultsMeta.textContent =
+      rows.length === 0
+        ? `No matches · "${state.latestSearch.query}"`
+        : `${rows.length} match${rows.length === 1 ? "" : "es"}${elapsed}`;
+    if (rows.length === 0) {
+      nodes.searchResults.innerHTML = `
+        <li class="result-empty">
+          <h3>No matches for "${escapeHtml(state.latestSearch.query)}"</h3>
+          <p>Try different phrasing or one of the preset questions.</p>
+        </li>
+      `;
+    } else {
+      nodes.searchResults.innerHTML = rows
+        .map(
+          (row) => `
+          <li class="result-row">
+            <span class="result-rank">${row.rank.toString().padStart(2, "0")}</span>
+            <div class="result-body">
+              <h3 class="result-title">${escapeHtml(row.title)}</h3>
+              ${row.description ? `<p class="result-description">${escapeHtml(row.description)}</p>` : ""}
+              <p class="result-excerpt">${escapeHtml(row.excerpt)}</p>
+              <p class="result-meta">
+                ${
+                  row.url
+                    ? `<a href="${escapeHtml(row.url)}" target="_blank" rel="noreferrer">Read on Simple English Wikipedia</a>`
+                    : `<span>${escapeHtml(String(row.documentId))}</span>`
+                }
+                <span>${escapeHtml(row.slug)}</span>
+              </p>
+            </div>
+            <span class="result-score">${row.score !== null ? row.score.toFixed(3) : "—"}</span>
+          </li>
+        `,
+        )
+        .join("");
+    }
+  }
+
+  if (state.corpus === null) {
+    nodes.documents.innerHTML = "";
+    nodes.corpusCount.textContent = "";
+  } else {
+    nodes.corpusCount.textContent = `· ${state.corpus.documents.length} articles`;
+    nodes.documents.innerHTML = state.corpus.documents
+      .map(
+        (doc) => `
+        <div class="doc-row">
+          <h3 class="doc-title">${escapeHtml(doc.metadata.title)}</h3>
+          ${doc.metadata.description ? `<p class="doc-description">${escapeHtml(doc.metadata.description)}</p>` : ""}
+          <p class="doc-meta">
+            <a href="${escapeHtml(doc.metadata.url)}" target="_blank" rel="noreferrer">Read</a>
+          </p>
+        </div>
+      `,
+      )
+      .join("");
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Flows — run Effects on the managed runtime, push state into the atom.
+// -----------------------------------------------------------------------------
+
+async function runInitializeFlow(
+  registry: AtomRegistry.AtomRegistry,
+  atom: Atom.Writable<UiState>,
+  preset: RealModelPreset,
+): Promise<void> {
+  const snapshot = registry.get(atom);
+  const corpus = snapshot.corpus;
+  if (corpus === null) {
+    registry.update(atom, (state): UiState => ({
+      ...state,
+      banner: { tone: "error", text: "Corpus fixture is not loaded yet." },
+    }));
+    return;
+  }
+
+  const corpusId = `wiki-${preset.id}`;
+  registry.update(atom, (state): UiState => ({
+    ...state,
+    phase: { tag: "initializing" },
+    initStages: updateStage(
+      updateStage(state.initStages, "fetch_corpus", { status: "done" }),
+      "session_create_complete",
+      { status: "running" },
+    ),
+    banner: {
+      tone: "info",
+      text: `Loading ${preset.modelId}. First run downloads model weights — can take 30–120s.`,
+    },
+  }));
+  pushEvent(registry, atom, "info", `Initializing ${preset.modelId}`);
+
+  try {
+    const result = await demoRuntime.runPromise(
+      Effect.scoped(
+        Effect.gen(function*() {
+          const encoderClient = yield* EncoderWorkerClient;
+          const runtimeService = yield* BrowserSearchRuntime;
+
+          yield* Stream.runForEach(encoderClient.events, (event) =>
+            Effect.sync(() => {
+              const durationMs =
+                "durationMs" in event && typeof event.durationMs === "number"
+                  ? event.durationMs
+                  : null;
+              registry.update(atom, (state): UiState => {
+                const known = state.initStages.find((s) => s.id === event.stage);
+                if (!known) return state;
+                return {
+                  ...state,
+                  initStages: updateStage(state.initStages, event.stage, {
+                    status: "done",
+                    durationMs,
+                  }),
+                };
+              });
+              pushEvent(
+                registry,
+                atom,
+                "encoder",
+                `Encoder · ${event.stage}${durationMs !== null ? ` (${formatDuration(durationMs)})` : ""}`,
+              );
+            }),
+          ).pipe(Effect.forkScoped);
+
+          yield* Stream.runForEach(runtimeService.mutableSyncEvents, (event) =>
+            Effect.sync(() => {
+              pushEvent(registry, atom, "sync", `Sync · ${event.type}`);
+            }),
+          ).pipe(Effect.forkScoped);
+
+          const capabilities = yield* encoderClient.init(
+            realModelEncoderInitRequest(preset).payload,
+          );
+
+          registry.update(atom, (state): UiState => ({
+            ...state,
+            initStages: updateStage(state.initStages, "register_corpus", {
+              status: "running",
+            }),
+          }));
+
+          const registered = yield* runtimeService.registerCorpus({
+            corpusId,
+            encoder: {
+              encoder_id: capabilities.encoderId,
+              encoder_build: capabilities.encoderBuild,
+              embedding_dim: capabilities.embeddingDim,
+              normalized: capabilities.normalized,
+            },
+            ftsTokenizer: "unicode61",
+          });
+
+          const registeredCreated =
+            (registered as { created?: boolean }).created ?? null;
+          registry.update(atom, (state): UiState => ({
+            ...state,
+            initStages: updateStage(
+              updateStage(state.initStages, "register_corpus", { status: "done" }),
+              "sync_corpus",
+              { status: "running" },
+            ),
+          }));
+          pushEvent(
+            registry,
+            atom,
+            "success",
+            `Corpus ${registeredCreated === true ? "registered" : registeredCreated === false ? "reopened" : "ready"}`,
+          );
+
+          const synced = yield* runtimeService.syncCorpus({
+            corpusId,
+            snapshot: { documents: [...corpus.documents] },
+          });
+
+          const corpusState =
+            (yield* SubscriptionRef.get(runtimeService.mutableCorpora)).get(
+              corpusId,
+            ) ?? null;
+
+          return { capabilities, registered, synced, corpusState };
+        }),
+      ),
+    );
+
+    registry.update(atom, (state): UiState => ({
+      ...state,
+      phase: { tag: "ready" },
+      initStages: updateStage(state.initStages, "sync_corpus", { status: "done" }),
+      activeCorpusId: corpusId,
+      runtimeDetail: {
+        encoder: result.capabilities,
+        register: result.registered,
+        sync: result.synced,
+        corpusState: result.corpusState,
+      },
+      banner: {
+        tone: "success",
+        text: `Browser runtime ready · ${corpus.documents.length} articles synced.`,
+      },
+    }));
+    pushEvent(registry, atom, "success", "Ready to search");
+  } catch (error) {
+    const message = formatError(error);
+    registry.update(atom, (state): UiState => ({
+      ...state,
+      phase: { tag: "error", message },
+      initStages: state.initStages.map((stage) =>
+        stage.status === "running" ? { ...stage, status: "failed" } : stage,
+      ),
+      banner: { tone: "error", text: message },
+    }));
+    pushEvent(registry, atom, "error", `Initialization failed: ${message}`);
+  }
+}
+
+async function runSearchFlow(
+  registry: AtomRegistry.AtomRegistry,
+  atom: Atom.Writable<UiState>,
+  queryText: string,
+): Promise<void> {
+  const snapshot = registry.get(atom);
+  if (snapshot.corpus === null || snapshot.activeCorpusId === null) {
+    registry.update(atom, (state): UiState => ({
+      ...state,
+      banner: { tone: "error", text: "Initialize the demo before searching." },
+    }));
+    return;
+  }
+  if (snapshot.phase.tag === "searching" || snapshot.phase.tag === "initializing") {
+    return;
+  }
+
+  const corpusId = snapshot.activeCorpusId;
+  const mode = snapshot.searchMode;
+  const alpha = snapshot.hybridAlpha;
+
+  registry.update(atom, (state): UiState => ({
+    ...state,
+    phase: { tag: "searching", query: queryText },
+    banner: null,
+  }));
+  const modeLabel = mode === "hybrid" ? `Hybrid α=${alpha.toFixed(2)}` : "Semantic";
+  pushEvent(registry, atom, "search", `${modeLabel} · "${queryText}"`);
+
+  const startedAt = performance.now();
+  try {
+    const response = await demoRuntime.runPromise(
+      Effect.gen(function*() {
+        const runtimeService = yield* BrowserSearchRuntime;
+        return yield* runtimeService.searchCorpus({
+          corpusId,
+          queryText,
+          request: {
+            params: {
+              top_k: 5,
+              n_ivf_probe: 12,
+              n_full_scores: 24,
+              centroid_score_threshold: null,
+            },
+            subset: null,
+            text_query: mode === "hybrid" ? [queryText] : null,
+            alpha: mode === "hybrid" ? alpha : null,
+            fusion: mode === "hybrid" ? "relative_score" : null,
+            filter_condition: null,
+            filter_parameters: null,
+          },
+        });
+      }),
+    );
+    const elapsedMs = performance.now() - startedAt;
+    const rows = mapResponseToRows(response);
+    registry.update(atom, (state): UiState => ({
+      ...state,
+      phase: { tag: "ready" },
+      latestSearch: { query: queryText, rows, elapsedMs },
+      banner:
+        rows.length === 0
+          ? { tone: "info", text: `No matches for "${queryText}". Try different phrasing.` }
+          : null,
+    }));
+    pushEvent(
+      registry,
+      atom,
+      rows.length === 0 ? "info" : "success",
+      `${rows.length} result${rows.length === 1 ? "" : "s"} in ${formatDuration(elapsedMs)}`,
+    );
+  } catch (error) {
+    const message = formatError(error);
+    registry.update(atom, (state): UiState => ({
+      ...state,
+      phase: { tag: "ready" },
+      latestSearch: {
+        query: queryText,
+        rows: [],
+        elapsedMs: performance.now() - startedAt,
+      },
+      banner: { tone: "error", text: message },
+    }));
+    pushEvent(registry, atom, "error", `Search failed: ${message}`);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Bootstrap
+// -----------------------------------------------------------------------------
+
+async function runInteractiveDemo(): Promise<void> {
+  setAutomationStatusVisible(false);
+  setDemoVisible(true);
+
+  const nodes = getDemoNodes();
+  const registry = AtomRegistry.make();
+  const uiAtom = Atom.make(INITIAL_UI_STATE);
+  registry.mount(uiAtom);
+
+  registry.subscribe(uiAtom, (state) => renderDemo(state, nodes), { immediate: true });
+
+  nodes.modelSelect.innerHTML = REAL_MODEL_PRESETS
+    .map(
+      (preset) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.modelId)}</option>`,
+    )
+    .join("");
+  nodes.modelSelect.value = INITIAL_UI_STATE.selectedPresetId;
+  nodes.modelSelect.addEventListener("change", () => {
+    registry.update(uiAtom, (state): UiState => ({
+      ...state,
+      selectedPresetId: nodes.modelSelect.value,
+    }));
+  });
+
+  // Wire persistent handlers now — they do not depend on the corpus fetch.
+  nodes.initializeButton.addEventListener("click", () => {
+    const presetId = nodes.modelSelect.value;
+    const preset = REAL_MODEL_PRESETS.find((p) => p.id === presetId);
+    if (preset === undefined) return;
+    void runInitializeFlow(registry, uiAtom, preset);
+  });
+  nodes.clearLogButton.addEventListener("click", () => {
+    registry.update(uiAtom, (state): UiState => ({ ...state, events: [] }));
+  });
+  nodes.searchForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = nodes.searchInput.value.trim();
+    if (!text) return;
+    void runSearchFlow(registry, uiAtom, text);
+  });
+
+  for (const btn of nodes.modeButtons) {
+    btn.addEventListener("click", () => {
+      const mode = btn.dataset.mode as SearchMode | undefined;
+      if (mode !== "semantic" && mode !== "hybrid") return;
+      registry.update(uiAtom, (state): UiState => ({ ...state, searchMode: mode }));
+    });
+  }
+  nodes.alphaSlider.addEventListener("input", () => {
+    const value = Number.parseFloat(nodes.alphaSlider.value);
+    if (!Number.isFinite(value)) return;
+    registry.update(uiAtom, (state): UiState => ({
+      ...state,
+      hybridAlpha: Math.min(1, Math.max(0, value)),
+    }));
+  });
+
+  registry.update(uiAtom, (state): UiState => ({
+    ...state,
+    phase: { tag: "loading_corpus" },
+    initStages: updateStage(state.initStages, "fetch_corpus", { status: "running" }),
+  }));
+
+  try {
+    const corpus = await loadWikiFixture();
+    registry.update(uiAtom, (state): UiState => ({
+      ...state,
+      phase: { tag: "idle" },
+      corpus,
+      initStages: updateStage(state.initStages, "fetch_corpus", { status: "done" }),
+      banner: {
+        tone: "info",
+        text: `Pick an encoder and initialize to sync ${corpus.documents.length} articles into the browser runtime.`,
+      },
+    }));
+    pushEvent(registry, uiAtom, "info", `Corpus loaded · ${corpus.documents.length} docs`);
+
+    nodes.queryButtons.innerHTML = corpus.queries
+      .map(
+        (query) =>
+          `<button class="pill-button" type="button" data-query="${escapeHtml(query.text)}">${escapeHtml(query.text)}</button>`,
+      )
+      .join("");
+    for (const btn of nodes.queryButtons.querySelectorAll("button[data-query]")) {
+      btn.addEventListener("click", () => {
+        const text = btn.getAttribute("data-query");
+        if (text === null) return;
+        nodes.searchInput.value = text;
+        void runSearchFlow(registry, uiAtom, text);
+      });
+    }
+    nodes.searchInput.value = corpus.queries[0]?.text ?? "";
+  } catch (error) {
+    const message = formatError(error);
+    registry.update(uiAtom, (state): UiState => ({
+      ...state,
+      phase: { tag: "error", message },
+      initStages: updateStage(state.initStages, "fetch_corpus", { status: "failed" }),
+      banner: { tone: "error", text: message },
+    }));
+    pushEvent(registry, uiAtom, "error", `Corpus load failed: ${message}`);
+    return;
+  }
+
+  window.addEventListener("pagehide", () => {
+    void demoRuntime.dispose();
+  }, { once: true });
 }
 
 async function runWrapperSmoke(): Promise<unknown> {
@@ -1009,14 +2022,23 @@ async function runRealModelProbe(): Promise<unknown> {
 }
 
 async function main(): Promise<void> {
+  const scenario = currentScenario();
   try {
-    const result = currentScenario() === "real-model-probe"
+    if (scenario === "interactive-demo") {
+      await runInteractiveDemo();
+      return;
+    }
+
+    setAutomationStatusVisible(true);
+    setDemoVisible(false);
+
+    const result = scenario === "real-model-probe"
       ? await runRealModelProbe()
       : await runWrapperSmoke();
     window.__NEXT_PLAID_SMOKE_RESULT__ = result;
     setStatus("ok", result);
   } catch (error) {
-    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    const message = formatError(error);
     window.__NEXT_PLAID_SMOKE_ERROR__ = message;
     setStatus("error", message);
   }

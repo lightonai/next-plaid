@@ -4,15 +4,15 @@ import type { ErrorCode } from "./ErrorCode";
 /**
  * Typed error payload returned by storage requests.
  */
-export type StorageErrorResponse = { 
+export type StorageErrorResponse = {
 /**
  * Stable machine-readable error code.
  */
-code: ErrorCode, 
+code: ErrorCode,
 /**
  * Human-readable message for logs and diagnostics.
  */
-message: string, 
+message: string,
 /**
  * Optional structured context.
  */

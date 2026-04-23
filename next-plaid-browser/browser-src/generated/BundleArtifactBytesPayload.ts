@@ -4,11 +4,11 @@ import type { ArtifactKind } from "./ArtifactKind";
 /**
  * Raw artifact bytes attached to an install request.
  */
-export type BundleArtifactBytesPayload = { 
+export type BundleArtifactBytesPayload = {
 /**
  * Artifact kind described by this payload.
  */
-kind: ArtifactKind, 
+kind: ArtifactKind,
 /**
  * Base64-encoded artifact bytes.
  */

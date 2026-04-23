@@ -4,11 +4,11 @@ import type { MutableCorpusSummary } from "./MutableCorpusSummary";
 /**
  * Response returned after loading a mutable corpus into the runtime.
  */
-export type LoadMutableCorpusResponse = { 
+export type LoadMutableCorpusResponse = {
 /**
  * Stable corpus identity exposed by the browser API.
  */
-corpus_id: string, 
+corpus_id: string,
 /**
  * Current mutable corpus summary.
  */

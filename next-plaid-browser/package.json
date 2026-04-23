@@ -21,6 +21,7 @@
     "test:keyword": "env PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --manifest-path ./Cargo.toml -p next-plaid-browser-wasm",
     "typecheck": "bun run export:contract && tsc --noEmit",
     "typecheck:fast": "bun run export:contract && tsgo --noEmit",
+    "demo:serve": "node ./scripts/browser_demo_server.mjs",
     "smoke:chromium": "node ./scripts/playwright_smoke.mjs chromium",
     "smoke:webkit": "node ./scripts/playwright_smoke.mjs webkit",
     "smoke:firefox": "node ./scripts/playwright_smoke.mjs firefox",

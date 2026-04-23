@@ -3,19 +3,19 @@
 /**
  * Encoder identity attached to bundles, loaded indices, and query payloads.
  */
-export type EncoderIdentity = { 
+export type EncoderIdentity = {
 /**
  * Stable logical encoder id.
  */
-encoder_id: string, 
+encoder_id: string,
 /**
  * Concrete encoder build identifier.
  */
-encoder_build: string, 
+encoder_build: string,
 /**
  * Embedding dimension produced by the encoder.
  */
-embedding_dim: number, 
+embedding_dim: number,
 /**
  * Whether vectors are normalized before search.
  */

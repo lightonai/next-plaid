@@ -3,4 +3,4 @@
 /**
  * Artifact kinds that make up a browser-deliverable search bundle.
  */
-export type ArtifactKind = "centroids" | "ivf" | "ivf_lengths" | "doc_lengths" | "merged_codes" | "merged_residuals" | "bucket_weights" | "metadata_json" | "metadata_sqlite";
+export type ArtifactKind = "centroids" | "ivf" | "ivf_lengths" | "doc_lengths" | "merged_codes" | "merged_residuals" | "bucket_weights" | "metadata_json" | "metadata_sqlite" | "source_spans_json";

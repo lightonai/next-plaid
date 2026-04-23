@@ -4,15 +4,15 @@ import type { MutableCorpusSummary } from "./MutableCorpusSummary";
 /**
  * Response returned after registering one mutable browser corpus.
  */
-export type RegisterMutableCorpusResponse = { 
+export type RegisterMutableCorpusResponse = {
 /**
  * Stable corpus identity exposed by the browser API.
  */
-corpus_id: string, 
+corpus_id: string,
 /**
  * Whether this call created a new corpus record.
  */
-created: boolean, 
+created: boolean,
 /**
  * Current mutable corpus summary.
  */

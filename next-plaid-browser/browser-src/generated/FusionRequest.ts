@@ -5,23 +5,23 @@ import type { RankedResultsPayload } from "./RankedResultsPayload";
 /**
  * Request to fuse semantic and keyword result lists.
  */
-export type FusionRequest = { 
+export type FusionRequest = {
 /**
  * Semantic ranked results, when available.
  */
-semantic?: RankedResultsPayload | null, 
+semantic?: RankedResultsPayload | null,
 /**
  * Keyword ranked results, when available.
  */
-keyword?: RankedResultsPayload | null, 
+keyword?: RankedResultsPayload | null,
 /**
  * Optional interpolation factor for relative-score fusion.
  */
-alpha?: number | null, 
+alpha?: number | null,
 /**
  * Requested fusion mode.
  */
-fusion?: FusionMode | null, 
+fusion?: FusionMode | null,
 /**
  * Maximum number of fused hits to return.
  */

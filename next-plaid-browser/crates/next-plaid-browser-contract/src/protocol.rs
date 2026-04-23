@@ -2,12 +2,13 @@ use std::fmt;
 
 use serde::de::{IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
+use thiserror::Error;
 use ts_rs::TS;
 
 use crate::bundle::{ArtifactKind, BundleManifest, EncoderIdentity};
 
 /// Exact runtime JSON schema version understood by the browser runtime.
-pub const RUNTIME_SCHEMA_VERSION: u32 = 1;
+pub const RUNTIME_SCHEMA_VERSION: u32 = 2;
 
 fn default_nbits() -> usize {
     4
@@ -308,6 +309,145 @@ pub struct QueryResultResponse {
     /// Metadata rows replayed for each ranked document.
     #[ts(type = "(unknown | null)[]")]
     pub metadata: Vec<Option<serde_json::Value>>,
+    /// Source spans replayed for each ranked document.
+    pub source_spans: Vec<Option<SourceSpan>>,
+}
+
+/// Caller-supplied source location for one document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SourceLocator {
+    /// Code or text line range with one-based line numbers.
+    LineRange {
+        /// One-based starting line.
+        start_line: usize,
+        /// Optional one-based ending line.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end_line: Option<usize>,
+        /// Optional one-based starting column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_column: Option<usize>,
+        /// Optional one-based ending column.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end_column: Option<usize>,
+    },
+    /// Non-code section path or anchor inside a source.
+    Section {
+        /// Human-readable section hierarchy, ordered from broad to narrow.
+        path: Vec<String>,
+        /// Optional app-owned section anchor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor: Option<String>,
+    },
+    /// Whole-source locator when no finer span is available.
+    Source,
+}
+
+impl SourceLocator {
+    /// Validates locator-specific invariants that JSON shape alone cannot express.
+    pub fn validate(&self) -> Result<(), SourceSpanValidationError> {
+        match self {
+            SourceLocator::LineRange {
+                start_line,
+                end_line,
+                start_column,
+                end_column,
+            } => {
+                if *start_line == 0 {
+                    return Err(SourceSpanValidationError::InvalidStartLine);
+                }
+                if let Some(end_line) = end_line {
+                    if *end_line == 0 {
+                        return Err(SourceSpanValidationError::InvalidEndLine);
+                    }
+                    if end_line < start_line {
+                        return Err(SourceSpanValidationError::EndLineBeforeStartLine);
+                    }
+                }
+                if matches!(start_column, Some(0)) {
+                    return Err(SourceSpanValidationError::InvalidStartColumn);
+                }
+                if matches!(end_column, Some(0)) {
+                    return Err(SourceSpanValidationError::InvalidEndColumn);
+                }
+                if end_line.unwrap_or(*start_line) == *start_line {
+                    if let (Some(start_column), Some(end_column)) = (start_column, end_column) {
+                        if end_column < start_column {
+                            return Err(SourceSpanValidationError::EndColumnBeforeStartColumn);
+                        }
+                    }
+                }
+                Ok(())
+            }
+            SourceLocator::Section { path, .. } => {
+                if path.is_empty() {
+                    return Err(SourceSpanValidationError::EmptySectionPath);
+                }
+                if path.iter().any(|entry| entry.trim().is_empty()) {
+                    return Err(SourceSpanValidationError::EmptySectionPathEntry);
+                }
+                Ok(())
+            }
+            SourceLocator::Source => Ok(()),
+        }
+    }
+}
+
+/// Caller-supplied display/provenance span for one indexed document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SourceSpan {
+    /// Optional app-owned source id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    /// Optional source URI or URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_uri: Option<String>,
+    /// Optional display title for the source span.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Optional caller-provided excerpt. The runtime does not synthesize this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excerpt: Option<String>,
+    /// Locator describing where the document came from.
+    pub locator: SourceLocator,
+}
+
+impl SourceSpan {
+    /// Validates source-span invariants that JSON shape alone cannot express.
+    pub fn validate(&self) -> Result<(), SourceSpanValidationError> {
+        self.locator.validate()
+    }
+}
+
+/// Semantic validation errors for caller-provided source spans.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SourceSpanValidationError {
+    /// A line-range locator used line zero.
+    #[error("line_range.start_line must be greater than zero")]
+    InvalidStartLine,
+    /// A line-range locator used ending line zero.
+    #[error("line_range.end_line must be greater than zero")]
+    InvalidEndLine,
+    /// A line-range locator ended before it started.
+    #[error("line_range.end_line must be greater than or equal to start_line")]
+    EndLineBeforeStartLine,
+    /// A line-range locator used start column zero.
+    #[error("line_range.start_column must be greater than zero")]
+    InvalidStartColumn,
+    /// A line-range locator used end column zero.
+    #[error("line_range.end_column must be greater than zero")]
+    InvalidEndColumn,
+    /// A same-line locator ended before its start column.
+    #[error(
+        "line_range.end_column must be greater than or equal to start_column when start_line and end_line are equal"
+    )]
+    EndColumnBeforeStartColumn,
+    /// A section locator omitted its section path.
+    #[error("section.path must not be empty")]
+    EmptySectionPath,
+    /// A section locator had an empty path segment.
+    #[error("section.path entries must not be empty")]
+    EmptySectionPathEntry,
 }
 
 /// Search response for a batched request.
@@ -407,6 +547,9 @@ pub struct WorkerLoadIndexRequest {
     #[serde(default)]
     #[ts(type = "(unknown | null)[] | null")]
     pub metadata: Option<Vec<Option<serde_json::Value>>>,
+    /// Optional source spans aligned with the document ids.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_spans: Option<Vec<Option<SourceSpan>>>,
     /// Residual quantization bit-width.
     #[serde(default = "default_nbits")]
     pub nbits: usize,
@@ -727,6 +870,9 @@ pub struct MutableCorpusDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "unknown | null")]
     pub metadata: Option<serde_json::Value>,
+    /// Optional display/provenance span used in search results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_span: Option<SourceSpan>,
 }
 
 /// Authoritative browser-managed snapshot for one mutable corpus.
@@ -940,6 +1086,7 @@ mod tests {
                         "title": "alpha launch memo",
                         "topic": "edge"
                     })),
+                    source_span: None,
                 },
                 MutableCorpusDocument {
                     document_id: "beta".into(),
@@ -949,8 +1096,24 @@ mod tests {
                         "title": "beta metrics report",
                         "topic": "metrics"
                     })),
+                    source_span: None,
                 },
             ],
+        }
+    }
+
+    fn source_span() -> SourceSpan {
+        SourceSpan {
+            source_id: Some("README.md".into()),
+            source_uri: Some("https://example.test/README.md".into()),
+            title: Some("README".into()),
+            excerpt: Some("alpha launch memo excerpt".into()),
+            locator: SourceLocator::LineRange {
+                start_line: 10,
+                end_line: Some(12),
+                start_column: Some(1),
+                end_column: None,
+            },
         }
     }
 
@@ -1173,12 +1336,68 @@ mod tests {
     fn mutable_storage_requests_roundtrip() {
         let request = StorageRequest::SyncMutableCorpus(SyncMutableCorpusRequest {
             corpus_id: "notes".into(),
-            snapshot: mutable_snapshot(),
+            snapshot: MutableCorpusSnapshot {
+                documents: vec![MutableCorpusDocument {
+                    document_id: "alpha".into(),
+                    semantic_text: "alpha launch memo".into(),
+                    semantic_embeddings: None,
+                    metadata: Some(serde_json::json!({ "title": "alpha launch memo" })),
+                    source_span: Some(source_span()),
+                }],
+            },
         });
 
         let json = serde_json::to_string(&request).unwrap();
         let decoded: StorageRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn source_locator_variants_roundtrip() {
+        let spans = vec![
+            source_span(),
+            SourceSpan {
+                source_id: Some("article-1".into()),
+                source_uri: Some("https://example.test/article".into()),
+                title: Some("Article".into()),
+                excerpt: Some("section excerpt".into()),
+                locator: SourceLocator::Section {
+                    path: vec!["Guide".into(), "Install".into()],
+                    anchor: Some("install".into()),
+                },
+            },
+            SourceSpan {
+                source_id: None,
+                source_uri: Some("https://example.test/source".into()),
+                title: None,
+                excerpt: None,
+                locator: SourceLocator::Source,
+            },
+        ];
+
+        let json = serde_json::to_string(&spans).unwrap();
+        let decoded: Vec<SourceSpan> = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, spans);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()[0]["locator"]["type"],
+            serde_json::json!("line_range")
+        );
+    }
+
+    #[test]
+    fn source_locator_validation_rejects_zero_line() {
+        let mut span = source_span();
+        span.locator = SourceLocator::LineRange {
+            start_line: 0,
+            end_line: None,
+            start_column: None,
+            end_column: None,
+        };
+
+        assert_eq!(
+            span.validate(),
+            Err(SourceSpanValidationError::InvalidStartLine)
+        );
     }
 
     #[test]
@@ -1262,8 +1481,14 @@ mod tests {
     #[test]
     fn search_response_timing_roundtrips() {
         let response = SearchResponse {
-            results: vec![],
-            num_queries: 0,
+            results: vec![QueryResultResponse {
+                query_id: 0,
+                document_ids: vec![7],
+                scores: vec![0.5],
+                metadata: vec![None],
+                source_spans: vec![Some(source_span())],
+            }],
+            num_queries: 1,
             timing: Some(SearchTimingBreakdown {
                 total_us: 120,
                 query_decode_us: Some(10),

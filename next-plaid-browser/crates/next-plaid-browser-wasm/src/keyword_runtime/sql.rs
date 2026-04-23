@@ -161,7 +161,28 @@ pub(super) fn search_one(
     top_k: usize,
     subset: Option<&[i64]>,
 ) -> Result<RankedResults, KeywordError> {
-    if query.is_empty() {
+    match search_one_fts_query(conn, query, top_k, subset) {
+        Ok(results) => Ok(results),
+        Err(error) if is_fts_syntax_error(&error) => {
+            let Some(fts_query) = natural_language_fts_query(query) else {
+                return Ok(RankedResults {
+                    document_ids: vec![],
+                    scores: vec![],
+                });
+            };
+            search_one_fts_query(conn, &fts_query, top_k, subset)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn search_one_fts_query(
+    conn: &Connection,
+    fts_query: &str,
+    top_k: usize,
+    subset: Option<&[i64]>,
+) -> Result<RankedResults, KeywordError> {
+    if fts_query.is_empty() {
         return Ok(RankedResults {
             document_ids: vec![],
             scores: vec![],
@@ -178,7 +199,7 @@ pub(super) fn search_one(
     let (sql, params, temp_table) = if let Some(subset) = subset {
         let (in_clause, mut subset_params, temp_table) = build_in_clause(conn, subset)?;
         let mut params: Vec<Box<dyn ToSql>> = Vec::with_capacity(subset_params.len() + 2);
-        params.push(Box::new(query.to_string()));
+        params.push(Box::new(fts_query.to_string()));
         params.append(&mut subset_params);
         params.push(Box::new(top_k as i64));
 
@@ -201,7 +222,7 @@ pub(super) fn search_one(
                 fts = FTS_TABLE
             ),
             vec![
-                Box::new(query.to_string()) as Box<dyn ToSql>,
+                Box::new(fts_query.to_string()) as Box<dyn ToSql>,
                 Box::new(top_k as i64),
             ],
             None,
@@ -230,6 +251,46 @@ pub(super) fn search_one(
         document_ids,
         scores,
     })
+}
+
+fn is_fts_syntax_error(error: &KeywordError) -> bool {
+    matches!(
+        error,
+        KeywordError::Sqlite(rusqlite::Error::SqliteFailure(_, Some(message)))
+            if message.contains("fts5: syntax error")
+    )
+}
+
+fn natural_language_fts_query(query: &str) -> Option<String> {
+    let mut terms = Vec::new();
+    let mut current = String::new();
+
+    for character in query.chars() {
+        if character.is_alphanumeric() || character == '_' {
+            current.push(character);
+            continue;
+        }
+
+        if !current.is_empty() {
+            terms.push(std::mem::take(&mut current));
+        }
+    }
+
+    if !current.is_empty() {
+        terms.push(current);
+    }
+
+    if terms.is_empty() {
+        return None;
+    }
+
+    Some(
+        terms
+            .into_iter()
+            .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 fn make_temp_table_name(prefix: &str) -> String {

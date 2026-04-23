@@ -4,15 +4,15 @@ import type { MatrixPayload } from "./MatrixPayload";
 /**
  * Request to score one query against one packed document batch.
  */
-export type ScoreRequest = { 
+export type ScoreRequest = {
 /**
  * Query matrix to score.
  */
-query: MatrixPayload, 
+query: MatrixPayload,
 /**
  * Flattened document token vectors.
  */
-doc_values: Array<number>, 
+doc_values: Array<number>,
 /**
  * Token counts for each document encoded in `doc_values`.
  */

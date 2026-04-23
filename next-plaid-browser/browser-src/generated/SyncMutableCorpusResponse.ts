@@ -5,15 +5,15 @@ import type { MutableCorpusSyncSummary } from "./MutableCorpusSyncSummary";
 /**
  * Response returned after syncing one mutable browser corpus.
  */
-export type SyncMutableCorpusResponse = { 
+export type SyncMutableCorpusResponse = {
 /**
  * Stable corpus identity exposed by the browser API.
  */
-corpus_id: string, 
+corpus_id: string,
 /**
  * Current mutable corpus summary.
  */
-summary: MutableCorpusSummary, 
+summary: MutableCorpusSummary,
 /**
  * Compact sync outcome counts.
  */

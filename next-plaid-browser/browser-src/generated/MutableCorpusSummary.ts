@@ -4,23 +4,23 @@ import type { EncoderIdentity } from "./EncoderIdentity";
 /**
  * Compact public summary for one mutable corpus.
  */
-export type MutableCorpusSummary = { 
+export type MutableCorpusSummary = {
 /**
  * Stable corpus identity exposed by the browser API.
  */
-corpus_id: string, 
+corpus_id: string,
 /**
  * Number of documents in the active snapshot.
  */
-document_count: number, 
+document_count: number,
 /**
  * Whether keyword/filter state is available.
  */
-has_keyword_state: boolean, 
+has_keyword_state: boolean,
 /**
  * Whether dense semantic search state is available.
  */
-has_dense_state: boolean, 
+has_dense_state: boolean,
 /**
  * Locked encoder identity for the corpus.
  */

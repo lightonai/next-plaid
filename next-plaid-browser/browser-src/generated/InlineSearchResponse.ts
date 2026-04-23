@@ -3,15 +3,15 @@
 /**
  * Response for an inline one-off search request.
  */
-export type InlineSearchResponse = { 
+export type InlineSearchResponse = {
 /**
  * Query id for this response.
  */
-query_id: number, 
+query_id: number,
 /**
  * Ranked passage ids.
  */
-passage_ids: number[], 
+passage_ids: number[],
 /**
  * Scores aligned with `passage_ids`.
  */

@@ -14,13 +14,14 @@ use next_plaid_browser_contract::{
     MatrixPayload, MetadataMode, MutableCorpusDocument, MutableCorpusSnapshot,
     QueryEmbeddingsPayload, QueryResultResponse, RegisterMutableCorpusRequest, RuntimeRequest,
     RuntimeResponse, SearchIndexPayload, SearchParamsRequest, SearchRequest, SearchResponse,
-    StorageErrorResponse, StorageRequest, StorageResponse, SyncMutableCorpusRequest,
-    WorkerLoadIndexRequest, WorkerSearchRequest, RUNTIME_SCHEMA_VERSION,
+    SourceLocator, SourceSpan, StorageErrorResponse, StorageRequest, StorageResponse,
+    SyncMutableCorpusRequest, WorkerLoadIndexRequest, WorkerSearchRequest, RUNTIME_SCHEMA_VERSION,
     SUPPORTED_BUNDLE_FORMAT_VERSION,
 };
 use next_plaid_browser_kernel::{
     maxsim_score, search_one, BrowserIndexView, MatrixView, SearchParameters,
 };
+use next_plaid_browser_loader::sha256_hex;
 use next_plaid_browser_storage::{
     load_mutable_corpus, register_mutable_corpus, sync_mutable_corpus, BrowserStorageError,
 };
@@ -82,6 +83,7 @@ fn load_request(name: &str) -> WorkerLoadIndexRequest {
             Some(serde_json::json!({"title": "beta report summary", "topic": "metrics"})),
             Some(serde_json::json!({"title": "gamma archive note", "topic": "history"})),
         ]),
+        source_spans: None,
         nbits: 2,
         fts_tokenizer: FtsTokenizer::Unicode61,
         max_documents: None,
@@ -330,6 +332,7 @@ fn direct_kernel_result(request: &WorkerSearchRequest) -> SearchResponse {
                             .flatten()
                     })
                     .collect(),
+                source_spans: vec![None; result.passage_ids.len()],
             }
         })
         .collect();
@@ -402,6 +405,15 @@ fn direct_mutable_semantic_result(
                             .ok()
                             .and_then(|index| snapshot.documents.get(index))
                             .and_then(|document| document.metadata.clone())
+                    })
+                    .collect(),
+                source_spans: ranked
+                    .iter()
+                    .map(|(document_id, _)| {
+                        usize::try_from(*document_id)
+                            .ok()
+                            .and_then(|index| snapshot.documents.get(index))
+                            .and_then(|document| document.source_span.clone())
                     })
                     .collect(),
             }
@@ -535,6 +547,34 @@ fn storage_install_request(index_id: &str, build_id: &str) -> StorageRequest {
     })
 }
 
+fn storage_install_request_with_source_spans(
+    index_id: &str,
+    build_id: &str,
+    source_spans: Vec<Option<SourceSpan>>,
+) -> StorageRequest {
+    let mut manifest = storage_manifest(index_id, build_id);
+    let bytes = serde_json::to_vec(&source_spans).unwrap();
+    manifest.artifacts.push(ArtifactEntry {
+        kind: ArtifactKind::SourceSpansJson,
+        path: "artifacts/source_spans.json".into(),
+        byte_size: bytes.len() as u64,
+        sha256: sha256_hex(&bytes),
+        compression: CompressionKind::None,
+    });
+
+    let mut artifacts = storage_artifacts();
+    artifacts.push(BundleArtifactBytesPayload {
+        kind: ArtifactKind::SourceSpansJson,
+        bytes_b64: STANDARD.encode(bytes),
+    });
+
+    StorageRequest::InstallBundle(InstallBundleRequest {
+        manifest,
+        artifacts,
+        activate: true,
+    })
+}
+
 fn storage_load_request(index_id: &str, name: &str) -> StorageRequest {
     StorageRequest::LoadStoredBundle(LoadStoredBundleRequest {
         index_id: index_id.into(),
@@ -576,6 +616,21 @@ fn matrix_payload(values: Vec<f32>, rows: usize, dim: usize) -> MatrixPayload {
     MatrixPayload { values, rows, dim }
 }
 
+fn source_span(document_id: &str, excerpt: &str) -> SourceSpan {
+    SourceSpan {
+        source_id: Some(format!("{document_id}.md")),
+        source_uri: Some(format!("https://example.test/{document_id}")),
+        title: Some(format!("Source {document_id}")),
+        excerpt: Some(excerpt.into()),
+        locator: SourceLocator::LineRange {
+            start_line: 10,
+            end_line: Some(12),
+            start_column: None,
+            end_column: None,
+        },
+    }
+}
+
 fn mutable_snapshot_v1() -> MutableCorpusSnapshot {
     MutableCorpusSnapshot {
         documents: vec![
@@ -588,6 +643,7 @@ fn mutable_snapshot_v1() -> MutableCorpusSnapshot {
                     "topic": "edge",
                     "kind": "memo"
                 })),
+                source_span: None,
             },
             MutableCorpusDocument {
                 document_id: "doc-beta".into(),
@@ -598,6 +654,7 @@ fn mutable_snapshot_v1() -> MutableCorpusSnapshot {
                     "topic": "metrics",
                     "kind": "report"
                 })),
+                source_span: None,
             },
         ],
     }
@@ -615,6 +672,7 @@ fn mutable_snapshot_v2() -> MutableCorpusSnapshot {
                     "topic": "edge",
                     "kind": "memo"
                 })),
+                source_span: None,
             },
             MutableCorpusDocument {
                 document_id: "doc-gamma".into(),
@@ -625,9 +683,24 @@ fn mutable_snapshot_v2() -> MutableCorpusSnapshot {
                     "topic": "history",
                     "kind": "archive"
                 })),
+                source_span: None,
             },
         ],
     }
+}
+
+fn mutable_snapshot_v1_with_source_spans() -> MutableCorpusSnapshot {
+    let mut snapshot = mutable_snapshot_v1();
+    snapshot.documents[0].source_span = Some(source_span("doc-alpha", "alpha source excerpt"));
+    snapshot.documents[1].source_span = Some(source_span("doc-beta", "beta source excerpt"));
+    snapshot
+}
+
+fn mutable_snapshot_v2_with_source_spans() -> MutableCorpusSnapshot {
+    let mut snapshot = mutable_snapshot_v2();
+    snapshot.documents[0].source_span = Some(source_span("doc-alpha", "alpha source excerpt v2"));
+    snapshot.documents[1].source_span = Some(source_span("doc-gamma", "gamma source excerpt"));
+    snapshot
 }
 
 fn mutable_snapshot_v1_dense() -> MutableCorpusSnapshot {
@@ -649,6 +722,7 @@ fn mutable_snapshot_v1_dense() -> MutableCorpusSnapshot {
                     "topic": "edge",
                     "kind": "memo"
                 })),
+                source_span: None,
             },
             MutableCorpusDocument {
                 document_id: "doc-beta".into(),
@@ -666,9 +740,16 @@ fn mutable_snapshot_v1_dense() -> MutableCorpusSnapshot {
                     "topic": "metrics",
                     "kind": "report"
                 })),
+                source_span: None,
             },
         ],
     }
+}
+
+fn mutable_snapshot_v1_dense_with_alpha_source_span(excerpt: &str) -> MutableCorpusSnapshot {
+    let mut snapshot = mutable_snapshot_v1_dense();
+    snapshot.documents[0].source_span = Some(source_span("doc-alpha", excerpt));
+    snapshot
 }
 
 fn mutable_snapshot_v1_dense_embedding_update() -> MutableCorpusSnapshot {
@@ -690,6 +771,7 @@ fn mutable_snapshot_v1_dense_embedding_update() -> MutableCorpusSnapshot {
                     "topic": "edge",
                     "kind": "memo"
                 })),
+                source_span: None,
             },
             MutableCorpusDocument {
                 document_id: "doc-beta".into(),
@@ -707,6 +789,7 @@ fn mutable_snapshot_v1_dense_embedding_update() -> MutableCorpusSnapshot {
                     "topic": "metrics",
                     "kind": "report"
                 })),
+                source_span: None,
             },
         ],
     }
@@ -731,6 +814,7 @@ fn mutable_snapshot_partial_dense() -> MutableCorpusSnapshot {
                     "topic": "edge",
                     "kind": "memo"
                 })),
+                source_span: None,
             },
             MutableCorpusDocument {
                 document_id: "doc-beta".into(),
@@ -741,6 +825,7 @@ fn mutable_snapshot_partial_dense() -> MutableCorpusSnapshot {
                     "topic": "metrics",
                     "kind": "report"
                 })),
+                source_span: None,
             },
         ],
     }
@@ -758,6 +843,7 @@ fn mutable_snapshot_dense_dim_mismatch() -> MutableCorpusSnapshot {
                     "topic": "edge",
                     "kind": "memo"
                 })),
+                source_span: None,
             },
             MutableCorpusDocument {
                 document_id: "doc-beta".into(),
@@ -768,6 +854,7 @@ fn mutable_snapshot_dense_dim_mismatch() -> MutableCorpusSnapshot {
                     "topic": "metrics",
                     "kind": "report"
                 })),
+                source_span: None,
             },
         ],
     }
@@ -785,6 +872,7 @@ fn mutable_snapshot_dense_value_length_mismatch() -> MutableCorpusSnapshot {
                     "topic": "edge",
                     "kind": "memo"
                 })),
+                source_span: None,
             },
             MutableCorpusDocument {
                 document_id: "doc-beta".into(),
@@ -795,6 +883,7 @@ fn mutable_snapshot_dense_value_length_mismatch() -> MutableCorpusSnapshot {
                     "topic": "metrics",
                     "kind": "report"
                 })),
+                source_span: None,
             },
         ],
     }
@@ -1104,6 +1193,69 @@ fn browser_worker_search_supports_keyword_only_queries() {
 }
 
 #[wasm_bindgen_test]
+fn browser_worker_search_returns_source_spans_without_keyword_pollution() {
+    reset_runtime_state();
+    let mut load = load_request("demo-source-spans");
+    load.source_spans = Some(vec![
+        Some(source_span("doc-alpha", "snippetonlytoken alpha excerpt")),
+        None,
+        Some(source_span("doc-gamma", "gamma excerpt")),
+    ]);
+    let request_json = serde_json::to_string(&RuntimeRequest::LoadIndex(load)).unwrap();
+    let response_json = handle_runtime_request_json(&request_json).unwrap();
+    let response: RuntimeResponse = serde_json::from_str(&response_json).unwrap();
+    assert!(matches!(response, RuntimeResponse::IndexLoaded(_)));
+
+    let semantic = runtime_result(&worker_search_request(
+        "demo-source-spans",
+        vec![vec![vec![1.0, 0.0], vec![0.7, 0.7]]],
+        None,
+    ));
+    assert_eq!(semantic.results[0].document_ids[0], 0);
+    assert_eq!(
+        semantic.results[0].source_spans[0]
+            .as_ref()
+            .and_then(|span| span.excerpt.as_deref()),
+        Some("snippetonlytoken alpha excerpt")
+    );
+
+    let keyword = runtime_result(&keyword_search_request(
+        "demo-source-spans",
+        &["snippetonlytoken"],
+    ));
+    assert!(keyword.results[0].document_ids.is_empty());
+}
+
+#[wasm_bindgen_test]
+fn browser_worker_load_index_rejects_source_span_count_mismatch() {
+    reset_runtime_state();
+    let mut load = load_request("demo-source-spans-mismatch");
+    load.source_spans = Some(vec![None]);
+
+    let error = runtime_error_response(RuntimeRequest::LoadIndex(load));
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert!(error.message.contains("source_spans length"));
+}
+
+#[wasm_bindgen_test]
+fn browser_worker_load_index_rejects_invalid_source_span_locator() {
+    reset_runtime_state();
+    let mut invalid_span = source_span("doc-alpha", "invalid excerpt");
+    invalid_span.locator = SourceLocator::LineRange {
+        start_line: 0,
+        end_line: None,
+        start_column: None,
+        end_column: None,
+    };
+    let mut load = load_request("demo-source-spans-invalid");
+    load.source_spans = Some(vec![Some(invalid_span), None, None]);
+
+    let error = runtime_error_response(RuntimeRequest::LoadIndex(load));
+    assert_eq!(error.code, ErrorCode::InvalidRequest);
+    assert!(error.message.contains("source_spans[0] is invalid"));
+}
+
+#[wasm_bindgen_test]
 fn browser_worker_search_supports_hybrid_queries() {
     reset_runtime_state();
     load_demo_index("demo-hybrid");
@@ -1193,6 +1345,80 @@ async fn browser_storage_install_and_reload_roundtrip() {
             + health.memory_usage_breakdown.metadata_json_bytes
             + health.memory_usage_breakdown.keyword_runtime_bytes
     );
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_install_and_reload_roundtrip_with_source_spans_artifact() {
+    reset_runtime_state();
+    let index_id = "stored-demo-source-spans";
+    let build_id = "build-storage-source-spans-001";
+
+    let install = storage_response(storage_install_request_with_source_spans(
+        index_id,
+        build_id,
+        vec![
+            Some(source_span("stored-alpha", "stored alpha source excerpt")),
+            Some(source_span("stored-beta", "stored beta source excerpt")),
+        ],
+    ))
+    .await;
+    match install {
+        StorageResponse::BundleInstalled(result) => {
+            assert_eq!(result.index_id, index_id);
+            assert!(result.activated);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    reset_runtime_state();
+    let load = storage_response(storage_load_request(index_id, "stored-demo-source-spans")).await;
+    match load {
+        StorageResponse::StoredBundleLoaded(result) => {
+            assert_eq!(result.summary.num_documents, 2);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+
+    let semantic = runtime_result(&stored_semantic_search_request("stored-demo-source-spans"));
+    assert_eq!(semantic.results[0].document_ids[0], 0);
+    assert_eq!(
+        semantic.results[0].source_spans[0]
+            .as_ref()
+            .and_then(|span| span.excerpt.as_deref()),
+        Some("stored alpha source excerpt")
+    );
+
+    let keyword = runtime_result(&keyword_search_request(
+        "stored-demo-source-spans",
+        &["beta"],
+    ));
+    assert_eq!(keyword.results[0].document_ids, vec![1]);
+    assert_eq!(
+        keyword.results[0].source_spans[0]
+            .as_ref()
+            .and_then(|span| span.excerpt.as_deref()),
+        Some("stored beta source excerpt")
+    );
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_rejects_source_spans_artifact_document_count_mismatch() {
+    reset_runtime_state();
+
+    let error = storage_error_response(storage_install_request_with_source_spans(
+        "stored-demo-source-spans-mismatch",
+        "build-storage-source-spans-mismatch-001",
+        vec![Some(source_span(
+            "stored-alpha",
+            "stored alpha source excerpt",
+        ))],
+    ))
+    .await;
+
+    assert_eq!(error.code, ErrorCode::StorageFailed);
+    assert!(error
+        .message
+        .contains("source-spans document count mismatch"));
 }
 
 #[wasm_bindgen_test]
@@ -1428,6 +1654,35 @@ async fn browser_storage_mutable_corpus_tracks_embedding_updates_and_dense_noops
 }
 
 #[wasm_bindgen_test]
+async fn browser_storage_mutable_corpus_tracks_source_span_only_updates() {
+    reset_runtime_state();
+    let corpus_id = "mutable-demo-source-span-update";
+
+    let _ = storage_response(register_mutable_corpus_request(corpus_id, 2)).await;
+    let _ = storage_response(sync_mutable_corpus_request(
+        corpus_id,
+        mutable_snapshot_v1_dense_with_alpha_source_span("alpha source excerpt v1"),
+    ))
+    .await;
+
+    let updated = storage_response(sync_mutable_corpus_request(
+        corpus_id,
+        mutable_snapshot_v1_dense_with_alpha_source_span("alpha source excerpt v2"),
+    ))
+    .await;
+    match updated {
+        StorageResponse::MutableCorpusSynced(result) => {
+            assert!(result.sync.changed);
+            assert_eq!(result.sync.added, 0);
+            assert_eq!(result.sync.updated, 1);
+            assert_eq!(result.sync.deleted, 0);
+            assert_eq!(result.sync.unchanged, 1);
+        }
+        other => panic!("unexpected storage response: {other:?}"),
+    }
+}
+
+#[wasm_bindgen_test]
 async fn browser_storage_mutable_corpus_rejects_query_dimension_mismatch() {
     reset_runtime_state();
     let corpus_id = "mutable-demo-query-dim-mismatch";
@@ -1498,6 +1753,69 @@ async fn browser_storage_mutable_corpus_applies_delete_and_noop_sync_semantics()
         }
         other => panic!("unexpected storage response: {other:?}"),
     }
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_mutable_corpus_keyword_search_accepts_question_punctuation() {
+    reset_runtime_state();
+    let corpus_id = "mutable-demo-keyword-question";
+
+    let _ = storage_response(register_mutable_corpus_request(corpus_id, 2)).await;
+    let _ = storage_response(sync_mutable_corpus_request(
+        corpus_id,
+        mutable_snapshot_v1(),
+    ))
+    .await;
+
+    let result = runtime_result(&keyword_search_request(corpus_id, &["alpha launch memo?"]));
+    assert_eq!(result.results[0].document_ids, vec![0]);
+}
+
+#[wasm_bindgen_test]
+async fn browser_storage_mutable_corpus_source_spans_survive_sync_delete_and_reload() {
+    reset_runtime_state();
+    let corpus_id = "mutable-demo-source-spans-reload";
+
+    let _ = storage_response(register_mutable_corpus_request(corpus_id, 2)).await;
+    let _ = storage_response(sync_mutable_corpus_request(
+        corpus_id,
+        mutable_snapshot_v1_with_source_spans(),
+    ))
+    .await;
+
+    let alpha = runtime_result(&keyword_search_request(corpus_id, &["alpha"]));
+    assert_eq!(alpha.results[0].document_ids, vec![0]);
+    assert_eq!(
+        alpha.results[0].source_spans[0]
+            .as_ref()
+            .and_then(|span| span.excerpt.as_deref()),
+        Some("alpha source excerpt")
+    );
+
+    let _ = storage_response(sync_mutable_corpus_request(
+        corpus_id,
+        mutable_snapshot_v2_with_source_spans(),
+    ))
+    .await;
+
+    let deleted = runtime_result(&keyword_search_request(corpus_id, &["beta"]));
+    assert!(deleted.results[0].document_ids.is_empty());
+
+    let gamma_before_reload = runtime_result(&keyword_search_request(corpus_id, &["gamma"]));
+    assert_eq!(gamma_before_reload.results[0].document_ids, vec![1]);
+    assert_eq!(
+        gamma_before_reload.results[0].source_spans[0]
+            .as_ref()
+            .and_then(|span| span.excerpt.as_deref()),
+        Some("gamma source excerpt")
+    );
+
+    reset_runtime_state();
+    let load = storage_response(load_mutable_corpus_request(corpus_id)).await;
+    assert!(matches!(load, StorageResponse::MutableCorpusLoaded(_)));
+
+    let gamma_after_reload = runtime_result(&keyword_search_request(corpus_id, &["gamma"]));
+    assert_eq!(gamma_after_reload.results, gamma_before_reload.results);
 }
 
 #[wasm_bindgen_test]

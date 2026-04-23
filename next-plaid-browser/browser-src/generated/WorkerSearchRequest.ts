@@ -4,11 +4,11 @@ import type { SearchRequest } from "./SearchRequest";
 /**
  * Request to search one named runtime index.
  */
-export type WorkerSearchRequest = { 
+export type WorkerSearchRequest = {
 /**
  * Runtime-local name of the index to search.
  */
-name: string, 
+name: string,
 /**
  * Search request payload.
  */

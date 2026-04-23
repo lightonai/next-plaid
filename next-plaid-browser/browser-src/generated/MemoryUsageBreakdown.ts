@@ -3,7 +3,7 @@
 /**
  * Breakdown of memory retained by the browser runtime.
  */
-export type MemoryUsageBreakdown = { 
+export type MemoryUsageBreakdown = {
 /**
  * Bytes retained by dense or compressed index payloads.
  *
@@ -11,14 +11,14 @@ export type MemoryUsageBreakdown = {
  * the full persisted snapshot body or all heap overhead retained by serde
  * metadata trees.
  */
-index_bytes: number, 
+index_bytes: number,
 /**
  * Bytes retained by replayable metadata JSON.
  *
  * This is the serialized JSON footprint, not a full accounting of the
  * in-memory `serde_json::Value` tree.
  */
-metadata_json_bytes: number, 
+metadata_json_bytes: number,
 /**
  * Bytes retained by the keyword-runtime SQLite / FTS copy.
  */

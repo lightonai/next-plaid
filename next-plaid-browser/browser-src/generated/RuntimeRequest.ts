@@ -9,7 +9,7 @@ import type { WorkerSearchRequest } from "./WorkerSearchRequest";
 /**
  * Top-level runtime request envelope.
  */
-export type RuntimeRequest = { "type": "health" } | { "type": "validate_bundle", 
+export type RuntimeRequest = { "type": "health" } | { "type": "validate_bundle",
 /**
  * Manifest to validate.
  */

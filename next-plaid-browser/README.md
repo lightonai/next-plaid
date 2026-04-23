@@ -43,33 +43,34 @@ This means the browser version is aiming for a faithful query-time port with an
 explicit bundle loader, not a literal in-browser rebuild of the native mmap
 runtime.
 
-## What This Does Not Yet Cover
+## Current encoder scope
 
-The current browser work is about **query-time search execution**, not browser
-embedding generation.
+The browser workspace now covers both sides of the browser-owned retrieval path:
 
-Right now, the browser workspace is proving that we can:
+- Rust/Wasm search execution in a dedicated search worker
+- browser-side encoder initialization in a dedicated encoder worker
+- ONNX Runtime Web session creation and warmup
+- Rust/Wasm preprocessing for both query and document encoding inside the
+  encoder worker
+- mutable-corpus sync that enriches browser documents with embeddings before
+  handing them to the Rust/Wasm search side
 
-- load browser-safe index artifacts
-- run the native-style search and rerank logic in Wasm
-- move toward a worker-hosted browser runtime
+What is proven today:
 
-It is **not yet** proving that the browser can import and run the actual ONNX
-embedding model.
+- the proof smoke lane stays green with a local fixture model package
+- the real-model probe is green for:
+  - `lightonai/mxbai-edge-colbert-v0-32m-onnx`
+  - `lightonai/answerai-colbert-small-v1-onnx`
+- mutable browser corpora can be registered, synced, searched, reloaded, and
+  searched again through the browser runtime API
 
-That encoder/model work is a later phase because it is a separate problem:
+What is still outside the finished v1 surface:
 
-- model format and runtime choice
-- browser-compatible inference engine
-- parity against native query embeddings
-- packaging and loading the model itself
-
-Until that phase lands, the mental model should be:
-
-- current work: browser search engine
-- later work: browser query encoder
-
-Those two pieces meet at the query embedding boundary.
+- broader model-package shapes such as the heavier GTE package with extra files
+- a polished preset/manifest system for application-facing model selection
+- eviction policy for cached model packages
+- broader Firefox and Safari release verification beyond the current Chrome /
+  Chromium-first gates
 
 ## Fidelity status
 
@@ -191,6 +192,19 @@ Other parity lanes:
 ./next-plaid-browser/scripts/test_browser_parity.sh all
 ```
 
+### Browser demo
+
+```bash
+cd next-plaid-browser
+npm install
+npm run demo:serve
+```
+
+This builds the harness, starts a local server, and prints a browser URL for
+the interactive demo. The demo uses the same browser runtime API as the smoke
+and probe lanes and lets you initialize a real model, sync a small document
+corpus, and run semantic queries directly in the browser.
+
 ### Browser smoke check
 
 ```bash
@@ -200,9 +214,9 @@ npm run smoke:chromium
 ```
 
 This is the first browser-runtime smoke layer. It builds the web Wasm bundle,
-serves a small harness page, launches a real browser with Playwright, and
-verifies that the browser can execute the dedicated-worker health/load/search
-path end to end across:
+serves the harness page in automation mode, launches a real browser with
+Playwright, and verifies that the browser can execute the dedicated-worker
+health/load/search path end to end across:
 
 - semantic search
 - keyword-only search
@@ -211,11 +225,14 @@ path end to end across:
 
 ## Next steps
 
-- implement OPFS-backed bundle loading and manifest/version handling
-- harden the new OPFS + IndexedDB runtime path for recovery and cleanup
-- add iterative FTS mutation flows
-- connect the current in-memory SQLite WASM keyword layer to storage-backed
-  browser startup
+- tighten the release surface around docs, demo ergonomics, and browser-facing
+  API examples
+- harden the OPFS + IndexedDB runtime path for more eviction and recovery edge
+  cases
+- extend model-package handling beyond the current three-asset baseline where
+  needed
+- broaden browser verification lanes after the Chrome-first release path feels
+  stable
 
 ## Docs
 

@@ -2,35 +2,40 @@
 import type { EncoderIdentity } from "./EncoderIdentity";
 import type { FtsTokenizer } from "./FtsTokenizer";
 import type { SearchIndexPayload } from "./SearchIndexPayload";
+import type { SourceSpan } from "./SourceSpan";
 
 /**
  * Request to load one in-memory index into the browser runtime.
  */
-export type WorkerLoadIndexRequest = { 
+export type WorkerLoadIndexRequest = {
 /**
  * Runtime-local name for the loaded index.
  */
-name: string, 
+name: string,
 /**
  * Dense index payload to load.
  */
-index: SearchIndexPayload, 
+index: SearchIndexPayload,
 /**
  * Encoder identity expected by semantic queries for this index.
  */
-encoder: EncoderIdentity, 
+encoder: EncoderIdentity,
 /**
  * Optional metadata rows aligned with the document ids.
  */
-metadata: (unknown | null)[] | null, 
+metadata: (unknown | null)[] | null,
+/**
+ * Optional source spans aligned with the document ids.
+ */
+source_spans?: Array<SourceSpan | null> | null,
 /**
  * Residual quantization bit-width.
  */
-nbits: number, 
+nbits: number,
 /**
  * FTS tokenizer used for keyword and hybrid search.
  */
-fts_tokenizer: FtsTokenizer, 
+fts_tokenizer: FtsTokenizer,
 /**
  * Optional maximum number of documents expected by the caller.
  */

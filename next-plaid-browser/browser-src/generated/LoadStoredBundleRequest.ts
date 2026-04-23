@@ -4,15 +4,15 @@ import type { FtsTokenizer } from "./FtsTokenizer";
 /**
  * Request to reopen the active stored bundle for one logical index id.
  */
-export type LoadStoredBundleRequest = { 
+export type LoadStoredBundleRequest = {
 /**
  * Logical index id whose active bundle should be reopened.
  */
-index_id: string, 
+index_id: string,
 /**
  * Runtime-local name to assign to the reopened bundle.
  */
-name: string, 
+name: string,
 /**
  * FTS tokenizer used when rebuilding the keyword runtime.
  */

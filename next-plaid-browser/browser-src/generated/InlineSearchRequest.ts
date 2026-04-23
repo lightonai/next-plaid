@@ -6,19 +6,19 @@ import type { SearchIndexPayload } from "./SearchIndexPayload";
 /**
  * Search request that carries the full index payload inline.
  */
-export type InlineSearchRequest = { 
+export type InlineSearchRequest = {
 /**
  * Dense index payload to search.
  */
-index: SearchIndexPayload, 
+index: SearchIndexPayload,
 /**
  * Query matrix to search with.
  */
-query: MatrixPayload, 
+query: MatrixPayload,
 /**
  * Search tuning parameters.
  */
-params: InlineSearchParamsRequest, 
+params: InlineSearchParamsRequest,
 /**
  * Optional subset of document ids to restrict scoring to.
  */

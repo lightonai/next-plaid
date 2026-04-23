@@ -4,11 +4,11 @@ import type { MutableCorpusSnapshot } from "./MutableCorpusSnapshot";
 /**
  * Request to sync one authoritative mutable corpus snapshot.
  */
-export type SyncMutableCorpusRequest = { 
+export type SyncMutableCorpusRequest = {
 /**
  * Stable corpus identity exposed by the browser API.
  */
-corpus_id: string, 
+corpus_id: string,
 /**
  * Full authoritative snapshot for the corpus.
  */

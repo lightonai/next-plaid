@@ -6,7 +6,7 @@ use next_plaid_browser_contract::{
     IndexSummary, InlineSearchParamsRequest, InlineSearchRequest, InlineSearchResponse,
     MatrixPayload, MemoryUsageBreakdown, MutableCorpusSnapshot, MutableCorpusSummary,
     QueryEmbeddingsPayload, QueryResultResponse, RankedResultsPayload, SearchIndexPayload,
-    SearchParamsRequest, SearchRequest, SearchResponse, SearchTimingBreakdown,
+    SearchParamsRequest, SearchRequest, SearchResponse, SearchTimingBreakdown, SourceSpan,
     WorkerLoadIndexRequest, WorkerLoadIndexResponse, WorkerSearchRequest, RUNTIME_SCHEMA_VERSION,
 };
 use next_plaid_browser_kernel::{
@@ -63,6 +63,7 @@ pub(crate) struct LoadedIndex {
     payload: LoadedIndexPayload,
     encoder: EncoderIdentity,
     metadata: Option<Vec<Option<serde_json::Value>>>,
+    source_spans: Option<Vec<Option<SourceSpan>>>,
     keyword_index: Option<KeywordIndex>,
     summary: IndexSummary,
     memory_usage_breakdown: MemoryUsageBreakdown,
@@ -79,6 +80,7 @@ pub(crate) struct LoadedMutableCorpus {
     #[allow(dead_code)]
     encoder: EncoderIdentity,
     metadata: Vec<Option<serde_json::Value>>,
+    source_spans: Vec<Option<SourceSpan>>,
     keyword_index: KeywordIndex,
     dense_index: Option<MutableDenseIndex>,
     summary: MutableCorpusSummary,
@@ -208,6 +210,15 @@ pub(crate) fn load_index(
             });
         }
     }
+    if let Some(source_spans) = &request.source_spans {
+        if source_spans.len() != summary.num_documents {
+            return Err(WasmError::SourceSpansLengthMismatch {
+                source_spans_len: source_spans.len(),
+                document_count: summary.num_documents,
+            });
+        }
+        validate_source_spans(source_spans)?;
+    }
 
     let keyword_index = request
         .metadata
@@ -227,6 +238,7 @@ pub(crate) fn load_index(
                 payload: LoadedIndexPayload::Dense(request.index),
                 encoder: request.encoder,
                 metadata: request.metadata,
+                source_spans: request.source_spans,
                 keyword_index,
                 summary: summary.clone(),
                 memory_usage_breakdown,
@@ -244,6 +256,7 @@ pub(crate) fn load_compressed_bundle_into_runtime(
 ) -> Result<IndexSummary, WasmError> {
     let manifest = stored.manifest.clone();
     let metadata = stored.metadata.clone();
+    let source_spans = stored.source_spans.clone();
     let keyword_index = metadata
         .as_ref()
         .map(|metadata| KeywordIndex::new(metadata, fts_tokenizer))
@@ -267,6 +280,7 @@ pub(crate) fn load_compressed_bundle_into_runtime(
                 payload: LoadedIndexPayload::Compressed(stored),
                 encoder: manifest.encoder.clone(),
                 metadata,
+                source_spans,
                 keyword_index,
                 summary: summary.clone(),
                 memory_usage_breakdown,
@@ -288,6 +302,13 @@ pub(crate) fn load_mutable_corpus_into_runtime(
         .iter()
         .map(|document| document.metadata.clone())
         .collect();
+    let source_spans: Vec<Option<SourceSpan>> = stored
+        .snapshot
+        .documents
+        .iter()
+        .map(|document| document.source_span.clone())
+        .collect();
+    validate_source_spans(&source_spans)?;
     let keyword_index = KeywordIndex::new(&metadata, stored.fts_tokenizer)?;
     let dense_index = build_mutable_dense_index(&stored.snapshot, &summary.encoder)?;
     let memory_usage_breakdown = mutable_corpus_memory_usage_breakdown(
@@ -302,6 +323,7 @@ pub(crate) fn load_mutable_corpus_into_runtime(
             LoadedMutableCorpus {
                 encoder: summary.encoder.clone(),
                 metadata,
+                source_spans,
                 keyword_index,
                 dense_index,
                 summary: summary.clone(),
@@ -393,6 +415,10 @@ fn search_loaded_immutable_index(
             results.push(QueryResultResponse {
                 query_id,
                 metadata: metadata_for_results(loaded.metadata.as_deref(), &fused.document_ids),
+                source_spans: source_spans_for_results(
+                    loaded.source_spans.as_deref(),
+                    &fused.document_ids,
+                ),
                 document_ids: fused.document_ids,
                 scores: fused.scores,
             });
@@ -430,6 +456,7 @@ fn search_loaded_immutable_index(
         )?;
         return Ok(search_response_from_ranked_results(
             loaded.metadata.as_deref(),
+            loaded.source_spans.as_deref(),
             ranked_results,
             Some(SearchTimingBreakdown {
                 total_us: elapsed_us(total_started_at),
@@ -452,6 +479,7 @@ fn search_loaded_immutable_index(
     )?;
     Ok(search_response_from_ranked_results(
         loaded.metadata.as_deref(),
+        loaded.source_spans.as_deref(),
         ranked_results,
         Some(SearchTimingBreakdown {
             total_us: elapsed_us(total_started_at),
@@ -524,6 +552,10 @@ fn search_loaded_mutable_corpus(
             results.push(QueryResultResponse {
                 query_id,
                 metadata: metadata_for_results(Some(&loaded.metadata), &fused.document_ids),
+                source_spans: source_spans_for_results(
+                    Some(&loaded.source_spans),
+                    &fused.document_ids,
+                ),
                 document_ids: fused.document_ids,
                 scores: fused.scores,
             });
@@ -561,6 +593,7 @@ fn search_loaded_mutable_corpus(
         )?;
         return Ok(search_response_from_ranked_results(
             Some(&loaded.metadata),
+            Some(&loaded.source_spans),
             ranked_results,
             Some(SearchTimingBreakdown {
                 total_us: elapsed_us(total_started_at),
@@ -583,6 +616,7 @@ fn search_loaded_mutable_corpus(
     )?;
     search_response_from_ranked_results(
         Some(&loaded.metadata),
+        Some(&loaded.source_spans),
         ranked_results,
         Some(SearchTimingBreakdown {
             total_us: elapsed_us(total_started_at),
@@ -699,6 +733,7 @@ fn empty_ranked_results(count: usize) -> Vec<RankedResultsPayload> {
 
 fn search_response_from_ranked_results(
     metadata: Option<&[Option<serde_json::Value>]>,
+    source_spans: Option<&[Option<SourceSpan>]>,
     ranked_results: Vec<RankedResultsPayload>,
     timing: Option<SearchTimingBreakdown>,
 ) -> Result<SearchResponse, WasmError> {
@@ -708,6 +743,7 @@ fn search_response_from_ranked_results(
         .map(|(query_id, ranked)| QueryResultResponse {
             query_id,
             metadata: metadata_for_results(metadata, &ranked.document_ids),
+            source_spans: source_spans_for_results(source_spans, &ranked.document_ids),
             document_ids: ranked.document_ids,
             scores: ranked.scores,
         })
@@ -1074,7 +1110,29 @@ fn metadata_for_results(
     metadata: Option<&[Option<serde_json::Value>]>,
     document_ids: &[i64],
 ) -> Vec<Option<serde_json::Value>> {
-    let Some(metadata) = metadata else {
+    rows_for_results(metadata, document_ids)
+}
+
+fn source_spans_for_results(
+    source_spans: Option<&[Option<SourceSpan>]>,
+    document_ids: &[i64],
+) -> Vec<Option<SourceSpan>> {
+    rows_for_results(source_spans, document_ids)
+}
+
+fn validate_source_spans(source_spans: &[Option<SourceSpan>]) -> Result<(), WasmError> {
+    for (row, source_span) in source_spans.iter().enumerate() {
+        if let Some(source_span) = source_span {
+            source_span.validate().map_err(|error| {
+                WasmError::InvalidRequest(format!("source_spans[{row}] is invalid: {error}"))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn rows_for_results<T: Clone>(rows: Option<&[Option<T>]>, document_ids: &[i64]) -> Vec<Option<T>> {
+    let Some(rows) = rows else {
         return vec![None; document_ids.len()];
     };
 
@@ -1083,7 +1141,7 @@ fn metadata_for_results(
         .map(|document_id| {
             usize::try_from(*document_id)
                 .ok()
-                .and_then(|index| metadata.get(index))
+                .and_then(|index| rows.get(index))
                 .cloned()
                 .flatten()
         })

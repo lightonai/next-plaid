@@ -1,0 +1,733 @@
+{
+  "id": "simple-wiki-demo-v1",
+  "attribution": "Text excerpts from Simple English Wikipedia, CC BY-SA 3.0.",
+  "documents": [
+    {
+      "document_id": "alan-turing",
+      "semantic_text": "Alan Mathison Turing was an English mathematician and computer scientist. He is known as the father of computer science. He was born in Maida Vale, London.",
+      "metadata": {
+        "slug": "alan_turing",
+        "title": "Alan Turing",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Alan_Turing",
+        "description": "English computer scientist (1912–1954)"
+      },
+      "source_span": {
+        "source_id": "alan_turing",
+        "source_uri": "https://simple.wikipedia.org/wiki/Alan_Turing",
+        "title": "Alan Turing",
+        "excerpt": "Alan Mathison Turing was an English mathematician and computer scientist. He is known as the father of computer science. He was born in Maida Vale, London.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Alan Turing"
+          ],
+          "anchor": "alan_turing"
+        }
+      }
+    },
+    {
+      "document_id": "vincent-van-gogh",
+      "semantic_text": "Vincent Willem van Gogh was a Dutch post-impressionist painter. His work had a great influence on modern art because of its striking colours and emotional power. He suffered from delusions and fits of mental illness. When he was 37, he died by committing suicide.",
+      "metadata": {
+        "slug": "vincent_van_gogh",
+        "title": "Vincent van Gogh",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Vincent_van_Gogh",
+        "description": "Dutch painter (1853–1890)"
+      },
+      "source_span": {
+        "source_id": "vincent_van_gogh",
+        "source_uri": "https://simple.wikipedia.org/wiki/Vincent_van_Gogh",
+        "title": "Vincent van Gogh",
+        "excerpt": "Vincent Willem van Gogh was a Dutch post-impressionist painter. His work had a great influence on modern art because of its striking colours and emotional power. He suffered from delusions and fits of mental illness. When he was 37, he died by committing suicide.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Vincent van Gogh"
+          ],
+          "anchor": "vincent_van_gogh"
+        }
+      }
+    },
+    {
+      "document_id": "photosynthesis",
+      "semantic_text": "Photosynthesis is a process in which green plants make their own food from sunlight, using the help of leaves to produce sugar. It is the process by which these organisms convert light energy into chemical energy, which is used to produce food.Photosynthesis is the process by which leaving plant cells containing chlorophyll produced food substances from carbon dioxide and oxygen is released as a bio product",
+      "metadata": {
+        "slug": "photosynthesis",
+        "title": "Photosynthesis",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Photosynthesis",
+        "description": "biological process to convert light into chemical energy"
+      },
+      "source_span": {
+        "source_id": "photosynthesis",
+        "source_uri": "https://simple.wikipedia.org/wiki/Photosynthesis",
+        "title": "Photosynthesis",
+        "excerpt": "Photosynthesis is a process in which green plants make their own food from sunlight, using the help of leaves to produce sugar. It is the process by which these organisms convert light energy into chemical energy, which is used to produce food.Photosynthesis is the process by which leaving plant cells containing chlorophyll produced food substances from carbon dioxide and oxygen is released as a bio product",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Photosynthesis"
+          ],
+          "anchor": "photosynthesis"
+        }
+      }
+    },
+    {
+      "document_id": "black-hole",
+      "semantic_text": "A black hole is a place in space where gravity is so strong that nothing can escape from it, even light. This idea comes from Albert Einstein's general theory of relativity. The outer edge of a black hole is called the event horizon. When something enters the black hole, it cannot get out. Black holes act like perfect black bodies, which means they do not reflect any light. According to quantum mechanics, black holes can slowly release a tiny amount of energy called Hawking radiation. But this radiation is so weak that it cannot be seen with the technology today.",
+      "metadata": {
+        "slug": "black_hole",
+        "title": "Black hole",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Black_hole",
+        "description": "astronomical object so massive, that anything falling into it, including light, cannot escape its gravity"
+      },
+      "source_span": {
+        "source_id": "black_hole",
+        "source_uri": "https://simple.wikipedia.org/wiki/Black_hole",
+        "title": "Black hole",
+        "excerpt": "A black hole is a place in space where gravity is so strong that nothing can escape from it, even light. This idea comes from Albert Einstein's general theory of relativity. The outer edge of a black hole is called the event horizon. When something enters the black hole, it cannot get out. Black holes act like perfect black bodies, which means they do not reflect any light. According to quantum mechanics, black holes can slowly release a tiny amount of energy called Hawking radiation. But this radiation is so weak that it cannot be seen with the technology today.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Black hole"
+          ],
+          "anchor": "black_hole"
+        }
+      }
+    },
+    {
+      "document_id": "great-pyramid-of-giza",
+      "semantic_text": "The Great Pyramid of Giza is a huge pyramid built by the Ancient Egyptians over 4,500 years ago. It stands 18.4 km from Cairo, Egypt. It is the oldest of the Seven Wonders of the Ancient World, and the only one to remain mostly intact.",
+      "metadata": {
+        "slug": "great_pyramid_of_giza",
+        "title": "Great Pyramid of Giza",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Great_Pyramid_of_Giza",
+        "description": "oldest and largest of the three pyramids in the Giza Necropolis; one of the seven ancient wonders of the world"
+      },
+      "source_span": {
+        "source_id": "great_pyramid_of_giza",
+        "source_uri": "https://simple.wikipedia.org/wiki/Great_Pyramid_of_Giza",
+        "title": "Great Pyramid of Giza",
+        "excerpt": "The Great Pyramid of Giza is a huge pyramid built by the Ancient Egyptians over 4,500 years ago. It stands 18.4 km from Cairo, Egypt. It is the oldest of the Seven Wonders of the Ancient World, and the only one to remain mostly intact.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Great Pyramid of Giza"
+          ],
+          "anchor": "great_pyramid_of_giza"
+        }
+      }
+    },
+    {
+      "document_id": "jazz",
+      "semantic_text": "Jazz is a type of music which was invented in the United States. Jazz music combines African-American music with European music. Jazz first became popular in the 1910s. Some common jazz instruments include the saxophone, trumpet, guitar, piano, double bass, and drums.",
+      "metadata": {
+        "slug": "jazz",
+        "title": "Jazz",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Jazz",
+        "description": "musical style and genre"
+      },
+      "source_span": {
+        "source_id": "jazz",
+        "source_uri": "https://simple.wikipedia.org/wiki/Jazz",
+        "title": "Jazz",
+        "excerpt": "Jazz is a type of music which was invented in the United States. Jazz music combines African-American music with European music. Jazz first became popular in the 1910s. Some common jazz instruments include the saxophone, trumpet, guitar, piano, double bass, and drums.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Jazz"
+          ],
+          "anchor": "jazz"
+        }
+      }
+    },
+    {
+      "document_id": "dna",
+      "semantic_text": "DNA, short for deoxyribonucleic acid, is the molecule that contains the genetic code of living organisms. This includes animals, plants, protists, archaea and bacteria. It is made up of two polynucleotide chains in a double helix.",
+      "metadata": {
+        "slug": "dna",
+        "title": "DNA",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/DNA",
+        "description": "molecule that encodes the genetic instructions used in the development and functioning of all known living organisms and many viruses"
+      },
+      "source_span": {
+        "source_id": "dna",
+        "source_uri": "https://simple.wikipedia.org/wiki/DNA",
+        "title": "DNA",
+        "excerpt": "DNA, short for deoxyribonucleic acid, is the molecule that contains the genetic code of living organisms. This includes animals, plants, protists, archaea and bacteria. It is made up of two polynucleotide chains in a double helix.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "DNA"
+          ],
+          "anchor": "dna"
+        }
+      }
+    },
+    {
+      "document_id": "mount-everest",
+      "semantic_text": "Mount Everest is the highest mountain on Earth. Mount Everest is in the Himalayas, a tall mountain range in Asia. It is about 8,848 metres high and one of the Seven Summits. Everest is located in the Mahalangur Himal sub-range of the Himalayas in the Solukhumbu district of Nepal.",
+      "metadata": {
+        "slug": "mount_everest",
+        "title": "Mount Everest",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Mount_Everest",
+        "description": "Earth's highest mountain above sea level, located in the Mahalangur Himal sub-range of the Himalayas"
+      },
+      "source_span": {
+        "source_id": "mount_everest",
+        "source_uri": "https://simple.wikipedia.org/wiki/Mount_Everest",
+        "title": "Mount Everest",
+        "excerpt": "Mount Everest is the highest mountain on Earth. Mount Everest is in the Himalayas, a tall mountain range in Asia. It is about 8,848 metres high and one of the Seven Summits. Everest is located in the Mahalangur Himal sub-range of the Himalayas in the Solukhumbu district of Nepal.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Mount Everest"
+          ],
+          "anchor": "mount_everest"
+        }
+      }
+    },
+    {
+      "document_id": "marie-curie",
+      "semantic_text": "Maria Salomea Skłodowska–Curie was a Polish physicist and chemist. She did research on radioactivity. She was also the first woman to win a Nobel Prize.,which she went on to win twice. She was the first woman professor at the University of Paris. She was the first person to win two Nobel Prizes. She received a Nobel Prize in physics for her research on uncontrolled radiation, which was discovered by Henri Becquerel.",
+      "metadata": {
+        "slug": "marie_curie",
+        "title": "Marie Curie",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Marie_Curie",
+        "description": "Polish-French physicist and chemist (1867–1934)"
+      },
+      "source_span": {
+        "source_id": "marie_curie",
+        "source_uri": "https://simple.wikipedia.org/wiki/Marie_Curie",
+        "title": "Marie Curie",
+        "excerpt": "Maria Salomea Skłodowska–Curie was a Polish physicist and chemist. She did research on radioactivity. She was also the first woman to win a Nobel Prize.,which she went on to win twice. She was the first woman professor at the University of Paris. She was the first person to win two Nobel Prizes. She received a Nobel Prize in physics for her research on uncontrolled radiation, which was discovered by Henri Becquerel.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Marie Curie"
+          ],
+          "anchor": "marie_curie"
+        }
+      }
+    },
+    {
+      "document_id": "byzantine-empire",
+      "semantic_text": "The Byzantine Empire, also formally called the Eastern Roman Empire, was the continuation of the Roman Empire primarily in its eastern provinces that survived into the Late Antiquity and the Middle Ages. The empire had its capital at Constantinople, survived the fall of the Western Roman Empire in the 5th century AD and continued to exist until the fall of Constantinople to the Ottoman Empire in 1453.",
+      "metadata": {
+        "slug": "byzantine_empire",
+        "title": "Byzantine Empire",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Byzantine_Empire",
+        "description": "Roman Empire during Late Antiquity and the Middle Ages"
+      },
+      "source_span": {
+        "source_id": "byzantine_empire",
+        "source_uri": "https://simple.wikipedia.org/wiki/Byzantine_Empire",
+        "title": "Byzantine Empire",
+        "excerpt": "The Byzantine Empire, also formally called the Eastern Roman Empire, was the continuation of the Roman Empire primarily in its eastern provinces that survived into the Late Antiquity and the Middle Ages. The empire had its capital at Constantinople, survived the fall of the Western Roman Empire in the 5th century AD and continued to exist until the fall of Constantinople to the Ottoman Empire in 1453.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Byzantine Empire"
+          ],
+          "anchor": "byzantine_empire"
+        }
+      }
+    },
+    {
+      "document_id": "quantum-mechanics",
+      "semantic_text": "Quantum mechanics explains how the universe works with things that are even smaller than atoms. It is also called quantum physics or quantum theory. Mechanics is the part of physics that explains how things move and quantum is the Latin word for 'how much'. A quantum of energy is the least amount possible, and quantum mechanics describes how that energy moves.",
+      "metadata": {
+        "slug": "quantum_mechanics",
+        "title": "Quantum mechanics",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Quantum_mechanics",
+        "description": "fundamental theory in physics describing the properties of nature on an atomic scale"
+      },
+      "source_span": {
+        "source_id": "quantum_mechanics",
+        "source_uri": "https://simple.wikipedia.org/wiki/Quantum_mechanics",
+        "title": "Quantum mechanics",
+        "excerpt": "Quantum mechanics explains how the universe works with things that are even smaller than atoms. It is also called quantum physics or quantum theory. Mechanics is the part of physics that explains how things move and quantum is the Latin word for 'how much'. A quantum of energy is the least amount possible, and quantum mechanics describes how that energy moves.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Quantum mechanics"
+          ],
+          "anchor": "quantum_mechanics"
+        }
+      }
+    },
+    {
+      "document_id": "silk-road",
+      "semantic_text": "The Silk Road was a group of trade routes across Asia that connected China with the Mediterranean region. It allowed Chinese traders to exchange things with Middle Eastern and Mediterranean traders.",
+      "metadata": {
+        "slug": "silk_road",
+        "title": "Silk Road",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Silk_Road",
+        "description": "trade routes through Asia connecting China to the Mediterranean Sea"
+      },
+      "source_span": {
+        "source_id": "silk_road",
+        "source_uri": "https://simple.wikipedia.org/wiki/Silk_Road",
+        "title": "Silk Road",
+        "excerpt": "The Silk Road was a group of trade routes across Asia that connected China with the Mediterranean region. It allowed Chinese traders to exchange things with Middle Eastern and Mediterranean traders.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Silk Road"
+          ],
+          "anchor": "silk_road"
+        }
+      }
+    },
+    {
+      "document_id": "penicillin",
+      "semantic_text": "Penicillin is a group of common antibiotics (penicillins), made to treat bacterial infections. It was one of the first antibiotics to be discovered, and worked well against staphylococci and streptococci. Many strains of bacteria are now resistant. Chemists and many businesses keep changing part of its structure in the effort to keep it working against the bacteria. Penicillin is sometimes made to treat syphilis, tonsillitis, meningitis, and pneumonia as well as other diseases.",
+      "metadata": {
+        "slug": "penicillin",
+        "title": "Penicillin",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Penicillin",
+        "description": "group of antibiotics derived from Penicillium fungi"
+      },
+      "source_span": {
+        "source_id": "penicillin",
+        "source_uri": "https://simple.wikipedia.org/wiki/Penicillin",
+        "title": "Penicillin",
+        "excerpt": "Penicillin is a group of common antibiotics (penicillins), made to treat bacterial infections. It was one of the first antibiotics to be discovered, and worked well against staphylococci and streptococci. Many strains of bacteria are now resistant. Chemists and many businesses keep changing part of its structure in the effort to keep it working against the bacteria. Penicillin is sometimes made to treat syphilis, tonsillitis, meningitis, and pneumonia as well as other diseases.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Penicillin"
+          ],
+          "anchor": "penicillin"
+        }
+      }
+    },
+    {
+      "document_id": "great-wall-of-china",
+      "semantic_text": "The Great Wall of China is a series of fortifications in China. Chinese emperors and dynasties built the wall to protect the north of their empire from enemy attacks. In total, the wall stretches 21,196.18 km (13,170.70 mi).",
+      "metadata": {
+        "slug": "great_wall_of_china",
+        "title": "Great Wall of China",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Great_Wall_of_China",
+        "description": "series of fortifications built along the historical border of China"
+      },
+      "source_span": {
+        "source_id": "great_wall_of_china",
+        "source_uri": "https://simple.wikipedia.org/wiki/Great_Wall_of_China",
+        "title": "Great Wall of China",
+        "excerpt": "The Great Wall of China is a series of fortifications in China. Chinese emperors and dynasties built the wall to protect the north of their empire from enemy attacks. In total, the wall stretches 21,196.18 km (13,170.70 mi).",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Great Wall of China"
+          ],
+          "anchor": "great_wall_of_china"
+        }
+      }
+    },
+    {
+      "document_id": "volcano",
+      "semantic_text": "A volcano is a mountain that has lava coming out from a magma chamber under the or did have in the past. Volcanoes are formed by the movement of tectonic plates.",
+      "metadata": {
+        "slug": "volcano",
+        "title": "Volcano",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Volcano",
+        "description": "natural, surface vent or fissure usually in a mountainous form"
+      },
+      "source_span": {
+        "source_id": "volcano",
+        "source_uri": "https://simple.wikipedia.org/wiki/Volcano",
+        "title": "Volcano",
+        "excerpt": "A volcano is a mountain that has lava coming out from a magma chamber under the or did have in the past. Volcanoes are formed by the movement of tectonic plates.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Volcano"
+          ],
+          "anchor": "volcano"
+        }
+      }
+    },
+    {
+      "document_id": "apollo-11",
+      "semantic_text": "Apollo 11 was the first flight to send people to the moon. It was done by NASA, the American space group. It went up to space on July 16, 1969, carrying three astronauts: Neil Armstrong, Buzz Aldrin and Michael Collins. On July 20, 1969, Armstrong and Aldrin became the first humans to land on the moon, while Collins stayed in orbit around the Moon.",
+      "metadata": {
+        "slug": "apollo_11",
+        "title": "Apollo 11",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Apollo_11",
+        "description": "first Moon landing and fifth crewed flight of the United States Apollo program"
+      },
+      "source_span": {
+        "source_id": "apollo_11",
+        "source_uri": "https://simple.wikipedia.org/wiki/Apollo_11",
+        "title": "Apollo 11",
+        "excerpt": "Apollo 11 was the first flight to send people to the moon. It was done by NASA, the American space group. It went up to space on July 16, 1969, carrying three astronauts: Neil Armstrong, Buzz Aldrin and Michael Collins. On July 20, 1969, Armstrong and Aldrin became the first humans to land on the moon, while Collins stayed in orbit around the Moon.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Apollo 11"
+          ],
+          "anchor": "apollo_11"
+        }
+      }
+    },
+    {
+      "document_id": "mona-lisa",
+      "semantic_text": "The Mona Lisa is a 16th-century portrait, painted in oil by Leonardo da Vinci during the Renaissance in Florence, Italy. Many people think Mona Lisa's smile is mysterious. Mona Lisa also has no eyebrows, it is believed that this was because they were accidentally removed during a restoration. Because it is so often studied, recognized, and copied, it is considered to be the most famous painting in the world. The Louvre says that about 80 percent of its visitors come to see the painting of Mona Lisa. According to art experts, the Mona Lisa is the best known, most visited, and overall most famous work of art in the entire world.",
+      "metadata": {
+        "slug": "mona_lisa",
+        "title": "Mona Lisa",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Mona_Lisa",
+        "description": "oil painting by Leonardo da Vinci in the Louvre, Paris"
+      },
+      "source_span": {
+        "source_id": "mona_lisa",
+        "source_uri": "https://simple.wikipedia.org/wiki/Mona_Lisa",
+        "title": "Mona Lisa",
+        "excerpt": "The Mona Lisa is a 16th-century portrait, painted in oil by Leonardo da Vinci during the Renaissance in Florence, Italy. Many people think Mona Lisa's smile is mysterious. Mona Lisa also has no eyebrows, it is believed that this was because they were accidentally removed during a restoration. Because it is so often studied, recognized, and copied, it is considered to be the most famous painting in the world. The Louvre says that about 80 percent of its visitors come to see the painting of Mona Lisa. According to art experts, the Mona Lisa is the best known, most visited, and overall most famous work of art in the entire world.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Mona Lisa"
+          ],
+          "anchor": "mona_lisa"
+        }
+      }
+    },
+    {
+      "document_id": "tea",
+      "semantic_text": "Tea is a caffeinated drink made from steeping the leaves of the Camellia sinensis plant. Tea can have other herbs, spices, or fruit flavors in it, like lemon.",
+      "metadata": {
+        "slug": "tea",
+        "title": "Tea",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Tea",
+        "description": "brewed drink made from tea leaves"
+      },
+      "source_span": {
+        "source_id": "tea",
+        "source_uri": "https://simple.wikipedia.org/wiki/Tea",
+        "title": "Tea",
+        "excerpt": "Tea is a caffeinated drink made from steeping the leaves of the Camellia sinensis plant. Tea can have other herbs, spices, or fruit flavors in it, like lemon.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Tea"
+          ],
+          "anchor": "tea"
+        }
+      }
+    },
+    {
+      "document_id": "renaissance",
+      "semantic_text": "The Renaissance is a period in European history that followed the Middle Ages and ended in the 17th century. Renaissance is a French word for “cultural rebirth.” During this period, there was a “rebirth” of classical learning. People started relearning the teachings of scholars from Ancient Greece, Rome, and other ancient societies. The Renaissance is often said to be the start of the modern age.",
+      "metadata": {
+        "slug": "renaissance",
+        "title": "Renaissance",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Renaissance",
+        "description": "cultural movement that spanned the period roughly from the 14th to the 17th century"
+      },
+      "source_span": {
+        "source_id": "renaissance",
+        "source_uri": "https://simple.wikipedia.org/wiki/Renaissance",
+        "title": "Renaissance",
+        "excerpt": "The Renaissance is a period in European history that followed the Middle Ages and ended in the 17th century. Renaissance is a French word for “cultural rebirth.” During this period, there was a “rebirth” of classical learning. People started relearning the teachings of scholars from Ancient Greece, Rome, and other ancient societies. The Renaissance is often said to be the start of the modern age.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Renaissance"
+          ],
+          "anchor": "renaissance"
+        }
+      }
+    },
+    {
+      "document_id": "coral-reef",
+      "semantic_text": "A coral reef is a large underwater structure made of dead and living corals. In most healthy reefs, stony corals are predominant. They are built from colonial polyps from the phylum Cnidaria which secrete an exoskeleton of calcium carbonate. The reefs are formed in tropical marine areas and between the tropics. The reef acts as the home of many tropical fish and other animals. Coral reefs systems are a major tourism attraction because of their beauty and color of the corals and their many associated animals.",
+      "metadata": {
+        "slug": "coral_reef",
+        "title": "Coral reef",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Coral_reef",
+        "description": "ridge of rock in the sea formed by the growth and deposit of coral"
+      },
+      "source_span": {
+        "source_id": "coral_reef",
+        "source_uri": "https://simple.wikipedia.org/wiki/Coral_reef",
+        "title": "Coral reef",
+        "excerpt": "A coral reef is a large underwater structure made of dead and living corals. In most healthy reefs, stony corals are predominant. They are built from colonial polyps from the phylum Cnidaria which secrete an exoskeleton of calcium carbonate. The reefs are formed in tropical marine areas and between the tropics. The reef acts as the home of many tropical fish and other animals. Coral reefs systems are a major tourism attraction because of their beauty and color of the corals and their many associated animals.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Coral reef"
+          ],
+          "anchor": "coral_reef"
+        }
+      }
+    },
+    {
+      "document_id": "printing-press",
+      "semantic_text": "The printing press is a machine for printing. It makes many copies of identical pages. The printing press today is used to print books and newspapers. It had a great influence on society, especially western society. It was \"one of the most potent agents... of western civilization in bringing together the scattered ideas of thinkers\".",
+      "metadata": {
+        "slug": "printing_press",
+        "title": "Printing press",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Printing_press",
+        "description": "device for evenly printing ink onto a print medium"
+      },
+      "source_span": {
+        "source_id": "printing_press",
+        "source_uri": "https://simple.wikipedia.org/wiki/Printing_press",
+        "title": "Printing press",
+        "excerpt": "The printing press is a machine for printing. It makes many copies of identical pages. The printing press today is used to print books and newspapers. It had a great influence on society, especially western society. It was \"one of the most potent agents... of western civilization in bringing together the scattered ideas of thinkers\".",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Printing press"
+          ],
+          "anchor": "printing_press"
+        }
+      }
+    },
+    {
+      "document_id": "isaac-newton",
+      "semantic_text": "Sir Isaac Newton was an English physicist, mathematician and astronomer. He is well known for his work on the laws of motion, optics, gravity, and calculus also, he presents his theory of universal gravitation and three laws of motion.",
+      "metadata": {
+        "slug": "isaac_newton",
+        "title": "Isaac Newton",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Isaac_Newton",
+        "description": "English mathematician and physicist (1642-1727)"
+      },
+      "source_span": {
+        "source_id": "isaac_newton",
+        "source_uri": "https://simple.wikipedia.org/wiki/Isaac_Newton",
+        "title": "Isaac Newton",
+        "excerpt": "Sir Isaac Newton was an English physicist, mathematician and astronomer. He is well known for his work on the laws of motion, optics, gravity, and calculus also, he presents his theory of universal gravitation and three laws of motion.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Isaac Newton"
+          ],
+          "anchor": "isaac_newton"
+        }
+      }
+    },
+    {
+      "document_id": "hibiscus",
+      "semantic_text": "Hibiscus or rosemallow is a genus of plants with a flower of bright colors. It grows mostly in the tropics, but some species grow in cool climates. Hibiscus often become national/state flowers. For example, the Hawaiian hibiscus is the state flower of Hawaii.",
+      "metadata": {
+        "slug": "hibiscus",
+        "title": "Hibiscus",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Hibiscus",
+        "description": "genus of plants"
+      },
+      "source_span": {
+        "source_id": "hibiscus",
+        "source_uri": "https://simple.wikipedia.org/wiki/Hibiscus",
+        "title": "Hibiscus",
+        "excerpt": "Hibiscus or rosemallow is a genus of plants with a flower of bright colors. It grows mostly in the tropics, but some species grow in cool climates. Hibiscus often become national/state flowers. For example, the Hawaiian hibiscus is the state flower of Hawaii.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Hibiscus"
+          ],
+          "anchor": "hibiscus"
+        }
+      }
+    },
+    {
+      "document_id": "origami",
+      "semantic_text": "Origami (折り紙) is the art and technique of folding paper. It also refers to the two- and three-dimensional forms created in the process. Although the word origami has Japanese roots, the practice itself is universal and its origin remains unknown. The use of the term has been extended in modern times to include other materials such as metal, textiles, and it is also used in the biological sciences to describe folded structures like DNA.",
+      "metadata": {
+        "slug": "origami",
+        "title": "Origami",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Origami",
+        "description": "traditional Japanese art of paper folding"
+      },
+      "source_span": {
+        "source_id": "origami",
+        "source_uri": "https://simple.wikipedia.org/wiki/Origami",
+        "title": "Origami",
+        "excerpt": "Origami (折り紙) is the art and technique of folding paper. It also refers to the two- and three-dimensional forms created in the process. Although the word origami has Japanese roots, the practice itself is universal and its origin remains unknown. The use of the term has been extended in modern times to include other materials such as metal, textiles, and it is also used in the biological sciences to describe folded structures like DNA.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Origami"
+          ],
+          "anchor": "origami"
+        }
+      }
+    },
+    {
+      "document_id": "oldowan",
+      "semantic_text": "Oldowan tools were a style of stone tools that were widely used during the early Lower Paleolithic period, the first part of the Stone Age. Oldowan tool artifacts are the earliest evidence we have of human tool-making.",
+      "metadata": {
+        "slug": "oldowan",
+        "title": "Oldowan",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Oldowan",
+        "description": "archaeological culture"
+      },
+      "source_span": {
+        "source_id": "oldowan",
+        "source_uri": "https://simple.wikipedia.org/wiki/Oldowan",
+        "title": "Oldowan",
+        "excerpt": "Oldowan tools were a style of stone tools that were widely used during the early Lower Paleolithic period, the first part of the Stone Age. Oldowan tool artifacts are the earliest evidence we have of human tool-making.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Oldowan"
+          ],
+          "anchor": "oldowan"
+        }
+      }
+    },
+    {
+      "document_id": "fibonacci-number",
+      "semantic_text": "The Fibonacci numbers are a sequence of numbers in mathematics named after Leonardo of Pisa, known as Fibonacci. Fibonacci wrote a book in 1202, called Liber Abaci, which introduced the number pattern to Western European mathematics, although mathematicians in India already knew about it.",
+      "metadata": {
+        "slug": "fibonacci_number",
+        "title": "Fibonacci number",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Fibonacci_number",
+        "description": "integer in the infinite Fibonacci sequence"
+      },
+      "source_span": {
+        "source_id": "fibonacci_number",
+        "source_uri": "https://simple.wikipedia.org/wiki/Fibonacci_number",
+        "title": "Fibonacci number",
+        "excerpt": "The Fibonacci numbers are a sequence of numbers in mathematics named after Leonardo of Pisa, known as Fibonacci. Fibonacci wrote a book in 1202, called Liber Abaci, which introduced the number pattern to Western European mathematics, although mathematicians in India already knew about it.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Fibonacci number"
+          ],
+          "anchor": "fibonacci_number"
+        }
+      }
+    },
+    {
+      "document_id": "nikola-tesla",
+      "semantic_text": "Nikola Tesla was a Serbian-American inventor and engineer of Serbian origin. He is best known for his contributions to the design of the modern alternating current (AC) electricity supply system. He was born in the village of Smiljan, in the part of former Austria-Hungary that is now Croatia. He later became an American citizen.",
+      "metadata": {
+        "slug": "nikola_tesla",
+        "title": "Nikola Tesla",
+        "source": "Simple English Wikipedia",
+        "url": "https://simple.wikipedia.org/wiki/Nikola_Tesla",
+        "description": "Serbian-American engineer and inventor (1856–1943)"
+      },
+      "source_span": {
+        "source_id": "nikola_tesla",
+        "source_uri": "https://simple.wikipedia.org/wiki/Nikola_Tesla",
+        "title": "Nikola Tesla",
+        "excerpt": "Nikola Tesla was a Serbian-American inventor and engineer of Serbian origin. He is best known for his contributions to the design of the modern alternating current (AC) electricity supply system. He was born in the village of Smiljan, in the part of former Austria-Hungary that is now Croatia. He later became an American citizen.",
+        "locator": {
+          "type": "section",
+          "path": [
+            "Simple English Wikipedia",
+            "Nikola Tesla"
+          ],
+          "anchor": "nikola_tesla"
+        }
+      }
+    }
+  ],
+  "queries": [
+    {
+      "id": "enigma-codebreaker",
+      "text": "Who cracked the Enigma code during the war?",
+      "expectedSlug": "alan_turing"
+    },
+    {
+      "id": "painter-cut-ear",
+      "text": "The painter who famously cut off his own ear",
+      "expectedSlug": "vincent_van_gogh"
+    },
+    {
+      "id": "gravity-apple",
+      "text": "The scientist who figured out gravity by watching fruit fall",
+      "expectedSlug": "isaac_newton"
+    },
+    {
+      "id": "oldest-living-coral",
+      "text": "Underwater ecosystems built by tiny animals over centuries",
+      "expectedSlug": "coral_reef"
+    },
+    {
+      "id": "mold-that-saves-lives",
+      "text": "A mold that turned out to kill bacteria and save lives",
+      "expectedSlug": "penicillin"
+    },
+    {
+      "id": "stone-wonder-egypt",
+      "text": "An ancient wonder made of huge stone blocks in the desert",
+      "expectedSlug": "great_pyramid_of_giza"
+    },
+    {
+      "id": "first-moon-landing",
+      "text": "When humans first walked on the surface of the moon",
+      "expectedSlug": "apollo_11"
+    },
+    {
+      "id": "folded-paper-art",
+      "text": "The Japanese art of folding paper into shapes",
+      "expectedSlug": "origami"
+    },
+    {
+      "id": "spiral-in-nature",
+      "text": "A number sequence that shows up in sunflowers and pinecones",
+      "expectedSlug": "fibonacci_number"
+    },
+    {
+      "id": "green-energy-of-plants",
+      "text": "How plants turn sunlight into food",
+      "expectedSlug": "photosynthesis"
+    }
+  ]
+}

@@ -6,35 +6,35 @@ import type { SearchParamsRequest } from "./SearchParamsRequest";
 /**
  * Unified semantic, keyword, and hybrid search request.
  */
-export type SearchRequest = { 
+export type SearchRequest = {
 /**
  * Semantic query embeddings, when semantic retrieval is requested.
  */
-queries?: Array<QueryEmbeddingsPayload> | null, 
+queries?: Array<QueryEmbeddingsPayload> | null,
 /**
  * Search tuning parameters for semantic retrieval.
  */
-params: SearchParamsRequest, 
+params: SearchParamsRequest,
 /**
  * Explicit document-id subset to search within.
  */
-subset?: number[] | null, 
+subset?: number[] | null,
 /**
  * Keyword queries for FTS-only or hybrid retrieval.
  */
-text_query?: Array<string> | null, 
+text_query?: Array<string> | null,
 /**
  * Optional interpolation factor for hybrid fusion.
  */
-alpha?: number | null, 
+alpha?: number | null,
 /**
  * Requested fusion mode.
  */
-fusion?: FusionMode | null, 
+fusion?: FusionMode | null,
 /**
  * SQL-like metadata filter condition.
  */
-filter_condition?: string | null, 
+filter_condition?: string | null,
 /**
  * Parameters bound into `filter_condition` placeholders.
  */

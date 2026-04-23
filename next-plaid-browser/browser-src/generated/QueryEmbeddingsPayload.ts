@@ -6,27 +6,27 @@ import type { EncoderIdentity } from "./EncoderIdentity";
 /**
  * Query embeddings encoded either inline or as base64 bytes plus shape metadata.
  */
-export type QueryEmbeddingsPayload = { 
+export type QueryEmbeddingsPayload = {
 /**
  * Encoder identity expected by the search runtime.
  */
-encoder: EncoderIdentity, 
+encoder: EncoderIdentity,
 /**
  * Binary dtype for the payload values.
  */
-dtype: EmbeddingDtype, 
+dtype: EmbeddingDtype,
 /**
  * Logical sequence layout represented by the payload.
  */
-layout: EmbeddingLayout, 
+layout: EmbeddingLayout,
 /**
  * Inline nested embeddings, when the sender does not use the binary form.
  */
-embeddings?: Array<Array<number>> | null, 
+embeddings?: Array<Array<number>> | null,
 /**
  * Base64-encoded row-major embedding bytes.
  */
-embeddings_b64?: string | null, 
+embeddings_b64?: string | null,
 /**
  * Matrix shape for the binary payload form.
  */

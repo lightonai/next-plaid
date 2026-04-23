@@ -6,39 +6,39 @@ import type { ModelHealthInfo } from "./ModelHealthInfo";
 /**
  * Health response for the browser runtime.
  */
-export type HealthResponse = { 
+export type HealthResponse = {
 /**
  * Overall runtime status string.
  */
-status: string, 
+status: string,
 /**
  * Runtime version string.
  */
-version: string, 
+version: string,
 /**
  * Exact JSON schema version for this runtime.
  */
-schema_version: number, 
+schema_version: number,
 /**
  * Number of loaded indices.
  */
-loaded_indices: number, 
+loaded_indices: number,
 /**
  * Logical location of the active runtime index store.
  */
-index_dir: string, 
+index_dir: string,
 /**
  * Total memory retained by loaded indices.
  */
-memory_usage_bytes: number, 
+memory_usage_bytes: number,
 /**
  * Memory breakdown for the loaded indices.
  */
-memory_usage_breakdown: MemoryUsageBreakdown, 
+memory_usage_breakdown: MemoryUsageBreakdown,
 /**
  * Summaries for each loaded index.
  */
-indices: Array<IndexSummary>, 
+indices: Array<IndexSummary>,
 /**
  * Optional model health details.
  */

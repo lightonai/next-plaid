@@ -5,15 +5,15 @@ import type { SearchTimingBreakdown } from "./SearchTimingBreakdown";
 /**
  * Search response for a batched request.
  */
-export type SearchResponse = { 
+export type SearchResponse = {
 /**
  * Per-query ranked outputs.
  */
-results: Array<QueryResultResponse>, 
+results: Array<QueryResultResponse>,
 /**
  * Number of queries represented in `results`.
  */
-num_queries: number, 
+num_queries: number,
 /**
  * Optional request-level timing breakdown.
  */

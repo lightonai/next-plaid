@@ -19,8 +19,9 @@ pub use protocol::{
     QueryEmbeddingsPayload, QueryResultResponse, RankedResultsPayload,
     RegisterMutableCorpusRequest, RegisterMutableCorpusResponse, RuntimeErrorResponse,
     RuntimeRequest, RuntimeResponse, ScoreRequest, ScoreResponse, SearchIndexPayload,
-    SearchParamsRequest, SearchRequest, SearchResponse, SearchTimingBreakdown,
-    StorageErrorResponse, StorageRequest, StorageResponse, StoredBundleLoadedResponse,
-    SyncMutableCorpusRequest, SyncMutableCorpusResponse, ValidateBundleResponse,
-    WorkerLoadIndexRequest, WorkerLoadIndexResponse, WorkerSearchRequest, RUNTIME_SCHEMA_VERSION,
+    SearchParamsRequest, SearchRequest, SearchResponse, SearchTimingBreakdown, SourceLocator,
+    SourceSpan, SourceSpanValidationError, StorageErrorResponse, StorageRequest, StorageResponse,
+    StoredBundleLoadedResponse, SyncMutableCorpusRequest, SyncMutableCorpusResponse,
+    ValidateBundleResponse, WorkerLoadIndexRequest, WorkerLoadIndexResponse, WorkerSearchRequest,
+    RUNTIME_SCHEMA_VERSION,
 };

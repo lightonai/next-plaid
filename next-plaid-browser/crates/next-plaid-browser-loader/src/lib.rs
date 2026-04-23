@@ -5,7 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use next_plaid_browser_contract::{
-    ArtifactKind, BundleManifest, BundleManifestError, MetadataMode,
+    ArtifactKind, BundleManifest, BundleManifestError, MetadataMode, SourceSpan,
+    SourceSpanValidationError,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -168,6 +169,25 @@ pub enum BundleLoaderError {
     /// Inline metadata JSON could not be decoded.
     #[error("failed to parse inline metadata JSON: {0}")]
     MetadataJsonParse(serde_json::Error),
+    /// Source-spans JSON could not be decoded.
+    #[error("failed to parse source-spans JSON: {0}")]
+    SourceSpansJsonParse(serde_json::Error),
+    /// Source-spans row count did not match the bundle document count.
+    #[error("source-spans document count mismatch: expected {expected}, found {actual}")]
+    SourceSpansDocumentCount {
+        /// Number of documents declared in the manifest.
+        expected: usize,
+        /// Actual number of decoded source-span rows.
+        actual: usize,
+    },
+    /// A source-span artifact row failed semantic validation.
+    #[error("source-spans row {row} is invalid: {reason}")]
+    InvalidSourceSpan {
+        /// Zero-based source-span row.
+        row: usize,
+        /// Source-span validation failure.
+        reason: SourceSpanValidationError,
+    },
     /// An artifact byte slice cannot be divided into the expected element width.
     #[error("artifact byte length is invalid for {kind}: expected a multiple of {element_size}, found {actual}")]
     InvalidArtifactByteLength {
@@ -237,6 +257,41 @@ pub fn parse_inline_metadata_json(
         BundleLoaderError::MissingArtifact(ArtifactKind::MetadataJson),
     )?;
     serde_json::from_slice(bytes).map_err(BundleLoaderError::MetadataJsonParse)
+}
+
+/// Parses optional source-span JSON from an artifact map.
+#[must_use = "parsing errors are only visible if the result is checked"]
+pub fn parse_source_spans_json(
+    manifest: &BundleManifest,
+    artifact_bytes: &ArtifactBytesMap,
+) -> Result<Option<Vec<Option<SourceSpan>>>, BundleLoaderError> {
+    let has_source_spans_artifact = manifest
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.kind == ArtifactKind::SourceSpansJson);
+    if !has_source_spans_artifact {
+        return Ok(None);
+    }
+
+    let bytes = artifact_bytes.get(&ArtifactKind::SourceSpansJson).ok_or(
+        BundleLoaderError::MissingArtifact(ArtifactKind::SourceSpansJson),
+    )?;
+    let source_spans: Vec<Option<SourceSpan>> =
+        serde_json::from_slice(bytes).map_err(BundleLoaderError::SourceSpansJsonParse)?;
+    if source_spans.len() != manifest.document_count {
+        return Err(BundleLoaderError::SourceSpansDocumentCount {
+            expected: manifest.document_count,
+            actual: source_spans.len(),
+        });
+    }
+    for (row, span) in source_spans.iter().enumerate() {
+        if let Some(span) = span {
+            span.validate()
+                .map_err(|reason| BundleLoaderError::InvalidSourceSpan { row, reason })?;
+        }
+    }
+
+    Ok(Some(source_spans))
 }
 
 /// Parses the search-artifact set required by the browser kernel.
@@ -505,6 +560,7 @@ fn parse_doc_lengths(bytes: &[u8]) -> Result<Vec<usize>, BundleLoaderError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use next_plaid_browser_contract::{ArtifactEntry, CompressionKind};
 
     fn fixture_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -553,6 +609,106 @@ mod tests {
         let metadata = bundle.read_inline_metadata_json().unwrap();
         assert_eq!(metadata["documents"].as_array().unwrap().len(), 2);
         assert_eq!(metadata["documents"][0]["title"], "alpha");
+    }
+
+    #[test]
+    fn parses_optional_source_spans_json() {
+        let bundle = load_bundle_from_dir(fixture_dir()).unwrap();
+        let mut manifest = bundle.manifest().clone();
+        let source_spans_json = serde_json::json!([
+            {
+                "source_id": "alpha.md",
+                "source_uri": "https://example.test/alpha",
+                "title": "Alpha",
+                "excerpt": "alpha excerpt",
+                "locator": {
+                    "type": "line_range",
+                    "start_line": 3,
+                    "end_line": 5
+                }
+            },
+            null
+        ])
+        .to_string()
+        .into_bytes();
+        manifest.artifacts.push(ArtifactEntry {
+            kind: ArtifactKind::SourceSpansJson,
+            path: "artifacts/source_spans.json".into(),
+            byte_size: source_spans_json.len() as u64,
+            sha256: sha256_hex(&source_spans_json),
+            compression: CompressionKind::None,
+        });
+        let mut artifact_bytes = ArtifactBytesMap::new();
+        artifact_bytes.insert(ArtifactKind::SourceSpansJson, source_spans_json);
+
+        let source_spans = parse_source_spans_json(&manifest, &artifact_bytes)
+            .unwrap()
+            .unwrap();
+        assert_eq!(source_spans.len(), 2);
+        assert_eq!(
+            source_spans[0]
+                .as_ref()
+                .and_then(|span| span.excerpt.as_deref()),
+            Some("alpha excerpt")
+        );
+        assert!(source_spans[1].is_none());
+    }
+
+    #[test]
+    fn rejects_source_spans_document_count_mismatch() {
+        let bundle = load_bundle_from_dir(fixture_dir()).unwrap();
+        let mut manifest = bundle.manifest().clone();
+        let source_spans_json = serde_json::json!([null]).to_string().into_bytes();
+        manifest.artifacts.push(ArtifactEntry {
+            kind: ArtifactKind::SourceSpansJson,
+            path: "artifacts/source_spans.json".into(),
+            byte_size: source_spans_json.len() as u64,
+            sha256: sha256_hex(&source_spans_json),
+            compression: CompressionKind::None,
+        });
+        let mut artifact_bytes = ArtifactBytesMap::new();
+        artifact_bytes.insert(ArtifactKind::SourceSpansJson, source_spans_json);
+
+        let err = parse_source_spans_json(&manifest, &artifact_bytes).unwrap_err();
+        assert!(matches!(
+            err,
+            BundleLoaderError::SourceSpansDocumentCount {
+                expected: 2,
+                actual: 1
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_source_span_locator() {
+        let bundle = load_bundle_from_dir(fixture_dir()).unwrap();
+        let mut manifest = bundle.manifest().clone();
+        let source_spans_json = serde_json::json!([
+            {
+                "locator": {
+                    "type": "line_range",
+                    "start_line": 0
+                }
+            },
+            null
+        ])
+        .to_string()
+        .into_bytes();
+        manifest.artifacts.push(ArtifactEntry {
+            kind: ArtifactKind::SourceSpansJson,
+            path: "artifacts/source_spans.json".into(),
+            byte_size: source_spans_json.len() as u64,
+            sha256: sha256_hex(&source_spans_json),
+            compression: CompressionKind::None,
+        });
+        let mut artifact_bytes = ArtifactBytesMap::new();
+        artifact_bytes.insert(ArtifactKind::SourceSpansJson, source_spans_json);
+
+        let err = parse_source_spans_json(&manifest, &artifact_bytes).unwrap_err();
+        assert!(matches!(
+            err,
+            BundleLoaderError::InvalidSourceSpan { row: 0, .. }
+        ));
     }
 
     #[test]

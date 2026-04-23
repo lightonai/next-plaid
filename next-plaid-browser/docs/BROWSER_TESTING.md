@@ -114,10 +114,16 @@ This probe is intentionally separate from the normal smoke lane:
 Current status:
 
 - the probe is now the right lane for real upstream model trials
-- with the current proof-only tokenizer runtime, live Hugging Face tokenizers
-  still fail at load time
-- that failure is expected to remain until the fixture tokenizer is replaced by
-  the planned real tokenizer runtime
+- it is green today for:
+  - `lightonai/mxbai-edge-colbert-v0-32m-onnx`
+  - `lightonai/answerai-colbert-small-v1-onnx`
+- it verifies:
+  - encoder init
+  - mutable corpus sync with dense state
+  - semantic search over a small natural-language corpus
+  - reload and reopen behavior
+- the heavier `GTE-ModernColBERT-v1` package remains a later package-shape
+  widening slice, not part of the current fast release baseline
 
 Primary command:
 
@@ -129,6 +135,25 @@ To include the heavier accuracy-oriented model as well:
 
 ```bash
 node ./scripts/playwright_real_model_probe.mjs chromium --all
+```
+
+### 3.75 Interactive browser demo
+
+Use the demo when you want a human-usable browser surface on top of the same
+runtime API that the smoke and probe lanes exercise.
+
+The demo:
+
+- starts the encoder and search workers locally
+- lets you choose a real model preset
+- syncs a small document corpus into the browser runtime
+- runs semantic queries from the page
+- makes reload and local cache reuse easy to inspect manually
+
+Primary command:
+
+```bash
+npm run demo:serve
 ```
 
 ### 4. Safari verification

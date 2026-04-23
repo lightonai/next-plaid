@@ -3,15 +3,15 @@
 /**
  * Dense matrix payload serialized as flat row-major values.
  */
-export type MatrixPayload = { 
+export type MatrixPayload = {
 /**
  * Flat row-major values buffer.
  */
-values: Array<number>, 
+values: Array<number>,
 /**
  * Number of rows in the matrix.
  */
-rows: number, 
+rows: number,
 /**
  * Number of columns per row.
  */

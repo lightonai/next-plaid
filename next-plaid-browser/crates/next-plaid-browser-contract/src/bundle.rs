@@ -30,6 +30,8 @@ pub enum ArtifactKind {
     MetadataJson,
     /// SQLite sidecar metadata payload.
     MetadataSqlite,
+    /// Optional source-span JSON payload used for result display/provenance.
+    SourceSpansJson,
 }
 
 impl ArtifactKind {
@@ -46,6 +48,7 @@ impl ArtifactKind {
             ArtifactKind::BucketWeights => "bucket_weights",
             ArtifactKind::MetadataJson => "metadata_json",
             ArtifactKind::MetadataSqlite => "metadata_sqlite",
+            ArtifactKind::SourceSpansJson => "source_spans_json",
         }
     }
 }

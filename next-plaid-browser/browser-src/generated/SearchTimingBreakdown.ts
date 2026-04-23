@@ -3,27 +3,27 @@
 /**
  * Request-level timing emitted by successful runtime searches.
  */
-export type SearchTimingBreakdown = { 
+export type SearchTimingBreakdown = {
 /**
  * Total request time in microseconds.
  */
-total_us: number, 
+total_us: number,
 /**
  * Time spent decoding query payloads, when semantic search ran.
  */
-query_decode_us?: number | null, 
+query_decode_us?: number | null,
 /**
  * Time spent resolving subsets or metadata filters.
  */
-subset_us?: number | null, 
+subset_us?: number | null,
 /**
  * Time spent in semantic search.
  */
-semantic_us?: number | null, 
+semantic_us?: number | null,
 /**
  * Time spent in keyword search.
  */
-keyword_us?: number | null, 
+keyword_us?: number | null,
 /**
  * Time spent fusing semantic and keyword results.
  */

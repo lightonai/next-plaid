@@ -3,39 +3,39 @@
 /**
  * Summary information reported for a loaded index.
  */
-export type IndexSummary = { 
+export type IndexSummary = {
 /**
  * Runtime-local name of the index.
  */
-name: string, 
+name: string,
 /**
  * Number of documents in the index.
  */
-num_documents: number, 
+num_documents: number,
 /**
  * Number of token embeddings across all documents.
  */
-num_embeddings: number, 
+num_embeddings: number,
 /**
  * Number of centroid partitions.
  */
-num_partitions: number, 
+num_partitions: number,
 /**
  * Embedding dimension.
  */
-dimension: number, 
+dimension: number,
 /**
  * Residual quantization bit-width.
  */
-nbits: number, 
+nbits: number,
 /**
  * Average document length in tokens.
  */
-avg_doclen: number, 
+avg_doclen: number,
 /**
  * Whether metadata is available for result replay and filtering.
  */
-has_metadata: boolean, 
+has_metadata: boolean,
 /**
  * Optional caller-specified document cap.
  */

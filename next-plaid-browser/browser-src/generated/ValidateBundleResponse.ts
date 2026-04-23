@@ -3,15 +3,15 @@
 /**
  * Response returned after validating a bundle manifest.
  */
-export type ValidateBundleResponse = { 
+export type ValidateBundleResponse = {
 /**
  * Logical index id from the manifest.
  */
-index_id: string, 
+index_id: string,
 /**
  * Build id from the manifest.
  */
-build_id: string, 
+build_id: string,
 /**
  * Number of artifacts declared by the manifest.
  */

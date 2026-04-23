@@ -3,19 +3,19 @@
 /**
  * Response returned after bundle installation.
  */
-export type BundleInstalledResponse = { 
+export type BundleInstalledResponse = {
 /**
  * Logical index id for the installed bundle.
  */
-index_id: string, 
+index_id: string,
 /**
  * Build id for the installed bundle.
  */
-build_id: string, 
+build_id: string,
 /**
  * Number of installed artifacts.
  */
-artifact_count: number, 
+artifact_count: number,
 /**
  * Whether the bundle was marked active.
  */

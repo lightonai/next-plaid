@@ -388,6 +388,7 @@ function searchResultsResponse(): SearchResultsResponseEnvelope {
         document_ids: [0, 1],
         scores: [0.9, 0.4],
         metadata: [{ title: "alpha" }, { title: "beta" }],
+        source_spans: [null, null],
       },
     ],
     num_queries: 1,
