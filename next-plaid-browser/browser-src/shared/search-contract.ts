@@ -3,6 +3,7 @@
 // This wrapper exists only for local re-exports and convenience aliases.
 export type { BundleInstalledResponse } from "../generated/BundleInstalledResponse";
 export type { BundleManifest } from "../generated/BundleManifest";
+export type { EmbeddingLayout } from "../generated/EmbeddingLayout";
 export type { EncoderIdentity } from "../generated/EncoderIdentity";
 export type { HealthResponse } from "../generated/HealthResponse";
 export type { InstallBundleRequest } from "../generated/InstallBundleRequest";

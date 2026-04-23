@@ -84,10 +84,11 @@ function decodeOutput(
   results: ort.InferenceSession.ReturnType,
   expectedRows: number,
   expectedEmbeddingDim: number,
+  allowOutputFallback: boolean,
 ): Effect.Effect<number[][], WorkerRuntimeError> {
   return Effect.gen(function*() {
     const output = yield* Effect.try({
-      try: () => selectOutputTensor(results),
+      try: () => selectOutputTensor(results, { allowFallback: allowOutputFallback }),
       catch: (error) =>
         workerRuntimeErrorFromUnknown(
           "wasm_encoder_backend.select_output",
@@ -152,19 +153,26 @@ function decodeOutput(
   });
 }
 
-function buildEncodedQuery(
+export function buildEncodedQuery(
   tokenized: PreparedEncoderInput,
   embeddings: number[][],
   encoder: EncoderCreateInput["encoder"],
-  queryLength: number,
   embeddingDim: number,
+  doQueryExpansion: boolean,
   total_ms: number,
   tokenize_ms: number,
   inference_ms: number,
 ): EncodedQuery {
+  const activeRows = doQueryExpansion
+    ? embeddings
+    : embeddings.slice(0, tokenized.activeLength);
+  const activeLength = doQueryExpansion
+    ? embeddings.length
+    : tokenized.activeLength;
+
   return {
     payload: {
-      embeddings,
+      embeddings: activeRows,
       encoder: {
         encoder_id: encoder.encoder_id,
         encoder_build: encoder.encoder_build,
@@ -172,15 +180,15 @@ function buildEncodedQuery(
         normalized: encoder.normalized,
       },
       dtype: "f32_le",
-      layout: "padded_query_length",
+      layout: doQueryExpansion ? "padded_query_length" : "ragged",
     },
     timing: buildTiming(
       total_ms,
       tokenize_ms,
       inference_ms,
     ),
-    input_ids: tokenized.inputIdValues.slice(0, queryLength),
-    attention_mask: tokenized.attentionMaskValues.slice(0, queryLength),
+    input_ids: tokenized.inputIdValues.slice(0, activeLength),
+    attention_mask: tokenized.attentionMaskValues.slice(0, activeLength),
   };
 }
 
@@ -282,6 +290,7 @@ function makeWasmEncoderBackend(): Effect.Effect<
           results,
           options.sequenceLength,
           engine.plan.embedding_dim,
+          engine.plan.allowOutputFallback,
         );
         return { embeddings, inference_ms };
       });
@@ -306,8 +315,8 @@ function makeWasmEncoderBackend(): Effect.Effect<
         tokenized,
         embeddings,
         engine.plan.encoder,
-        engine.plan.query_length,
         engine.plan.embedding_dim,
+        engine.plan.do_query_expansion,
         total_ms,
         tokenize_ms,
         inference_ms,

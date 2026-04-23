@@ -11,6 +11,7 @@ import type {
 
 export interface EncoderEffectiveEncodePlan extends OnnxConfig {
   readonly encoder: EncoderCreateInput["encoder"];
+  readonly allowOutputFallback: boolean;
 }
 
 function ensureFinite(values: Iterable<number>, label: string): void {
@@ -27,13 +28,19 @@ function ensureFinite(values: Iterable<number>, label: string): void {
 
 export function selectOutputTensor(
   results: ort.InferenceSession.ReturnType,
+  options: { readonly allowFallback?: boolean } = {},
 ): ort.Tensor {
-  const candidate =
-    "output" in results ? results.output : Object.values(results)[0];
+  const candidate = "output" in results
+    ? results.output
+    : options.allowFallback === true
+    ? Object.values(results)[0]
+    : undefined;
   if (!candidate || typeof candidate !== "object" || !("dims" in candidate)) {
     throw workerRuntimeError({
       operation: "encoder_session_engine.select_output",
-      message: "model inference did not produce a tensor output",
+      message: options.allowFallback === true
+        ? "model inference did not produce a tensor output"
+        : "model inference did not produce the required output tensor",
       details: results,
     });
   }
@@ -137,6 +144,7 @@ export function deriveEncoderEffectiveEncodePlan(
   return {
     ...config,
     encoder: input.encoder,
+    allowOutputFallback: input.allowOutputFallback === true,
   };
 }
 
@@ -152,7 +160,11 @@ export function deriveEncoderCapabilities(
     encoderBuild: plan.encoder.encoder_build,
     embeddingDim: plan.embedding_dim,
     queryLength: plan.query_length,
+    documentLength: plan.document_length,
     doQueryExpansion: plan.do_query_expansion,
+    usesTokenTypeIds: plan.uses_token_type_ids,
+    doLowerCase: plan.do_lower_case,
+    queryOutputLayout: plan.do_query_expansion ? "padded_query_length" : "ragged",
     normalized: plan.encoder.normalized,
   };
 }

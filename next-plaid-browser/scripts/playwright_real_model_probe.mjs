@@ -23,6 +23,27 @@ const ALL_MODEL_PRESETS = [
   "GTE-ModernColBERT-v1",
 ];
 
+const EXPECTED_CAPABILITIES = {
+  "answerai-colbert-small-v1-onnx": {
+    embeddingDim: 96,
+    queryLength: 32,
+    documentLength: 300,
+    usesTokenTypeIds: true,
+    doLowerCase: false,
+    doQueryExpansion: false,
+    queryOutputLayout: "ragged",
+  },
+  "mxbai-edge-colbert-v0-32m-onnx": {
+    embeddingDim: 64,
+    queryLength: 48,
+    documentLength: 512,
+    usesTokenTypeIds: false,
+    doLowerCase: true,
+    doQueryExpansion: false,
+    queryOutputLayout: "ragged",
+  },
+};
+
 function selectedModelPresets(args) {
   const filtered = args.filter((value) => !value.startsWith("--"));
   if (args.includes("--all")) {
@@ -54,10 +75,26 @@ function assertPhaseSearches(phase, phaseName) {
 
   for (const search of phase.searches) {
     const returnedSlugs = Array.isArray(search?.returnedSlugs) ? search.returnedSlugs : [];
-    if (!returnedSlugs.includes(search?.expectedSlug)) {
+    if (returnedSlugs[0] !== search?.expectedSlug) {
       throw new Error(
-        `${phaseName} query "${search?.queryId ?? "unknown"}" did not return expected slug ` +
+        `${phaseName} query "${search?.queryId ?? "unknown"}" did not rank expected slug first ` +
         `"${search?.expectedSlug ?? "unknown"}"; got ${JSON.stringify(returnedSlugs)}`,
+      );
+    }
+  }
+}
+
+function assertCapabilities(capabilities, expectedPreset) {
+  const expected = EXPECTED_CAPABILITIES[expectedPreset];
+  if (expected === undefined) {
+    return;
+  }
+
+  for (const [key, expectedValue] of Object.entries(expected)) {
+    if (capabilities?.[key] !== expectedValue) {
+      throw new Error(
+        `expected ${expectedPreset} capability ${key}=${JSON.stringify(expectedValue)} ` +
+        `but got ${JSON.stringify(capabilities?.[key])}`,
       );
     }
   }
@@ -77,6 +114,8 @@ function validateProbeResult(result, expectedPreset) {
   if (result?.initialPhase?.encoderCapabilities?.backend !== "wasm") {
     throw new Error(`encoder backend was not wasm: ${JSON.stringify(result?.initialPhase)}`);
   }
+  assertCapabilities(result?.initialPhase?.encoderCapabilities, expectedPreset);
+  assertCapabilities(result?.reloadedPhase?.encoderCapabilities, expectedPreset);
 
   if (result?.initialPhase?.syncCorpus?.summary?.has_dense_state !== true) {
     throw new Error(`initial sync did not produce dense state: ${JSON.stringify(result?.initialPhase?.syncCorpus)}`);

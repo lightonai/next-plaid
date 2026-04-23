@@ -99,6 +99,7 @@ function mockModule(
       input_ids: [2, 5, 7, 3],
       attention_mask: [1, 1, 1, 1],
       token_type_ids: undefined,
+      active_length: 4,
     }),
     prepare_document: () => ({
       input_ids: [2, 6, 7, 8, 3, 0],
@@ -176,6 +177,22 @@ describe("EncoderPreprocessor", () => {
       expect(prepared.inputIdValues).toEqual([2, 6, 7, 8, 3, 0]);
       expect(prepared.retainRowIndices).toEqual([0, 2, 4]);
       expect(prepared.activeLength).toBe(5);
+    }),
+  );
+
+  it.effect("normalizes prepared query active length into the worker input shape", () =>
+    Effect.gen(function*() {
+      const { module } = mockModule();
+      loaderState.module = module;
+
+      const scope = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+
+      const preprocessor = yield* buildPreprocessor(scope, resolvedAssets());
+      const prepared = yield* preprocessor.prepareQuery("alpha");
+
+      expect(Array.from(prepared.inputIds)).toEqual([2n, 5n, 7n, 3n]);
+      expect(prepared.activeLength).toBe(4);
     }),
   );
 

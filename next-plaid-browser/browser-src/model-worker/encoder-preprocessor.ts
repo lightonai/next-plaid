@@ -29,6 +29,7 @@ const decodePreparedInput = Schema.decodeUnknownEffect(
     input_ids: Schema.Array(Schema.Number),
     attention_mask: Schema.Array(Schema.Number),
     token_type_ids: Schema.optional(Schema.NullOr(Schema.Array(Schema.Number))),
+    active_length: Schema.Number,
   }),
 );
 
@@ -59,11 +60,11 @@ export interface PreparedEncoderInput {
   readonly inputIdValues: readonly number[];
   readonly attentionMaskValues: readonly number[];
   readonly tokenTypeIdValues: readonly number[] | null;
+  readonly activeLength: number;
 }
 
 export interface PreparedDocumentInput extends PreparedEncoderInput {
   readonly retainRowIndices: readonly number[];
-  readonly activeLength: number;
 }
 
 export interface EncoderPreprocessorApi {
@@ -93,6 +94,7 @@ function asPreparedSequence(
     readonly input_ids: readonly number[];
     readonly attention_mask: readonly number[];
     readonly token_type_ids?: readonly number[] | null | undefined;
+    readonly active_length: number;
   },
   expectedLength: number,
   usesTokenTypeIds: boolean,
@@ -133,6 +135,17 @@ function asPreparedSequence(
         tokenTypeIdValues,
         expectedLength,
       );
+    if (
+      !Number.isInteger(value.active_length) ||
+      value.active_length < 0 ||
+      value.active_length > expectedLength
+    ) {
+      return yield* workerRuntimeError({
+        operation: `${operation}.active_length`,
+        message: "preprocessor returned an invalid active_length",
+        details: value.active_length,
+      });
+    }
 
     return {
       inputIds: toBigInt64Array(inputIdValues),
@@ -144,6 +157,7 @@ function asPreparedSequence(
       inputIdValues,
       attentionMaskValues,
       tokenTypeIdValues: normalizedTokenTypeValues,
+      activeLength: value.active_length,
     };
   });
 }
@@ -329,17 +343,6 @@ function prepareDocument(
           prepared.retain_row_indices,
           prepared.retain_row_indices.length,
         );
-        if (
-          !Number.isInteger(prepared.active_length) ||
-          prepared.active_length < 0 ||
-          prepared.active_length > summary.document_length
-        ) {
-          return yield* workerRuntimeError({
-            operation: "encoder_preprocessor.prepare_document.active_length",
-            message: "preprocessor returned an invalid document active_length",
-            details: prepared.active_length,
-          });
-        }
         for (const index of retainRowIndices) {
           if (index >= prepared.active_length) {
             return yield* workerRuntimeError({
@@ -353,7 +356,6 @@ function prepareDocument(
         return {
           ...base,
           retainRowIndices,
-          activeLength: prepared.active_length,
         };
       })
     ),

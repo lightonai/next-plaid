@@ -814,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_search_filter_condition_overrides_subset() {
+    fn worker_search_filter_condition_intersects_subset() {
         reset_runtime_state();
         handle_runtime_request_json(
             &serde_json::to_string(&RuntimeRequest::LoadIndex(load_search_demo_request(
@@ -828,7 +828,7 @@ mod tests {
         request.request.subset = Some(vec![0]);
 
         let response = runtime_search_response(request);
-        assert_eq!(response.results[0].document_ids, vec![1]);
+        assert_eq!(response.results[0].document_ids, Vec::<i64>::new());
     }
 
     #[test]

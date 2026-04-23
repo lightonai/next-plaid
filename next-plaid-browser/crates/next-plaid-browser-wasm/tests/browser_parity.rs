@@ -1266,7 +1266,7 @@ fn browser_worker_search_supports_hybrid_queries() {
 }
 
 #[wasm_bindgen_test]
-fn browser_worker_search_filter_condition_overrides_subset() {
+fn browser_worker_search_filter_condition_intersects_subset() {
     reset_runtime_state();
     load_demo_index("demo-filter-override");
 
@@ -1274,7 +1274,7 @@ fn browser_worker_search_filter_condition_overrides_subset() {
     request.request.subset = Some(vec![0]);
 
     let runtime = runtime_result(&request);
-    assert_eq!(runtime.results[0].document_ids, vec![1]);
+    assert_eq!(runtime.results[0].document_ids, Vec::<i64>::new());
 }
 
 #[wasm_bindgen_test]

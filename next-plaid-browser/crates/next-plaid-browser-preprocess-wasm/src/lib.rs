@@ -28,6 +28,7 @@ struct RawPreparedInput {
     input_ids: Vec<u32>,
     attention_mask: Vec<u32>,
     token_type_ids: Option<Vec<u32>>,
+    active_length: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -220,6 +221,7 @@ fn prepare_raw_row(
             input_ids,
             attention_mask,
             token_type_ids,
+            active_length,
         },
         token_ids,
         active_length,
@@ -421,6 +423,7 @@ mod tests {
         assert_eq!(prepared.input_ids, vec![2, 5, 7, 8, 3, 0]);
         assert_eq!(prepared.attention_mask, vec![1, 1, 1, 1, 1, 0]);
         assert_eq!(prepared.token_type_ids, None);
+        assert_eq!(prepared.active_length, 5);
     }
 
     #[test]
@@ -433,6 +436,7 @@ mod tests {
         let prepared = prepare_query_internal("alpha beta gamma").expect("query should prepare");
         assert_eq!(prepared.input_ids, vec![2, 5, 7, 3]);
         assert_eq!(prepared.attention_mask, vec![1, 1, 1, 1]);
+        assert_eq!(prepared.active_length, 4);
     }
 
     #[test]
@@ -457,6 +461,7 @@ mod tests {
         assert_eq!(prepared.input_ids.len(), 8);
         assert_eq!(prepared.attention_mask.len(), 8);
         assert_eq!(prepared.input_ids[..4], [2, 5, 7, 3]);
+        assert_eq!(prepared.active_length, 4);
     }
 
     #[test]
@@ -505,6 +510,7 @@ mod tests {
             )
             .expect("query payload should decode");
             assert_eq!(prepared.input_ids, vec![2, 5, 7, 8, 3, 0]);
+            assert_eq!(prepared.active_length, 5);
         }
 
         #[wasm_bindgen_test]

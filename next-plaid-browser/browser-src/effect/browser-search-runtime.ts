@@ -466,7 +466,7 @@ function loadedIndexMetadata(
 }
 
 function hasKeywordText(
-  request: EncodeAndSearchArgs["searchRequest"]["request"],
+  request: Omit<SearchRequestEnvelope["request"], "queries">,
 ): boolean {
   return request.text_query !== undefined &&
     request.text_query !== null &&
@@ -500,6 +500,21 @@ function keywordOnlyRequest(
     name: args.searchRequest.name,
     request: {
       ...args.searchRequest.request,
+      queries: null,
+      alpha: null,
+      fusion: null,
+    },
+  };
+}
+
+function keywordOnlyMutableCorpusSearchRequest(
+  args: SearchCorpusArgs,
+): SearchRequestEnvelope {
+  return {
+    type: "search",
+    name: args.corpusId,
+    request: {
+      ...args.request,
       queries: null,
       alpha: null,
       fusion: null,
@@ -833,21 +848,48 @@ export const makeBrowserSearchRuntime: Effect.Effect<
         Effect.flatMap((metadata) =>
           Effect.gen(function*() {
             let queries: QueryEmbeddingsPayload[] | null = null;
+            const canFallbackToKeyword = hasKeywordText(args.request);
+            const fallbackToKeyword = () =>
+              searchClient.search(keywordOnlyMutableCorpusSearchRequest(args)).pipe(
+                Effect.withLogSpan("browser_runtime.search_corpus.keyword_fallback"),
+                Effect.annotateLogs({
+                  operation: "browser_runtime.search_corpus",
+                  corpus_id: args.corpusId,
+                  fallback_mode: "keyword_only",
+                  search_mode: "keyword",
+                }),
+              );
+
             if (args.queryText !== undefined) {
               if (!mutableCorpusHasDenseState(metadata.summary)) {
+                if (canFallbackToKeyword) {
+                  return yield* fallbackToKeyword();
+                }
                 return yield* mutableCorpusDenseStateMissingError(
                   args.corpusId,
                   "browser_runtime.search_corpus",
                 );
               }
 
-              yield* ensureMutableCorpusEncoderReady(
-                metadata,
-                "browser_runtime.search_corpus",
+              const encodedResult = yield* Effect.result(
+                ensureMutableCorpusEncoderReady(
+                  metadata,
+                  "browser_runtime.search_corpus",
+                ).pipe(
+                  Effect.andThen(
+                    encoderClient.encodeQuery({
+                      text: args.queryText,
+                    }),
+                  ),
+                ),
               );
-              const encoded = yield* encoderClient.encodeQuery({
-                text: args.queryText,
-              });
+              if (encodedResult._tag === "Failure") {
+                if (canFallbackToKeyword) {
+                  return yield* fallbackToKeyword();
+                }
+                return yield* encodedResult.failure;
+              }
+              const encoded = encodedResult.success;
               queries = [encoded.payload];
             }
 

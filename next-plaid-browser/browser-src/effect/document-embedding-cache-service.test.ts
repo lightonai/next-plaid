@@ -41,7 +41,11 @@ function encoderCapabilities(
     encoderBuild: overrides.encoderBuild ?? "proof-build-1",
     embeddingDim: overrides.embeddingDim ?? 4,
     queryLength: overrides.queryLength ?? 8,
+    documentLength: overrides.documentLength ?? 16,
     doQueryExpansion: overrides.doQueryExpansion ?? false,
+    usesTokenTypeIds: overrides.usesTokenTypeIds ?? false,
+    doLowerCase: overrides.doLowerCase ?? false,
+    queryOutputLayout: overrides.queryOutputLayout ?? "ragged",
     normalized: overrides.normalized ?? true,
   };
 }

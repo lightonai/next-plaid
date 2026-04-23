@@ -38,7 +38,11 @@ function encoderCapabilities(): EncoderCapabilities {
     encoderBuild: "build-1",
     embeddingDim: 4,
     queryLength: 8,
+    documentLength: 16,
     doQueryExpansion: false,
+    usesTokenTypeIds: false,
+    doLowerCase: false,
+    queryOutputLayout: "ragged",
     normalized: true,
   };
 }

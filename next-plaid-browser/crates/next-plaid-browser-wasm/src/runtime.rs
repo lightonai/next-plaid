@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use next_plaid_browser_contract::{
     EncoderIdentity, FtsTokenizer, FusionMode, FusionRequest, FusionResponse, HealthResponse,
@@ -642,10 +642,24 @@ fn resolve_subset(
         let condition = request.filter_condition.as_deref().unwrap_or_default();
         let parameters: &[serde_json::Value] = request.filter_parameters.as_deref().unwrap_or(&[]);
         let subset = keyword_index.filter_document_ids(condition, parameters)?;
-        return Ok(Some(subset));
+        return Ok(Some(intersect_request_subset(
+            subset,
+            request.subset.as_deref(),
+        )));
     }
 
     Ok(request.subset.clone())
+}
+
+fn intersect_request_subset(filtered: Vec<i64>, requested: Option<&[i64]>) -> Vec<i64> {
+    let Some(requested) = requested else {
+        return filtered;
+    };
+    let requested = requested.iter().copied().collect::<HashSet<_>>();
+    filtered
+        .into_iter()
+        .filter(|document_id| requested.contains(document_id))
+        .collect()
 }
 
 fn semantic_ranked_results(
@@ -767,7 +781,10 @@ fn resolve_mutable_subset(
         let subset = loaded
             .keyword_index
             .filter_document_ids(condition, parameters)?;
-        return Ok(Some(subset));
+        return Ok(Some(intersect_request_subset(
+            subset,
+            request.subset.as_deref(),
+        )));
     }
 
     Ok(request.subset.clone())

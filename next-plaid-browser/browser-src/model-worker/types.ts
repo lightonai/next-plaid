@@ -5,7 +5,11 @@ import type * as Effect from "effect/Effect";
 
 import type { WorkerRuntimeError } from "../effect/worker-runtime-errors.js";
 import type { MatrixPayload } from "../generated/MatrixPayload.js";
-import type { EncoderIdentity, QueryEmbeddingsPayload } from "../shared/search-contract.js";
+import type {
+  EmbeddingLayout,
+  EncoderIdentity,
+  QueryEmbeddingsPayload,
+} from "../shared/search-contract.js";
 import type { DurableModelAssetStoreKind, ModelAssetStoreKind } from "./model-asset-types.js";
 
 export type BackendKind = "wasm";
@@ -36,7 +40,11 @@ export interface EncoderCapabilities {
   encoderBuild: string;
   embeddingDim: number;
   queryLength: number;
+  documentLength: number;
   doQueryExpansion: boolean;
+  usesTokenTypeIds: boolean;
+  doLowerCase: boolean;
+  queryOutputLayout: EmbeddingLayout;
   normalized: boolean;
 }
 
@@ -66,6 +74,7 @@ export interface EncoderCreateInput {
   onnxConfigUrl: string;
   tokenizerUrl: string;
   prefer?: "wasm" | "auto";
+  allowOutputFallback?: boolean;
 }
 
 export interface EncoderBackend {

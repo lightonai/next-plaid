@@ -58,10 +58,6 @@ services:
       - "128"
       - --model-pool-size
       - "${MODEL_POOL_SIZE:-1}"
-      - --query-length
-      - "48"
-      - --document-length
-      - "300"
     healthcheck:
       test: ["CMD", "curl", "-f", "--max-time", "5", "http://localhost:8080/health"]
       interval: 15s

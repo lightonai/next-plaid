@@ -237,7 +237,11 @@ function encoderCapabilities(
     encoderBuild: encoder.encoder_build,
     embeddingDim: encoder.embedding_dim,
     queryLength: 8,
+    documentLength: 16,
     doQueryExpansion: false,
+    usesTokenTypeIds: false,
+    doLowerCase: false,
+    queryOutputLayout: "ragged",
     normalized: encoder.normalized,
   };
 }
@@ -1464,6 +1468,61 @@ layer(makeBrowserRuntimeHarnessLayer())("BrowserSearchRuntime mutable corpus API
       expect(searchRequestEnvelope.request.request.text_query).toEqual(["alpha hybrid"]);
       expect(searchRequestEnvelope.request.request.alpha).toBe(0.25);
       expect(searchRequestEnvelope.request.request.fusion).toBe("relative_score");
+      yield* replySuccess(
+        harness.searchFake,
+        searchRequestEnvelope.requestId,
+        searchResultsResponse(),
+      );
+
+      const result = yield* Fiber.join(searchFiber);
+      expect(result.type).toBe("search_results");
+    }),
+  );
+
+  it.effect("falls back to keyword-only mutable-corpus search when dense state is unavailable", () =>
+    Effect.gen(function*() {
+      const harness = yield* BrowserRuntimeHarness;
+      const runtime = yield* BrowserSearchRuntime;
+
+      yield* waitForWorkerStart(harness.searchFake);
+      yield* waitForWorkerStart(harness.encoderFake);
+      harness.searchFake.dispatchReady();
+      harness.encoderFake.dispatchReady();
+
+      yield* SubscriptionRef.set(
+        runtime.mutableCorpora,
+        new Map([["proof-corpus", persistedMutableCorpusMetadata(2, { hasDenseState: false })]]),
+      );
+      harness.searchFake.clearOutbound();
+      harness.encoderFake.clearOutbound();
+
+      const searchFiber = yield* runtime.searchCorpus(hybridSearchCorpusArgs()).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Effect.yieldNow;
+
+      const loadRequest = firstCapturedRequest<LoadMutableCorpusRequestEnvelope>(harness.searchFake);
+      yield* replySuccess(
+        harness.searchFake,
+        loadRequest.requestId,
+        loadMutableCorpusResponse(2, { hasDenseState: false }),
+      );
+      yield* Effect.yieldNow;
+
+      yield* waitForCapturedRequestCount(harness.searchFake, 2);
+      expect(harness.encoderFake.capturedRequests()).toHaveLength(0);
+
+      const searchRequestEnvelope =
+        harness.searchFake.capturedRequests<SearchRequestEnvelope>()[1];
+      expect(searchRequestEnvelope).toBeDefined();
+      if (searchRequestEnvelope === undefined) {
+        throw new Error("expected mutable keyword fallback request");
+      }
+      expect(searchRequestEnvelope.request.request.queries).toBeNull();
+      expect(searchRequestEnvelope.request.request.text_query).toEqual(["alpha hybrid"]);
+      expect(searchRequestEnvelope.request.request.alpha).toBeNull();
+      expect(searchRequestEnvelope.request.request.fusion).toBeNull();
+
       yield* replySuccess(
         harness.searchFake,
         searchRequestEnvelope.requestId,

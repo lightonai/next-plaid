@@ -7,6 +7,7 @@ import type {
   EncoderWorkerRequest,
 } from "./types.js";
 import {
+  EmbeddingLayoutSchema,
   EncoderIdentitySchema,
   InlineQueryEmbeddingsPayloadSchema,
   normalizeQueryEmbeddingsPayload,
@@ -27,7 +28,11 @@ export const EncoderCapabilitiesSchema = Schema.Struct({
   encoderBuild: Schema.String,
   embeddingDim: Schema.Number,
   queryLength: Schema.Number,
+  documentLength: Schema.Number,
   doQueryExpansion: Schema.Boolean,
+  usesTokenTypeIds: Schema.Boolean,
+  doLowerCase: Schema.Boolean,
+  queryOutputLayout: EmbeddingLayoutSchema,
   normalized: Schema.Boolean,
 });
 
@@ -59,6 +64,7 @@ export const EncoderCreateInputSchema = Schema.Struct({
   prefer: Schema.optional(
     Schema.Union([Schema.Literal("wasm"), Schema.Literal("auto")]),
   ),
+  allowOutputFallback: Schema.optional(Schema.Boolean),
 });
 
 export const EncoderInitResponseSchema = Schema.Struct({
@@ -176,22 +182,21 @@ export const isEncoderInitEvent = Schema.is(EncoderInitEventSchema);
 function normalizeEncoderCreateInput(
   input: Schema.Schema.Type<typeof EncoderCreateInputSchema>,
 ): EncoderCreateInput {
-  if (input.prefer === undefined) {
-    return {
-      encoder: input.encoder,
-      modelUrl: input.modelUrl,
-      onnxConfigUrl: input.onnxConfigUrl,
-      tokenizerUrl: input.tokenizerUrl,
-    };
-  }
-
-  return {
+  const normalized: EncoderCreateInput = {
     encoder: input.encoder,
     modelUrl: input.modelUrl,
     onnxConfigUrl: input.onnxConfigUrl,
     tokenizerUrl: input.tokenizerUrl,
-    prefer: input.prefer,
   };
+
+  if (input.prefer !== undefined) {
+    normalized.prefer = input.prefer;
+  }
+  if (input.allowOutputFallback !== undefined) {
+    normalized.allowOutputFallback = input.allowOutputFallback;
+  }
+
+  return normalized;
 }
 
 function normalizeEncodeResponse(

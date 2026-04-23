@@ -57,6 +57,7 @@ async function runSmoke(browserName) {
     const encodedQueryLayout = result.encodedQuery?.encoded?.payload?.layout;
     const encodedQueryEncoderId = result.encodedQuery?.encoded?.payload?.encoder?.encoder_id;
     const encoderBackend = result.encoderInit?.capabilities?.backend;
+    const encoderQueryOutputLayout = result.encoderInit?.capabilities?.queryOutputLayout;
     const encoderPersistentStorage = result.encoderInit?.capabilities?.persistentStorage;
     const encoderState = result.encoderHealth?.state;
     const registerCorpusCreated = result.registerCorpus?.created;
@@ -109,9 +110,10 @@ async function runSmoke(browserName) {
       JSON.stringify(filteredKeywordDocumentIds) !== JSON.stringify([0, 2]) ||
       encodedQueryTopDocumentId !== 0 ||
       encodedQueryTopExcerpt !== "Alpha proof document excerpt." ||
-      encodedQueryLayout !== "padded_query_length" ||
+      encodedQueryLayout !== "ragged" ||
       encodedQueryEncoderId !== "tiny-encoder-proof" ||
       encoderBackend !== "wasm" ||
+      encoderQueryOutputLayout !== "ragged" ||
       encoderPersistentStorage !== true ||
       encoderState !== "ready" ||
       !sawAssetLoad ||
