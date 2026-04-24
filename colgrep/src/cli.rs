@@ -390,6 +390,14 @@ pub struct Cli {
     #[arg(long = "uninstall-codex")]
     pub uninstall_codex: bool,
 
+    /// Install colgrep for Hermes
+    #[arg(long = "install-hermes")]
+    pub install_hermes: bool,
+
+    /// Uninstall colgrep from Hermes
+    #[arg(long = "uninstall-hermes")]
+    pub uninstall_hermes: bool,
+
     /// Completely uninstall colgrep: remove from all AI tools, clear all indexes, and remove all data
     #[arg(long = "uninstall")]
     pub uninstall: bool,
