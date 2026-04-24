@@ -1,3 +1,4 @@
+#[cfg(feature = "native")]
 use std::path::PathBuf;
 
 use thiserror::Error as ThisError;
