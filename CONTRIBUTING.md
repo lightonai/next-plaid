@@ -22,9 +22,14 @@ When changing release-facing crates, also run a publish dry run before asking fo
 
 ```bash
 cargo publish -p next-plaid --locked --dry-run
-cargo publish -p next-plaid-onnx --locked --dry-run
+cargo publish -p next-plaid-preprocess --locked --dry-run
 cargo publish -p colgrep --locked --dry-run
 ```
+
+`next-plaid-onnx` depends on the published `next-plaid-preprocess` crate for the
+same version. The release workflow publishes them in that order; run the
+`next-plaid-onnx` dry run after `next-plaid-preprocess` is available in the
+crates.io index.
 
 ## Browser Workspace
 
