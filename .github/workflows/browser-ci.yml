@@ -3,6 +3,9 @@ name: Browser CI
 on:
   pull_request:
     paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "next-plaid/**"
       - "next-plaid-browser/**"
       - "next-plaid-preprocess/**"
       - ".github/workflows/browser-ci.yml"
@@ -10,6 +13,9 @@ on:
     branches:
       - main
     paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "next-plaid/**"
       - "next-plaid-browser/**"
       - "next-plaid-preprocess/**"
       - ".github/workflows/browser-ci.yml"
