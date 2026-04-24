@@ -19,4 +19,3 @@ This project expects professional, respectful collaboration.
 ## Enforcement
 
 Maintainers may remove comments, close threads, block accounts, or take other proportionate action when this code of conduct is violated. Report concerns privately through the project maintainers or the repository owner organization.
-

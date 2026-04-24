@@ -16,4 +16,3 @@ Include:
 - Any proof-of-concept details needed to verify the report.
 
 Do not disclose the issue publicly until maintainers have had time to investigate and coordinate a fix.
-

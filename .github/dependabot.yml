@@ -49,4 +49,3 @@ updates:
     directory: /next-plaid-onnx/python
     schedule:
       interval: weekly
-
