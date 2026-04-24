@@ -1,0 +1,282 @@
+import { Effect, Schema } from "effect";
+
+import type {
+  EncodeDocumentResponse,
+  EncodeResponse,
+  EncoderCreateInput,
+  EncoderWorkerRequest,
+} from "./types.js";
+import {
+  EmbeddingLayoutSchema,
+  EncoderIdentitySchema,
+  InlineQueryEmbeddingsPayloadSchema,
+  normalizeQueryEmbeddingsPayload,
+} from "../shared/search-contract-schema.js";
+import { DurableModelAssetStoreKindSchema, ModelAssetStoreKindSchema } from "./model-asset-store-schema.js";
+
+export const MatrixPayloadSchema = Schema.Struct({
+  values: Schema.Array(Schema.Finite),
+  rows: Schema.Number,
+  dim: Schema.Number,
+});
+
+export const EncoderCapabilitiesSchema = Schema.Struct({
+  backend: Schema.Literal("wasm"),
+  threaded: Schema.Boolean,
+  persistentStorage: Schema.Boolean,
+  encoderId: Schema.String,
+  encoderBuild: Schema.String,
+  embeddingDim: Schema.Number,
+  queryLength: Schema.Number,
+  documentLength: Schema.Number,
+  doQueryExpansion: Schema.Boolean,
+  usesTokenTypeIds: Schema.Boolean,
+  doLowerCase: Schema.Boolean,
+  queryOutputLayout: EmbeddingLayoutSchema,
+  normalized: Schema.Boolean,
+});
+
+export const EncodeTimingBreakdownSchema = Schema.Struct({
+  total_ms: Schema.Number,
+  tokenize_ms: Schema.Number,
+  inference_ms: Schema.Number,
+});
+
+export const EncodedQuerySchema = Schema.Struct({
+  payload: InlineQueryEmbeddingsPayloadSchema,
+  timing: EncodeTimingBreakdownSchema,
+  input_ids: Schema.Array(Schema.Number),
+  attention_mask: Schema.Array(Schema.Number),
+});
+
+export const EncodedDocumentSchema = Schema.Struct({
+  payload: MatrixPayloadSchema,
+  timing: EncodeTimingBreakdownSchema,
+  input_ids: Schema.Array(Schema.Number),
+  attention_mask: Schema.Array(Schema.Number),
+});
+
+export const EncoderCreateInputSchema = Schema.Struct({
+  encoder: EncoderIdentitySchema,
+  modelUrl: Schema.String,
+  onnxConfigUrl: Schema.String,
+  tokenizerUrl: Schema.String,
+  prefer: Schema.optional(
+    Schema.Union([Schema.Literal("wasm"), Schema.Literal("auto")]),
+  ),
+  allowOutputFallback: Schema.optional(Schema.Boolean),
+});
+
+export const EncoderInitResponseSchema = Schema.Struct({
+  type: Schema.Literal("encoder_ready"),
+  state: Schema.Literal("ready"),
+  capabilities: EncoderCapabilitiesSchema,
+});
+
+export const EncodeResponseSchema = Schema.Struct({
+  type: Schema.Literal("encoded_query"),
+  encoded: EncodedQuerySchema,
+});
+
+export const EncodeDocumentResponseSchema = Schema.Struct({
+  type: Schema.Literal("encoded_document"),
+  encoded: EncodedDocumentSchema,
+});
+
+export const EncoderInitEventSchema = Schema.Union([
+  Schema.Struct({
+    stage: Schema.Literal("asset_memory_hit"),
+    url: Schema.String,
+    bytesReceived: Schema.Number,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("asset_store_hit"),
+    url: Schema.String,
+    storeKind: ModelAssetStoreKindSchema,
+    bytesReceived: Schema.Number,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("asset_store_miss"),
+    url: Schema.String,
+    storeKind: ModelAssetStoreKindSchema,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("asset_store_write_start"),
+    url: Schema.String,
+    storeKind: DurableModelAssetStoreKindSchema,
+    bytesReceived: Schema.Number,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("asset_store_write_complete"),
+    url: Schema.String,
+    storeKind: DurableModelAssetStoreKindSchema,
+    bytesReceived: Schema.Number,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("asset_fetch_start"),
+    url: Schema.String,
+    expectedBytes: Schema.NullOr(Schema.Number),
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("asset_fetch_complete"),
+    url: Schema.String,
+    bytesReceived: Schema.Number,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("config_validated"),
+    queryLength: Schema.Number,
+    embeddingDim: Schema.Number,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("session_create_start"),
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("session_create_complete"),
+    durationMs: Schema.Number,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("warmup_start"),
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("warmup_complete"),
+    durationMs: Schema.Number,
+  }),
+  Schema.Struct({
+    stage: Schema.Literal("ready"),
+    capabilities: EncoderCapabilitiesSchema,
+  }),
+]);
+
+export const EncoderWorkerRequestSchema = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("init"),
+    payload: EncoderCreateInputSchema,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("health"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("encode_query"),
+    payload: Schema.Struct({
+      text: Schema.String,
+    }),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("encode_document"),
+    payload: Schema.Struct({
+      text: Schema.String,
+    }),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("dispose"),
+  }),
+]);
+
+export const isEncodedQuery = Schema.is(EncodedQuerySchema);
+export const isEncoderWorkerRequest = Schema.is(EncoderWorkerRequestSchema);
+export const isEncoderInitResponse = Schema.is(EncoderInitResponseSchema);
+export const isEncodeResponse = Schema.is(EncodeResponseSchema);
+export const isEncodeDocumentResponse = Schema.is(EncodeDocumentResponseSchema);
+export const isEncoderInitEvent = Schema.is(EncoderInitEventSchema);
+
+function normalizeEncoderCreateInput(
+  input: Schema.Schema.Type<typeof EncoderCreateInputSchema>,
+): EncoderCreateInput {
+  const normalized: EncoderCreateInput = {
+    encoder: input.encoder,
+    modelUrl: input.modelUrl,
+    onnxConfigUrl: input.onnxConfigUrl,
+    tokenizerUrl: input.tokenizerUrl,
+  };
+
+  if (input.prefer !== undefined) {
+    normalized.prefer = input.prefer;
+  }
+  if (input.allowOutputFallback !== undefined) {
+    normalized.allowOutputFallback = input.allowOutputFallback;
+  }
+
+  return normalized;
+}
+
+function normalizeEncodeResponse(
+  response: Schema.Schema.Type<typeof EncodeResponseSchema>,
+): EncodeResponse {
+  return {
+    type: response.type,
+    encoded: {
+      payload: normalizeQueryEmbeddingsPayload(response.encoded.payload),
+      timing: {
+        total_ms: response.encoded.timing.total_ms,
+        tokenize_ms: response.encoded.timing.tokenize_ms,
+        inference_ms: response.encoded.timing.inference_ms,
+      },
+      input_ids: [...response.encoded.input_ids],
+      attention_mask: [...response.encoded.attention_mask],
+    },
+  };
+}
+
+function normalizeEncodeDocumentResponse(
+  response: Schema.Schema.Type<typeof EncodeDocumentResponseSchema>,
+): EncodeDocumentResponse {
+  return {
+    type: response.type,
+    encoded: {
+      payload: {
+        values: [...response.encoded.payload.values],
+        rows: response.encoded.payload.rows,
+        dim: response.encoded.payload.dim,
+      },
+      timing: {
+        total_ms: response.encoded.timing.total_ms,
+        tokenize_ms: response.encoded.timing.tokenize_ms,
+        inference_ms: response.encoded.timing.inference_ms,
+      },
+      input_ids: [...response.encoded.input_ids],
+      attention_mask: [...response.encoded.attention_mask],
+    },
+  };
+}
+
+function normalizeEncoderWorkerRequest(
+  request: Schema.Schema.Type<typeof EncoderWorkerRequestSchema>,
+): EncoderWorkerRequest {
+  if (request.type !== "init") {
+    return request;
+  }
+
+  return {
+    type: "init",
+    payload: normalizeEncoderCreateInput(request.payload),
+  };
+}
+
+export const decodeEncoderWorkerRequest = (
+  value: unknown,
+): Effect.Effect<EncoderWorkerRequest, unknown> =>
+  Schema.decodeUnknownEffect(EncoderWorkerRequestSchema)(value).pipe(
+    Effect.map(normalizeEncoderWorkerRequest),
+  );
+
+export const decodeEncoderInitResponseSchema = Schema.decodeUnknownEffect(
+  EncoderInitResponseSchema,
+);
+
+export const decodeEncodeResponseSchema = (
+  value: unknown,
+): Effect.Effect<EncodeResponse, unknown> =>
+  Schema.decodeUnknownEffect(EncodeResponseSchema)(value).pipe(
+    Effect.map(normalizeEncodeResponse),
+  );
+
+export const decodeEncodeDocumentResponseSchema = (
+  value: unknown,
+): Effect.Effect<EncodeDocumentResponse, unknown> =>
+  Schema.decodeUnknownEffect(EncodeDocumentResponseSchema)(value).pipe(
+    Effect.map(normalizeEncodeDocumentResponse),
+  );
+
+export const decodeEncoderInitEventSchema = Schema.decodeUnknownEffect(
+  EncoderInitEventSchema,
+);

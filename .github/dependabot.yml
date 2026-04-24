@@ -1,0 +1,51 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: cargo
+    directory: /next-plaid-browser
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /next-plaid-browser
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /next-plaid-api
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip
+    directory: /colgrep/python-sdk
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip
+    directory: /docs/benchmarks
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip
+    directory: /next-plaid-api/python-sdk
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip
+    directory: /next-plaid-api/tests
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip
+    directory: /next-plaid-onnx/python
+    schedule:
+      interval: weekly

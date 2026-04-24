@@ -1,0 +1,31 @@
+[package]
+name = "next-plaid-browser-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+base64 = { workspace = true }
+console_error_panic_hook = "0.1"
+js-sys = "0.3.82"
+next-plaid-browser-contract = { path = "../next-plaid-browser-contract" }
+next-plaid-browser-kernel = { path = "../next-plaid-browser-kernel" }
+next-plaid-browser-loader = { path = "../next-plaid-browser-loader" }
+next-plaid-browser-storage = { path = "../next-plaid-browser-storage" }
+regex = "1.12"
+rusqlite = { workspace = true, features = ["functions"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+
+[dev-dependencies]
+indexed_db_futures = { version = "0.6.4", features = ["serde"] }
+wasm-bindgen-test = { workspace = true }
+
+[lints]
+workspace = true

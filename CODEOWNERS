@@ -1,0 +1,8 @@
+# Default maintainers for repository-wide changes.
+* @raphaelsty
+
+# Areas with higher review sensitivity.
+/colgrep/ @raphaelsty
+/next-plaid-browser/ @raphaelsty
+/.github/ @raphaelsty
+/next-plaid-api/Dockerfile @raphaelsty

@@ -1,0 +1,37 @@
+{
+  "name": "next-plaid-browser",
+  "devDependencies": {
+    "@effect/language-service": "^0.85.1",
+    "@effect/vitest": "^4.0.0-beta.52",
+    "@typescript/native-preview": "^7.0.0-dev.20260420.1",
+    "esbuild": "^0.28.0",
+    "fake-indexeddb": "^6.2.5",
+    "onnxruntime-web": "^1.24.3",
+    "playwright": "^1.54.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.4"
+  },
+  "private": true,
+  "scripts": {
+    "prepare": "effect-language-service patch",
+    "export:contract": "env PATH=\"$HOME/.cargo/bin:$PATH\" TS_RS_EXPORT_DIR=./browser-src/generated cargo run --manifest-path ./Cargo.toml -p next-plaid-browser-contract --bin export_bindings",
+    "build:harness": "node ./scripts/build_browser_harness.mjs",
+    "parity:preprocess": "node ./scripts/check_preprocess_model_parity.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:keyword": "env PATH=\"$HOME/.cargo/bin:$PATH\" cargo test --manifest-path ./Cargo.toml -p next-plaid-browser-wasm",
+    "typecheck": "bun run export:contract && tsc --noEmit",
+    "typecheck:fast": "bun run export:contract && tsgo --noEmit",
+    "demo:serve": "node ./scripts/browser_demo_server.mjs",
+    "smoke:chromium": "node ./scripts/playwright_smoke.mjs chromium",
+    "smoke:webkit": "node ./scripts/playwright_smoke.mjs webkit",
+    "smoke:firefox": "node ./scripts/playwright_smoke.mjs firefox",
+    "smoke:chrome": "node ./scripts/playwright_smoke.mjs chrome",
+    "probe:real-models": "node ./scripts/playwright_real_model_probe.mjs chromium"
+  },
+  "type": "module",
+  "dependencies": {
+    "@effect/platform-browser": "^4.0.0-beta.52",
+    "effect": "^4.0.0-beta.52"
+  }
+}

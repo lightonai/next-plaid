@@ -671,10 +671,8 @@ Options:
                            Smaller batches are better for parallel sessions.
   --threads <N>            Threads per ONNX session (default: auto-detected)
                            Auto-set to 1 when using --parallel.
-  --query-length <N>       Maximum query length in tokens (default: 48)
-                           Overrides value from model config file.
-  --document-length <N>    Maximum document length in tokens (default: 300)
-                           Overrides value from model config file.
+  --query-length <N>       Override maximum query length from the model config file.
+  --document-length <N>    Override maximum document length from the model config file.
   --model-pool-size <N>    Number of model worker instances for concurrent encoding
                            (default: 1). Each worker owns a separate model instance.
                            More workers = more encoding parallelism but also more memory.

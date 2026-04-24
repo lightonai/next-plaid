@@ -336,18 +336,19 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - name: Publish next-plaid
-        run: cargo publish -p next-plaid --no-verify
-        continue-on-error: true # May already be published
+        run: ./scripts/publish_crate_if_needed.sh next-plaid
+      - name: Wait for crates.io index
+        run: sleep 30
+      - name: Publish next-plaid-preprocess
+        run: ./scripts/publish_crate_if_needed.sh next-plaid-preprocess
       - name: Wait for crates.io index
         run: sleep 30
       - name: Publish next-plaid-onnx
-        run: cargo publish -p next-plaid-onnx --no-verify
-        continue-on-error: true # May already be published
+        run: ./scripts/publish_crate_if_needed.sh next-plaid-onnx
       - name: Wait for crates.io index
         run: sleep 30
       - name: Publish colgrep
-        run: cargo publish -p colgrep --no-verify
-        continue-on-error: true # May already be published
+        run: ./scripts/publish_crate_if_needed.sh colgrep
 
   announce:
     needs:

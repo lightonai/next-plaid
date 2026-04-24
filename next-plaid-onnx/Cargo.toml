@@ -33,7 +33,8 @@ python = ["pyo3", "numpy"]
 # - Enable cuda/tensorrt/coreml/directml features for GPU acceleration
 # Using load-dynamic for better compatibility across systems
 ort = { version = "=2.0.0-rc.11", features = ["ndarray", "load-dynamic"] }
-tokenizers = { version = "0.21.1", default-features = false, features = [
+next-plaid-preprocess = { version = "1.2.0", path = "../next-plaid-preprocess", default-features = false, features = ["native"] }
+tokenizers = { workspace = true, features = [
     "onig",
 ] }
 ndarray = "0.16"

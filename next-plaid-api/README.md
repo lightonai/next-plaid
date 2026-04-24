@@ -685,8 +685,8 @@ next-plaid-api [OPTIONS]
 | `--parallel`        | `1`         | Parallel ONNX sessions (recommended: 8-25 for throughput) |
 | `--batch-size`      | auto        | Batch size per session (32 CPU, 64 GPU, 2 parallel)       |
 | `--threads`         | auto        | Threads per ONNX session (auto: 1 when parallel)          |
-| `--query-length`    | `48`        | Max query length in tokens                                |
-| `--document-length` | `300`       | Max document length in tokens                             |
+| `--query-length`    | model config | Override max query length in tokens                       |
+| `--document-length` | model config | Override max document length in tokens                    |
 | `--model-pool-size` | `1`         | Number of model worker instances for concurrent encoding  |
 
 ```bash

@@ -1,0 +1,28 @@
+[package]
+name = "next-plaid-browser-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+next-plaid-browser-contract = { path = "../next-plaid-browser-contract" }
+next-plaid-browser-loader = { path = "../next-plaid-browser-loader" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+indexed_db_futures = { version = "0.6.4", features = ["async-upgrade", "serde"] }
+js-sys = "0.3.82"
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { version = "0.3.82", features = [
+  "DomException",
+  "Event",
+  "EventTarget",
+] }
+
+[lints]
+workspace = true

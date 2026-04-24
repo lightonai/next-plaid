@@ -1,0 +1,90 @@
+name: Browser CI
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "next-plaid/**"
+      - "next-plaid-browser/**"
+      - "next-plaid-preprocess/**"
+      - ".github/workflows/browser-ci.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "next-plaid/**"
+      - "next-plaid-browser/**"
+      - "next-plaid-preprocess/**"
+      - ".github/workflows/browser-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  browser:
+    name: Browser tests and smoke
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            next-plaid-browser
+            .
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install browser dependencies
+        working-directory: next-plaid-browser
+        run: bun install --frozen-lockfile
+
+      - name: Install browser tooling
+        run: cargo install wasm-pack --locked
+
+      - name: Install Chromium
+        working-directory: next-plaid-browser
+        run: bunx playwright install --with-deps chromium
+
+      - name: Check browser Rust formatting
+        run: cargo fmt --manifest-path next-plaid-browser/Cargo.toml --all -- --check
+
+      - name: Lint browser Rust workspace
+        run: cargo clippy --manifest-path next-plaid-browser/Cargo.toml --workspace --locked --all-targets -- -D warnings
+
+      - name: Test browser Rust workspace
+        run: cargo test --manifest-path next-plaid-browser/Cargo.toml --locked
+
+      - name: Test browser wasm in Chrome
+        run: BROWSER_HEADLESS=1 ./next-plaid-browser/scripts/test_browser_parity.sh chrome
+
+      - name: Typecheck browser TypeScript
+        working-directory: next-plaid-browser
+        run: bun run typecheck
+
+      - name: Run browser JavaScript tests
+        working-directory: next-plaid-browser
+        run: bun run test
+
+      - name: Build browser harness
+        working-directory: next-plaid-browser
+        run: bun run build:harness
+
+      - name: Check native/browser preprocessing parity
+        working-directory: next-plaid-browser
+        run: bun run parity:preprocess
+
+      - name: Run Chromium smoke test
+        working-directory: next-plaid-browser
+        run: bun run smoke:chromium

@@ -1,0 +1,21 @@
+[package]
+name = "next-plaid-browser-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+ndarray = "0.16"
+next-plaid-browser-contract = { path = "../next-plaid-browser-contract" }
+next-plaid = { path = "../../../next-plaid" }
+next-plaid-browser-loader = { path = "../next-plaid-browser-loader" }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -1,0 +1,10 @@
+/target
+/node_modules
+/playwright-harness/pkg
+/playwright-harness/app.js
+/playwright-harness/encoder-worker.js
+/playwright-harness/search-worker.js
+/playwright-harness/next_plaid_browser_wasm_bg.wasm
+/playwright-harness/ort
+/crates/next-plaid-browser-contract/bindings
+/output/playwright

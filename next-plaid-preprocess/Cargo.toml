@@ -1,0 +1,29 @@
+[package]
+name = "next-plaid-preprocess"
+version.workspace = true
+edition.workspace = true
+description = "Shared ColBERT preprocessing primitives for native and browser NextPlaid runtimes"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+documentation.workspace = true
+keywords = ["colbert", "preprocessing", "tokenizers", "search"]
+categories = ["science", "algorithms"]
+
+[features]
+default = ["native"]
+native = ["tokenizers/onig"]
+wasm = ["tokenizers/unstable_wasm"]
+parity-oracle = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokenizers = { workspace = true }
+
+[[bin]]
+name = "preprocess-parity-oracle"
+path = "src/bin/preprocess_parity_oracle.rs"
+required-features = ["parity-oracle"]
