@@ -21,7 +21,7 @@ updates:
       interval: weekly
 
   - package-ecosystem: docker
-    directory: /
+    directory: /next-plaid-api
     schedule:
       interval: weekly
 
