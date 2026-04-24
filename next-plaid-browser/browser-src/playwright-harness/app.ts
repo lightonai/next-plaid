@@ -675,7 +675,7 @@ function filteredKeywordSearchRequest(): SearchRequestEnvelope {
       queries: null,
       params: { top_k: 2, n_ivf_probe: null, n_full_scores: null, centroid_score_threshold: null },
       subset: null,
-      text_query: ["alpha OR gamma"],
+      text_query: ["alpha", "gamma"],
       alpha: null,
       fusion: null,
       filter_condition: "topic IN (?, ?)",

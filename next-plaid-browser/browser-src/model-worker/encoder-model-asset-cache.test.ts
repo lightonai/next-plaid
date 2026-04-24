@@ -63,3 +63,27 @@ it.effect("removes cached model packages by package id", () =>
     expect(value).toBeNull();
   }),
 );
+
+it.effect("evicts older model packages when capacity is exceeded", () =>
+  Effect.gen(function*() {
+    const scope = yield* Scope.make();
+    yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+
+    const context = yield* Layer.buildWithScope(
+      EncoderModelAssetCache.layerWithCapacity(2),
+      scope,
+    );
+    const assetCache = Context.get(context, EncoderModelAssetCache);
+    const first = modelAssetPackage("pkg-1");
+    const second = modelAssetPackage("pkg-2");
+    const third = modelAssetPackage("pkg-3");
+
+    yield* assetCache.put(first);
+    yield* assetCache.put(second);
+    yield* assetCache.put(third);
+
+    expect(yield* assetCache.get(first.key.packageId)).toBeNull();
+    expect(yield* assetCache.get(second.key.packageId)).toEqual(second);
+    expect(yield* assetCache.get(third.key.packageId)).toEqual(third);
+  }),
+);

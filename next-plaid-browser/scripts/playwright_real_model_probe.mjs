@@ -42,6 +42,15 @@ const EXPECTED_CAPABILITIES = {
     doQueryExpansion: false,
     queryOutputLayout: "ragged",
   },
+  "GTE-ModernColBERT-v1": {
+    embeddingDim: 128,
+    queryLength: 48,
+    documentLength: 300,
+    usesTokenTypeIds: false,
+    doLowerCase: false,
+    doQueryExpansion: false,
+    queryOutputLayout: "ragged",
+  },
 };
 
 function selectedModelPresets(args) {

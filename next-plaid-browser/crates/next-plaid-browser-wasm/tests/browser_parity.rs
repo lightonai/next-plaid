@@ -189,7 +189,7 @@ fn filtered_semantic_request(name: &str) -> WorkerSearchRequest {
 }
 
 fn filtered_keyword_request(name: &str) -> WorkerSearchRequest {
-    let mut request = keyword_search_request(name, &["alpha OR gamma"]);
+    let mut request = keyword_search_request(name, &["alpha", "gamma"]);
     request.request.filter_condition = Some("topic IN (?, ?)".into());
     request.request.filter_parameters = Some(vec![
         serde_json::json!("history"),
@@ -1283,7 +1283,9 @@ fn browser_worker_search_supports_filtered_keyword_queries() {
     load_demo_index("demo-filtered-keyword");
 
     let runtime = runtime_result(&filtered_keyword_request("demo-filtered-keyword"));
-    assert_eq!(runtime.results[0].document_ids, vec![0, 2]);
+    assert_eq!(runtime.num_queries, 2);
+    assert_eq!(runtime.results[0].document_ids, vec![0]);
+    assert_eq!(runtime.results[1].document_ids, vec![2]);
 }
 
 #[wasm_bindgen_test]

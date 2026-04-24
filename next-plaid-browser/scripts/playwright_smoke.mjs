@@ -50,8 +50,10 @@ async function runSmoke(browserName) {
     const hybridTopDocumentId = result.hybridSearch?.results?.[0]?.document_ids?.[0];
     const filteredSemanticTopDocumentId =
       result.filteredSemanticSearch?.results?.[0]?.document_ids?.[0];
-    const filteredKeywordDocumentIds =
+    const filteredKeywordAlphaDocumentIds =
       result.filteredKeywordSearch?.results?.[0]?.document_ids ?? [];
+    const filteredKeywordGammaDocumentIds =
+      result.filteredKeywordSearch?.results?.[1]?.document_ids ?? [];
     const encodedQueryTopDocumentId = result.encodedSearch?.results?.[0]?.document_ids?.[0];
     const encodedQueryTopExcerpt = result.encodedSearch?.results?.[0]?.source_spans?.[0]?.excerpt;
     const encodedQueryLayout = result.encodedQuery?.encoded?.payload?.layout;
@@ -107,7 +109,8 @@ async function runSmoke(browserName) {
       keywordTopDocumentId !== 0 ||
       hybridTopDocumentId !== 1 ||
       filteredSemanticTopDocumentId !== 1 ||
-      JSON.stringify(filteredKeywordDocumentIds) !== JSON.stringify([0, 2]) ||
+      JSON.stringify(filteredKeywordAlphaDocumentIds) !== JSON.stringify([0]) ||
+      JSON.stringify(filteredKeywordGammaDocumentIds) !== JSON.stringify([2]) ||
       encodedQueryTopDocumentId !== 0 ||
       encodedQueryTopExcerpt !== "Alpha proof document excerpt." ||
       encodedQueryLayout !== "ragged" ||

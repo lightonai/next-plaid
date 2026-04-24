@@ -161,19 +161,14 @@ pub(super) fn search_one(
     top_k: usize,
     subset: Option<&[i64]>,
 ) -> Result<RankedResults, KeywordError> {
-    match search_one_fts_query(conn, query, top_k, subset) {
-        Ok(results) => Ok(results),
-        Err(error) if is_fts_syntax_error(&error) => {
-            let Some(fts_query) = natural_language_fts_query(query) else {
-                return Ok(RankedResults {
-                    document_ids: vec![],
-                    scores: vec![],
-                });
-            };
-            search_one_fts_query(conn, &fts_query, top_k, subset)
-        }
-        Err(error) => Err(error),
-    }
+    let Some(fts_query) = natural_language_fts_query(query) else {
+        return Ok(RankedResults {
+            document_ids: vec![],
+            scores: vec![],
+        });
+    };
+
+    search_one_fts_query(conn, &fts_query, top_k, subset)
 }
 
 fn search_one_fts_query(
@@ -253,16 +248,8 @@ fn search_one_fts_query(
     })
 }
 
-fn is_fts_syntax_error(error: &KeywordError) -> bool {
-    matches!(
-        error,
-        KeywordError::Sqlite(rusqlite::Error::SqliteFailure(_, Some(message)))
-            if message.contains("fts5: syntax error")
-    )
-}
-
 fn natural_language_fts_query(query: &str) -> Option<String> {
-    let mut terms = Vec::new();
+    let mut fts_query = String::with_capacity(query.len().saturating_add(4));
     let mut current = String::new();
 
     for character in query.chars() {
@@ -272,25 +259,25 @@ fn natural_language_fts_query(query: &str) -> Option<String> {
         }
 
         if !current.is_empty() {
-            terms.push(std::mem::take(&mut current));
+            append_quoted_fts_term(&mut fts_query, &current);
+            current.clear();
         }
     }
 
     if !current.is_empty() {
-        terms.push(current);
+        append_quoted_fts_term(&mut fts_query, &current);
     }
 
-    if terms.is_empty() {
-        return None;
-    }
+    (!fts_query.is_empty()).then_some(fts_query)
+}
 
-    Some(
-        terms
-            .into_iter()
-            .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
+fn append_quoted_fts_term(fts_query: &mut String, term: &str) {
+    if !fts_query.is_empty() {
+        fts_query.push(' ');
+    }
+    fts_query.push('"');
+    fts_query.push_str(term);
+    fts_query.push('"');
 }
 
 fn make_temp_table_name(prefix: &str) -> String {

@@ -46,8 +46,8 @@ pub(crate) enum WasmError {
 
     #[error("encoder mismatch: expected {expected:?}, got {actual:?}")]
     EncoderMismatch {
-        expected: EncoderIdentity,
-        actual: EncoderIdentity,
+        expected: Box<EncoderIdentity>,
+        actual: Box<EncoderIdentity>,
     },
 
     #[error("query dimension {query_dim} does not match index dimension {index_dim}")]
@@ -583,7 +583,7 @@ mod tests {
     }
 
     fn filtered_keyword_request(name: &str) -> WorkerSearchRequest {
-        let mut request = keyword_search_request(name, &["alpha OR gamma"]);
+        let mut request = keyword_search_request(name, &["alpha", "gamma"]);
         request.request.filter_condition = Some("topic IN (?, ?)".into());
         request.request.filter_parameters = Some(vec![
             serde_json::json!("history"),
@@ -843,7 +843,8 @@ mod tests {
         .unwrap();
 
         let response = runtime_search_response(filtered_keyword_request("demo-filtered-keyword"));
-        assert_eq!(response.results[0].document_ids, vec![0, 2]);
+        assert_eq!(response.results[0].document_ids, vec![0]);
+        assert_eq!(response.results[1].document_ids, vec![2]);
     }
 
     #[test]

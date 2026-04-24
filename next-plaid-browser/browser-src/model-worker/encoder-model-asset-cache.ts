@@ -1,6 +1,8 @@
-import { Context, Effect, Layer, Ref } from "effect";
+import { Cache as EffectCache, Context, Duration, Effect, Layer, Option } from "effect";
 
 import type { ModelAssetPackage } from "./model-asset-types.js";
+
+const DEFAULT_MODEL_ASSET_CACHE_CAPACITY = 3;
 
 export interface EncoderModelAssetCacheApi {
   readonly get: (
@@ -19,40 +21,41 @@ export class EncoderModelAssetCache
     "next-plaid-browser/EncoderModelAssetCache",
   )
 {
-  static readonly layer = Layer.effect(EncoderModelAssetCache)(
-    makeEncoderModelAssetCache(),
+  static layerWithCapacity(capacity: number) {
+    return Layer.effect(EncoderModelAssetCache)(
+      makeEncoderModelAssetCache({ capacity }),
+    );
+  }
+
+  static readonly layer = EncoderModelAssetCache.layerWithCapacity(
+    DEFAULT_MODEL_ASSET_CACHE_CAPACITY,
   );
 }
 
-function makeEncoderModelAssetCache(): Effect.Effect<
+function makeEncoderModelAssetCache(options: {
+  readonly capacity: number;
+}): Effect.Effect<
   EncoderModelAssetCacheApi,
   never
 > {
   return Effect.gen(function*() {
-    const cacheRef = yield* Ref.make(new Map<string, ModelAssetPackage>());
+    const cache = yield* EffectCache.make<string, ModelAssetPackage>({
+      capacity: options.capacity,
+      lookup: () => Effect.die("EncoderModelAssetCache.get should use getOption"),
+      timeToLive: Duration.infinity,
+    });
 
     const get = Effect.fn("EncoderModelAssetCache.get")(function*(packageId: string) {
-      const cache = yield* Ref.get(cacheRef);
-      return cache.get(packageId) ?? null;
+      const value = yield* EffectCache.getOption(cache, packageId);
+      return Option.getOrNull(value);
     });
 
     const put = Effect.fn("EncoderModelAssetCache.put")(function*(pkg: ModelAssetPackage) {
-      yield* Ref.update(cacheRef, (cache) => {
-        const next = new Map(cache);
-        next.set(pkg.key.packageId, pkg);
-        return next;
-      });
+      yield* EffectCache.set(cache, pkg.key.packageId, pkg);
     });
 
     const remove = Effect.fn("EncoderModelAssetCache.remove")(function*(packageId: string) {
-      yield* Ref.update(cacheRef, (cache) => {
-        if (!cache.has(packageId)) {
-          return cache;
-        }
-        const next = new Map(cache);
-        next.delete(packageId);
-        return next;
-      });
+      yield* EffectCache.invalidate(cache, packageId);
     });
 
     return EncoderModelAssetCache.of({

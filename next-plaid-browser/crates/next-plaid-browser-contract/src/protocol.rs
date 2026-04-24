@@ -1075,33 +1075,6 @@ mod tests {
         }
     }
 
-    fn mutable_snapshot() -> MutableCorpusSnapshot {
-        MutableCorpusSnapshot {
-            documents: vec![
-                MutableCorpusDocument {
-                    document_id: "alpha".into(),
-                    semantic_text: "alpha launch memo".into(),
-                    semantic_embeddings: None,
-                    metadata: Some(serde_json::json!({
-                        "title": "alpha launch memo",
-                        "topic": "edge"
-                    })),
-                    source_span: None,
-                },
-                MutableCorpusDocument {
-                    document_id: "beta".into(),
-                    semantic_text: "beta metrics report".into(),
-                    semantic_embeddings: None,
-                    metadata: Some(serde_json::json!({
-                        "title": "beta metrics report",
-                        "topic": "metrics"
-                    })),
-                    source_span: None,
-                },
-            ],
-        }
-    }
-
     fn source_span() -> SourceSpan {
         SourceSpan {
             source_id: Some("README.md".into()),

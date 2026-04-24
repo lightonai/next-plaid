@@ -106,8 +106,8 @@ pub(crate) fn validate_encoder_identity(
         Ok(())
     } else {
         Err(WasmError::EncoderMismatch {
-            expected: expected.clone(),
-            actual: actual.clone(),
+            expected: Box::new(expected.clone()),
+            actual: Box::new(actual.clone()),
         })
     }
 }

@@ -87,9 +87,9 @@ pub enum BrowserStorageError {
         /// Stable browser-owned corpus id.
         corpus_id: String,
         /// Previously registered encoder identity.
-        expected: EncoderIdentity,
+        expected: Box<EncoderIdentity>,
         /// Requested encoder identity.
-        actual: EncoderIdentity,
+        actual: Box<EncoderIdentity>,
     },
     /// Registration attempted to change the locked tokenizer configuration.
     #[error("mutable corpus '{corpus_id}' is registered with a different fts tokenizer")]
@@ -793,8 +793,8 @@ mod wasm {
                 if record.encoder != *encoder {
                     return Err(BrowserStorageError::MutableCorpusEncoderMismatch {
                         corpus_id: corpus_id.to_string(),
-                        expected: record.encoder,
-                        actual: encoder.clone(),
+                        expected: Box::new(record.encoder),
+                        actual: Box::new(encoder.clone()),
                     });
                 }
                 if record.fts_tokenizer != fts_tokenizer {

@@ -72,7 +72,7 @@ pub(crate) struct LoadedIndex {
 #[derive(Debug)]
 pub(crate) enum LoadedIndexPayload {
     Dense(SearchIndexPayload),
-    Compressed(next_plaid_browser_storage::StoredBrowserBundle),
+    Compressed(Box<next_plaid_browser_storage::StoredBrowserBundle>),
 }
 
 #[derive(Debug)]
@@ -277,7 +277,7 @@ pub(crate) fn load_compressed_bundle_into_runtime(
         indices.borrow_mut().insert(
             name,
             LoadedIndex {
-                payload: LoadedIndexPayload::Compressed(stored),
+                payload: LoadedIndexPayload::Compressed(Box::new(stored)),
                 encoder: manifest.encoder.clone(),
                 metadata,
                 source_spans,
@@ -454,7 +454,7 @@ fn search_loaded_immutable_index(
             top_k,
             subset.as_deref(),
         )?;
-        return Ok(search_response_from_ranked_results(
+        return search_response_from_ranked_results(
             loaded.metadata.as_deref(),
             loaded.source_spans.as_deref(),
             ranked_results,
@@ -466,7 +466,7 @@ fn search_loaded_immutable_index(
                 keyword_us: None,
                 fusion_us: None,
             }),
-        )?);
+        );
     }
 
     let text_queries = request.text_query.as_deref().unwrap_or(&[]);
@@ -477,7 +477,7 @@ fn search_loaded_immutable_index(
         top_k,
         subset.as_deref(),
     )?;
-    Ok(search_response_from_ranked_results(
+    search_response_from_ranked_results(
         loaded.metadata.as_deref(),
         loaded.source_spans.as_deref(),
         ranked_results,
@@ -489,7 +489,7 @@ fn search_loaded_immutable_index(
             keyword_us: Some(elapsed_us(keyword_started_at)),
             fusion_us: None,
         }),
-    )?)
+    )
 }
 
 fn search_loaded_mutable_corpus(
@@ -591,7 +591,7 @@ fn search_loaded_mutable_corpus(
             top_k,
             subset.as_deref(),
         )?;
-        return Ok(search_response_from_ranked_results(
+        return search_response_from_ranked_results(
             Some(&loaded.metadata),
             Some(&loaded.source_spans),
             ranked_results,
@@ -603,7 +603,7 @@ fn search_loaded_mutable_corpus(
                 keyword_us: None,
                 fusion_us: None,
             }),
-        )?);
+        );
     }
 
     let text_queries = request.text_query.as_deref().unwrap_or(&[]);

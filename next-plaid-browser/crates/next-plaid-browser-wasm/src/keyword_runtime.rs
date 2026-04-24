@@ -205,22 +205,94 @@ mod tests {
     }
 
     #[test]
-    fn keyword_index_preserves_valid_fts_expressions() {
+    fn keyword_index_treats_fts_operator_words_as_literal_terms() {
         let index = KeywordIndex::new(
             &[
-                Some(json!({"title": "alpha launch memo"})),
-                Some(json!({"title": "beta report summary"})),
-                Some(json!({"title": "gamma archive note"})),
+                Some(json!({"title": "cats AND dogs literal conjunction"})),
+                Some(json!({"title": "cats dogs no operator word"})),
+                Some(json!({"title": "foo NEAR bar literal operator"})),
+                Some(json!({"title": "foo bar plain proximity token"})),
+                Some(json!({"title": "alpha OR gamma literal operator"})),
+                Some(json!({"title": "alpha gamma plain token"})),
             ],
             FtsTokenizer::Unicode61,
         )
         .unwrap();
 
-        let results = index
-            .search_many(&["alpha OR gamma".to_string()], 3, None)
-            .expect("valid FTS expressions should still be accepted");
+        let cases = [
+            ("cats AND dogs", vec![0]),
+            ("foo NEAR bar", vec![2]),
+            ("alpha OR gamma", vec![4]),
+        ];
 
-        assert_eq!(results[0].document_ids, vec![0, 2]);
+        for (query, expected_ids) in cases {
+            let results = index
+                .search_many(&[query.to_string()], 3, None)
+                .expect("operator-like words should be searched as normal text");
+
+            assert_eq!(results[0].document_ids, expected_ids, "query: {query}");
+        }
+    }
+
+    #[test]
+    fn keyword_index_treats_fts_punctuation_as_natural_language_boundaries() {
+        let index = KeywordIndex::new(
+            &[
+                Some(json!({"title": "foo bar punctuation target"})),
+                Some(json!({"title": "alpha punctuation target"})),
+                Some(json!({"title": "alphabet punctuation target"})),
+                Some(json!({"title": "cat punctuation target"})),
+                Some(json!({"title": "unterminated quote punctuation target"})),
+            ],
+            FtsTokenizer::Unicode61,
+        )
+        .unwrap();
+
+        let cases = [
+            ("foo*bar", vec![0]),
+            ("foo:bar", vec![0]),
+            ("foo\"bar", vec![0]),
+            ("alpha*", vec![1]),
+            ("(cat)", vec![3]),
+            ("-foo", vec![0]),
+            ("\"unterminated", vec![4]),
+        ];
+
+        for (query, expected_ids) in cases {
+            let results = index
+                .search_many(&[query.to_string()], 5, None)
+                .expect("punctuation-heavy keyword query should not reach FTS syntax errors");
+
+            assert_eq!(results[0].document_ids, expected_ids, "query: {query}");
+        }
+    }
+
+    #[test]
+    fn keyword_index_handles_empty_and_large_natural_language_queries() {
+        let index = KeywordIndex::new(
+            &[
+                Some(json!({"title": "alpha target"})),
+                Some(json!({"title": "emoji target"})),
+            ],
+            FtsTokenizer::Unicode61,
+        )
+        .unwrap();
+
+        for query in ["", "   ", "???", "✨✨✨"] {
+            let results = index
+                .search_many(&[query.to_string()], 3, None)
+                .expect("empty-like keyword search should return no results");
+
+            assert!(results[0].document_ids.is_empty(), "query: {query}");
+            assert!(results[0].scores.is_empty(), "query: {query}");
+        }
+
+        let large_query = "alpha ".repeat(260);
+        let results = index
+            .search_many(&[large_query], 3, None)
+            .expect("large natural-language keyword search should succeed");
+
+        assert_eq!(results[0].document_ids, vec![0]);
     }
 
     #[test]
