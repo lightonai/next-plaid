@@ -3,7 +3,7 @@ name = "colgrep"
 version.workspace = true
 edition = "2021"
 description = "Semantic code search powered by ColBERT"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/lightonai/next-plaid"
 homepage = "https://github.com/lightonai/next-plaid"
 

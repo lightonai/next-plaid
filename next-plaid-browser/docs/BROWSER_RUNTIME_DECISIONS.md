@@ -249,5 +249,6 @@ Product-surface follow-up after the storage-backed baseline:
 
 ## Supporting research
 
-Background research and source notes are kept in
-`docs/BROWSER_RUNTIME_TRACK_2.md`.
+Durable browser-runtime decisions are captured in this document,
+`docs/ARCHITECTURE.md`, `docs/BROWSER_TESTING.md`, and `docs/ROADMAP.md`.
+Internal research notes are intentionally kept out of the upstream-facing tree.

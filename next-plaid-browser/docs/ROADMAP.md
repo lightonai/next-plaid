@@ -210,8 +210,8 @@ Status:
   - eviction recovery cleanup behavior
   - optional IndexedDB artifact fallback
   - `FileSystemSyncAccessHandle` optimization for the worker hot path
-- detailed review findings and remediation slices now live in
-  `docs/REMEDIATION_AUDIT.md`
+- detailed review findings have been folded into this public roadmap and the
+  browser testing guide
 
 ## Phase 5.25: Embeddable browser API surface
 
@@ -284,8 +284,7 @@ What this phase means in practice:
 
 Scope:
 
-- follows remediation `Slice 7`, `Slice 8`, and `Slice 9` in
-  `docs/REMEDIATION_AUDIT.md`
+- follows the completed kernel split, typed-error, and module cleanup work
 - does not change search semantics or the browser runtime contract
 - overlaps with `Slice 4` for typed `fusion_mode` and `fts_tokenizer`
   values at the contract boundary
@@ -325,8 +324,7 @@ Status:
   - storage-backed persistence instead of in-memory-only FTS state
   - iterative add / update / delete support for the browser FTS side inside
     the mutable sync foundation
-- the tracked follow-on note for this work is:
-  `docs/plans/2026-04-21-browser-mutable-index-sync-foundation.md`
+- follow-on work is tracked here instead of in internal planning memos
 
 ## Phase 6.25: Mutable index sync foundation
 
@@ -363,8 +361,7 @@ Status:
 - it is the next major browser-runtime foundation after the embeddable API
   contract lock
 - intentionally comes before full query-time freshness parity
-- plan of record:
-  `docs/plans/2026-04-21-browser-mutable-index-sync-foundation.md`
+- plan of record: this roadmap section
 
 ## Phase 7: Encoder path
 

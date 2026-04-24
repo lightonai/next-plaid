@@ -1,0 +1,9 @@
+# Default maintainers for repository-wide changes.
+* @lightonai
+
+# Areas with higher review sensitivity.
+/colgrep/ @lightonai
+/next-plaid-browser/ @lightonai
+/.github/ @lightonai
+/next-plaid-api/Dockerfile @lightonai
+
