@@ -7,7 +7,7 @@ use colored::Colorize;
 use std::fs;
 use std::path::PathBuf;
 
-use super::{uninstall_claude_code, uninstall_codex, uninstall_opencode};
+use super::{uninstall_claude_code, uninstall_codex, uninstall_hermes, uninstall_opencode};
 
 /// Get the colgrep data directory (contains indices and config)
 fn get_colgrep_data_dir() -> Result<PathBuf> {
@@ -33,10 +33,11 @@ fn get_hf_cache_dir() -> Result<PathBuf> {
 /// 1. Uninstalls from Claude Code (if installed)
 /// 2. Uninstalls from Codex (if installed)
 /// 3. Uninstalls from OpenCode (if installed)
-/// 4. Removes all indexes
-/// 5. Removes config and data directory
-/// 6. Removes ONNX runtime cache
-/// 7. Shows instructions for removing the binary
+/// 4. Uninstalls from Hermes (if installed)
+/// 5. Removes all indexes
+/// 6. Removes config and data directory
+/// 7. Removes ONNX runtime cache
+/// 8. Shows instructions for removing the binary
 pub fn uninstall_all() -> Result<()> {
     println!();
     println!("{}", "Completely uninstalling colgrep...".yellow().bold());
@@ -96,6 +97,17 @@ fn uninstall_ai_tools() {
         Err(_) => {
             println!(
                 "  {} OpenCode: not installed or already removed",
+                "-".dimmed()
+            );
+        }
+    }
+
+    // Hermes
+    match uninstall_hermes() {
+        Ok(()) => {}
+        Err(_) => {
+            println!(
+                "  {} Hermes: not installed or already removed",
                 "-".dimmed()
             );
         }
