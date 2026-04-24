@@ -1,9 +1,8 @@
 # Default maintainers for repository-wide changes.
-* @lightonai
+* @raphaelsty
 
 # Areas with higher review sensitivity.
-/colgrep/ @lightonai
-/next-plaid-browser/ @lightonai
-/.github/ @lightonai
-/next-plaid-api/Dockerfile @lightonai
-
+/colgrep/ @raphaelsty
+/next-plaid-browser/ @raphaelsty
+/.github/ @raphaelsty
+/next-plaid-api/Dockerfile @raphaelsty
