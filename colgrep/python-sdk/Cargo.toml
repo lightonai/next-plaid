@@ -3,7 +3,7 @@ name = "colgrep-parser"
 version = "1.2.0"
 edition = "2021"
 description = "Python bindings for colgrep code parser"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/lightonai/next-plaid"
 
 # Exclude from parent workspace
