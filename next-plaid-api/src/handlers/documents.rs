@@ -45,6 +45,38 @@ fn max_queued_tasks_per_index() -> usize {
     })
 }
 
+fn build_update_config(stored_config: &IndexConfigStored) -> UpdateConfig {
+    let default_update_config = UpdateConfig::default();
+    UpdateConfig {
+        batch_size: stored_config.batch_size,
+        kmeans_niters: default_update_config.kmeans_niters,
+        max_points_per_centroid: default_update_config.max_points_per_centroid,
+        n_samples_kmeans: default_update_config.n_samples_kmeans,
+        seed: stored_config.seed.unwrap_or(default_update_config.seed),
+        start_from_scratch: stored_config.start_from_scratch,
+        buffer_size: default_update_config.buffer_size,
+        force_cpu: default_update_config.force_cpu,
+    }
+}
+
+fn build_stored_index_config(req: &CreateIndexRequest) -> IndexConfigStored {
+    IndexConfigStored {
+        nbits: req.config.nbits.unwrap_or(4),
+        batch_size: req.config.batch_size.unwrap_or(50_000),
+        seed: req.config.seed,
+        start_from_scratch: req
+            .config
+            .start_from_scratch
+            .unwrap_or(next_plaid::default_start_from_scratch()),
+        max_documents: req.config.max_documents,
+        fts_tokenizer: req
+            .config
+            .fts_tokenizer
+            .clone()
+            .unwrap_or_else(|| "unicode61".to_string()),
+    }
+}
+
 // --- Index/DB Sync Repair ---
 
 /// Global registry of per-index repair locks to prevent concurrent repair operations.
@@ -399,7 +431,7 @@ async fn process_batch(
             fts_tokenizer: fts_tokenizer.clone(),
             ..Default::default()
         };
-        let update_config = UpdateConfig::default();
+        let update_config = build_update_config(&stored_config);
 
         // STEP 1: Update vector index FIRST
         let index_update_start = std::time::Instant::now();
@@ -949,18 +981,7 @@ pub async fn create_index(
     }
 
     // Build stored config
-    let stored_config = IndexConfigStored {
-        nbits: req.config.nbits.unwrap_or(4),
-        batch_size: req.config.batch_size.unwrap_or(50_000),
-        seed: req.config.seed,
-        start_from_scratch: req.config.start_from_scratch.unwrap_or(999),
-        max_documents: req.config.max_documents,
-        fts_tokenizer: req
-            .config
-            .fts_tokenizer
-            .clone()
-            .unwrap_or_else(|| "unicode61".to_string()),
-    };
+    let stored_config = build_stored_index_config(&req);
 
     // Create index directory
     std::fs::create_dir_all(&index_path)
@@ -1203,7 +1224,10 @@ pub async fn add_documents(
             let mut index = MmapIndex::load(&path_str)?;
 
             // Update with metadata (metadata is required)
-            let update_config = UpdateConfig::default();
+            let stored_config = state_clone
+                .get_index_config(&name_inner)
+                .ok_or_else(|| ApiError::IndexNotFound(name_inner.clone()))?;
+            let update_config = build_update_config(&stored_config);
             let index_update_start = std::time::Instant::now();
             index.update_with_metadata(&embeddings, &update_config, Some(&metadata))?;
             let index_update_ms = index_update_start.elapsed().as_millis() as u64;
@@ -1699,4 +1723,69 @@ pub async fn update_index_with_encoding(
 
     // Immediate Response
     Ok((StatusCode::ACCEPTED, Json("Update queued for batching")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_stored_index_config, build_update_config};
+    use crate::models::{CreateIndexRequest, IndexConfigRequest, IndexConfigStored};
+
+    #[test]
+    fn build_update_config_uses_stored_start_from_scratch() {
+        let stored_config = IndexConfigStored {
+            nbits: 4,
+            batch_size: 12_345,
+            seed: Some(7),
+            start_from_scratch: 17,
+            max_documents: None,
+            fts_tokenizer: "unicode61".to_string(),
+        };
+
+        let update_config = build_update_config(&stored_config);
+
+        assert_eq!(update_config.batch_size, 12_345);
+        assert_eq!(update_config.seed, 7);
+        assert_eq!(update_config.start_from_scratch, 17);
+    }
+
+    #[test]
+    fn build_stored_index_config_uses_request_start_from_scratch_when_present() {
+        let req = CreateIndexRequest {
+            name: "idx".to_string(),
+            config: IndexConfigRequest {
+                nbits: Some(4),
+                batch_size: Some(50_000),
+                seed: Some(42),
+                start_from_scratch: Some(23),
+                max_documents: None,
+                fts_tokenizer: Some("unicode61".to_string()),
+            },
+        };
+
+        let stored_config = build_stored_index_config(&req);
+
+        assert_eq!(stored_config.start_from_scratch, 23);
+    }
+
+    #[test]
+    fn build_stored_index_config_uses_runtime_default_when_request_omits_threshold() {
+        let req = CreateIndexRequest {
+            name: "idx".to_string(),
+            config: IndexConfigRequest {
+                nbits: Some(4),
+                batch_size: Some(50_000),
+                seed: Some(42),
+                start_from_scratch: None,
+                max_documents: None,
+                fts_tokenizer: Some("unicode61".to_string()),
+            },
+        };
+
+        let stored_config = build_stored_index_config(&req);
+
+        assert_eq!(
+            stored_config.start_from_scratch,
+            next_plaid::default_start_from_scratch()
+        );
+    }
 }

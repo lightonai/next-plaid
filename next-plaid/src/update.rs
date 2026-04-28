@@ -58,7 +58,7 @@ impl Default for UpdateConfig {
             max_points_per_centroid: 256,
             n_samples_kmeans: None,
             seed: 42,
-            start_from_scratch: 999,
+            start_from_scratch: crate::default_start_from_scratch(),
             buffer_size: 100,
             force_cpu: false,
         }
@@ -1016,7 +1016,10 @@ mod tests {
         let config = UpdateConfig::default();
         assert_eq!(config.batch_size, 50_000);
         assert_eq!(config.buffer_size, 100);
-        assert_eq!(config.start_from_scratch, 999);
+        assert_eq!(
+            config.start_from_scratch,
+            crate::default_start_from_scratch()
+        );
     }
 
     #[test]
