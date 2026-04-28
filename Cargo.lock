@@ -2494,6 +2494,7 @@ dependencies = [
  "arc-swap",
  "axum",
  "base64 0.22.1",
+ "futures-util",
  "ndarray 0.16.1",
  "ndarray-rand",
  "next-plaid",

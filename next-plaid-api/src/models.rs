@@ -787,6 +787,76 @@ pub struct UpdateWithEncodingRequest {
 }
 
 // =============================================================================
+// Project Sync
+// =============================================================================
+
+/// Request to create a staged project sync job for MCP project uploads.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectSyncCreateJobRequest {
+    /// Exact byte size of the later upload body.
+    #[schema(example = 4096)]
+    pub declared_bytes: u64,
+    /// Content type of the later upload body.
+    #[schema(example = "application/x-ndjson")]
+    pub content_type: String,
+}
+
+/// Response returned after accepting a project sync job.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ProjectSyncCreateJobResponse {
+    /// Server-assigned project sync job identifier.
+    #[schema(example = "f47ac10b-58cc-4372-a567-0e02b2c3d479")]
+    pub job_id: String,
+    /// Initial job status.
+    pub status: ProjectSyncJobStatus,
+    /// Reserved byte budget for this job.
+    #[schema(example = 4096)]
+    pub declared_bytes: u64,
+}
+
+/// Public project sync job lifecycle.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectSyncJobStatus {
+    Created,
+    Uploading,
+    Uploaded,
+    Queued,
+    Running,
+    Cancelling,
+    Completed,
+    Failed,
+    Cancelled,
+    Expired,
+}
+
+/// Response describing current project sync job state.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ProjectSyncJobResponse {
+    /// Job identifier.
+    #[schema(example = "f47ac10b-58cc-4372-a567-0e02b2c3d479")]
+    pub job_id: String,
+    /// Target index name.
+    #[schema(example = "project_1234abcd")]
+    pub index_name: String,
+    /// Current job status.
+    pub status: ProjectSyncJobStatus,
+    /// Reserved byte budget declared during create-job.
+    #[schema(example = 4096)]
+    pub declared_bytes: u64,
+    /// Bytes currently written to spool.
+    #[schema(example = 4096)]
+    pub uploaded_bytes: u64,
+    /// Upload content type.
+    #[schema(example = "application/x-ndjson")]
+    pub content_type: String,
+    /// Optional server-side error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// =============================================================================
 // Reranking
 // =============================================================================
 

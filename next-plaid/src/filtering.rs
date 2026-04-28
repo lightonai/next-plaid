@@ -501,6 +501,26 @@ fn get_schema_columns(conn: &Connection) -> Result<HashSet<String>> {
     Ok(columns)
 }
 
+/// Check whether a metadata column exists for an index.
+pub fn has_column(index_path: &str, column_name: &str) -> Result<bool> {
+    if !is_valid_column_name(column_name) {
+        return Err(Error::Filtering(format!(
+            "Invalid column name '{}'. Column names must start with a letter or \
+             underscore, followed by letters, digits, or underscores.",
+            column_name
+        )));
+    }
+
+    let db_path = get_db_path(index_path);
+    if !db_path.exists() {
+        return Ok(false);
+    }
+
+    let conn = open_db(&db_path)?;
+    let columns = get_schema_columns(&conn)?;
+    Ok(columns.contains(column_name))
+}
+
 /// Validate a SQL WHERE condition against the allowed grammar and schema.
 ///
 /// This function performs security validation on user-provided SQL conditions:
@@ -1665,6 +1685,27 @@ mod tests {
 
         // Verify count
         assert_eq!(count(path).unwrap(), 3);
+    }
+
+    #[test]
+    fn test_has_column_reports_metadata_schema() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+
+        let metadata = vec![json!({"name": "Alice"})];
+        let doc_ids = vec![0];
+        create(path, &metadata, &doc_ids).unwrap();
+
+        assert!(has_column(path, "name").unwrap());
+        assert!(!has_column(path, "source_path").unwrap());
+    }
+
+    #[test]
+    fn test_has_column_returns_false_without_metadata_db() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+
+        assert!(!has_column(path, "source_path").unwrap());
     }
 
     #[test]

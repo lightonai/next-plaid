@@ -4,7 +4,7 @@
 //! with appropriate status codes and JSON error bodies.
 
 use axum::{
-    http::StatusCode,
+    http::{header::RETRY_AFTER, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -30,6 +30,10 @@ pub enum ApiError {
     #[error("Invalid request: {0}")]
     BadRequest(String),
 
+    /// Request conflicts with current resource state
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
     /// Embedding dimension mismatch
     #[error("Embedding dimension mismatch: expected {expected}, got {actual}")]
     DimensionMismatch { expected: usize, actual: usize },
@@ -46,6 +50,25 @@ pub enum ApiError {
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
 
+    /// Service temporarily unavailable with structured retry details
+    #[error("Service unavailable: {message}")]
+    ServiceUnavailableDetailed {
+        message: String,
+        details: serde_json::Value,
+        retry_after_seconds: Option<u64>,
+    },
+
+    /// Request body exceeded the configured limit
+    #[error("Content too large: {message}")]
+    ContentTooLarge {
+        message: String,
+        details: serde_json::Value,
+    },
+
+    /// Request timed out before completion
+    #[error("Request timed out: {0}")]
+    RequestTimeout(String),
+
     /// Model not loaded (encoding endpoints require --model flag)
     #[error("Model not loaded. Start the server with --model <path> to enable encoding.")]
     ModelNotLoaded,
@@ -58,6 +81,10 @@ pub enum ApiError {
     /// NextPlaid library error
     #[error("Next-Plaid error: {0}")]
     NextPlaid(#[from] next_plaid::Error),
+
+    /// Project sync job not found
+    #[error("Project sync job not found: {0}")]
+    ProjectSyncJobNotFound(String),
 }
 
 /// JSON error response body.
@@ -74,11 +101,21 @@ pub struct ErrorResponse {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
-            ApiError::IndexNotFound(msg) => (StatusCode::NOT_FOUND, "INDEX_NOT_FOUND", msg.clone()),
-            ApiError::IndexAlreadyExists(msg) => {
-                (StatusCode::CONFLICT, "INDEX_ALREADY_EXISTS", msg.clone())
-            }
+        let (status, code, message, details, retry_after_seconds) = match &self {
+            ApiError::IndexNotFound(msg) => (
+                StatusCode::NOT_FOUND,
+                "INDEX_NOT_FOUND",
+                msg.clone(),
+                None,
+                None,
+            ),
+            ApiError::IndexAlreadyExists(msg) => (
+                StatusCode::CONFLICT,
+                "INDEX_ALREADY_EXISTS",
+                msg.clone(),
+                None,
+                None,
+            ),
             ApiError::IndexNotDeclared(msg) => (
                 StatusCode::NOT_FOUND,
                 "INDEX_NOT_DECLARED",
@@ -86,51 +123,114 @@ impl IntoResponse for ApiError {
                     "Index '{}' not declared. Call POST /indices first to declare the index.",
                     msg
                 ),
+                None,
+                None,
             ),
-            ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
+            ApiError::BadRequest(msg) => (
+                StatusCode::BAD_REQUEST,
+                "BAD_REQUEST",
+                msg.clone(),
+                None,
+                None,
+            ),
+            ApiError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone(), None, None),
             ApiError::DimensionMismatch { expected, actual } => (
                 StatusCode::BAD_REQUEST,
                 "DIMENSION_MISMATCH",
                 format!("Expected dimension {}, got {}", expected, actual),
+                None,
+                None,
             ),
-            ApiError::MetadataNotFound(msg) => {
-                (StatusCode::NOT_FOUND, "METADATA_NOT_FOUND", msg.clone())
-            }
+            ApiError::MetadataNotFound(msg) => (
+                StatusCode::NOT_FOUND,
+                "METADATA_NOT_FOUND",
+                msg.clone(),
+                None,
+                None,
+            ),
             ApiError::Internal(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
                 msg.clone(),
+                None,
+                None,
             ),
             ApiError::ServiceUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "SERVICE_UNAVAILABLE",
                 msg.clone(),
+                None,
+                None,
+            ),
+            ApiError::ServiceUnavailableDetailed {
+                message,
+                details,
+                retry_after_seconds,
+            } => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
+                message.clone(),
+                Some(details.clone()),
+                *retry_after_seconds,
+            ),
+            ApiError::ContentTooLarge { message, details } => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "CONTENT_TOO_LARGE",
+                message.clone(),
+                Some(details.clone()),
+                None,
+            ),
+            ApiError::RequestTimeout(msg) => (
+                StatusCode::REQUEST_TIMEOUT,
+                "REQUEST_TIMEOUT",
+                msg.clone(),
+                None,
+                None,
             ),
             ApiError::ModelNotLoaded => (
                 StatusCode::BAD_REQUEST,
                 "MODEL_NOT_LOADED",
                 "No model loaded. Start the server with --model <path> to enable encoding."
                     .to_string(),
+                None,
+                None,
             ),
             ApiError::ModelError(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "MODEL_ERROR",
                 msg.clone(),
+                None,
+                None,
             ),
             ApiError::NextPlaid(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "NEXT_PLAID_ERROR",
                 e.to_string(),
+                None,
+                None,
+            ),
+            ApiError::ProjectSyncJobNotFound(job_id) => (
+                StatusCode::NOT_FOUND,
+                "PROJECT_SYNC_JOB_NOT_FOUND",
+                format!("Project sync job '{}' not found", job_id),
+                None,
+                None,
             ),
         };
 
         let body = ErrorResponse {
             code,
             message,
-            details: None,
+            details,
         };
 
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if let Some(seconds) = retry_after_seconds {
+            let value =
+                HeaderValue::from_str(&seconds.to_string()).expect("Retry-After must be valid");
+            response.headers_mut().insert(RETRY_AFTER, value);
+        }
+        response
     }
 }
 
