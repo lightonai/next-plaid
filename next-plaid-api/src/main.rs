@@ -502,6 +502,106 @@ fn build_router(state: Arc<AppState>) -> Router {
         .merge(api_router)
 }
 
+#[cfg(feature = "model")]
+fn execution_provider_name(use_cuda: bool) -> &'static str {
+    if use_cuda {
+        "cuda"
+    } else {
+        "cpu"
+    }
+}
+
+#[cfg(feature = "model")]
+fn build_model_instance(
+    model_config: &state::ModelConfig,
+) -> Result<next_plaid_onnx::Colbert, String> {
+    let execution_provider = if model_config.use_cuda {
+        next_plaid_onnx::ExecutionProvider::Cuda
+    } else {
+        next_plaid_onnx::ExecutionProvider::Cpu
+    };
+
+    let mut builder = next_plaid_onnx::Colbert::builder(&model_config.path)
+        .with_execution_provider(execution_provider)
+        .with_quantized(model_config.use_int8);
+
+    if let Some(value) = model_config.parallel_sessions {
+        builder = builder.with_parallel(value);
+    }
+    if let Some(value) = model_config.batch_size {
+        builder = builder.with_batch_size(value);
+    }
+    if let Some(value) = model_config.threads {
+        builder = builder.with_threads(value);
+    }
+    if let Some(value) = model_config.query_length {
+        builder = builder.with_query_length(value);
+    }
+    if let Some(value) = model_config.document_length {
+        builder = builder.with_document_length(value);
+    }
+
+    builder.build().map_err(|error| error.to_string())
+}
+
+#[cfg(feature = "model")]
+fn log_loaded_model(
+    model_path: &std::path::Path,
+    model: &next_plaid_onnx::Colbert,
+    use_cuda: bool,
+    use_int8: bool,
+) {
+    let config = model.config();
+    tracing::info!(
+        model_path = %model_path.display(),
+        model_name = ?config.model_name(),
+        execution_provider = execution_provider_name(use_cuda),
+        quantized = use_int8,
+        embedding_dim = model.embedding_dim(),
+        batch_size = model.batch_size(),
+        num_sessions = model.num_sessions(),
+        query_length = config.query_length,
+        document_length = config.document_length,
+        query_expansion = config.do_query_expansion,
+        "model.load.complete"
+    );
+}
+
+#[cfg(feature = "model")]
+fn build_model_pool(
+    model: next_plaid_onnx::Colbert,
+    model_config: state::ModelConfig,
+    pool_size: usize,
+) -> state::ModelPool {
+    let loaded_model_config = model.config();
+    let cached_info = state::CachedModelInfo {
+        name: loaded_model_config
+            .model_name()
+            .map(|value| value.to_string()),
+        path: model_config.path.to_string_lossy().to_string(),
+        quantized: model_config.use_int8,
+        embedding_dim: model.embedding_dim(),
+        batch_size: model.batch_size(),
+        num_sessions: model.num_sessions(),
+        query_prefix: loaded_model_config.query_prefix.clone(),
+        document_prefix: loaded_model_config.document_prefix.clone(),
+        query_length: loaded_model_config.query_length,
+        document_length: loaded_model_config.document_length,
+        do_query_expansion: loaded_model_config.do_query_expansion,
+        uses_token_type_ids: loaded_model_config.uses_token_type_ids,
+        mask_token_id: loaded_model_config.mask_token_id,
+        pad_token_id: loaded_model_config.pad_token_id,
+    };
+
+    drop(model);
+
+    state::ModelPool {
+        pool_size,
+        model_config,
+        cached_info,
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Initialize tracing
@@ -521,6 +621,7 @@ async fn main() {
     let mut index_dir = PathBuf::from("./indices");
     let mut model_path: Option<PathBuf> = None;
     let mut _use_cuda = false;
+    let mut _query_on_cpu = false;
     let mut _use_int8 = false;
     let mut _parallel_sessions: Option<usize> = None;
     let mut _batch_size: Option<usize> = None;
@@ -573,6 +674,10 @@ async fn main() {
             }
             "--cuda" => {
                 _use_cuda = true;
+                i += 1;
+            }
+            "--query-on-cpu" => {
+                _query_on_cpu = true;
                 i += 1;
             }
             "--int8" => {
@@ -663,6 +768,8 @@ Options:
   -d, --index-dir <DIR>    Directory for storing indices (default: ./indices)
   -m, --model <PATH>       Path to ONNX model directory for encoding (optional)
   --cuda                   Use CUDA for model inference (requires --model)
+  --query-on-cpu           CUDA route only: run query/rerank encoding on CPU while
+                           keeping ingest encoding on CUDA
   --int8                   Use INT8 quantized model for faster inference (requires --model)
   --parallel <N>           Number of parallel ONNX sessions (default: 1)
                            More sessions = more parallelism but also more memory.
@@ -691,6 +798,8 @@ Examples:
   next-plaid-api -p 3000 -d /data/indices                 # Custom port and directory
   next-plaid-api --model ./models/colbert                 # Enable text encoding
   next-plaid-api --model ./models/colbert --cuda          # Enable encoding with CUDA
+  next-plaid-api --model ./models/colbert --cuda --query-on-cpu
+                                                          # Query/rerank on CPU, ingest on CUDA
   next-plaid-api --model ./models/colbert --int8          # Enable encoding with INT8 quantization
   next-plaid-api --model ./models/colbert --parallel 16   # 16 parallel sessions for high throughput
   next-plaid-api --model ./models/colbert --parallel 8 --batch-size 4  # Fine-tuned parallel config
@@ -708,6 +817,15 @@ Examples:
         }
     }
 
+    if _query_on_cpu && !_use_cuda {
+        eprintln!("Error: --query-on-cpu requires --cuda");
+        std::process::exit(1);
+    }
+    if _query_on_cpu && model_path.is_none() {
+        eprintln!("Error: --query-on-cpu requires --model <PATH>");
+        std::process::exit(1);
+    }
+
     // Create config
     let config = ApiConfig {
         index_dir,
@@ -719,69 +837,6 @@ Examples:
         "server.starting"
     );
 
-    // Load model if specified
-    #[cfg(feature = "model")]
-    let model = if let Some(ref model_path) = model_path {
-        let execution_provider = if _use_cuda {
-            next_plaid_onnx::ExecutionProvider::Cuda
-        } else {
-            next_plaid_onnx::ExecutionProvider::Cpu
-        };
-
-        let mut builder = next_plaid_onnx::Colbert::builder(model_path)
-            .with_execution_provider(execution_provider)
-            .with_quantized(_use_int8);
-
-        // Apply optional model configuration
-        if let Some(parallel) = _parallel_sessions {
-            builder = builder.with_parallel(parallel);
-        }
-        if let Some(batch_size) = _batch_size {
-            builder = builder.with_batch_size(batch_size);
-        }
-        if let Some(threads) = _threads {
-            builder = builder.with_threads(threads);
-        }
-        if let Some(query_length) = _query_length {
-            builder = builder.with_query_length(query_length);
-        }
-        if let Some(document_length) = _document_length {
-            builder = builder.with_document_length(document_length);
-        }
-
-        match builder.build() {
-            Ok(model) => {
-                let cfg = model.config();
-                tracing::info!(
-                    model_path = %model_path.display(),
-                    model_name = ?cfg.model_name(),
-                    execution_provider = if _use_cuda { "cuda" } else { "cpu" },
-                    quantized = _use_int8,
-                    embedding_dim = model.embedding_dim(),
-                    batch_size = model.batch_size(),
-                    num_sessions = model.num_sessions(),
-                    query_length = cfg.query_length,
-                    document_length = cfg.document_length,
-                    query_expansion = cfg.do_query_expansion,
-                    "model.load.complete"
-                );
-                Some(model)
-            }
-            Err(e) => {
-                tracing::error!(
-                    model_path = %model_path.display(),
-                    error = %e,
-                    "model.load.failed"
-                );
-                eprintln!("Error: Failed to load model from {:?}: {}", model_path, e);
-                std::process::exit(1);
-            }
-        }
-    } else {
-        tracing::debug!("model.disabled");
-        None
-    };
-
     // Create state
     #[cfg(feature = "model")]
     let state = {
@@ -789,36 +844,11 @@ Examples:
             path: path.to_string_lossy().to_string(),
             quantized: _use_int8,
         });
+        let pool_size = _model_pool_size.unwrap_or(1);
 
-        // Create model pool if model was loaded successfully
-        let model_pool = model.map(|m| {
-            let model_cfg = m.config();
-            let pool_size = _model_pool_size.unwrap_or(1);
-
-            // Create cached model info for lock-free health endpoint access
-            let cached_info = state::CachedModelInfo {
-                name: model_cfg.model_name().map(|s| s.to_string()),
-                path: model_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-                quantized: _use_int8,
-                embedding_dim: m.embedding_dim(),
-                batch_size: m.batch_size(),
-                num_sessions: m.num_sessions(),
-                query_prefix: model_cfg.query_prefix.clone(),
-                document_prefix: model_cfg.document_prefix.clone(),
-                query_length: model_cfg.query_length,
-                document_length: model_cfg.document_length,
-                do_query_expansion: model_cfg.do_query_expansion,
-                uses_token_type_ids: model_cfg.uses_token_type_ids,
-                mask_token_id: model_cfg.mask_token_id,
-                pad_token_id: model_cfg.pad_token_id,
-            };
-
-            // Create model config for workers to build their own instances
-            let model_config = state::ModelConfig {
-                path: model_path.clone().unwrap(),
+        if let Some(ref loaded_model_path) = model_path {
+            let ingest_model_config = state::ModelConfig {
+                path: loaded_model_path.clone(),
                 use_cuda: _use_cuda,
                 use_int8: _use_int8,
                 parallel_sessions: _parallel_sessions,
@@ -827,18 +857,105 @@ Examples:
                 query_length: _query_length,
                 document_length: _document_length,
             };
+            if _query_on_cpu {
+                let query_model_config = state::ModelConfig {
+                    path: loaded_model_path.clone(),
+                    use_cuda: false,
+                    use_int8: _use_int8,
+                    parallel_sessions: _parallel_sessions,
+                    batch_size: _batch_size,
+                    threads: _threads,
+                    query_length: _query_length,
+                    document_length: _document_length,
+                };
+                let ingest_model = match build_model_instance(&state::ModelConfig {
+                    use_cuda: true,
+                    ..ingest_model_config.clone()
+                }) {
+                    Ok(model) => model,
+                    Err(error) => {
+                        tracing::error!(
+                            model_path = %loaded_model_path.display(),
+                            lane = "ingest",
+                            execution_provider = execution_provider_name(true),
+                            error = %error,
+                            "model.load.failed"
+                        );
+                        eprintln!(
+                            "Error: Failed to load ingest model from {:?}: {}",
+                            loaded_model_path, error
+                        );
+                        std::process::exit(1);
+                    }
+                };
+                log_loaded_model(loaded_model_path, &ingest_model, true, _use_int8);
 
-            // Drop the initial model - workers will create their own
-            drop(m);
+                let query_model = match build_model_instance(&query_model_config) {
+                    Ok(model) => model,
+                    Err(error) => {
+                        tracing::error!(
+                            model_path = %loaded_model_path.display(),
+                            lane = "query",
+                            execution_provider = execution_provider_name(false),
+                            error = %error,
+                            "model.load.failed"
+                        );
+                        eprintln!(
+                            "Error: Failed to load query model from {:?}: {}",
+                            loaded_model_path, error
+                        );
+                        std::process::exit(1);
+                    }
+                };
+                log_loaded_model(loaded_model_path, &query_model, false, _use_int8);
 
-            state::ModelPool {
-                pool_size,
-                model_config,
-                cached_info,
+                let ingest_pool = build_model_pool(
+                    ingest_model,
+                    state::ModelConfig {
+                        use_cuda: true,
+                        ..ingest_model_config.clone()
+                    },
+                    pool_size,
+                );
+                let query_pool = build_model_pool(query_model, query_model_config, pool_size);
+
+                Arc::new(AppState::with_dual_model_pools(
+                    config,
+                    ingest_pool,
+                    query_pool,
+                    model_info,
+                ))
+            } else {
+                let model = match build_model_instance(&ingest_model_config) {
+                    Ok(model) => model,
+                    Err(error) => {
+                        tracing::error!(
+                            model_path = %loaded_model_path.display(),
+                            execution_provider = execution_provider_name(_use_cuda),
+                            error = %error,
+                            "model.load.failed"
+                        );
+                        eprintln!(
+                            "Error: Failed to load model from {:?}: {}",
+                            loaded_model_path, error
+                        );
+                        std::process::exit(1);
+                    }
+                };
+                log_loaded_model(loaded_model_path, &model, _use_cuda, _use_int8);
+
+                let model_pool = build_model_pool(model, ingest_model_config, pool_size);
+
+                Arc::new(AppState::with_model_pool(
+                    config,
+                    Some(model_pool),
+                    model_info,
+                ))
             }
-        });
-
-        Arc::new(AppState::with_model_pool(config, model_pool, model_info))
+        } else {
+            tracing::debug!("model.disabled");
+            Arc::new(AppState::with_model_pool(config, None, model_info))
+        }
     };
 
     #[cfg(not(feature = "model"))]

@@ -15,6 +15,11 @@ use crate::state::AppState;
 use crate::tracing_middleware::TraceId;
 use crate::PrettyJson;
 
+#[cfg(feature = "model")]
+fn rerank_document_encode_lane() -> crate::state::EncodeLane {
+    crate::state::EncodeLane::Query
+}
+
 /// Convert a Vec<Vec<f32>> to an ndarray::Array2<f32>.
 fn to_ndarray(embeddings: &[Vec<f32>]) -> ApiResult<Array2<f32>> {
     crate::models::json_embeddings_to_array2(embeddings, "query", "Query")
@@ -202,7 +207,7 @@ pub async fn rerank_with_encoding(
     trace_id: Option<Extension<TraceId>>,
     Json(request): Json<crate::models::RerankWithEncodingRequest>,
 ) -> ApiResult<PrettyJson<RerankResponse>> {
-    use crate::handlers::encode::encode_texts_internal;
+    use crate::handlers::encode::{encode_texts_internal, encode_texts_internal_with_lane};
     use crate::models::InputType;
 
     let trace_id = trace_id.map(|t| t.0).unwrap_or_default();
@@ -240,10 +245,11 @@ pub async fn rerank_with_encoding(
         .ok_or_else(|| ApiError::Internal("Failed to encode query".to_string()))?;
 
     // Encode documents
-    let doc_embeddings = encode_texts_internal(
+    let doc_embeddings = encode_texts_internal_with_lane(
         state,
         &request.documents,
         InputType::Document,
+        rerank_document_encode_lane(),
         request.pool_factor,
     )
     .await?;
