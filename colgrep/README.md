@@ -331,6 +331,7 @@ Config stored at `~/.config/colgrep/config.json`.
 | OpenCode    | `colgrep --install-agent opencode`   | `colgrep --uninstall-agent opencode`   |
 | Codex       | `colgrep --install-agent codex`      | `colgrep --uninstall-agent codex`      |
 | Hermes      | `colgrep --install-agent hermes`     | `colgrep --uninstall-agent hermes`     |
+| Droid       | `colgrep --install-agent droid`      | `colgrep --uninstall-agent droid`      |
 
 > Restart your agent after installing.
 
