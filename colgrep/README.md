@@ -325,12 +325,12 @@ Config stored at `~/.config/colgrep/config.json`.
 
 ## Agent Integrations
 
-| Agent       | Install                         | Uninstall                         |
-| ----------- | ------------------------------- | --------------------------------- |
-| Claude Code | `colgrep --install-claude-code` | `colgrep --uninstall-claude-code` |
-| OpenCode    | `colgrep --install-opencode`    | `colgrep --uninstall-opencode`    |
-| Codex       | `colgrep --install-codex`       | `colgrep --uninstall-codex`       |
-| Hermes      | `colgrep --install-hermes`      | `colgrep --uninstall-hermes`      |
+| Agent       | Install                              | Uninstall                              |
+| ----------- | ------------------------------------ | -------------------------------------- |
+| Claude Code | `colgrep --install-agent claude`     | `colgrep --uninstall-agent claude`     |
+| OpenCode    | `colgrep --install-agent opencode`   | `colgrep --uninstall-agent opencode`   |
+| Codex       | `colgrep --install-agent codex`      | `colgrep --uninstall-agent codex`      |
+| Hermes      | `colgrep --install-agent hermes`     | `colgrep --uninstall-agent hermes`     |
 
 > Restart your agent after installing.
 

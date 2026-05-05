@@ -141,7 +141,7 @@ fn print_codex_success() {
     println!("    {}", "Example: \"find error handling logic\"".white());
     println!();
     println!("  {}", "To uninstall:".cyan().bold());
-    println!("    {}", "colgrep --uninstall-codex".green());
+    println!("    {}", "colgrep --uninstall-agent codex".green());
     println!();
     println!("{}", "═".repeat(70).cyan());
 }
