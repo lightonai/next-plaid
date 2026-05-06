@@ -11,8 +11,9 @@ use rayon::ThreadPoolBuilder;
 
 use colgrep::{
     acceleration::{apply_acceleration_mode, env_acceleration_mode, AccelerationMode},
-    install_claude_code, install_codex, install_hermes, install_opencode, setup_signal_handler,
-    uninstall_all, uninstall_claude_code, uninstall_codex, uninstall_hermes, uninstall_opencode,
+    install_agent, install_claude_code, install_codex, install_hermes, install_opencode,
+    setup_signal_handler, uninstall_agent, uninstall_all, uninstall_claude_code, uninstall_codex,
+    uninstall_hermes, uninstall_opencode,
 };
 
 use cli::{Cli, Commands};
@@ -41,6 +42,14 @@ fn main() -> Result<()> {
     apply_acceleration_mode(acceleration_mode);
 
     // Handle global flags before subcommands
+    if let Some(ref agent) = cli.install_agent {
+        return install_agent(agent);
+    }
+
+    if let Some(ref agent) = cli.uninstall_agent {
+        return uninstall_agent(agent);
+    }
+
     if cli.install_claude_code {
         return install_claude_code();
     }

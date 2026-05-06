@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use colgrep::install::Agent;
 
 pub const MAIN_HELP: &str = "\
 EXAMPLES:
@@ -366,36 +367,36 @@ pub struct Cli {
     #[arg(long, value_name = "FLOAT")]
     pub alpha: Option<f32>,
 
-    /// Install colgrep as a plugin for Claude Code
-    #[arg(long = "install-claude-code")]
+    /// Install colgrep for an AI coding agent
+    #[arg(long = "install-agent", value_name = "AGENT")]
+    pub install_agent: Option<Agent>,
+
+    /// Uninstall colgrep from an AI coding agent
+    #[arg(long = "uninstall-agent", value_name = "AGENT")]
+    pub uninstall_agent: Option<Agent>,
+
+    #[arg(long = "install-claude-code", hide = true)]
     pub install_claude_code: bool,
 
-    /// Uninstall colgrep plugin from Claude Code
-    #[arg(long = "uninstall-claude-code")]
+    #[arg(long = "uninstall-claude-code", hide = true)]
     pub uninstall_claude_code: bool,
 
-    /// Install colgrep for OpenCode
-    #[arg(long = "install-opencode")]
+    #[arg(long = "install-opencode", hide = true)]
     pub install_opencode: bool,
 
-    /// Uninstall colgrep from OpenCode
-    #[arg(long = "uninstall-opencode")]
+    #[arg(long = "uninstall-opencode", hide = true)]
     pub uninstall_opencode: bool,
 
-    /// Install colgrep for Codex
-    #[arg(long = "install-codex")]
+    #[arg(long = "install-codex", hide = true)]
     pub install_codex: bool,
 
-    /// Uninstall colgrep from Codex
-    #[arg(long = "uninstall-codex")]
+    #[arg(long = "uninstall-codex", hide = true)]
     pub uninstall_codex: bool,
 
-    /// Install colgrep for Hermes
-    #[arg(long = "install-hermes")]
+    #[arg(long = "install-hermes", hide = true)]
     pub install_hermes: bool,
 
-    /// Uninstall colgrep from Hermes
-    #[arg(long = "uninstall-hermes")]
+    #[arg(long = "uninstall-hermes", hide = true)]
     pub uninstall_hermes: bool,
 
     /// Completely uninstall colgrep: remove from all AI tools, clear all indexes, and remove all data

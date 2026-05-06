@@ -140,7 +140,7 @@ fn print_opencode_success() {
     println!("    {}", "Example: \"find error handling logic\"".white());
     println!();
     println!("  {}", "To uninstall:".cyan().bold());
-    println!("    {}", "colgrep --uninstall-opencode".green());
+    println!("    {}", "colgrep --uninstall-agent opencode".green());
     println!();
     println!("{}", "═".repeat(70).cyan());
 }

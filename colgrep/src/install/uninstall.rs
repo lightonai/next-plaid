@@ -7,7 +7,9 @@ use colored::Colorize;
 use std::fs;
 use std::path::PathBuf;
 
-use super::{uninstall_claude_code, uninstall_codex, uninstall_hermes, uninstall_opencode};
+use super::{
+    uninstall_claude_code, uninstall_codex, uninstall_droid, uninstall_hermes, uninstall_opencode,
+};
 
 /// Get the colgrep data directory (contains indices and config)
 fn get_colgrep_data_dir() -> Result<PathBuf> {
@@ -108,6 +110,17 @@ fn uninstall_ai_tools() {
         Err(_) => {
             println!(
                 "  {} Hermes: not installed or already removed",
+                "-".dimmed()
+            );
+        }
+    }
+
+    // Droid (Factory)
+    match uninstall_droid() {
+        Ok(()) => {}
+        Err(_) => {
+            println!(
+                "  {} Droid (Factory): not installed or already removed",
                 "-".dimmed()
             );
         }
