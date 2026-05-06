@@ -56,7 +56,10 @@ pub fn install_droid() -> Result<()> {
         "COLGREP INSTALLED FOR DROID (FACTORY)".green().bold()
     );
     println!("  Restart Droid sessions to pick up the new skill.");
-    println!("  To uninstall: {}", "colgrep --uninstall-agent droid".green());
+    println!(
+        "  To uninstall: {}",
+        "colgrep --uninstall-agent droid".green()
+    );
     println!("{}", "═".repeat(70).cyan());
     Ok(())
 }

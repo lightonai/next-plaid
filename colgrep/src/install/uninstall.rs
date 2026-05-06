@@ -7,7 +7,9 @@ use colored::Colorize;
 use std::fs;
 use std::path::PathBuf;
 
-use super::{uninstall_claude_code, uninstall_codex, uninstall_droid, uninstall_hermes, uninstall_opencode};
+use super::{
+    uninstall_claude_code, uninstall_codex, uninstall_droid, uninstall_hermes, uninstall_opencode,
+};
 
 /// Get the colgrep data directory (contains indices and config)
 fn get_colgrep_data_dir() -> Result<PathBuf> {

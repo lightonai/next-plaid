@@ -84,7 +84,10 @@ pub fn install_hermes() -> Result<()> {
         "COLGREP INSTALLED FOR HERMES".green().bold()
     );
     println!("  Restart Hermes sessions to pick up the AGENTS.md update.");
-    println!("  To uninstall: {}", "colgrep --uninstall-agent hermes".green());
+    println!(
+        "  To uninstall: {}",
+        "colgrep --uninstall-agent hermes".green()
+    );
     println!("{}", "═".repeat(70).cyan());
     Ok(())
 }
