@@ -1114,16 +1114,16 @@ impl IndexBuilder {
             filtering_count, vector_count
         );
         if filtering_count > vector_count {
-            // Filtering DB has orphan entries (docs without embeddings)
-            // Get all doc IDs from filtering that exceed the vector index count
-            // The vector index uses sequential IDs starting from 0, so any ID >= vector_count is orphan
-            let all_metadata = filtering::get(index_path, None, &[], None)?;
-
-            let orphan_ids: Vec<i64> = all_metadata
-                .iter()
-                .filter_map(|meta| meta.get("_subset_").and_then(|v| v.as_i64()))
-                .filter(|&id| id >= vector_count as i64)
-                .collect();
+            // Filtering DB has orphan entries (docs without embeddings).
+            // The vector index uses sequential IDs starting from 0, so any
+            // `_subset_` ID >= vector_count is an orphan. Push the filter into
+            // SQL so we don't materialize every row's metadata just to find a
+            // few stray IDs.
+            let orphan_ids = filtering::where_condition(
+                index_path,
+                "_subset_ >= ?",
+                &[serde_json::json!(vector_count as i64)],
+            )?;
 
             if !orphan_ids.is_empty() {
                 // Delete orphan entries from filtering DB
@@ -2242,14 +2242,11 @@ impl IndexBuilder {
     /// Clean up orphaned entries: files in index but not on disk
     /// This handles directory deletion/rename and any state inconsistencies
     fn cleanup_orphaned_entries(&self, index_path: &str) -> Result<usize> {
-        // Get all indexed files from filtering DB
-        let all_metadata = filtering::get(index_path, None, &[], None).unwrap_or_default();
-        let mut files: HashSet<String> = HashSet::new();
-        for meta in &all_metadata {
-            if let Some(file) = meta.get("file").and_then(|v| v.as_str()) {
-                files.insert(file.to_string());
-            }
-        }
+        // Pull only the distinct file paths from the metadata DB. The previous
+        // implementation called `filtering::get` which streams every column of
+        // every row (code text, embeddings metadata, etc.) on every search — a
+        // tens-of-megabytes JSON deserialize on large indexes.
+        let files = filtering::get_distinct_strings(index_path, "file").unwrap_or_default();
 
         let mut deleted_count = 0;
         for file_str in files {
