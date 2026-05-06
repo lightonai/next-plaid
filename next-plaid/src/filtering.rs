@@ -1327,6 +1327,62 @@ pub fn where_condition_regexp(
     Ok(result)
 }
 
+/// Get distinct non-NULL string values from a single METADATA column.
+///
+/// This is a focused, low-cost alternative to [`get`] when callers only need
+/// to enumerate the unique values of a single string column (for example, the
+/// distinct file paths represented in the index). It runs a single
+/// `SELECT DISTINCT` query and avoids loading every row's full metadata.
+///
+/// # Arguments
+///
+/// * `index_path` - Path to the index directory
+/// * `column` - Column name (validated against the METADATA schema)
+///
+/// # Returns
+///
+/// * `Ok(values)` - Distinct non-NULL string values from the column
+/// * `Ok(vec![])` - The database does not exist or the column is not present
+/// * `Err(_)` - Invalid column name or a database error
+pub fn get_distinct_strings(index_path: &str, column: &str) -> Result<Vec<String>> {
+    let db_path = get_db_path(index_path);
+    if !db_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    // Reject column names that aren't safe SQL identifiers up front (defense in
+    // depth — the schema check below would also catch unknown names).
+    if !is_valid_column_name(column) {
+        return Err(Error::Filtering(format!(
+            "Invalid column name: '{}'",
+            column
+        )));
+    }
+
+    let conn = open_db(&db_path)?;
+
+    let columns = get_schema_columns(&conn)?;
+    if !columns.contains(column) {
+        return Ok(Vec::new());
+    }
+
+    let query = format!(
+        "SELECT DISTINCT \"{0}\" FROM METADATA WHERE \"{0}\" IS NOT NULL",
+        column
+    );
+    let mut stmt = conn.prepare(&query)?;
+    let rows = stmt.query_map([], |row| row.get::<_, Option<String>>(0))?;
+
+    let mut values: Vec<String> = Vec::new();
+    for row in rows {
+        if let Some(value) = row? {
+            values.push(value);
+        }
+    }
+
+    Ok(values)
+}
+
 /// Get full metadata rows by condition or subset IDs.
 ///
 /// Returns metadata as JSON objects with the `_subset_` field included.
@@ -1701,6 +1757,57 @@ mod tests {
         let subset =
             where_condition(path, "category = ? AND score > ?", &[json!("A"), json!(93)]).unwrap();
         assert_eq!(subset, vec![0]);
+    }
+
+    #[test]
+    fn test_get_distinct_strings_returns_unique_values() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+
+        let metadata = vec![
+            json!({"file": "src/a.rs", "code": "x"}),
+            json!({"file": "src/a.rs", "code": "y"}),
+            json!({"file": "src/b.rs", "code": "z"}),
+        ];
+        let doc_ids: Vec<i64> = (0..3).collect();
+        create(path, &metadata, &doc_ids).unwrap();
+
+        let mut files = get_distinct_strings(path, "file").unwrap();
+        files.sort();
+        assert_eq!(files, vec!["src/a.rs".to_string(), "src/b.rs".to_string()]);
+    }
+
+    #[test]
+    fn test_get_distinct_strings_missing_db_returns_empty() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+        // No create() call — DB does not exist.
+        let files = get_distinct_strings(path, "file").unwrap();
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_get_distinct_strings_unknown_column_returns_empty() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+
+        let metadata = vec![json!({"file": "src/a.rs"})];
+        create(path, &metadata, &[0]).unwrap();
+
+        let values = get_distinct_strings(path, "not_a_column").unwrap();
+        assert!(values.is_empty());
+    }
+
+    #[test]
+    fn test_get_distinct_strings_rejects_invalid_column_name() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+
+        let metadata = vec![json!({"file": "src/a.rs"})];
+        create(path, &metadata, &[0]).unwrap();
+
+        let result = get_distinct_strings(path, "file; DROP TABLE METADATA --");
+        assert!(result.is_err());
     }
 
     #[test]
