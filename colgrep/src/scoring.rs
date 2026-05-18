@@ -1,29 +1,5 @@
 use std::path::Path;
 
-use colgrep::CodeUnit;
-
-/// Compute final score with test function demotion
-pub fn compute_final_score(
-    semantic_score: f32,
-    query: &str,
-    unit: &CodeUnit,
-    text_pattern: Option<&str>,
-) -> f32 {
-    let mut score = semantic_score;
-    let query_lower = query.to_lowercase();
-
-    // Demote test functions unless query or pattern contains "test"
-    let query_has_test = query_lower.contains("test");
-    let pattern_has_test = text_pattern
-        .map(|p| p.to_lowercase().contains("test"))
-        .unwrap_or(false);
-    if unit.name.to_lowercase().contains("test") && !query_has_test && !pattern_has_test {
-        score -= 1.0;
-    }
-
-    score
-}
-
 /// Check if --include patterns would escape the subdirectory
 /// A pattern escapes if it starts with `**/` followed by a specific directory name
 /// that doesn't exist within the current subdirectory.
@@ -61,74 +37,7 @@ pub fn should_search_from_root(
 mod tests {
     use std::path::PathBuf;
 
-    use colgrep::{Language, UnitType};
-
     use super::*;
-
-    /// Helper to create a test CodeUnit with minimal required fields
-    fn make_test_unit(name: &str, signature: &str, code: &str, file: &str) -> CodeUnit {
-        let mut unit = CodeUnit::new(
-            name.to_string(),
-            PathBuf::from(file),
-            1,
-            10,
-            Language::Rust,
-            UnitType::Function,
-            None,
-        );
-        unit.signature = signature.to_string();
-        unit.code = code.to_string();
-        unit
-    }
-
-    // Test compute_final_score function
-    #[test]
-    fn test_compute_final_score_no_adjustment() {
-        let unit = make_test_unit(
-            "other_function",
-            "fn other_function()",
-            "does something else",
-            "test.rs",
-        );
-        let score = compute_final_score(5.0, "search_query", &unit, None);
-        assert_eq!(score, 5.0);
-    }
-
-    #[test]
-    fn test_compute_final_score_test_function_demoted() {
-        let unit = make_test_unit(
-            "test_something",
-            "fn test_something()",
-            "does something",
-            "test.rs",
-        );
-        let score = compute_final_score(5.0, "search_query", &unit, None);
-        assert_eq!(score, 5.0 - 1.0);
-    }
-
-    #[test]
-    fn test_compute_final_score_test_function_not_demoted_when_query_has_test() {
-        let unit = make_test_unit(
-            "test_something",
-            "fn test_something()",
-            "does something",
-            "test.rs",
-        );
-        let score = compute_final_score(5.0, "test", &unit, None);
-        assert_eq!(score, 5.0);
-    }
-
-    #[test]
-    fn test_compute_final_score_test_function_not_demoted_when_pattern_has_test() {
-        let unit = make_test_unit(
-            "test_something",
-            "fn test_something()",
-            "does something",
-            "test.rs",
-        );
-        let score = compute_final_score(5.0, "search_query", &unit, Some("test"));
-        assert_eq!(score, 5.0);
-    }
 
     // Test should_search_from_root function
     #[test]

@@ -14,7 +14,7 @@ use crate::display::{
     calc_display_ranges, find_representative_lines, group_results_by_file,
     print_highlighted_content, print_highlighted_ranges,
 };
-use crate::scoring::{compute_final_score, should_search_from_root};
+use crate::scoring::should_search_from_root;
 
 /// Pre-compiled pattern matcher for efficient repeated matching.
 /// Compiling regex is expensive (~microseconds), so we do it once and reuse.
@@ -1460,16 +1460,13 @@ fn search_single_path(
     };
 
     // Note: When -e is used, results are already filtered to units containing the pattern
-    // via filter_by_text_pattern_with_options() above, which supports -E, -F, -w flags
-
-    // Apply query boost and re-sort results
-    let mut results: Vec<_> = results
-        .into_iter()
-        .map(|mut r| {
-            r.score = compute_final_score(r.score, query, &r.unit, text_pattern);
-            r
-        })
-        .collect();
+    // via filter_by_text_pattern_with_options() above, which supports -E, -F, -w flags.
+    //
+    // The legacy `compute_final_score` test-name demotion was removed; the
+    // hybrid pipeline now applies `ranking::file_path_penalty` (a much more
+    // complete language-aware test/bench/example/compat penalty) inside
+    // `Searcher::search_hybrid_with_embedding`.
+    let mut results: Vec<_> = results;
     results.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)

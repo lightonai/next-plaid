@@ -3307,7 +3307,19 @@ impl Searcher {
         alpha: f32,
         fts5_results: Option<&next_plaid::QueryResult>,
     ) -> Result<Vec<SearchResult>> {
-        let fetch_k = top_k * 3;
+        // Over-fetch generously so that after path-noise penalty + boosts
+        // + file collapse we still return exactly `top_k` distinct files
+        // (and not a smaller, "approximate" set) — `-k` is a hard
+        // contract from the user's perspective.
+        //
+        // The cost is small: each extra candidate is a single SQLite row
+        // read plus a few constant-time score adjustments. We cap at
+        // `num_documents()` so we never request more rows than the index
+        // actually contains.
+        let fetch_k = std::cmp::min(
+            std::cmp::max(top_k * 20, 200),
+            self.index.num_documents().max(top_k),
+        );
         let params = SearchParameters {
             top_k: fetch_k,
             ..Default::default()
@@ -3443,9 +3455,11 @@ impl Searcher {
             |r, s| r.score = s,
         );
 
-        // Re-sort after the penalty + boosts adjust scores, then truncate.
+        // Re-sort after the penalty + boosts adjust scores, then collapse
+        // to one entry per file (merging start/end lines to cover every
+        // matched unit from that file) before truncating to top_k.
         search_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        search_results.truncate(top_k);
+        search_results = collapse_by_file(search_results, top_k);
 
         Ok(search_results)
     }
@@ -3453,6 +3467,37 @@ impl Searcher {
     pub fn num_documents(&self) -> usize {
         self.index.num_documents()
     }
+}
+
+/// Collapse search results so each file appears at most once.
+///
+/// Walks `results` (which the caller has already sorted by score descending)
+/// and for every file keeps the first / highest-scoring unit as the leader,
+/// then extends that leader's line range to cover every subsequent unit from
+/// the same file: `line = min(line_i)`, `end_line = max(end_line_i)`.
+///
+/// Truncates to `top_k` unique files. The leader's other metadata (name,
+/// signature, code, ...) is left untouched so consumers can still display
+/// the top unit's structural information.
+fn collapse_by_file(results: Vec<SearchResult>, top_k: usize) -> Vec<SearchResult> {
+    let mut by_file: std::collections::HashMap<std::path::PathBuf, usize> =
+        std::collections::HashMap::new();
+    let mut out: Vec<SearchResult> = Vec::with_capacity(top_k.min(results.len()));
+    for r in results {
+        if let Some(&idx) = by_file.get(&r.unit.file) {
+            // Merge: cover the full span of all candidates from this file.
+            let leader = &mut out[idx];
+            leader.unit.line = leader.unit.line.min(r.unit.line);
+            leader.unit.end_line = leader.unit.end_line.max(r.unit.end_line);
+        } else {
+            if out.len() >= top_k {
+                continue;
+            }
+            by_file.insert(r.unit.file.clone(), out.len());
+            out.push(r);
+        }
+    }
+    out
 }
 
 /// SQLite stores booleans as integers and arrays as JSON strings. Normalize
