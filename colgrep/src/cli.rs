@@ -362,7 +362,7 @@ pub struct Cli {
     #[arg(long = "semantic-only")]
     pub no_fts: bool,
 
-    /// Hybrid search alpha: balance between keyword (0.0) and semantic (1.0). Default: 0.65.
+    /// Hybrid search alpha: balance between keyword (0.0) and semantic (1.0). Default: 0.60.
     #[arg(long, value_name = "FLOAT")]
     pub alpha: Option<f32>,
 
@@ -508,7 +508,7 @@ pub enum Commands {
         #[arg(long = "semantic-only")]
         no_fts: bool,
 
-        /// Hybrid search alpha: balance between keyword (0.0) and semantic (1.0). Default: 0.65.
+        /// Hybrid search alpha: balance between keyword (0.0) and semantic (1.0). Default: 0.60.
         #[arg(long, value_name = "FLOAT")]
         alpha: Option<f32>,
 

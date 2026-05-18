@@ -394,7 +394,7 @@ pub fn cmd_config(
     if let Some(a) = alpha {
         if a == 0.0 {
             config.clear_hybrid_alpha();
-            println!("✅ Reset hybrid alpha to 0.65 (default)");
+            println!("✅ Reset hybrid alpha to 0.60 (default)");
         } else {
             config.set_hybrid_alpha(a);
             println!("✅ Set hybrid alpha to {:.2}", config.get_hybrid_alpha());

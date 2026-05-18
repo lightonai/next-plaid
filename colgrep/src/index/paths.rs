@@ -62,8 +62,17 @@ impl ProjectMetadata {
     }
 }
 
-/// Get the base colgrep data directory (XDG_DATA_HOME/colgrep or platform equivalent)
+/// Get the base colgrep data directory (XDG_DATA_HOME/colgrep or platform equivalent).
+///
+/// Honours the `COLGREP_DATA_DIR` env var so concurrent benchmark
+/// processes can keep separate index caches without fighting over
+/// `~/.local/share/colgrep/indices`.
 pub fn get_colgrep_data_dir() -> Result<PathBuf> {
+    if let Ok(env_dir) = std::env::var("COLGREP_DATA_DIR") {
+        if !env_dir.is_empty() {
+            return Ok(PathBuf::from(env_dir));
+        }
+    }
     let data_dir = dirs::data_dir().context("Could not determine data directory")?;
     Ok(data_dir.join("colgrep").join("indices"))
 }

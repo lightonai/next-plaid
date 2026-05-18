@@ -3292,8 +3292,11 @@ impl Searcher {
         alpha: f32,
     ) -> Result<Vec<SearchResult>> {
         let query_emb = self.encode_query(query)?;
-        let fts5 = self.fts5_search(query, top_k * 3, subset);
-        self.search_hybrid_with_embedding(&query_emb, query, top_k, subset, alpha, fts5.as_ref())
+        // Pass None so `search_hybrid_with_embedding` fetches FTS5 with its
+        // own `fetch_k` (≥200), matching the semantic-side over-fetch.
+        // Asymmetric pools (e.g. 200 semantic vs only 30 BM25) bias the
+        // min-max fusion toward the side with more candidates.
+        self.search_hybrid_with_embedding(&query_emb, query, top_k, subset, alpha, None)
     }
 
     /// Hybrid search using a pre-computed query embedding and optional cached
@@ -3398,11 +3401,25 @@ impl Searcher {
 
         let apply_penalty = crate::ranking::should_apply_path_penalty(query);
 
-        let mut search_results: Vec<SearchResult> = metadata
-            .into_iter()
+        // Index returned metadata rows by `_subset_` id so we can pair each
+        // row to its score safely. Using `Vec::zip` here was a bug: if any
+        // id in `fused_ids` had no METADATA row (stale FTS5 reference),
+        // every subsequent (meta, score) pair shifted by one — silently
+        // attaching the wrong score to the wrong unit.
+        let mut meta_by_id: std::collections::HashMap<i64, serde_json::Value> =
+            std::collections::HashMap::with_capacity(metadata.len());
+        for mut m in metadata {
+            if let Some(id) = m.get("_subset_").and_then(|v| v.as_i64()) {
+                fix_sqlite_types(&mut m);
+                meta_by_id.insert(id, m);
+            }
+        }
+
+        let mut search_results: Vec<SearchResult> = fused_ids
+            .iter()
             .zip(fused_scores.iter())
-            .filter_map(|(mut meta, &score)| {
-                fix_sqlite_types(&mut meta);
+            .filter_map(|(&id, &score)| {
+                let meta = meta_by_id.remove(&id)?;
                 serde_json::from_value::<CodeUnit>(meta).ok().map(|unit| {
                     let mut final_score = score;
                     if apply_penalty {

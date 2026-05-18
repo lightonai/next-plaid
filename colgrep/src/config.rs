@@ -404,12 +404,21 @@ impl Config {
 
     /// Get hybrid search alpha (keyword vs semantic balance).
     ///
-    /// Defaults to 0.65 (semantic-leaning but with meaningful BM25 weight).
-    /// Tuned against the semble code-search benchmark with the identifier-aware
-    /// BM25 retriever and min-max score fusion; 0.65 is the peak of a fairly
-    /// broad plateau spanning roughly 0.55–0.75.
+    /// Defaults to 0.60. With the dedup + fts5-refetch fixes and the
+    /// path-stem / definition / file-coherence / file-collapse stack in
+    /// place, the plateau across alpha is broad (0.55–0.70 all land in
+    /// the 0.829–0.831 NDCG@10 band on the semble bench) and 0.60 is the
+    /// empirical peak.
+    ///
+    /// Overrideable at runtime via `COLGREP_ALPHA` env var (used by the
+    /// benchmark harness to grid-search without rebuilding).
     pub fn get_hybrid_alpha(&self) -> f32 {
-        self.hybrid_alpha.unwrap_or(0.65)
+        if let Ok(env_alpha) = std::env::var("COLGREP_ALPHA") {
+            if let Ok(v) = env_alpha.parse::<f32>() {
+                return v.clamp(0.0, 1.0);
+            }
+        }
+        self.hybrid_alpha.unwrap_or(0.60)
     }
 
     /// Set hybrid search alpha (0.0 = pure keyword, 1.0 = pure semantic).
@@ -417,7 +426,7 @@ impl Config {
         self.hybrid_alpha = Some(alpha.clamp(0.0, 1.0));
     }
 
-    /// Clear hybrid alpha setting (revert to default: 0.65).
+    /// Clear hybrid alpha setting (revert to default: 0.60).
     pub fn clear_hybrid_alpha(&mut self) {
         self.hybrid_alpha = None;
     }

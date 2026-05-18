@@ -1340,7 +1340,7 @@ fn search_single_path(
         !config.use_hybrid_search()
     };
 
-    // CLI --alpha overrides config, config overrides default (0.65)
+    // CLI --alpha overrides config, config overrides default (0.55)
     let hybrid_alpha = alpha.unwrap_or_else(|| config.get_hybrid_alpha());
 
     // When no -e flag is provided, run BOTH semantic/hybrid search and text-pattern search
@@ -1413,13 +1413,17 @@ fn search_single_path(
                         Some(&hybrid_subset),
                     )?
                 } else {
+                    // Pass `None` so FTS5 is refetched *within* the subset.
+                    // Reusing the global `fts5_results` here would carry
+                    // BM25 hits from outside the subset; they'd get filtered
+                    // down to a tiny intersection, hurting recall.
                     searcher.search_hybrid_with_embedding(
                         &query_emb,
                         query,
                         search_top_k,
                         Some(&hybrid_subset),
                         hybrid_alpha,
-                        fts5_results.as_ref(),
+                        None,
                     )?
                 }
             } else {
@@ -1429,33 +1433,37 @@ fn search_single_path(
             vec![]
         };
 
-        // 3. Merge results: keep max score for each unique code unit (by file + line)
-        let mut merged: HashMap<(PathBuf, usize), colgrep::SearchResult> = HashMap::new();
-
-        for result in semantic_results {
-            let key = (result.unit.file.clone(), result.unit.line);
-            merged
-                .entry(key)
-                .and_modify(|existing| {
+        // 3. Merge results: one entry per file, span covers every matched
+        //    unit, score is the max across both calls.
+        //
+        // The previous `(file, line)` dedup was buggy: both
+        // `search_hybrid_with_embedding` calls run `collapse_by_file`
+        // internally, which sets `unit.line = min(line_i)` *across that
+        // call's candidate pool*. Two pools → two different mins for the
+        // same file → same file occupied two top-K slots.
+        use std::collections::hash_map::Entry;
+        let mut merged: HashMap<PathBuf, colgrep::SearchResult> = HashMap::new();
+        for result in semantic_results
+            .into_iter()
+            .chain(hybrid_results.into_iter())
+        {
+            let key = result.unit.file.clone();
+            match merged.entry(key) {
+                Entry::Occupied(mut e) => {
+                    let existing = e.get_mut();
+                    let new_start = existing.unit.line.min(result.unit.line);
+                    let new_end = existing.unit.end_line.max(result.unit.end_line);
                     if result.score > existing.score {
-                        *existing = result.clone();
+                        *existing = result;
                     }
-                })
-                .or_insert(result);
+                    existing.unit.line = new_start;
+                    existing.unit.end_line = new_end;
+                }
+                Entry::Vacant(e) => {
+                    e.insert(result);
+                }
+            }
         }
-
-        for result in hybrid_results {
-            let key = (result.unit.file.clone(), result.unit.line);
-            merged
-                .entry(key)
-                .and_modify(|existing| {
-                    if result.score > existing.score {
-                        *existing = result.clone();
-                    }
-                })
-                .or_insert(result);
-        }
-
         merged.into_values().collect::<Vec<_>>()
     };
 

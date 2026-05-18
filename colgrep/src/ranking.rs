@@ -19,9 +19,22 @@ use std::sync::OnceLock;
 // (semantic + BM25) score. Pattern set mirrors semble's `penalties.py` so
 // the behaviour is comparable between the two tools.
 
-const STRONG_PENALTY: f32 = 0.3;
-const MODERATE_PENALTY: f32 = 0.5;
-const MILD_PENALTY: f32 = 0.7;
+// All ranking constants below can be overridden at runtime via env vars
+// (used by the benchmark harness to grid-search without rebuilding).
+
+fn env_f32(name: &str, default: f32) -> f32 {
+    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+fn strong_penalty() -> f32 {
+    env_f32("COLGREP_STRONG_PENALTY", 0.30)
+}
+fn moderate_penalty() -> f32 {
+    env_f32("COLGREP_MODERATE_PENALTY", 0.50)
+}
+fn mild_penalty() -> f32 {
+    env_f32("COLGREP_MILD_PENALTY", 0.70)
+}
 
 /// Test files across common languages (suffix-anchored).
 fn test_file_re() -> &'static Regex {
@@ -118,23 +131,23 @@ pub fn file_path_penalty(file: &str) -> f32 {
     let mut penalty: f32 = 1.0;
 
     if test_file_re().is_match(&normalised) || test_dir_re().is_match(&normalised) {
-        penalty *= STRONG_PENALTY;
+        penalty *= strong_penalty();
     }
     if compat_dir_re().is_match(&normalised) {
-        penalty *= STRONG_PENALTY;
+        penalty *= strong_penalty();
     }
     if examples_dir_re().is_match(&normalised) {
-        penalty *= STRONG_PENALTY;
+        penalty *= strong_penalty();
     }
     if normalised.ends_with(".d.ts") {
-        penalty *= MILD_PENALTY;
+        penalty *= mild_penalty();
     }
     let name = Path::new(&normalised)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
     if matches!(name, "__init__.py" | "package-info.java") {
-        penalty *= MODERATE_PENALTY;
+        penalty *= moderate_penalty();
     }
     penalty
 }
@@ -160,7 +173,9 @@ pub fn should_apply_path_penalty(query: &str) -> bool {
 // have synthetic names like `raw_code_24` that should never trigger a
 // boost.
 
-const DEFINITION_BOOST_FRAC: f32 = 0.5;
+fn definition_boost_frac() -> f32 {
+    env_f32("COLGREP_DEF_BOOST", 0.25)
+}
 
 /// Apply the definition boost in place. For each candidate, if its `name`
 /// matches any token of the identifier-aware-tokenized query, add
@@ -192,7 +207,7 @@ pub fn apply_definition_boost<T>(
         return;
     }
 
-    let boost = max_score * DEFINITION_BOOST_FRAC;
+    let boost = max_score * definition_boost_frac();
     for i in 0..items.len() {
         if !is_definition(&items[i]) {
             continue;
@@ -222,11 +237,51 @@ pub fn apply_definition_boost<T>(
 // sides lets `parserequest`, `parse`, and `request` all hit
 // `parse_request.py`.
 
-const PATH_STEM_BOOST_FRAC: f32 = 0.4;
+fn path_stem_boost_frac() -> f32 {
+    env_f32("COLGREP_STEM_BOOST", 0.40)
+}
+fn path_stem_prefix_frac() -> f32 {
+    env_f32("COLGREP_STEM_PREFIX_BOOST", 0.20)
+}
+
+fn env_flag(name: &str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(v) => matches!(v.as_str(), "1" | "true" | "TRUE" | "yes"),
+        Err(_) => default,
+    }
+}
+
+fn stem_proportional() -> bool {
+    // Default OFF: ablation on the semble bench (alpha=0.65) shows
+    // proportional ratio costs ~0.012 NDCG@10 vs binary boost. The dense
+    // and BM25 retrievers already weight signal density; an *additional*
+    // proportional dampening of the stem boost over-discounts multi-word
+    // NL queries where only one keyword names the file.
+    env_flag("COLGREP_STEM_PROPORTIONAL", false)
+}
+fn stem_stopword_filter() -> bool {
+    env_flag("COLGREP_STEM_STOPWORDS", true)
+}
+fn stem_plural_snake() -> bool {
+    env_flag("COLGREP_STEM_PLURAL_SNAKE", true)
+}
+
+/// Common English stopwords to remove from NL query tokens before
+/// stem-matching. Ports semble's set (`semble/ranking/boosting.py:82-86`).
+/// Stopwords still flow through the dense + BM25 retrievers; we only
+/// filter them out for the path-stem boost, where a file named
+/// `how_to.py` shouldn't get a free hit on "how to authenticate".
+const STEM_BOOST_STOPWORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "by", "do", "does",
+    "for", "from", "has", "have", "how", "if", "in", "into", "is",
+    "it", "its", "of", "on", "or", "so", "that", "the", "their", "then",
+    "there", "these", "this", "to", "was", "were", "what", "when",
+    "where", "which", "who", "why", "with",
+];
 
 /// Apply the file-path stem boost in place. For each candidate whose
 /// file's stem (in identifier-aware tokens) overlaps with the query's
-/// tokens, add `0.4 * max_score` to its score.
+/// tokens, add a fraction of `max_score`.
 pub fn apply_path_stem_boost<T>(
     items: &mut [T],
     query: &str,
@@ -241,16 +296,28 @@ pub fn apply_path_stem_boost<T>(
     if !max_score.is_finite() || max_score <= 0.0 {
         return;
     }
-    let query_tokens: std::collections::HashSet<String> =
-        next_plaid::text_search::tokenize_identifiers(query)
-            .into_iter()
-            .collect();
+    let stopwords: std::collections::HashSet<&'static str> = if stem_stopword_filter() {
+        STEM_BOOST_STOPWORDS.iter().copied().collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+    let raw_q: Vec<String> = next_plaid::text_search::tokenize_identifiers(query);
+    let query_tokens: std::collections::HashSet<String> = raw_q
+        .iter()
+        .filter(|t| !stopwords.contains(t.as_str()))
+        .cloned()
+        .collect();
     if query_tokens.is_empty() {
         return;
     }
+    let proportional = stem_proportional();
+    let do_plural_snake = stem_plural_snake();
+    // Total keyword count for proportional match ratio. Use the
+    // de-stopworded set so common NL words don't dilute the ratio.
+    let n_query_tokens = query_tokens.len() as f32;
 
-    let boost = max_score * PATH_STEM_BOOST_FRAC;
-    let prefix_boost = max_score * PATH_STEM_BOOST_FRAC * 0.5;
+    let max_boost = max_score * path_stem_boost_frac();
+    let max_prefix_boost = max_score * path_stem_prefix_frac();
     for i in 0..items.len() {
         let path = file_path(&items[i]);
         let stem = Path::new(path)
@@ -262,29 +329,72 @@ pub fn apply_path_stem_boost<T>(
             continue;
         }
         let stem_tokens = next_plaid::text_search::tokenize_identifiers(&stem);
-        let exact_hit = stem_tokens.iter().any(|t| query_tokens.contains(t));
-        if exact_hit {
-            let cur = score(&items[i]);
-            set_score(&mut items[i], cur + boost);
-            continue;
+        // Plural / snake-case-normalized matching (semble:`_stem_matches`):
+        // `dependencies` matches `dependency`, `my_func` matches `myfunc`.
+        // Toggleable via `COLGREP_STEM_PLURAL_SNAKE` for ablation.
+        let normalize = |s: &str| -> Vec<String> {
+            let mut out = vec![s.to_string()];
+            if do_plural_snake {
+                let stripped = s.replace('_', "");
+                if stripped != s {
+                    out.push(stripped);
+                }
+                if s.ends_with('s') && s.len() > 1 {
+                    out.push(s[..s.len() - 1].to_string());
+                }
+            }
+            out
+        };
+        // Count how many *distinct* query tokens this file's stem hits
+        // (exact or prefix). Proportional weighting: a query like
+        // "auth token rotation" matching all three parts wins out over
+        // a file matching only one part.
+        let mut exact_matches: usize = 0;
+        let mut prefix_matches: usize = 0;
+        for qtok in &query_tokens {
+            let qvars = normalize(qtok);
+            let exact = stem_tokens.iter().any(|stem_tok| {
+                let svars = normalize(stem_tok);
+                svars.iter().any(|sv| qvars.iter().any(|qv| sv == qv))
+            });
+            if exact {
+                exact_matches += 1;
+                continue;
+            }
+            let prefix = stem_tokens.iter().any(|stem_tok| {
+                let svars = normalize(stem_tok);
+                svars.iter().any(|sv| {
+                    qvars.iter().any(|qv| {
+                        let (short, long) = if sv.len() <= qv.len() {
+                            (sv.as_str(), qv.as_str())
+                        } else {
+                            (qv.as_str(), sv.as_str())
+                        };
+                        short.len() >= 3 && long.starts_with(short)
+                    })
+                })
+            });
+            if prefix {
+                prefix_matches += 1;
+            }
         }
-        // Half-strength prefix match for morphological variants:
-        // "dependency" ↔ "dependencies", "config" ↔ "configuration",
-        // "intercept" ↔ "interceptor".  Either side must be at least
-        // 3 characters to avoid spurious one-letter prefixes hitting.
-        let prefix_hit = stem_tokens.iter().any(|stem_tok| {
-            query_tokens.iter().any(|qtok| {
-                let (short, long) = if stem_tok.len() <= qtok.len() {
-                    (stem_tok.as_str(), qtok.as_str())
-                } else {
-                    (qtok.as_str(), stem_tok.as_str())
-                };
-                short.len() >= 3 && long.starts_with(short)
-            })
-        });
-        if prefix_hit {
+        // When proportional is off, any single match gets the full boost
+        // (the old binary-hit behavior).
+        let ratio = |m: usize| -> f32 {
+            if proportional {
+                m as f32 / n_query_tokens
+            } else if m > 0 {
+                1.0
+            } else {
+                0.0
+            }
+        };
+        if exact_matches > 0 {
             let cur = score(&items[i]);
-            set_score(&mut items[i], cur + prefix_boost);
+            set_score(&mut items[i], cur + max_boost * ratio(exact_matches));
+        } else if prefix_matches > 0 {
+            let cur = score(&items[i]);
+            set_score(&mut items[i], cur + max_prefix_boost * ratio(prefix_matches));
         }
     }
 }
@@ -301,7 +411,9 @@ pub fn apply_path_stem_boost<T>(
 // This is semble's `boost_multi_chunk_files` adapted to code units; one
 // boost per file (applied to its top-scoring unit) rather than per chunk.
 
-const FILE_COHERENCE_BOOST_FRAC: f32 = 0.2;
+fn file_coherence_boost_frac() -> f32 {
+    env_f32("COLGREP_COHERENCE_BOOST", 0.20)
+}
 
 /// Apply the file-coherence boost in place to a `Vec<(file_path, score)>`.
 ///
@@ -343,7 +455,7 @@ pub fn apply_file_coherence_boost<T>(items: &mut [T], file_path: impl Fn(&T) -> 
         return;
     }
 
-    let boost_unit = max_score * FILE_COHERENCE_BOOST_FRAC;
+    let boost_unit = max_score * file_coherence_boost_frac();
     let updates: Vec<(usize, f32)> = per_file
         .into_values()
         .map(|(sum, idx)| (idx, score(&items[idx]) + boost_unit * sum / max_file_sum))
