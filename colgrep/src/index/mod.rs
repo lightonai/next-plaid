@@ -2025,12 +2025,11 @@ const IGNORED_DIRS: &[&str] = &[
     "third_party",
     "third-party",
     "external",
-    // Build outputs
+    // Build outputs.
     "target",
     "build",
     "dist",
     "out",
-    "output",
     "bin",
     "obj",
     // Python
