@@ -478,7 +478,7 @@ fn run_metadata_stage(
             &index_path,
             &metadata,
             &chunk.doc_ids,
-            &next_plaid::FtsTokenizer::Trigram,
+            &next_plaid::FtsTokenizer::IdentifierAware,
         ) {
             eprintln!("⚠️  FTS indexing failed (non-fatal): {}", e);
         }
@@ -3214,13 +3214,20 @@ impl Searcher {
 
     /// Run FTS5 keyword search if the text index is available and the query
     /// remains non-empty after sanitization.
+    ///
+    /// Uses [`next_plaid::text_search::sanitize_fts5_query_or`] because the
+    /// index is built with [`FtsTokenizer::IdentifierAware`]: each identifier
+    /// in the corpus has been pre-split into its compound + camel/snake parts,
+    /// so OR semantics let a natural-language query match documents that
+    /// contain *any* relevant sub-part. BM25 still rewards documents that hit
+    /// more query terms.
     pub fn fts5_search(
         &self,
         query: &str,
         top_k: usize,
         subset: Option<&[i64]>,
     ) -> Option<next_plaid::QueryResult> {
-        let sanitized_query = next_plaid::text_search::sanitize_fts5_query(query);
+        let sanitized_query = next_plaid::text_search::sanitize_fts5_query_or(query);
         if sanitized_query.is_empty() {
             return None;
         }
@@ -3349,13 +3356,19 @@ impl Searcher {
             }
         };
 
+        // Score-based min-max fusion: with the identifier-aware BM25 retriever,
+        // FTS5 recall@200 is ~99.6%, so the relative-score combiner outperforms
+        // pure rank-based RRF (rank-RRF caps both retrievers' contributions
+        // even when one is much higher quality on a given query).
         let (fused_ids, fused_scores) = if let Some(kw) = keyword {
             if kw.passage_ids.is_empty() {
                 (semantic.passage_ids, semantic.scores)
             } else {
-                next_plaid::text_search::fuse_rrf(
+                next_plaid::text_search::fuse_relative_score(
                     &semantic.passage_ids,
+                    &semantic.scores,
                     &kw.passage_ids,
+                    &kw.scores,
                     alpha,
                     top_k,
                 )

@@ -1340,7 +1340,7 @@ fn search_single_path(
         !config.use_hybrid_search()
     };
 
-    // CLI --alpha overrides config, config overrides default (0.75)
+    // CLI --alpha overrides config, config overrides default (0.65)
     let hybrid_alpha = alpha.unwrap_or_else(|| config.get_hybrid_alpha());
 
     // When no -e flag is provided, run BOTH semantic/hybrid search and text-pattern search

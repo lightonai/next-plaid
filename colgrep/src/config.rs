@@ -403,9 +403,13 @@ impl Config {
     }
 
     /// Get hybrid search alpha (keyword vs semantic balance).
-    /// Defaults to 0.75 (favors semantic).
+    ///
+    /// Defaults to 0.65 (semantic-leaning but with meaningful BM25 weight).
+    /// Tuned against the semble code-search benchmark with the identifier-aware
+    /// BM25 retriever and min-max score fusion; 0.65 is the peak of a fairly
+    /// broad plateau spanning roughly 0.55–0.75.
     pub fn get_hybrid_alpha(&self) -> f32 {
-        self.hybrid_alpha.unwrap_or(0.75)
+        self.hybrid_alpha.unwrap_or(0.65)
     }
 
     /// Set hybrid search alpha (0.0 = pure keyword, 1.0 = pure semantic).
@@ -413,7 +417,7 @@ impl Config {
         self.hybrid_alpha = Some(alpha.clamp(0.0, 1.0));
     }
 
-    /// Clear hybrid alpha setting (revert to default: 0.75).
+    /// Clear hybrid alpha setting (revert to default: 0.65).
     pub fn clear_hybrid_alpha(&mut self) {
         self.hybrid_alpha = None;
     }

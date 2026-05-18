@@ -54,20 +54,30 @@ const FTS_CONFIG_TABLE: &str = "_FTS_SETTINGS_";
 /// - `Unicode61` (default) — word-level tokenizer with Unicode-aware segmentation.
 ///   Good for natural-language metadata.
 /// - `Trigram` — character-level 3-gram tokenizer. Enables substring matching
-///   (e.g. searching `"arg"` matches `"parse_arguments"`). Ideal for code search.
+///   (e.g. searching `"arg"` matches `"parse_arguments"`).
+/// - `IdentifierAware` — word-level FTS5 tokenizer (`unicode61`) over content
+///   that has been **pre-tokenized** with [`tokenize_identifiers`]. Identifiers
+///   are split on camelCase / snake_case boundaries while the original compound
+///   token is preserved, so a query for `parse` matches `parseRequest`,
+///   `ParseRequest`, and `parse_request`. Use [`sanitize_fts5_query_or`] on the
+///   query side so each token is OR'd (a natural-language query rarely shares
+///   *every* token with a relevant code unit).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FtsTokenizer {
     #[default]
     Unicode61,
     Trigram,
+    IdentifierAware,
 }
 
 impl FtsTokenizer {
-    /// Return the FTS5 `tokenize=` clause value.
+    /// Return the FTS5 `tokenize=` clause value. `IdentifierAware` rides on
+    /// top of `unicode61`; the splitting happens in [`prepare_document_text`].
     fn fts5_tokenize_value(&self) -> &'static str {
         match self {
             FtsTokenizer::Unicode61 => "unicode61",
             FtsTokenizer::Trigram => "trigram",
+            FtsTokenizer::IdentifierAware => "unicode61",
         }
     }
 
@@ -76,6 +86,7 @@ impl FtsTokenizer {
         match self {
             FtsTokenizer::Unicode61 => "unicode61",
             FtsTokenizer::Trigram => "trigram",
+            FtsTokenizer::IdentifierAware => "identifier_aware",
         }
     }
 
@@ -84,8 +95,151 @@ impl FtsTokenizer {
         match s {
             "unicode61" => Some(FtsTokenizer::Unicode61),
             "trigram" => Some(FtsTokenizer::Trigram),
+            "identifier_aware" => Some(FtsTokenizer::IdentifierAware),
             _ => None,
         }
+    }
+}
+
+// =============================================================================
+// Identifier-aware tokenization (used by FtsTokenizer::IdentifierAware)
+// =============================================================================
+
+/// Split a single identifier into sub-tokens via camelCase / PascalCase /
+/// snake_case, returning the lowered compound followed by each sub-part.
+///
+/// Examples:
+/// - `"HandlerStack"`    → `["handlerstack", "handler", "stack"]`
+/// - `"getHTTPResponse"` → `["gethttpresponse", "get", "http", "response"]`
+/// - `"my_func"`         → `["my_func", "my", "func"]`
+/// - `"simple"`          → `["simple"]`
+fn split_identifier(token: &str) -> Vec<String> {
+    let lower = token.to_lowercase();
+    let parts: Vec<String> = if token.contains('_') {
+        lower.split('_').filter(|p| !p.is_empty()).map(String::from).collect()
+    } else {
+        camel_split(token)
+    };
+    if parts.len() >= 2 {
+        let mut out = Vec::with_capacity(parts.len() + 1);
+        out.push(lower);
+        out.extend(parts);
+        out
+    } else {
+        vec![lower]
+    }
+}
+
+/// Split a camelCase / PascalCase token into lowercase parts.
+///
+/// Handles three patterns:
+/// 1. Runs of digits.
+/// 2. Acronym followed by capitalized word: `"HTTPResponse"` → `"http"`, `"response"`.
+/// 3. Capitalized or lowercase word: `"Foo"`, `"bar"`, `"BAR"`.
+fn camel_split(token: &str) -> Vec<String> {
+    let bytes = token.as_bytes();
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+
+        if c.is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && (bytes[i] as char).is_ascii_digit() {
+                i += 1;
+            }
+            parts.push(token[start..i].to_string());
+            continue;
+        }
+
+        if !c.is_ascii_alphabetic() {
+            i += 1;
+            continue;
+        }
+
+        if c.is_ascii_uppercase() {
+            // Acronym run: consume uppercase letters; if the next-to-last char
+            // is followed by a lowercase letter, that uppercase belongs to the
+            // *next* word (HTTPResponse → HTTP + Response).
+            let start = i;
+            while i + 1 < bytes.len()
+                && (bytes[i + 1] as char).is_ascii_uppercase()
+            {
+                i += 1;
+            }
+            // If we stopped on an uppercase letter and the next byte is
+            // lowercase, give that uppercase back to the next word.
+            if i + 1 < bytes.len()
+                && (bytes[i] as char).is_ascii_uppercase()
+                && (bytes[i + 1] as char).is_ascii_lowercase()
+                && i > start
+            {
+                parts.push(token[start..i].to_lowercase());
+                continue;
+            }
+            // Acronym run ends here; advance past it.
+            i += 1;
+            // Greedy lowercase tail (handles `Foo` after the initial F was
+            // captured as an "acronym" of length 1).
+            while i < bytes.len() && (bytes[i] as char).is_ascii_lowercase() {
+                i += 1;
+            }
+            parts.push(token[start..i].to_lowercase());
+            continue;
+        }
+
+        // Pure lowercase run.
+        let start = i;
+        while i < bytes.len() && (bytes[i] as char).is_ascii_lowercase() {
+            i += 1;
+        }
+        parts.push(token[start..i].to_lowercase());
+    }
+    parts
+}
+
+/// Split text into lowercase identifier-like tokens for FTS5 indexing.
+///
+/// Compound identifiers (camelCase, PascalCase, snake_case) are expanded into
+/// sub-tokens so partial matches work; the original compound is preserved so
+/// exact-name searches still hit. Non-identifier characters separate tokens.
+pub fn tokenize_identifiers(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        // Identifier head: ASCII letter or underscore. We deliberately keep
+        // this ASCII-only to match the FTS5 unicode61 default segmentation;
+        // wider Unicode identifiers fall through to be split by surrounding
+        // non-identifier bytes.
+        if c.is_ascii_alphabetic() || c == '_' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() {
+                let cc = bytes[i] as char;
+                if cc.is_ascii_alphanumeric() || cc == '_' {
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            out.extend(split_identifier(&text[start..i]));
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Prepare the body of a document for FTS5 indexing. For
+/// [`FtsTokenizer::IdentifierAware`] this returns the identifier tokens joined
+/// by spaces (so FTS5's unicode61 sees one token per identifier sub-part);
+/// other tokenizers receive the original text unchanged.
+fn prepare_document_text(text: &str, tokenizer: &FtsTokenizer) -> String {
+    match tokenizer {
+        FtsTokenizer::IdentifierAware => tokenize_identifiers(text).join(" "),
+        _ => text.to_string(),
     }
 }
 
@@ -221,7 +375,17 @@ fn ensure_tables(conn: &Connection, tokenizer: &FtsTokenizer) -> Result<()> {
 
 /// Insert rows into both the content table and FTS5 index.
 /// Wrapped in a transaction for performance (single fsync instead of one per row).
-fn insert_rows(conn: &Connection, metadata: &[Value], doc_ids: &[i64]) -> Result<()> {
+///
+/// For [`FtsTokenizer::IdentifierAware`] the raw text is stored in the content
+/// table (so callers that read `_fts_content_` keep getting the original body)
+/// but the FTS5 row is built from the pre-tokenized form so the FTS5 unicode61
+/// tokenizer sees one identifier sub-part per word.
+fn insert_rows(
+    conn: &Connection,
+    metadata: &[Value],
+    doc_ids: &[i64],
+    tokenizer: &FtsTokenizer,
+) -> Result<()> {
     conn.execute_batch("BEGIN")
         .map_err(|e| Error::Filtering(format!("Failed to begin transaction: {}", e)))?;
 
@@ -244,11 +408,12 @@ fn insert_rows(conn: &Connection, metadata: &[Value], doc_ids: &[i64]) -> Result
 
         for (item, &doc_id) in metadata.iter().zip(doc_ids.iter()) {
             let text = metadata_to_text(item);
+            let indexed = prepare_document_text(&text, tokenizer);
             content_stmt
                 .execute(rusqlite::params![doc_id, text])
                 .map_err(|e| Error::Filtering(format!("Failed to insert content row: {}", e)))?;
             fts_stmt
-                .execute(rusqlite::params![doc_id, text])
+                .execute(rusqlite::params![doc_id, indexed])
                 .map_err(|e| Error::Filtering(format!("Failed to insert FTS5 row: {}", e)))?;
         }
         Ok(())
@@ -307,7 +472,7 @@ pub fn index(
 
     let conn = crate::filtering::open_db(&db_path)?;
     ensure_tables(&conn, tokenizer)?;
-    insert_rows(&conn, metadata, doc_ids)?;
+    insert_rows(&conn, metadata, doc_ids, tokenizer)?;
     Ok(())
 }
 
@@ -655,6 +820,11 @@ pub fn rebuild(index_path: &str) -> Result<()> {
 /// This function splits the query into words, removes FTS5 operators and
 /// punctuation-only tokens, and wraps each remaining word in double quotes
 /// so they are treated as literal terms.
+///
+/// The resulting expression has implicit AND between terms — every word must
+/// match. This is the right call for a `unicode61` or `trigram` index because
+/// the corpus is the raw text and the user expects every word they typed to
+/// appear in the result.
 pub fn sanitize_fts5_query(query: &str) -> String {
     let operators = ["AND", "OR", "NOT", "NEAR"];
     query
@@ -675,6 +845,30 @@ pub fn sanitize_fts5_query(query: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Sanitize a user query for an FTS5 index built with
+/// [`FtsTokenizer::IdentifierAware`].
+///
+/// Tokenizes the query with [`tokenize_identifiers`] (so a query like
+/// `parseRequest` expands to `parserequest OR parse OR request`) and joins
+/// the resulting terms with explicit FTS5 `OR` operators.
+///
+/// `OR` semantics are required because identifier splitting multiplies a
+/// query into many terms; insisting that *every* sub-part appear in a
+/// document collapses recall. FTS5's BM25 ranking still favours documents
+/// that contain more matching terms, so accuracy is preserved.
+pub fn sanitize_fts5_query_or(query: &str) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for tok in tokenize_identifiers(query) {
+        if tok.is_empty() || !seen.insert(tok.clone()) {
+            continue;
+        }
+        let escaped = tok.replace('"', "\"\"");
+        out.push(format!("\"{}\"", escaped));
+    }
+    out.join(" OR ")
 }
 
 // =============================================================================
@@ -1043,6 +1237,145 @@ mod tests {
         assert!(text.contains("Hello World"));
         assert!(text.contains("test"));
         assert!(text.contains("42"));
+    }
+
+    #[test]
+    fn test_split_identifier_camel_case() {
+        // PascalCase: compound + lowercase parts
+        assert_eq!(
+            split_identifier("HandlerStack"),
+            vec!["handlerstack", "handler", "stack"]
+        );
+    }
+
+    #[test]
+    fn test_split_identifier_acronym_run() {
+        // Acronym followed by a capitalized word: each is its own token.
+        assert_eq!(
+            split_identifier("getHTTPResponse"),
+            vec!["gethttpresponse", "get", "http", "response"]
+        );
+        assert_eq!(
+            split_identifier("XMLParser"),
+            vec!["xmlparser", "xml", "parser"]
+        );
+    }
+
+    #[test]
+    fn test_split_identifier_snake_case() {
+        assert_eq!(
+            split_identifier("my_func_name"),
+            vec!["my_func_name", "my", "func", "name"]
+        );
+    }
+
+    #[test]
+    fn test_split_identifier_single_word() {
+        // No split → just lowercase.
+        assert_eq!(split_identifier("simple"), vec!["simple"]);
+        assert_eq!(split_identifier("UPPER"), vec!["upper"]);
+    }
+
+    #[test]
+    fn test_tokenize_identifiers_strips_punctuation() {
+        // Punctuation separates tokens; nothing else makes it through.
+        let toks = tokenize_identifiers("Foo::bar(baz) + qux");
+        assert_eq!(toks, vec!["foo", "bar", "baz", "qux"]);
+    }
+
+    #[test]
+    fn test_tokenize_identifiers_preserves_compound() {
+        let toks = tokenize_identifiers("parseRequest and ResponseBuilder");
+        // Each compound is preserved alongside its parts.
+        assert!(toks.contains(&"parserequest".to_string()));
+        assert!(toks.contains(&"parse".to_string()));
+        assert!(toks.contains(&"request".to_string()));
+        assert!(toks.contains(&"responsebuilder".to_string()));
+        assert!(toks.contains(&"response".to_string()));
+        assert!(toks.contains(&"builder".to_string()));
+    }
+
+    #[test]
+    fn test_prepare_document_text_identifier_aware_splits() {
+        let body = "fn parseRequest(payload: Buffer) -> Response_Builder";
+        let prepared = prepare_document_text(body, &FtsTokenizer::IdentifierAware);
+        // The FTS5 unicode61 tokenizer will see one word per token; the
+        // compound is preserved so an exact-name query still hits.
+        assert!(prepared.split_whitespace().any(|t| t == "parserequest"));
+        assert!(prepared.split_whitespace().any(|t| t == "parse"));
+        assert!(prepared.split_whitespace().any(|t| t == "request"));
+        assert!(prepared.split_whitespace().any(|t| t == "response_builder"));
+    }
+
+    #[test]
+    fn test_prepare_document_text_passthrough_for_others() {
+        let body = "fn parseRequest()";
+        // Non-IdentifierAware tokenizers store the raw text unchanged.
+        assert_eq!(
+            prepare_document_text(body, &FtsTokenizer::Unicode61),
+            body
+        );
+        assert_eq!(prepare_document_text(body, &FtsTokenizer::Trigram), body);
+    }
+
+    #[test]
+    fn test_sanitize_fts5_query_or_basic() {
+        let q = sanitize_fts5_query_or("parseRequest");
+        // Compound + parts, deduplicated, joined by OR.
+        assert_eq!(q, r#""parserequest" OR "parse" OR "request""#);
+    }
+
+    #[test]
+    fn test_sanitize_fts5_query_or_natural_language() {
+        let q = sanitize_fts5_query_or("how parse request is built");
+        // Stopwords come through; FTS5's BM25 IDF naturally down-weights them.
+        // Order matches the order of first appearance in the query.
+        let expected = r#""how" OR "parse" OR "request" OR "is" OR "built""#;
+        assert_eq!(q, expected);
+    }
+
+    #[test]
+    fn test_sanitize_fts5_query_or_dedup() {
+        let q = sanitize_fts5_query_or("get_user getUser");
+        // 'get_user' splits to [get_user, get, user]; 'getUser' to [getuser, get, user].
+        // The 'get' and 'user' parts shouldn't appear twice.
+        let terms: Vec<&str> = q.split(" OR ").collect();
+        let mut seen = std::collections::HashSet::new();
+        for t in &terms {
+            assert!(seen.insert(*t), "term {t:?} appeared twice in {q:?}");
+        }
+    }
+
+    #[test]
+    fn test_sanitize_fts5_query_or_empty() {
+        assert_eq!(sanitize_fts5_query_or(""), "");
+        assert_eq!(sanitize_fts5_query_or("!!! ???"), "");
+    }
+
+    #[test]
+    fn test_identifier_aware_index_round_trip() {
+        // End-to-end: index with IdentifierAware, query with sanitize_fts5_query_or,
+        // confirm we find a document by either the compound name or a sub-part.
+        let meta = vec![
+            json!({"name": "parseRequest"}),
+            json!({"name": "buildResponse"}),
+        ];
+        let (_dir, path) = setup_with_metadata_tokenizer(&meta, &FtsTokenizer::IdentifierAware);
+
+        for query in ["parseRequest", "parse", "Parse Request"] {
+            let q = sanitize_fts5_query_or(query);
+            let res = search(&path, &q, 10).unwrap();
+            assert!(
+                res.passage_ids.contains(&0),
+                "query {query:?} should match doc 0 (got ids={:?})",
+                res.passage_ids,
+            );
+        }
+
+        // 'build' only matches buildResponse.
+        let q = sanitize_fts5_query_or("build");
+        let res = search(&path, &q, 10).unwrap();
+        assert_eq!(res.passage_ids, vec![1]);
     }
 
     #[test]
