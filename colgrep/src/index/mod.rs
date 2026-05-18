@@ -3402,7 +3402,17 @@ impl Searcher {
             })
             .collect();
 
-        // Re-sort after the penalty multiplies scores, then truncate to top_k.
+        // Boost files that appear in multiple candidate units: the file with
+        // the most cumulative score in the pool gets `+0.2 * max_score` on
+        // its top-scoring unit; others get a proportional share.
+        crate::ranking::apply_file_coherence_boost(
+            &mut search_results,
+            |r| r.unit.file.to_str().unwrap_or(""),
+            |r| r.score,
+            |r, s| r.score = s,
+        );
+
+        // Re-sort after the penalty + boost multiplies scores, then truncate.
         search_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         search_results.truncate(top_k);
 

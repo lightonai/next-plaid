@@ -6,6 +6,7 @@
 //! can run after fusion without re-reading any documents.
 
 use regex::Regex;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -144,6 +145,70 @@ pub fn file_path_penalty(file: &str) -> f32 {
 pub fn should_apply_path_penalty(query: &str) -> bool {
     let q = query.to_lowercase();
     !(q.contains("test") || q.contains("spec") || q.contains("benchmark"))
+}
+
+// =========================================================================
+// File coherence boost
+// =========================================================================
+//
+// When several candidate units come from the same file, that file is more
+// likely to be the canonical implementation than a file with a single
+// strong match.  Add a fraction of `max_score` to each file's best-scoring
+// unit, scaled by how much of the candidate pool that file occupies.
+//
+// This is semble's `boost_multi_chunk_files` adapted to code units; one
+// boost per file (applied to its top-scoring unit) rather than per chunk.
+
+const FILE_COHERENCE_BOOST_FRAC: f32 = 0.2;
+
+/// Apply the file-coherence boost in place to a `Vec<(file_path, score)>`.
+///
+/// Returns nothing; the caller is responsible for re-sorting and truncating
+/// to `top_k` afterwards.
+///
+/// The `score_for` argument is used to fetch + update scores via index so we
+/// can stay generic over `SearchResult` shapes.
+pub fn apply_file_coherence_boost<T>(items: &mut [T], file_path: impl Fn(&T) -> &str, score: impl Fn(&T) -> f32, set_score: impl Fn(&mut T, f32)) {
+    if items.is_empty() {
+        return;
+    }
+    let max_score = items.iter().map(&score).fold(f32::NEG_INFINITY, f32::max);
+    if !max_score.is_finite() || max_score <= 0.0 {
+        return;
+    }
+
+    // file_path → (sum of scores in this file, index of the top-scoring unit)
+    let mut per_file: HashMap<String, (f32, usize)> = HashMap::new();
+    for (i, item) in items.iter().enumerate() {
+        let path = file_path(item).to_string();
+        let s = score(item);
+        per_file
+            .entry(path)
+            .and_modify(|(sum, top_idx)| {
+                *sum += s;
+                if s > score(&items[*top_idx]) {
+                    *top_idx = i;
+                }
+            })
+            .or_insert((s, i));
+    }
+
+    let max_file_sum = per_file
+        .values()
+        .map(|(sum, _)| *sum)
+        .fold(f32::NEG_INFINITY, f32::max);
+    if !max_file_sum.is_finite() || max_file_sum <= 0.0 {
+        return;
+    }
+
+    let boost_unit = max_score * FILE_COHERENCE_BOOST_FRAC;
+    let updates: Vec<(usize, f32)> = per_file
+        .into_values()
+        .map(|(sum, idx)| (idx, score(&items[idx]) + boost_unit * sum / max_file_sum))
+        .collect();
+    for (idx, new_score) in updates {
+        set_score(&mut items[idx], new_score);
+    }
 }
 
 #[cfg(test)]
