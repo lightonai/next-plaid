@@ -3402,6 +3402,26 @@ impl Searcher {
             })
             .collect();
 
+        // Boost units whose tree-sitter name matches a query token. Applied
+        // before file-coherence so the symbol the user actually asked about
+        // can lift its parent file above neighbours that merely reference it.
+        crate::ranking::apply_definition_boost(
+            &mut search_results,
+            query,
+            |r| r.unit.name.as_str(),
+            |r| {
+                matches!(
+                    r.unit.unit_type,
+                    crate::UnitType::Function
+                        | crate::UnitType::Method
+                        | crate::UnitType::Class
+                        | crate::UnitType::Constant
+                )
+            },
+            |r| r.score,
+            |r, s| r.score = s,
+        );
+
         // Boost files that appear in multiple candidate units: the file with
         // the most cumulative score in the pool gets `+0.2 * max_score` on
         // its top-scoring unit; others get a proportional share.
@@ -3412,7 +3432,7 @@ impl Searcher {
             |r, s| r.score = s,
         );
 
-        // Re-sort after the penalty + boost multiplies scores, then truncate.
+        // Re-sort after the penalty + boosts adjust scores, then truncate.
         search_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         search_results.truncate(top_k);
 

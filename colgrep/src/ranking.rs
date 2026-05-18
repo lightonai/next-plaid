@@ -148,6 +148,70 @@ pub fn should_apply_path_penalty(query: &str) -> bool {
 }
 
 // =========================================================================
+// Definition boost
+// =========================================================================
+//
+// Tree-sitter has already extracted each code unit's `name` at index time;
+// a unit *defines* its name by construction. If a query word matches the
+// name of one of the candidate units, that unit is far more likely to be
+// what the user is asking about than a unit that merely *references* it.
+//
+// We only consider definition-bearing unit kinds — bare blocks of `rawcode`
+// have synthetic names like `raw_code_24` that should never trigger a
+// boost.
+
+const DEFINITION_BOOST_FRAC: f32 = 0.5;
+
+/// Apply the definition boost in place. For each candidate, if its `name`
+/// matches any token of the identifier-aware-tokenized query, add
+/// `0.5 * max_score` to its score. Uses the same tokenization as the BM25
+/// retriever so `parse_request` and `parseRequest` match each other.
+///
+/// The caller's `is_definition` closure filters out unit kinds whose
+/// `name` is synthetic (e.g. `raw_code_24` blocks).
+pub fn apply_definition_boost<T>(
+    items: &mut [T],
+    query: &str,
+    name: impl Fn(&T) -> &str,
+    is_definition: impl Fn(&T) -> bool,
+    score: impl Fn(&T) -> f32,
+    set_score: impl Fn(&mut T, f32),
+) {
+    if items.is_empty() {
+        return;
+    }
+    let max_score = items.iter().map(&score).fold(f32::NEG_INFINITY, f32::max);
+    if !max_score.is_finite() || max_score <= 0.0 {
+        return;
+    }
+    let query_tokens: std::collections::HashSet<String> =
+        next_plaid::text_search::tokenize_identifiers(query)
+            .into_iter()
+            .collect();
+    if query_tokens.is_empty() {
+        return;
+    }
+
+    let boost = max_score * DEFINITION_BOOST_FRAC;
+    for i in 0..items.len() {
+        if !is_definition(&items[i]) {
+            continue;
+        }
+        let n = name(&items[i]).to_lowercase();
+        if n.is_empty() {
+            continue;
+        }
+        // Match either the whole name or any of its identifier sub-parts.
+        let name_tokens = next_plaid::text_search::tokenize_identifiers(&n);
+        let hit = name_tokens.iter().any(|t| query_tokens.contains(t));
+        if hit {
+            let cur = score(&items[i]);
+            set_score(&mut items[i], cur + boost);
+        }
+    }
+}
+
+// =========================================================================
 // File coherence boost
 // =========================================================================
 //
