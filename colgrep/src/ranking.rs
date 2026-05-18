@@ -250,6 +250,7 @@ pub fn apply_path_stem_boost<T>(
     }
 
     let boost = max_score * PATH_STEM_BOOST_FRAC;
+    let prefix_boost = max_score * PATH_STEM_BOOST_FRAC * 0.5;
     for i in 0..items.len() {
         let path = file_path(&items[i]);
         let stem = Path::new(path)
@@ -261,9 +262,29 @@ pub fn apply_path_stem_boost<T>(
             continue;
         }
         let stem_tokens = next_plaid::text_search::tokenize_identifiers(&stem);
-        if stem_tokens.iter().any(|t| query_tokens.contains(t)) {
+        let exact_hit = stem_tokens.iter().any(|t| query_tokens.contains(t));
+        if exact_hit {
             let cur = score(&items[i]);
             set_score(&mut items[i], cur + boost);
+            continue;
+        }
+        // Half-strength prefix match for morphological variants:
+        // "dependency" ↔ "dependencies", "config" ↔ "configuration",
+        // "intercept" ↔ "interceptor".  Either side must be at least
+        // 3 characters to avoid spurious one-letter prefixes hitting.
+        let prefix_hit = stem_tokens.iter().any(|stem_tok| {
+            query_tokens.iter().any(|qtok| {
+                let (short, long) = if stem_tok.len() <= qtok.len() {
+                    (stem_tok.as_str(), qtok.as_str())
+                } else {
+                    (qtok.as_str(), stem_tok.as_str())
+                };
+                short.len() >= 3 && long.starts_with(short)
+            })
+        });
+        if prefix_hit {
+            let cur = score(&items[i]);
+            set_score(&mut items[i], cur + prefix_boost);
         }
     }
 }
