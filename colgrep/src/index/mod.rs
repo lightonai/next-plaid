@@ -3330,6 +3330,7 @@ impl Searcher {
             .index
             .search(query_emb, &params, subset)
             .context("Semantic search failed")?;
+        trace_log(query, "semantic", &semantic.passage_ids, &semantic.scores, 20);
 
         let owned_fts5;
         let keyword = match fts5_results {
@@ -3378,6 +3379,10 @@ impl Searcher {
         // Fuse into the larger `fetch_k` pool (not `top_k`) so the path-noise
         // reranker can pull a strong-but-buried implementation file above
         // tests / examples that happened to rank higher in the raw fusion.
+        if let Some(kw) = keyword {
+            trace_log(query, "bm25", &kw.passage_ids, &kw.scores, 20);
+        }
+
         let (fused_ids, fused_scores) = if let Some(kw) = keyword {
             if kw.passage_ids.is_empty() {
                 (semantic.passage_ids, semantic.scores)
@@ -3394,6 +3399,7 @@ impl Searcher {
         } else {
             (semantic.passage_ids, semantic.scores)
         };
+        trace_log(query, "fused", &fused_ids, &fused_scores, 20);
 
         let metadata = filtering::get(&self.index_path, None, &[], Some(&fused_ids))
             .context("Failed to retrieve metadata")?;
@@ -3429,6 +3435,7 @@ impl Searcher {
                 })
             })
             .collect();
+        trace_log_results(query, "after_path_penalty", &search_results, 30);
 
         // Boost candidates whose file-path stem matches a query token —
         // queries like "interceptor manager" map almost surgically to
@@ -3440,6 +3447,7 @@ impl Searcher {
             |r| r.score,
             |r, s| r.score = s,
         );
+        trace_log_results(query, "after_path_stem_boost", &search_results, 30);
 
         // Boost units whose tree-sitter name matches a query token. Applied
         // before file-coherence so the symbol the user actually asked about
@@ -3460,6 +3468,7 @@ impl Searcher {
             |r| r.score,
             |r, s| r.score = s,
         );
+        trace_log_results(query, "after_definition_boost", &search_results, 30);
 
         // Boost files that appear in multiple candidate units: the file with
         // the most cumulative score in the pool gets `+0.2 * max_score` on
@@ -3470,12 +3479,14 @@ impl Searcher {
             |r| r.score,
             |r, s| r.score = s,
         );
+        trace_log_results(query, "after_coherence_boost", &search_results, 30);
 
         // Re-sort after the penalty + boosts adjust scores, then collapse
         // to one entry per file (merging start/end lines to cover every
         // matched unit from that file) before truncating to top_k.
         search_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         search_results = collapse_by_file(search_results, top_k);
+        trace_log_results(query, "final", &search_results, 30);
 
         Ok(search_results)
     }
@@ -3483,6 +3494,88 @@ impl Searcher {
     pub fn num_documents(&self) -> usize {
         self.index.num_documents()
     }
+}
+
+/// Emit a single JSON line to stderr describing one stage of the hybrid
+/// pipeline, when `COLGREP_TRACE` is truthy. No-op (essentially free) when
+/// the env var is unset, so we can leave the call sites in release builds.
+///
+/// The shape is intentionally simple — one object per call:
+///   {"stage":"fused","query":"...","ids":[...],"scores":[...]}
+/// `diagnose_misses.py` picks these up via stderr and aggregates them per
+/// query so the user can see which stage demotes the relevant file.
+fn trace_log(query: &str, stage: &str, ids: &[i64], scores: &[f32], limit: usize) {
+    if !trace_enabled() {
+        return;
+    }
+    let n = ids.len().min(scores.len()).min(limit);
+    // Build the JSON manually to avoid an extra dep and keep things fast.
+    let mut s = String::with_capacity(64 + n * 32);
+    s.push_str("{\"stage\":\"");
+    s.push_str(stage);
+    s.push_str("\",\"query\":");
+    json_escape(&mut s, query);
+    s.push_str(",\"ids\":[");
+    for (i, id) in ids.iter().take(n).enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&id.to_string());
+    }
+    s.push_str("],\"scores\":[");
+    for (i, sc) in scores.iter().take(n).enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&format!("{:.6}", sc));
+    }
+    s.push_str("]}");
+    eprintln!("__COLGREP_TRACE__ {}", s);
+}
+
+/// Same as [`trace_log`] but accepts a slice of `SearchResult` so callers
+/// can dump the post-rerank pool with file paths included.
+fn trace_log_results(query: &str, stage: &str, results: &[SearchResult], limit: usize) {
+    if !trace_enabled() {
+        return;
+    }
+    let n = results.len().min(limit);
+    let mut s = String::with_capacity(64 + n * 64);
+    s.push_str("{\"stage\":\"");
+    s.push_str(stage);
+    s.push_str("\",\"query\":");
+    json_escape(&mut s, query);
+    s.push_str(",\"results\":[");
+    for (i, r) in results.iter().take(n).enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str("{\"file\":");
+        json_escape(&mut s, &r.unit.file.to_string_lossy());
+        s.push_str(&format!(",\"score\":{:.6}}}", r.score));
+    }
+    s.push_str("]}");
+    eprintln!("__COLGREP_TRACE__ {}", s);
+}
+
+fn trace_enabled() -> bool {
+    matches!(std::env::var("COLGREP_TRACE").as_deref(), Ok("1") | Ok("true") | Ok("TRUE"))
+}
+
+fn json_escape(out: &mut String, s: &str) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
 }
 
 /// Collapse search results so each file appears at most once.
