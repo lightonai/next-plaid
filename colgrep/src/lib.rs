@@ -13,6 +13,7 @@ pub mod install;
 pub mod model;
 pub mod onnx_runtime;
 pub mod parser;
+pub mod ranking;
 pub mod signal;
 pub mod stderr;
 

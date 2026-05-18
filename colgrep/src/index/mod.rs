@@ -3360,6 +3360,10 @@ impl Searcher {
         // FTS5 recall@200 is ~99.6%, so the relative-score combiner outperforms
         // pure rank-based RRF (rank-RRF caps both retrievers' contributions
         // even when one is much higher quality on a given query).
+        //
+        // Fuse into the larger `fetch_k` pool (not `top_k`) so the path-noise
+        // reranker can pull a strong-but-buried implementation file above
+        // tests / examples that happened to rank higher in the raw fusion.
         let (fused_ids, fused_scores) = if let Some(kw) = keyword {
             if kw.passage_ids.is_empty() {
                 (semantic.passage_ids, semantic.scores)
@@ -3370,7 +3374,7 @@ impl Searcher {
                     &kw.passage_ids,
                     &kw.scores,
                     alpha,
-                    top_k,
+                    fetch_k,
                 )
             }
         } else {
@@ -3380,16 +3384,27 @@ impl Searcher {
         let metadata = filtering::get(&self.index_path, None, &[], Some(&fused_ids))
             .context("Failed to retrieve metadata")?;
 
-        let search_results: Vec<SearchResult> = metadata
+        let apply_penalty = crate::ranking::should_apply_path_penalty(query);
+
+        let mut search_results: Vec<SearchResult> = metadata
             .into_iter()
             .zip(fused_scores.iter())
             .filter_map(|(mut meta, &score)| {
                 fix_sqlite_types(&mut meta);
-                serde_json::from_value::<CodeUnit>(meta)
-                    .ok()
-                    .map(|unit| SearchResult { unit, score })
+                serde_json::from_value::<CodeUnit>(meta).ok().map(|unit| {
+                    let mut final_score = score;
+                    if apply_penalty {
+                        let file_str = unit.file.to_string_lossy();
+                        final_score *= crate::ranking::file_path_penalty(&file_str);
+                    }
+                    SearchResult { unit, score: final_score }
+                })
             })
             .collect();
+
+        // Re-sort after the penalty multiplies scores, then truncate to top_k.
+        search_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        search_results.truncate(top_k);
 
         Ok(search_results)
     }
