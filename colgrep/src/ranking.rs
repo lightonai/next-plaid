@@ -212,6 +212,63 @@ pub fn apply_definition_boost<T>(
 }
 
 // =========================================================================
+// File-path stem boost
+// =========================================================================
+//
+// When a query token matches the stem of a candidate's file path
+// (filename minus extension, identifier-aware tokenized), that file is
+// almost certainly the implementation the user wants — `parseRequest.ts`,
+// `intercept_manager.py`, etc.  Identifier-aware tokenization on both
+// sides lets `parserequest`, `parse`, and `request` all hit
+// `parse_request.py`.
+
+const PATH_STEM_BOOST_FRAC: f32 = 0.4;
+
+/// Apply the file-path stem boost in place. For each candidate whose
+/// file's stem (in identifier-aware tokens) overlaps with the query's
+/// tokens, add `0.4 * max_score` to its score.
+pub fn apply_path_stem_boost<T>(
+    items: &mut [T],
+    query: &str,
+    file_path: impl Fn(&T) -> &str,
+    score: impl Fn(&T) -> f32,
+    set_score: impl Fn(&mut T, f32),
+) {
+    if items.is_empty() {
+        return;
+    }
+    let max_score = items.iter().map(&score).fold(f32::NEG_INFINITY, f32::max);
+    if !max_score.is_finite() || max_score <= 0.0 {
+        return;
+    }
+    let query_tokens: std::collections::HashSet<String> =
+        next_plaid::text_search::tokenize_identifiers(query)
+            .into_iter()
+            .collect();
+    if query_tokens.is_empty() {
+        return;
+    }
+
+    let boost = max_score * PATH_STEM_BOOST_FRAC;
+    for i in 0..items.len() {
+        let path = file_path(&items[i]);
+        let stem = Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if stem.is_empty() {
+            continue;
+        }
+        let stem_tokens = next_plaid::text_search::tokenize_identifiers(&stem);
+        if stem_tokens.iter().any(|t| query_tokens.contains(t)) {
+            let cur = score(&items[i]);
+            set_score(&mut items[i], cur + boost);
+        }
+    }
+}
+
+// =========================================================================
 // File coherence boost
 // =========================================================================
 //

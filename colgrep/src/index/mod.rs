@@ -3402,6 +3402,17 @@ impl Searcher {
             })
             .collect();
 
+        // Boost candidates whose file-path stem matches a query token —
+        // queries like "interceptor manager" map almost surgically to
+        // `InterceptorManager.js`, and the path tells us so cheaply.
+        crate::ranking::apply_path_stem_boost(
+            &mut search_results,
+            query,
+            |r| r.unit.file.to_str().unwrap_or(""),
+            |r| r.score,
+            |r, s| r.score = s,
+        );
+
         // Boost units whose tree-sitter name matches a query token. Applied
         // before file-coherence so the symbol the user actually asked about
         // can lift its parent file above neighbours that merely reference it.
