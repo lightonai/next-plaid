@@ -592,6 +592,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 1.0.69",
+ "toml_edit",
  "tree-sitter",
  "tree-sitter-c",
  "tree-sitter-c-sharp",
