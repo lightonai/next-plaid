@@ -3215,7 +3215,8 @@ impl Searcher {
     /// remains non-empty after sanitization.
     ///
     /// Uses [`next_plaid::text_search::sanitize_fts5_query_or`] because the
-    /// index is built with [`FtsTokenizer::IdentifierAware`]: each identifier
+    /// index is built with [`next_plaid::FtsTokenizer::IdentifierAware`]:
+    /// each identifier
     /// in the corpus has been pre-split into its compound + camel/snake parts,
     /// so OR semantics let a natural-language query match documents that
     /// contain *any* relevant sub-part. BM25 still rewards documents that hit
@@ -3330,7 +3331,13 @@ impl Searcher {
             .index
             .search(query_emb, &params, subset)
             .context("Semantic search failed")?;
-        trace_log(query, "semantic", &semantic.passage_ids, &semantic.scores, 20);
+        trace_log(
+            query,
+            "semantic",
+            &semantic.passage_ids,
+            &semantic.scores,
+            20,
+        );
 
         let owned_fts5;
         let keyword = match fts5_results {
@@ -3431,7 +3438,10 @@ impl Searcher {
                         let file_str = unit.file.to_string_lossy();
                         final_score *= crate::ranking::file_path_penalty(&file_str);
                     }
-                    SearchResult { unit, score: final_score }
+                    SearchResult {
+                        unit,
+                        score: final_score,
+                    }
                 })
             })
             .collect();
@@ -3484,7 +3494,11 @@ impl Searcher {
         // Re-sort after the penalty + boosts adjust scores, then collapse
         // to one entry per file (merging start/end lines to cover every
         // matched unit from that file) before truncating to top_k.
-        search_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        search_results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         search_results = collapse_by_file(search_results, top_k);
         trace_log_results(query, "final", &search_results, 30);
 
@@ -3559,7 +3573,10 @@ fn trace_log_results(query: &str, stage: &str, results: &[SearchResult], limit: 
 }
 
 fn trace_enabled() -> bool {
-    matches!(std::env::var("COLGREP_TRACE").as_deref(), Ok("1") | Ok("true") | Ok("TRUE"))
+    matches!(
+        std::env::var("COLGREP_TRACE").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
 }
 
 fn json_escape(out: &mut String, s: &str) {

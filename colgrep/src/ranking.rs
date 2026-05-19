@@ -23,7 +23,10 @@ use std::sync::OnceLock;
 // (used by the benchmark harness to grid-search without rebuilding).
 
 fn env_f32(name: &str, default: f32) -> f32 {
-    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 
 fn strong_penalty() -> f32 {
@@ -209,11 +212,11 @@ pub fn apply_definition_boost<T>(
     }
 
     let boost = max_score * definition_boost_frac();
-    for i in 0..items.len() {
-        if !is_definition(&items[i]) {
+    for item in items.iter_mut() {
+        if !is_definition(item) {
             continue;
         }
-        let n = name(&items[i]).to_lowercase();
+        let n = name(item).to_lowercase();
         if n.is_empty() {
             continue;
         }
@@ -221,8 +224,8 @@ pub fn apply_definition_boost<T>(
         let name_tokens = next_plaid::text_search::tokenize_identifiers(&n);
         let hit = name_tokens.iter().any(|t| query_tokens.contains(t));
         if hit {
-            let cur = score(&items[i]);
-            set_score(&mut items[i], cur + boost);
+            let cur = score(item);
+            set_score(item, cur + boost);
         }
     }
 }
@@ -265,11 +268,10 @@ fn stem_plural_snake() -> bool {
 /// filter them out for the path-stem boost, where a file named
 /// `how_to.py` shouldn't get a free hit on "how to authenticate".
 const STEM_BOOST_STOPWORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "by", "do", "does",
-    "for", "from", "has", "have", "how", "if", "in", "into", "is",
-    "it", "its", "of", "on", "or", "so", "that", "the", "their", "then",
-    "there", "these", "this", "to", "was", "were", "what", "when",
-    "where", "which", "who", "why", "with",
+    "a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from", "has", "have",
+    "how", "if", "in", "into", "is", "it", "its", "of", "on", "or", "so", "that", "the", "their",
+    "then", "there", "these", "this", "to", "was", "were", "what", "when", "where", "which", "who",
+    "why", "with",
 ];
 
 /// Apply the file-path stem boost in place. For each candidate whose
@@ -307,9 +309,8 @@ pub fn apply_path_stem_boost<T>(
 
     let max_boost = max_score * path_stem_boost_frac();
     let max_prefix_boost = max_score * path_stem_prefix_frac();
-    for i in 0..items.len() {
-        let path = file_path(&items[i]);
-        let stem = Path::new(path)
+    for item in items.iter_mut() {
+        let stem = Path::new(file_path(item))
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("")
@@ -360,11 +361,11 @@ pub fn apply_path_stem_boost<T>(
             }
         }
         if exact_hit {
-            let cur = score(&items[i]);
-            set_score(&mut items[i], cur + max_boost);
+            let cur = score(item);
+            set_score(item, cur + max_boost);
         } else if prefix_hit {
-            let cur = score(&items[i]);
-            set_score(&mut items[i], cur + max_prefix_boost);
+            let cur = score(item);
+            set_score(item, cur + max_prefix_boost);
         }
     }
 }
@@ -392,7 +393,12 @@ fn file_coherence_boost_frac() -> f32 {
 ///
 /// The `score_for` argument is used to fetch + update scores via index so we
 /// can stay generic over `SearchResult` shapes.
-pub fn apply_file_coherence_boost<T>(items: &mut [T], file_path: impl Fn(&T) -> &str, score: impl Fn(&T) -> f32, set_score: impl Fn(&mut T, f32)) {
+pub fn apply_file_coherence_boost<T>(
+    items: &mut [T],
+    file_path: impl Fn(&T) -> &str,
+    score: impl Fn(&T) -> f32,
+    set_score: impl Fn(&mut T, f32),
+) {
     if items.is_empty() {
         return;
     }

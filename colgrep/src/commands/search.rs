@@ -1443,10 +1443,7 @@ fn search_single_path(
         // same file → same file occupied two top-K slots.
         use std::collections::hash_map::Entry;
         let mut merged: HashMap<PathBuf, colgrep::SearchResult> = HashMap::new();
-        for result in semantic_results
-            .into_iter()
-            .chain(hybrid_results.into_iter())
-        {
+        for result in semantic_results.into_iter().chain(hybrid_results) {
             let key = result.unit.file.clone();
             match merged.entry(key) {
                 Entry::Occupied(mut e) => {

@@ -116,7 +116,11 @@ impl FtsTokenizer {
 fn split_identifier(token: &str) -> Vec<String> {
     let lower = token.to_lowercase();
     let parts: Vec<String> = if token.contains('_') {
-        lower.split('_').filter(|p| !p.is_empty()).map(String::from).collect()
+        lower
+            .split('_')
+            .filter(|p| !p.is_empty())
+            .map(String::from)
+            .collect()
     } else {
         camel_split(token)
     };
@@ -162,9 +166,7 @@ fn camel_split(token: &str) -> Vec<String> {
             // is followed by a lowercase letter, that uppercase belongs to the
             // *next* word (HTTPResponse → HTTP + Response).
             let start = i;
-            while i + 1 < bytes.len()
-                && (bytes[i + 1] as char).is_ascii_uppercase()
-            {
+            while i + 1 < bytes.len() && (bytes[i + 1] as char).is_ascii_uppercase() {
                 i += 1;
             }
             // If we stopped on an uppercase letter and the next byte is
@@ -1311,10 +1313,7 @@ mod tests {
     fn test_prepare_document_text_passthrough_for_others() {
         let body = "fn parseRequest()";
         // Non-IdentifierAware tokenizers store the raw text unchanged.
-        assert_eq!(
-            prepare_document_text(body, &FtsTokenizer::Unicode61),
-            body
-        );
+        assert_eq!(prepare_document_text(body, &FtsTokenizer::Unicode61), body);
         assert_eq!(prepare_document_text(body, &FtsTokenizer::Trigram), body);
     }
 

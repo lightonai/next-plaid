@@ -71,7 +71,7 @@ pub async fn trace_request(mut request: Request, next: Next) -> Response {
         .get(&X_REQUEST_ID)
         .and_then(|v| v.to_str().ok())
         .map(|s| TraceId::from_string(s.to_string()))
-        .unwrap_or_else(TraceId::new);
+        .unwrap_or_default();
 
     // Store trace_id in request extensions for handlers to access
     request.extensions_mut().insert(trace_id.clone());
