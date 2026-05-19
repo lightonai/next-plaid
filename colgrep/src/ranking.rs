@@ -179,8 +179,9 @@ fn definition_boost_frac() -> f32 {
 
 /// Apply the definition boost in place. For each candidate, if its `name`
 /// matches any token of the identifier-aware-tokenized query, add
-/// `0.5 * max_score` to its score. Uses the same tokenization as the BM25
-/// retriever so `parse_request` and `parseRequest` match each other.
+/// `definition_boost_frac() * max_score` to its score. Uses the same
+/// tokenization as the BM25 retriever so `parse_request` and
+/// `parseRequest` match each other.
 ///
 /// The caller's `is_definition` closure filters out unit kinds whose
 /// `name` is synthetic (e.g. `raw_code_24` blocks).
@@ -251,14 +252,6 @@ fn env_flag(name: &str, default: bool) -> bool {
     }
 }
 
-fn stem_proportional() -> bool {
-    // Default OFF: ablation on the semble bench (alpha=0.65) shows
-    // proportional ratio costs ~0.012 NDCG@10 vs binary boost. The dense
-    // and BM25 retrievers already weight signal density; an *additional*
-    // proportional dampening of the stem boost over-discounts multi-word
-    // NL queries where only one keyword names the file.
-    env_flag("COLGREP_STEM_PROPORTIONAL", false)
-}
 fn stem_stopword_filter() -> bool {
     env_flag("COLGREP_STEM_STOPWORDS", true)
 }
@@ -310,11 +303,7 @@ pub fn apply_path_stem_boost<T>(
     if query_tokens.is_empty() {
         return;
     }
-    let proportional = stem_proportional();
     let do_plural_snake = stem_plural_snake();
-    // Total keyword count for proportional match ratio. Use the
-    // de-stopworded set so common NL words don't dilute the ratio.
-    let n_query_tokens = query_tokens.len() as f32;
 
     let max_boost = max_score * path_stem_boost_frac();
     let max_prefix_boost = max_score * path_stem_prefix_frac();
@@ -345,25 +334,18 @@ pub fn apply_path_stem_boost<T>(
             }
             out
         };
-        // Count how many *distinct* query tokens this file's stem hits
-        // (exact or prefix). Proportional weighting: a query like
-        // "auth token rotation" matching all three parts wins out over
-        // a file matching only one part.
-        let mut exact_matches: usize = 0;
-        let mut prefix_matches: usize = 0;
-        for qtok in &query_tokens {
+        // Does *any* query token hit the stem (exact-or-prefix)?
+        let mut exact_hit = false;
+        let mut prefix_hit = false;
+        'outer: for qtok in &query_tokens {
             let qvars = normalize(qtok);
-            let exact = stem_tokens.iter().any(|stem_tok| {
+            for stem_tok in &stem_tokens {
                 let svars = normalize(stem_tok);
-                svars.iter().any(|sv| qvars.iter().any(|qv| sv == qv))
-            });
-            if exact {
-                exact_matches += 1;
-                continue;
-            }
-            let prefix = stem_tokens.iter().any(|stem_tok| {
-                let svars = normalize(stem_tok);
-                svars.iter().any(|sv| {
+                if svars.iter().any(|sv| qvars.iter().any(|qv| sv == qv)) {
+                    exact_hit = true;
+                    break 'outer;
+                }
+                if svars.iter().any(|sv| {
                     qvars.iter().any(|qv| {
                         let (short, long) = if sv.len() <= qv.len() {
                             (sv.as_str(), qv.as_str())
@@ -372,29 +354,17 @@ pub fn apply_path_stem_boost<T>(
                         };
                         short.len() >= 3 && long.starts_with(short)
                     })
-                })
-            });
-            if prefix {
-                prefix_matches += 1;
+                }) {
+                    prefix_hit = true;
+                }
             }
         }
-        // When proportional is off, any single match gets the full boost
-        // (the old binary-hit behavior).
-        let ratio = |m: usize| -> f32 {
-            if proportional {
-                m as f32 / n_query_tokens
-            } else if m > 0 {
-                1.0
-            } else {
-                0.0
-            }
-        };
-        if exact_matches > 0 {
+        if exact_hit {
             let cur = score(&items[i]);
-            set_score(&mut items[i], cur + max_boost * ratio(exact_matches));
-        } else if prefix_matches > 0 {
+            set_score(&mut items[i], cur + max_boost);
+        } else if prefix_hit {
             let cur = score(&items[i]);
-            set_score(&mut items[i], cur + max_prefix_boost * ratio(prefix_matches));
+            set_score(&mut items[i], cur + max_prefix_boost);
         }
     }
 }
