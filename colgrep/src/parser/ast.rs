@@ -109,6 +109,15 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
             kind,
             "struct_specifier" | "union_specifier" | "enum_specifier"
         ),
+        // CSS top-level rules. Each rule_set / media-query / keyframes
+        // animation / supports query is treated as one searchable unit; the
+        // declarations inside it are kept together (we don't recurse into
+        // the `block`) so a query like "button hover" surfaces the whole
+        // rule, not an isolated property:value line.
+        Language::Css => matches!(
+            kind,
+            "rule_set" | "media_statement" | "keyframes_statement" | "supports_statement"
+        ),
         // Text/config formats
         _ => false,
     }
@@ -141,6 +150,12 @@ pub fn is_constant_node(kind: &str, lang: Language) -> bool {
         Language::Zig => kind == "VarDecl", // const/var declarations
         Language::Julia => kind == "const_statement",
         Language::Sql => false, // SQL doesn't have constants in this sense
+        // CSS single-line at-rules: @import / @charset / @namespace. They
+        // don't open a block but their text is searchable on its own.
+        Language::Css => matches!(
+            kind,
+            "import_statement" | "charset_statement" | "namespace_statement"
+        ),
         // Java, CSharp, Ruby, Lua don't have clear top-level constants
         _ => false,
     }
@@ -184,6 +199,16 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
                 }
             }
             None
+        }
+        Language::Css => {
+            // CSS rules don't expose `body` as a field; find the curly-
+            // brace block (or the keyframe list for @keyframes) by kind.
+            let want = if node.kind() == "keyframes_statement" {
+                "keyframe_block_list"
+            } else {
+                "block"
+            };
+            node.children(&mut node.walk()).find(|c| c.kind() == want)
         }
         // Lua and text/config formats
         _ => None,
@@ -244,6 +269,9 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
         Language::Ocaml => node
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("pattern")),
+        Language::Css => {
+            return get_css_unit_name(node, bytes);
+        }
         // Text/config formats
         _ => None,
     };
@@ -256,6 +284,79 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             Some(text.to_string())
         }
     })
+}
+
+/// CSS doesn't carry named `name` fields on its rule / at-rule nodes —
+/// the "name" we want to display + index is the selector list (for
+/// `rule_set`), the keyframe name (for `@keyframes`), the at-keyword
+/// itself (for `@import`/`@charset`/`@namespace`), or `@<keyword>` plus
+/// the query text (for `@media`/`@supports`). Build it ad-hoc by
+/// scanning children.
+fn get_css_unit_name(node: Node, bytes: &[u8]) -> Option<String> {
+    let kind = node.kind();
+    let text_of = |n: Node| -> Option<String> {
+        let t = n.utf8_text(bytes).ok()?;
+        let trimmed = t.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            // CSS selectors / media queries can span multiple lines —
+            // collapse runs of whitespace so the unit name stays on a
+            // single line for display + boost matching.
+            Some(trimmed.split_whitespace().collect::<Vec<_>>().join(" "))
+        }
+    };
+
+    match kind {
+        // `rule_set` → "<selectors>"
+        "rule_set" => node
+            .children(&mut node.walk())
+            .find(|c| c.kind() == "selectors")
+            .and_then(text_of),
+        // `@keyframes <name>`
+        "keyframes_statement" => node
+            .children(&mut node.walk())
+            .find(|c| c.kind() == "keyframes_name")
+            .and_then(text_of)
+            .map(|n| format!("@keyframes {}", n)),
+        // `@media`, `@supports`: keep the query expression as the name.
+        // tree-sitter-css makes the `@media` / `@supports` literal a
+        // named `at_keyword` child as well as separate query nodes, so
+        // we whitelist just the query-bearing kinds here to avoid
+        // double-printing the at-keyword.
+        "media_statement" | "supports_statement" => {
+            let kw = if kind == "media_statement" {
+                "@media"
+            } else {
+                "@supports"
+            };
+            let query: Vec<String> = node
+                .children(&mut node.walk())
+                .filter(|c| {
+                    matches!(
+                        c.kind(),
+                        "binary_query"
+                            | "feature_query"
+                            | "keyword_query"
+                            | "parenthesized_query"
+                            | "selector_query"
+                            | "unary_query"
+                    )
+                })
+                .filter_map(text_of)
+                .collect();
+            if query.is_empty() {
+                Some(kw.to_string())
+            } else {
+                Some(format!("{} {}", kw, query.join(" ")))
+            }
+        }
+        // `@import url(...)` / `@charset "..."` / `@namespace prefix url(...)`
+        "import_statement" => Some("@import".to_string()),
+        "charset_statement" => Some("@charset".to_string()),
+        "namespace_statement" => Some("@namespace".to_string()),
+        _ => None,
+    }
 }
 
 /// Find the start line including preceding attributes/decorators/doc comments.

@@ -476,6 +476,10 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .or_else(|| node.child_by_field_name("pattern"))
             .and_then(|n| n.utf8_text(bytes).ok())
             .map(|s| s.to_string()),
+        // CSS at-rules ( @import / @charset / @namespace ): the unit name
+        // is the at-keyword, produced by the same helper that names
+        // rule_set / @media / @keyframes elsewhere in the parser.
+        Language::Css => super::ast::get_node_name(node, bytes, lang),
         _ => None,
     }
 }

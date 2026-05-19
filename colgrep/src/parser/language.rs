@@ -44,6 +44,7 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "sql" => Some(Language::Sql),
         "vue" => Some(Language::Vue),
         "svelte" => Some(Language::Svelte),
+        "css" => Some(Language::Css),
         // Text/documentation formats
         "qml" => Some(Language::Qml),
         "html" | "htm" => Some(Language::Html),
@@ -112,6 +113,8 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Qml => tree_sitter_qmljs::LANGUAGE.into(),
         // HTML uses tree-sitter-html
         Language::Html => tree_sitter_html::LANGUAGE.into(),
+        // CSS uses tree-sitter-css
+        Language::Css => tree_sitter_css::LANGUAGE.into(),
         // Text/config formats don't use tree-sitter - this should never be called
         Language::Markdown
         | Language::Text
@@ -321,6 +324,18 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_language_css() {
+        assert_eq!(
+            detect_language(Path::new("styles.css")),
+            Some(Language::Css)
+        );
+        assert_eq!(
+            detect_language(Path::new("src/components/button.css")),
+            Some(Language::Css)
+        );
+    }
+
+    #[test]
     fn test_detect_language_unknown() {
         assert_eq!(detect_language(Path::new("file.xyz")), None);
         assert_eq!(detect_language(Path::new("noextension")), None);
@@ -355,5 +370,6 @@ mod tests {
         assert!(!is_text_format(Language::Vue));
         assert!(!is_text_format(Language::Svelte));
         assert!(!is_text_format(Language::Html));
+        assert!(!is_text_format(Language::Css));
     }
 }

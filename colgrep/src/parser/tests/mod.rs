@@ -6,6 +6,7 @@ mod common;
 mod test_c;
 mod test_cpp;
 mod test_csharp;
+mod test_css;
 mod test_elixir;
 mod test_go;
 mod test_haskell;
