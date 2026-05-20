@@ -27,14 +27,14 @@ We re-run [Semble](https://github.com/MinishLab/semble)'s public code-search ben
 
 | Method | NDCG@10 | Index time | Query p50 |
 | --- | ---: | ---: | ---: |
-| ColGREP — `lightonai/LateOn-Code` (137M, GPU FP32) | 0.799 | 178 s | 1 056 ms (GPU) |
+| ColGREP — `lightonai/LateOn-Code` (137M, GPU FP32) | 0.835 | 188 s | 1 109 ms (GPU) |
 | **ColGREP — `lightonai/LateOn-Code-edge` (17M, GPU FP32)** | **0.820** | **21 s** | **430 ms (GPU)** / **530 ms (CPU + MKL)** |
 | semble — `minishlab/potion-code-16M` (16M, CPU) | 0.853 | 263 ms | 1.5 ms |
 | BM25 (`bm25s`, CPU) | 0.682 | 263 ms | 0.1 ms |
 
 **Notes**
 
-- `lightonai/LateOn-Code-edge` is the model ColGREP ships with by default (17M ColBERT). It out-scores the larger `lightonai/LateOn-Code` on this benchmark because its training mix and pooling were tuned for code search at this parameter count; the larger model is included for completeness.
+- The default model is `lightonai/LateOn-Code-edge` (17M ColBERT) — it captures most of the quality of the 9× larger `lightonai/LateOn-Code` (0.820 vs 0.835 NDCG@10) at ~9× faster indexing and ~2.5× faster queries. Switch with `colgrep set-model lightonai/LateOn-Code` if you have GPU headroom and want the extra +0.015 NDCG.
 - Index time is end-to-end for the full 63-repo set on GPU FP32 (per-repo time on CPU+MKL is roughly proportional to the model size).
 - Query p50 for ColGREP is averaged over 10 representative queries, one per repo. Semble and BM25 numbers come from semble's own README — directly comparable methodology, same query set.
 - ColGREP is **not** trying to match semble's CPU latency: ColBERT multi-vector retrieval and BM25 + bag-of-words live in different cost classes. We surface this gap honestly so users can pick the right tool — semble for instant CPU search, ColGREP when you need higher recall and you have a GPU or you can wait 0.5 s on CPU.
