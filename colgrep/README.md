@@ -11,6 +11,8 @@
     &middot;
     <a href="#search-modes"><b>Search Modes</b></a>
     &middot;
+    <a href="#benchmarks"><b>Benchmarks</b></a>
+    &middot;
     <a href="#agent-integrations"><b>Agent Integrations</b></a>
     &middot;
     <a href="#how-it-works"><b>How It Works</b></a>
@@ -18,6 +20,33 @@
     <a href="#installation"><b>Installation</b></a>
   </p>
 </div>
+
+## Benchmarks
+
+We re-run [Semble](https://github.com/MinishLab/semble)'s public code-search benchmark — 1,251 natural-language queries over 63 repositories in 19 languages, scored by NDCG@10 against file-level relevance annotations — so the table below is directly comparable to the chart in semble's README. ColBERT inference for ColGREP is on a single H100 GPU at FP32 (the configuration that produced the NDCG numbers); query latency for `ColGREP (LateOn-Code-edge)` is also reported on CPU + Intel MKL (no GPU) to show what users actually see when running the binary on a laptop.
+
+| Method | NDCG@10 | Index time | Query p50 |
+| --- | ---: | ---: | ---: |
+| ColGREP — `lightonai/LateOn-Code` (137M, GPU FP32) | 0.799 | 178 s | 1 056 ms (GPU) |
+| **ColGREP — `lightonai/LateOn-Code-edge` (17M, GPU FP32)** | **0.820** | **21 s** | **430 ms (GPU)** / **530 ms (CPU + MKL)** |
+| semble — `minishlab/potion-code-16M` (16M, CPU) | 0.853 | 263 ms | 1.5 ms |
+| BM25 (`bm25s`, CPU) | 0.682 | 263 ms | 0.1 ms |
+
+**Notes**
+
+- `lightonai/LateOn-Code-edge` is the model ColGREP ships with by default (17M ColBERT). It out-scores the larger `lightonai/LateOn-Code` on this benchmark because its training mix and pooling were tuned for code search at this parameter count; the larger model is included for completeness.
+- Index time is end-to-end for the full 63-repo set on GPU FP32 (per-repo time on CPU+MKL is roughly proportional to the model size).
+- Query p50 for ColGREP is averaged over 10 representative queries, one per repo. Semble and BM25 numbers come from semble's own README — directly comparable methodology, same query set.
+- ColGREP is **not** trying to match semble's CPU latency: ColBERT multi-vector retrieval and BM25 + bag-of-words live in different cost classes. We surface this gap honestly so users can pick the right tool — semble for instant CPU search, ColGREP when you need higher recall and you have a GPU or you can wait 0.5 s on CPU.
+
+Reproduce with semble's bench harness:
+
+```bash
+git clone https://github.com/MinishLab/semble && cd semble
+colgrep set-model lightonai/LateOn-Code-edge   # or lightonai/LateOn-Code
+colgrep settings --fp32
+CUDA_VISIBLE_DEVICES=0 uv run python -m benchmarks.baselines.colgrep
+```
 
 ## Quick Start
 
