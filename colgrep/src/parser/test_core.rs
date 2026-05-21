@@ -488,10 +488,10 @@ class Person:
         class_code.contains("greet"),
         "Class code should contain greet method"
     );
-    // No separate method chunks
+    // Methods are extracted as separate units (alongside the class).
     assert!(
-        !units.iter().any(|u| u.unit_type == UnitType::Method),
-        "Methods should not be extracted separately from classes"
+        units.iter().any(|u| u.unit_type == UnitType::Method),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -569,12 +569,12 @@ class Calculator {
         class_unit.unwrap().code.contains("add"),
         "Class code should contain add method"
     );
-    // No separate method chunks
+    // Methods are extracted as separate units (alongside the class).
     assert!(
-        !units
+        units
             .iter()
             .any(|u| u.name == "add" && u.unit_type == UnitType::Method),
-        "Methods should not be extracted separately"
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -620,10 +620,10 @@ public class Calculator {
         class_unit.unwrap().code.contains("add"),
         "Class code should contain add method"
     );
-    // No separate method chunks
+    // Methods are extracted as separate units (alongside the class).
     assert!(
-        !units.iter().any(|u| u.unit_type == UnitType::Method),
-        "Methods should not be extracted separately from classes"
+        units.iter().any(|u| u.unit_type == UnitType::Method),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -1608,11 +1608,14 @@ if __name__ == "__main__":
         "Class code should contain method_three"
     );
 
-    // Should have NO separate method chunks - methods are inside the class chunk
+    // Methods are now extracted as separate Method units alongside the
+    // enclosing class. The class itself still carries the full method
+    // bodies in its `code` field (asserted above) so symbol-name queries
+    // hit either granularity.
     assert_eq!(
         methods.len(),
-        0,
-        "Should have 0 separate method chunks (methods are inside class), got: {:?}",
+        3,
+        "Should have 3 separate method chunks (method_one/two/three), got: {:?}",
         methods.iter().map(|u| &u.name).collect::<Vec<_>>()
     );
 
@@ -1624,11 +1627,11 @@ if __name__ == "__main__":
         raw_code.iter().map(|u| &u.code).collect::<Vec<_>>()
     );
 
-    // Total should be 5 chunks: 2 functions + 1 class + 2 raw_code
+    // Total should be 8 chunks: 2 top-level functions + 1 class + 3 methods + 2 raw_code
     assert_eq!(
         units.len(),
-        5,
-        "Should have exactly 5 chunks total, got {} chunks: {:?}",
+        8,
+        "Should have exactly 8 chunks total, got {} chunks: {:?}",
         units.len(),
         units
             .iter()

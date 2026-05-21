@@ -38,8 +38,8 @@ private:
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
-    // Class is extracted as a single chunk with method inside
-    assert_eq!(units.len(), 1);
+    // Class is extracted alongside its inner method as a separate unit.
+    assert_eq!(units.len(), 2);
 
     let class = get_unit_by_name(&units, "Calculator").unwrap();
     let class_text = build_embedding_text(class);
@@ -60,8 +60,8 @@ private:
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "add").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "add").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -81,8 +81,8 @@ public:
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
-    // Class is extracted as a single chunk with doxygen comment and method inside
-    assert_eq!(units.len(), 1);
+    // Class is extracted alongside its inner method as a separate unit.
+    assert_eq!(units.len(), 2);
 
     let class_unit = get_unit_by_name(&units, "Math").unwrap();
     let class_text = build_embedding_text(class_unit);
@@ -106,8 +106,8 @@ public:
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "add").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "add").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -169,8 +169,8 @@ private:
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
-    // Class is extracted as a single chunk with constructor inside
-    assert_eq!(units.len(), 1);
+    // Class is extracted alongside its constructor as a separate unit.
+    assert_eq!(units.len(), 2);
 
     let class_unit = get_unit_by_name(&units, "Person").unwrap();
     let class_text = build_embedding_text(class_unit);
@@ -189,12 +189,17 @@ private:
 };"#;
     assert_eq!(class_text, expected);
 
-    // Verify NO separate constructor unit exists (constructor has same name as class)
+    // Constructors share the class name in C++. With class-body recursion
+    // on, both the class itself and the constructor land in the unit list
+    // — two `Person` units total. They have different `unit_type`s
+    // (Class vs Method/Function) so downstream consumers can still tell
+    // them apart.
     let person_units: Vec<_> = units.iter().filter(|u| u.name == "Person").collect();
     assert_eq!(
         person_units.len(),
-        1,
-        "Should only have 1 Person unit (the class), not separate constructor"
+        2,
+        "Expect the Person class plus its constructor — got {} units",
+        person_units.len()
     );
 }
 
@@ -207,8 +212,8 @@ public:
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
-    // Class is extracted as a single chunk with virtual methods inside
-    assert_eq!(units.len(), 1);
+    // Class is extracted alongside its virtual method as a separate unit.
+    assert_eq!(units.len(), 2);
 
     let class_unit = get_unit_by_name(&units, "Shape").unwrap();
     let class_text = build_embedding_text(class_unit);
@@ -223,14 +228,17 @@ public:
 };"#;
     assert_eq!(class_text, expected);
 
-    // Verify NO separate method/destructor units exist
+    // The defaulted destructor (`= default`) parses as a
+    // function_definition and is extracted alongside the class. The pure
+    // virtual `area` has no body, so tree-sitter parses it as
+    // field_declaration — no separate method unit is produced.
     assert!(
-        get_unit_by_name(&units, "~Shape").is_none(),
-        "Destructors should not be extracted separately from classes"
+        get_unit_by_name(&units, "~Shape").is_some(),
+        "Defaulted destructors are extracted as separate units alongside their class"
     );
     assert!(
         get_unit_by_name(&units, "area").is_none(),
-        "Methods should not be extracted separately from classes"
+        "Pure-virtual methods have no body and aren't extracted as separate units"
     );
 }
 
@@ -279,8 +287,8 @@ fn test_struct_with_methods() {
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
-    // Struct is extracted as a single chunk with method inside
-    assert_eq!(units.len(), 1);
+    // Struct is extracted alongside its inner method as a separate unit.
+    assert_eq!(units.len(), 2);
 
     let unit = get_unit_by_name(&units, "Point").unwrap();
     let text = build_embedding_text(unit);
@@ -300,8 +308,8 @@ struct Point {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "distance").is_none(),
-        "Methods should not be extracted separately from structs"
+        get_unit_by_name(&units, "distance").is_some(),
+        "Methods are extracted as separate units alongside their parent structs"
     );
 }
 
@@ -318,8 +326,8 @@ private:
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
-    // Class is extracted as a single chunk with operator overload inside
-    assert_eq!(units.len(), 1);
+    // Class is extracted alongside its operator overload as a separate unit.
+    assert_eq!(units.len(), 2);
 
     let class_unit = get_unit_by_name(&units, "Vector").unwrap();
     let class_text = build_embedding_text(class_unit);
@@ -341,8 +349,8 @@ private:
 
     // Verify NO separate operator method unit exists
     assert!(
-        get_unit_by_name(&units, "operator+").is_none(),
-        "Operator overloads should not be extracted separately from classes"
+        get_unit_by_name(&units, "operator+").is_some(),
+        "Operator overloads are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -387,8 +395,8 @@ public:
 };"#;
     let units = parse(source, Language::Cpp, "test.cpp");
 
-    // Both classes are extracted as single chunks
-    assert_eq!(units.len(), 2);
+    // Both classes are extracted alongside their methods as separate units.
+    assert_eq!(units.len(), 4);
 
     let animal = get_unit_by_name(&units, "Animal").unwrap();
     let animal_text = build_embedding_text(animal);
@@ -423,8 +431,8 @@ public:
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "speak").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "speak").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 

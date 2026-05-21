@@ -138,8 +138,8 @@ class Calculator {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "add").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "add").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -279,8 +279,8 @@ class Service {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "doSomething").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "doSomething").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -354,8 +354,8 @@ class Dog extends Animal {
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "speak").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "speak").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 

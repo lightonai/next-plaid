@@ -30,8 +30,8 @@ public class Calculator {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "add").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "add").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -72,8 +72,8 @@ public class Math {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "add").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "add").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -104,8 +104,8 @@ public class Utils {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "format").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "format").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -148,12 +148,12 @@ public class Container<T> {
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "getValue").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "getValue").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
     assert!(
-        get_unit_by_name(&units, "setValue").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "setValue").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -236,8 +236,8 @@ public class FileReader {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "read").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "read").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -315,12 +315,12 @@ public abstract class Shape {
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "describe").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "describe").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
     assert!(
-        get_unit_by_name(&units, "area").is_none(),
-        "Abstract methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "area").is_some(),
+        "Abstract methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -363,12 +363,12 @@ public class Service {
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "toString").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "toString").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
     assert!(
-        get_unit_by_name(&units, "init").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "init").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -402,8 +402,8 @@ public class StreamExample {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "filter").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "filter").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -475,7 +475,7 @@ public class ListUtils {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "createList").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "createList").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }

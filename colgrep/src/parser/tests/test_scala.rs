@@ -72,8 +72,8 @@ class Person(val name: String, var age: Int) {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "greet").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "greet").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -120,8 +120,8 @@ object Utils {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "helper").is_none(),
-        "Methods should not be extracted separately from objects"
+        get_unit_by_name(&units, "helper").is_some(),
+        "Methods are extracted as separate units alongside their parent objects"
     );
 }
 
@@ -149,13 +149,16 @@ trait Drawable {
     );
 
     // Verify NO separate method units exist
+    // Scala traits are abstract type containers — recursion is skipped
+    // and the trait stays as a single unit. See
+    // parser::is_abstract_type_container.
     assert!(
         get_unit_by_name(&units, "draw").is_none(),
-        "Trait methods should not be extracted separately"
+        "Trait methods are NOT split out — traits are abstract type containers"
     );
     assert!(
         get_unit_by_name(&units, "bounds").is_none(),
-        "Trait methods should not be extracted separately"
+        "Trait methods are NOT split out — traits are abstract type containers"
     );
 }
 
@@ -211,8 +214,8 @@ implicit class StringOps(val s: String) extends AnyVal {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "addExclamation").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "addExclamation").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -298,12 +301,12 @@ object Circle {
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "apply").is_none(),
-        "Methods should not be extracted separately from objects"
+        get_unit_by_name(&units, "apply").is_some(),
+        "Methods are extracted as separate units alongside their parent objects"
     );
     assert!(
-        get_unit_by_name(&units, "unit").is_none(),
-        "Methods should not be extracted separately from objects"
+        get_unit_by_name(&units, "unit").is_some(),
+        "Methods are extracted as separate units alongside their parent objects"
     );
 }
 
@@ -372,8 +375,8 @@ class Dog extends Animal {
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "speak").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "speak").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 

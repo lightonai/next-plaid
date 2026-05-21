@@ -105,12 +105,12 @@ class Person {
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "greet").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "greet").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
     assert!(
-        get_unit_by_name(&units, "__construct").is_none(),
-        "Constructor should not be extracted separately from classes"
+        get_unit_by_name(&units, "__construct").is_some(),
+        "Constructor are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -168,8 +168,8 @@ class Utils {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "helper").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "helper").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -199,14 +199,16 @@ interface Drawable {
 }"
     );
 
-    // Verify NO separate method units exist
+    // PHP interfaces are abstract type containers — recursion is skipped
+    // and the interface stays as a single unit. See
+    // parser::is_abstract_type_container.
     assert!(
         get_unit_by_name(&units, "draw").is_none(),
-        "Interface methods should not be extracted separately"
+        "Interface methods are NOT split out — interfaces are abstract type containers"
     );
     assert!(
         get_unit_by_name(&units, "getBounds").is_none(),
-        "Interface methods should not be extracted separately"
+        "Interface methods are NOT split out — interfaces are abstract type containers"
     );
 }
 
@@ -263,10 +265,12 @@ trait Loggable {
 }"
     );
 
-    // Verify NO separate method unit exists
+    // PHP traits are abstract type containers — recursion is skipped
+    // and the trait stays as a single unit. See
+    // parser::is_abstract_type_container.
     assert!(
         get_unit_by_name(&units, "log").is_none(),
-        "Trait methods should not be extracted separately"
+        "Trait methods are NOT split out — traits are abstract type containers"
     );
 }
 
@@ -304,12 +308,12 @@ abstract class Shape {
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "describe").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "describe").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
     assert!(
-        get_unit_by_name(&units, "area").is_none(),
-        "Abstract methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "area").is_some(),
+        "Abstract methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -422,8 +426,8 @@ class Dog extends Animal {
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "speak").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "speak").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 

@@ -35,8 +35,8 @@ public class Calculator
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "Add").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "Add").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -83,8 +83,8 @@ public class Math
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "Add").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "Add").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -137,15 +137,18 @@ public class Person
 
     // Verify NO separate method/constructor units exist
     assert!(
-        get_unit_by_name(&units, "Greet").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "Greet").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
-    // Constructor has same name as class, so we check there's only 1 unit with name "Person"
+    // Constructor shares the class name in C#. With class-body recursion
+    // on, both the class and the constructor are in the unit list — they
+    // differ by `unit_type` (Class vs Method/Function).
     let person_units: Vec<_> = units.iter().filter(|u| u.name == "Person").collect();
     assert_eq!(
         person_units.len(),
-        1,
-        "Should only have 1 Person unit (the class), not separate constructor"
+        2,
+        "Expect the Person class plus its constructor — got {} units",
+        person_units.len()
     );
 }
 
@@ -184,8 +187,8 @@ public class DataService
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "FetchDataAsync").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "FetchDataAsync").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -220,8 +223,8 @@ public static class Utils
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "Format").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "Format").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -250,14 +253,16 @@ public interface IDrawable
 }"
     );
 
-    // Verify NO separate method units exist
+    // C# interfaces are abstract type containers — recursion is skipped
+    // and the interface stays as a single unit. See
+    // parser::is_abstract_type_container.
     assert!(
         get_unit_by_name(&units, "Draw").is_none(),
-        "Interface methods should not be extracted separately"
+        "Interface methods are NOT split out — interfaces are abstract type containers"
     );
     assert!(
         get_unit_by_name(&units, "GetBounds").is_none(),
-        "Interface methods should not be extracted separately"
+        "Interface methods are NOT split out — interfaces are abstract type containers"
     );
 }
 
@@ -307,12 +312,12 @@ public class Container<T>
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "GetValue").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "GetValue").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
     assert!(
-        get_unit_by_name(&units, "SetValue").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "SetValue").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -347,8 +352,8 @@ public static class StringExtensions
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "AddExclamation").is_none(),
-        "Extension methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "AddExclamation").is_some(),
+        "Extension methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -455,8 +460,8 @@ public class QueryService
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "FilterNames").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "FilterNames").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -520,8 +525,8 @@ public class Dog : Animal
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "Speak").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "Speak").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -563,7 +568,7 @@ public class Factory
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "CreateUser").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "CreateUser").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }

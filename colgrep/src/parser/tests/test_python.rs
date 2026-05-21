@@ -88,14 +88,14 @@ class Calculator:
         return self.value"#;
     assert_eq!(class_text, expected_class);
 
-    // Methods should NOT be extracted separately - they are part of the class chunk
+    // Methods are extracted as separate units (alongside the class).
     assert!(
-        get_unit_by_name(&units, "__init__").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "__init__").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
     assert!(
-        get_unit_by_name(&units, "add").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "add").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 
     // Verify class code contains all methods

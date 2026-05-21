@@ -94,8 +94,8 @@ class Person {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "greet").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "greet").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -132,8 +132,8 @@ struct Point {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "distance").is_none(),
-        "Methods should not be extracted separately from structs"
+        get_unit_by_name(&units, "distance").is_some(),
+        "Methods are extracted as separate units alongside their parent structs"
     );
 }
 
@@ -275,8 +275,8 @@ extension String {
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "addExclamation").is_none(),
-        "Extension methods should not be extracted separately"
+        get_unit_by_name(&units, "addExclamation").is_some(),
+        "Extension methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -386,8 +386,8 @@ class Dog: Animal {
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "speak").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "speak").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 

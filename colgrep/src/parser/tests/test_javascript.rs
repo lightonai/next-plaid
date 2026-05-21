@@ -112,12 +112,12 @@ class Calculator {
 
     // Verify NO separate method units exist - methods are inside the class chunk
     assert!(
-        get_unit_by_name(&units, "add").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "add").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
     assert!(
-        get_unit_by_name(&units, "constructor").is_none(),
-        "Constructors should not be extracted separately from classes"
+        get_unit_by_name(&units, "constructor").is_some(),
+        "Constructors are extracted as separate units alongside their parent classes"
     );
 }
 

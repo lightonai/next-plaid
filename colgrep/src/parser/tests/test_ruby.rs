@@ -87,12 +87,12 @@ end"#;
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "initialize").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "initialize").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
     assert!(
-        get_unit_by_name(&units, "add").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "add").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -174,12 +174,12 @@ end"#;
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "helper").is_none(),
-        "Methods should not be extracted separately from modules"
+        get_unit_by_name(&units, "helper").is_some(),
+        "Methods are extracted as separate units alongside their parent modules"
     );
     assert!(
-        get_unit_by_name(&units, "instance_helper").is_none(),
-        "Methods should not be extracted separately from modules"
+        get_unit_by_name(&units, "instance_helper").is_some(),
+        "Methods are extracted as separate units alongside their parent modules"
     );
 }
 
@@ -245,8 +245,8 @@ end"#;
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "create").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "create").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -324,8 +324,8 @@ end"#;
 
     // Verify NO separate method unit exists
     assert!(
-        get_unit_by_name(&units, "initialize").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "initialize").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -367,12 +367,12 @@ end"#;
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "public_method").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "public_method").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
     assert!(
-        get_unit_by_name(&units, "helper").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "helper").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 
@@ -425,8 +425,8 @@ end"#;
 
     // Verify NO separate method units exist
     assert!(
-        get_unit_by_name(&units, "speak").is_none(),
-        "Methods should not be extracted separately from classes"
+        get_unit_by_name(&units, "speak").is_some(),
+        "Methods are extracted as separate units alongside their parent classes"
     );
 }
 

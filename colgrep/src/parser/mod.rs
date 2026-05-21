@@ -55,10 +55,9 @@ fn is_abstract_type_container(kind: &str, lang: Language) -> bool {
             kind,
             "interface_declaration" | "type_alias_declaration" | "enum_declaration"
         ),
-        Language::Java | Language::CSharp => matches!(
-            kind,
-            "interface_declaration" | "enum_declaration"
-        ),
+        Language::Java | Language::CSharp => {
+            matches!(kind, "interface_declaration" | "enum_declaration")
+        }
         Language::Scala => kind == "trait_definition",
         Language::Swift => matches!(kind, "protocol_declaration" | "enum_declaration"),
         Language::Kotlin => kind == "interface_declaration",
