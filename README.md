@@ -21,6 +21,10 @@
 
 Semantic code search for your terminal and your coding agents. Searches combine regex filtering with semantic ranking. All local, your code never leaves your machine.
 
+<p align="center">
+  <img width="560" src="docs/colgrep-bench.svg" alt="NDCG@10 on the Semble code-search benchmark: ColGREP LateOn-Code 0.859, semble potion-code-16M 0.853, ColGREP LateOn-Code-edge 0.846"/>
+</p>
+
 ### Quick start
 
 Install:
