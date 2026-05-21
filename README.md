@@ -21,10 +21,6 @@
 
 Semantic code search for your terminal and your coding agents. Searches combine regex filtering with semantic ranking. All local, your code never leaves your machine.
 
-<p align="center">
-  <img width="560" src="docs/colgrep-bench.svg" alt="NDCG@10 on the Semble code-search benchmark: ColGREP LateOn-Code 0.859, semble potion-code-16M 0.853, ColGREP LateOn-Code-edge 0.846"/>
-</p>
-
 ### Quick start
 
 Install:
@@ -145,6 +141,17 @@ def fetch_with_retry(url: str, max_retries: int = 3) -> Response:
 This structured input gives the model richer signal than raw code alone.
 
 **Documentation:** install variants, performance tuning, all flags and options → [ColGREP documentation](colgrep/README.md)
+
+### Benchmark
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/colgrep-bench-dark.svg">
+    <img width="560" src="docs/colgrep-bench-light.svg" alt="NDCG@10 on the Semble code-search benchmark — ColGREP LateOn-Code 0.859, semble potion-code-16M 0.853, ColGREP LateOn-Code-edge 0.846">
+  </picture>
+</p>
+
+ColGREP on a single H100 GPU at FP32 against [Semble](https://github.com/MinishLab/semble)'s public bench — 1,251 NL queries × 63 repos × 19 languages.
 
 ---
 

@@ -23,10 +23,6 @@
 
 ## Benchmarks
 
-<p align="center">
-  <img width="560" src="../docs/colgrep-bench.svg" alt="NDCG@10 on the Semble code-search benchmark: ColGREP LateOn-Code 0.859, semble potion-code-16M 0.853, ColGREP LateOn-Code-edge 0.846"/>
-</p>
-
 [Semble](https://github.com/MinishLab/semble)'s public bench — 1,251 NL queries × 63 repos × 19 languages — scored at NDCG@10 against file-level annotations. ColGREP runs on a single H100 GPU at FP32; `colgrep set-model lightonai/LateOn-Code` switches to the 137M big model.
 
 Reproduce:
@@ -36,6 +32,13 @@ git clone https://github.com/MinishLab/semble && cd semble
 colgrep set-model lightonai/LateOn-Code-edge   # or lightonai/LateOn-Code
 CUDA_VISIBLE_DEVICES=0 uv run python -m benchmarks.baselines.colgrep
 ```
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="../docs/colgrep-bench-dark.svg">
+    <img width="560" src="../docs/colgrep-bench-light.svg" alt="NDCG@10 on the Semble code-search benchmark — ColGREP LateOn-Code 0.859, semble potion-code-16M 0.853, ColGREP LateOn-Code-edge 0.846">
+  </picture>
+</p>
 
 ## Quick Start
 

@@ -1,39 +1,32 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 230" role="img" aria-label="NDCG@10 on Semble code-search benchmark — ColGREP LateOn-Code 0.859, semble potion-code-16M 0.853, ColGREP LateOn-Code-edge 0.846">
   <style>
-    .title  { font: 600 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: currentColor; }
-    .sub    { font: 400 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: currentColor; opacity: 0.55; }
-    .label  { font: 500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: currentColor; }
-    .value  { font: 600 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; fill: currentColor; }
-    .axis   { stroke: currentColor; stroke-opacity: 0.15; stroke-width: 1; }
-    .tick   { font: 400 10px ui-monospace, "SF Mono", Menlo, Consolas, monospace; fill: currentColor; opacity: 0.5; }
-    .bar-cg { fill: #6366f1; }
-    .bar-sb { fill: #94a3b8; }
+    .title  { font: 600 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #e5e7eb; }
+    .sub    { font: 400 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #9ca3af; }
+    .label  { font: 500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #e5e7eb; }
+    .value  { font: 600 12px ui-monospace, "SF Mono", Menlo, Consolas, monospace; fill: #e5e7eb; }
+    .axis   { stroke: #4b5563; stroke-width: 1; }
+    .tick   { font: 400 10px ui-monospace, "SF Mono", Menlo, Consolas, monospace; fill: #6b7280; }
+    .bar-cg { fill: #818cf8; }
+    .bar-sb { fill: #64748b; }
   </style>
 
   <text class="title" x="0"  y="18">NDCG@10 on the Semble code-search benchmark</text>
   <text class="sub"   x="0"  y="35">1,251 NL queries · 63 repos · 19 languages · file-level NDCG@10</text>
 
-  <!-- Plot area: x ∈ [220, 520], y per bar -->
-  <!-- Domain: 0 → 1, plotted width = 300 px starting at x=220 -->
-
-  <!-- Axis ticks at 0.7, 0.8, 0.9 -->
   <line class="axis" x1="430" y1="62"  x2="430" y2="186"/>
   <line class="axis" x1="490" y1="62"  x2="490" y2="186"/>
   <text class="tick" x="430" y="200" text-anchor="middle">0.80</text>
   <text class="tick" x="490" y="200" text-anchor="middle">0.90</text>
   <line class="axis" x1="220" y1="186" x2="520" y2="186"/>
 
-  <!-- Bar 1 — ColGREP LateOn-Code 0.859 (width = 0.859*300 = 257.7) -->
   <text class="label" x="210" y="82"  text-anchor="end">ColGREP · LateOn-Code (137M)</text>
   <rect class="bar-cg" x="220" y="68"  width="257.7" height="24" rx="3"/>
   <text class="value" x="486" y="84">0.859</text>
 
-  <!-- Bar 2 — semble potion-code-16M 0.853 -->
   <text class="label" x="210" y="120" text-anchor="end">semble · potion-code-16M (16M)</text>
   <rect class="bar-sb" x="220" y="106" width="255.9" height="24" rx="3"/>
   <text class="value" x="484" y="122">0.853</text>
 
-  <!-- Bar 3 — ColGREP LateOn-Code-edge 0.846 -->
   <text class="label" x="210" y="158" text-anchor="end">ColGREP · LateOn-Code-edge (17M)</text>
   <rect class="bar-cg" x="220" y="144" width="253.8" height="24" rx="3"/>
   <text class="value" x="482" y="160">0.846</text>
