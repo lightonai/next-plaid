@@ -112,6 +112,7 @@ use state::{ApiConfig, AppState};
     ),
     components(schemas(
         models::HealthResponse,
+        models::UpdateHealthStatus,
         models::ModelHealthInfo,
         models::IndexSummary,
         models::ErrorResponse,
@@ -236,6 +237,7 @@ async fn health(state: axum::extract::State<Arc<AppState>>) -> PrettyJson<Health
         index_dir: state.config.index_dir.to_string_lossy().to_string(),
         memory_usage_bytes,
         indices: state.get_all_index_summaries(),
+        updates: state.get_update_health_statuses(),
         model: model_info,
     })
 }

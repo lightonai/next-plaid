@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arc_swap::{ArcSwap, Guard};
 use next_plaid::MmapIndex;
@@ -45,6 +46,39 @@ impl IndexSlot {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{ApiConfig, AppState};
+
+    #[test]
+    fn update_health_status_tracks_active_and_completed_updates() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(ApiConfig {
+            index_dir: temp_dir.path().to_path_buf(),
+            default_top_k: 10,
+        });
+
+        assert!(state.get_update_health_statuses().is_empty());
+
+        state.record_update_queued("docs", 3, "queued");
+        let queued = state.get_update_health_statuses();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].index, "docs");
+        assert_eq!(queued[0].status, "queued");
+        assert_eq!(queued[0].queued_documents, Some(3));
+
+        state.record_update_stage("docs", "kmeans", "clustering outlier embeddings");
+        let running = state.get_update_health_statuses();
+        assert_eq!(running[0].status, "running");
+        assert_eq!(running[0].stage, "kmeans");
+
+        state.record_update_complete("docs", 3, "update complete");
+        let complete = state.get_update_health_statuses();
+        assert_eq!(complete[0].status, "complete");
+        assert_eq!(complete[0].processed_documents, Some(3));
+    }
+}
+
 /// Get or create a loading lock for the given index name.
 fn get_loading_lock(name: &str) -> Arc<std::sync::Mutex<()>> {
     let locks = LOADING_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
@@ -58,7 +92,49 @@ fn get_loading_lock(name: &str) -> Arc<std::sync::Mutex<()>> {
 }
 
 use crate::error::{ApiError, ApiResult};
-use crate::models::IndexConfigStored;
+use crate::models::{IndexConfigStored, UpdateHealthStatus};
+
+const UPDATE_STATUS_RETENTION: Duration = Duration::from_secs(10 * 60);
+
+#[derive(Debug, Clone)]
+struct UpdateProgress {
+    status: String,
+    stage: String,
+    queued_documents: Option<usize>,
+    processed_documents: Option<usize>,
+    started_at: SystemTime,
+    updated_at: SystemTime,
+    message: Option<String>,
+    error: Option<String>,
+}
+
+fn system_time_to_rfc3339(time: SystemTime) -> String {
+    let seconds = time
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let days = seconds.div_euclid(86_400);
+    let seconds_of_day = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+fn civil_from_days(days_since_unix_epoch: i64) -> (i64, i64, i64) {
+    let z = days_since_unix_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    year += if month <= 2 { 1 } else { 0 };
+    (year, month, day)
+}
 
 /// Configuration for the API server.
 #[derive(Debug, Clone)]
@@ -171,6 +247,8 @@ pub struct AppState {
     indices: RwLock<HashMap<String, Arc<IndexSlot>>>,
     /// Cached index configurations to avoid repeated file reads
     index_configs: RwLock<HashMap<String, IndexConfigStored>>,
+    /// Active and recent index update progress for the health endpoint
+    update_progress: RwLock<HashMap<String, UpdateProgress>>,
     /// Optional model pool for concurrent encoding
     #[cfg(feature = "model")]
     pub model_pool: Option<ModelPool>,
@@ -193,6 +271,7 @@ impl AppState {
             config,
             indices: RwLock::new(HashMap::new()),
             index_configs: RwLock::new(HashMap::new()),
+            update_progress: RwLock::new(HashMap::new()),
         }
     }
 
@@ -212,6 +291,7 @@ impl AppState {
             config,
             indices: RwLock::new(HashMap::new()),
             index_configs: RwLock::new(HashMap::new()),
+            update_progress: RwLock::new(HashMap::new()),
             model_pool,
             model_info,
         }
@@ -467,6 +547,154 @@ impl AppState {
 
         names.sort();
         names
+    }
+
+    /// Mark an update as queued.
+    pub fn record_update_queued(&self, name: &str, queued_documents: usize, message: &str) {
+        let now = SystemTime::now();
+        let mut progress = self.update_progress.write();
+        if let Some(existing) = progress.get_mut(name) {
+            existing.queued_documents = Some(
+                existing
+                    .queued_documents
+                    .unwrap_or(0)
+                    .saturating_add(queued_documents),
+            );
+            existing.updated_at = now;
+            existing.message = Some(message.to_string());
+            existing.error = None;
+            if existing.status != "running" {
+                existing.status = "queued".to_string();
+                existing.stage = "queued".to_string();
+                existing.processed_documents = None;
+                existing.started_at = now;
+            }
+            return;
+        }
+
+        progress.insert(
+            name.to_string(),
+            UpdateProgress {
+                status: "queued".to_string(),
+                stage: "queued".to_string(),
+                queued_documents: Some(queued_documents),
+                processed_documents: None,
+                started_at: now,
+                updated_at: now,
+                message: Some(message.to_string()),
+                error: None,
+            },
+        );
+    }
+
+    /// Mark an update as running at a new stage.
+    pub fn record_update_stage(&self, name: &str, stage: &str, message: &str) {
+        let now = SystemTime::now();
+        let mut progress = self.update_progress.write();
+        let entry = progress
+            .entry(name.to_string())
+            .or_insert_with(|| UpdateProgress {
+                status: "running".to_string(),
+                stage: stage.to_string(),
+                queued_documents: None,
+                processed_documents: None,
+                started_at: now,
+                updated_at: now,
+                message: None,
+                error: None,
+            });
+        entry.status = "running".to_string();
+        entry.stage = stage.to_string();
+        entry.updated_at = now;
+        entry.message = Some(message.to_string());
+        entry.error = None;
+    }
+
+    /// Mark an update as complete.
+    pub fn record_update_complete(&self, name: &str, processed_documents: usize, message: &str) {
+        let now = SystemTime::now();
+        let mut progress = self.update_progress.write();
+        let entry = progress
+            .entry(name.to_string())
+            .or_insert_with(|| UpdateProgress {
+                status: "complete".to_string(),
+                stage: "complete".to_string(),
+                queued_documents: Some(processed_documents),
+                processed_documents: None,
+                started_at: now,
+                updated_at: now,
+                message: None,
+                error: None,
+            });
+        entry.status = "complete".to_string();
+        entry.stage = "complete".to_string();
+        entry.processed_documents = Some(processed_documents);
+        entry.updated_at = now;
+        entry.message = Some(message.to_string());
+        entry.error = None;
+    }
+
+    /// Mark an update as failed.
+    pub fn record_update_failed(&self, name: &str, error: &str) {
+        let now = SystemTime::now();
+        let mut progress = self.update_progress.write();
+        let entry = progress
+            .entry(name.to_string())
+            .or_insert_with(|| UpdateProgress {
+                status: "failed".to_string(),
+                stage: "failed".to_string(),
+                queued_documents: None,
+                processed_documents: None,
+                started_at: now,
+                updated_at: now,
+                message: None,
+                error: None,
+            });
+        entry.status = "failed".to_string();
+        entry.stage = "failed".to_string();
+        entry.updated_at = now;
+        entry.message = Some("update failed".to_string());
+        entry.error = Some(error.to_string());
+    }
+
+    /// Get active and recent update progress for the health endpoint.
+    pub fn get_update_health_statuses(&self) -> Vec<UpdateHealthStatus> {
+        let now = SystemTime::now();
+        let mut progress = self.update_progress.write();
+        progress.retain(|_, item| {
+            item.status == "queued"
+                || item.status == "running"
+                || now
+                    .duration_since(item.updated_at)
+                    .map(|age| age <= UPDATE_STATUS_RETENTION)
+                    .unwrap_or(true)
+        });
+
+        let mut statuses: Vec<UpdateHealthStatus> = progress
+            .iter()
+            .map(|(index, item)| {
+                let elapsed_ms = now
+                    .duration_since(item.started_at)
+                    .unwrap_or_default()
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64;
+                UpdateHealthStatus {
+                    index: index.clone(),
+                    status: item.status.clone(),
+                    stage: item.stage.clone(),
+                    queued_documents: item.queued_documents,
+                    processed_documents: item.processed_documents,
+                    started_at: system_time_to_rfc3339(item.started_at),
+                    updated_at: system_time_to_rfc3339(item.updated_at),
+                    elapsed_ms,
+                    message: item.message.clone(),
+                    error: item.error.clone(),
+                }
+            })
+            .collect();
+
+        statuses.sort_by(|a, b| a.index.cmp(&b.index));
+        statuses
     }
 
     /// Get the number of loaded indices.

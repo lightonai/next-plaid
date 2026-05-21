@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::codec::ResidualCodec;
 use crate::error::{Error, Result};
 use crate::kmeans::{compute_kmeans, ComputeKmeansConfig};
-use crate::utils::{quantile, quantiles};
+use crate::utils::{atomic_write_file, quantile, quantiles};
 
 /// CPU implementation of fused compress_into_codes + residual computation.
 fn compress_and_residuals_cpu(
@@ -392,30 +392,40 @@ pub fn write_index_from_encoded_chunks(
     };
 
     let centroids_path = index_dir.join("centroids.npy");
-    codec_artifacts
-        .codec
-        .centroids_view()
-        .to_owned()
-        .write_npy(File::create(&centroids_path)?)?;
-    codec_artifacts
-        .bucket_cutoffs
-        .write_npy(File::create(index_dir.join("bucket_cutoffs.npy"))?)?;
-    codec_artifacts
-        .bucket_weights
-        .write_npy(File::create(index_dir.join("bucket_weights.npy"))?)?;
-    codec_artifacts
-        .avg_res_per_dim
-        .write_npy(File::create(index_dir.join("avg_residual.npy"))?)?;
-    Array1::from_vec(vec![codec_artifacts.cluster_threshold])
-        .write_npy(File::create(index_dir.join("cluster_threshold.npy"))?)?;
+    atomic_write_file(&centroids_path, |file| {
+        codec_artifacts
+            .codec
+            .centroids_view()
+            .to_owned()
+            .write_npy(file)?;
+        Ok(())
+    })?;
+    atomic_write_file(&index_dir.join("bucket_cutoffs.npy"), |file| {
+        codec_artifacts.bucket_cutoffs.write_npy(file)?;
+        Ok(())
+    })?;
+    atomic_write_file(&index_dir.join("bucket_weights.npy"), |file| {
+        codec_artifacts.bucket_weights.write_npy(file)?;
+        Ok(())
+    })?;
+    atomic_write_file(&index_dir.join("avg_residual.npy"), |file| {
+        codec_artifacts.avg_res_per_dim.write_npy(file)?;
+        Ok(())
+    })?;
+    atomic_write_file(&index_dir.join("cluster_threshold.npy"), |file| {
+        Array1::from_vec(vec![codec_artifacts.cluster_threshold]).write_npy(file)?;
+        Ok(())
+    })?;
 
     let n_chunks = chunks.len();
     let plan = serde_json::json!({
         "nbits": config.nbits,
         "num_chunks": n_chunks,
     });
-    let mut plan_file = File::create(index_dir.join("plan.json"))?;
-    writeln!(plan_file, "{}", serde_json::to_string_pretty(&plan)?)?;
+    atomic_write_file(&index_dir.join("plan.json"), |file| {
+        writeln!(file, "{}", serde_json::to_string_pretty(&plan)?)?;
+        Ok(())
+    })?;
 
     let mut all_codes: Vec<usize> = Vec::with_capacity(total_embeddings);
     let mut doc_lengths: Vec<i64> = Vec::with_capacity(num_documents);
@@ -429,24 +439,38 @@ pub fn write_index_from_encoded_chunks(
         };
         current_offset += chunk.codes.len();
 
-        serde_json::to_writer_pretty(
-            BufWriter::new(File::create(
-                index_dir.join(format!("{}.metadata.json", chunk_idx)),
-            )?),
-            &chunk_meta,
+        atomic_write_file(
+            &index_dir.join(format!("{}.metadata.json", chunk_idx)),
+            |file| {
+                let mut writer = BufWriter::new(file);
+                serde_json::to_writer_pretty(&mut writer, &chunk_meta)?;
+                writer.flush()?;
+                Ok(())
+            },
         )?;
-        serde_json::to_writer(
-            BufWriter::new(File::create(
-                index_dir.join(format!("doclens.{}.json", chunk_idx)),
-            )?),
-            &chunk.doclens,
+        atomic_write_file(
+            &index_dir.join(format!("doclens.{}.json", chunk_idx)),
+            |file| {
+                let mut writer = BufWriter::new(file);
+                serde_json::to_writer(&mut writer, &chunk.doclens)?;
+                writer.flush()?;
+                Ok(())
+            },
         )?;
-        chunk.codes.write_npy(File::create(
-            index_dir.join(format!("{}.codes.npy", chunk_idx)),
-        )?)?;
-        chunk.residuals.write_npy(File::create(
-            index_dir.join(format!("{}.residuals.npy", chunk_idx)),
-        )?)?;
+        atomic_write_file(
+            &index_dir.join(format!("{}.codes.npy", chunk_idx)),
+            |file| {
+                chunk.codes.write_npy(file)?;
+                Ok(())
+            },
+        )?;
+        atomic_write_file(
+            &index_dir.join(format!("{}.residuals.npy", chunk_idx)),
+            |file| {
+                chunk.residuals.write_npy(file)?;
+                Ok(())
+            },
+        )?;
 
         doc_lengths.extend_from_slice(&chunk.doclens);
         all_codes.extend(chunk.codes.iter().map(|&x| x as usize));
@@ -474,8 +498,14 @@ pub fn write_index_from_encoded_chunks(
         }
     }
 
-    Array1::from_vec(ivf_data).write_npy(File::create(index_dir.join("ivf.npy"))?)?;
-    Array1::from_vec(ivf_lengths).write_npy(File::create(index_dir.join("ivf_lengths.npy"))?)?;
+    atomic_write_file(&index_dir.join("ivf.npy"), |file| {
+        Array1::from_vec(ivf_data).write_npy(file)?;
+        Ok(())
+    })?;
+    atomic_write_file(&index_dir.join("ivf_lengths.npy"), |file| {
+        Array1::from_vec(ivf_lengths).write_npy(file)?;
+        Ok(())
+    })?;
 
     let metadata = Metadata {
         num_chunks: n_chunks,
@@ -487,10 +517,12 @@ pub fn write_index_from_encoded_chunks(
         embedding_dim,
         next_plaid_compatible: true,
     };
-    serde_json::to_writer_pretty(
-        BufWriter::new(File::create(index_dir.join("metadata.json"))?),
-        &metadata,
-    )?;
+    atomic_write_file(&index_dir.join("metadata.json"), |file| {
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer_pretty(&mut writer, &metadata)?;
+        writer.flush()?;
+        Ok(())
+    })?;
 
     Ok(metadata)
 }
@@ -637,22 +669,34 @@ pub fn create_index_files(
     use ndarray_npy::WriteNpyExt;
 
     let centroids_path = index_dir.join("centroids.npy");
-    codec
-        .centroids_view()
-        .to_owned()
-        .write_npy(File::create(&centroids_path)?)?;
+    atomic_write_file(&centroids_path, |file| {
+        codec.centroids_view().to_owned().write_npy(file)?;
+        Ok(())
+    })?;
 
     let cutoffs_path = index_dir.join("bucket_cutoffs.npy");
-    bucket_cutoffs.write_npy(File::create(&cutoffs_path)?)?;
+    atomic_write_file(&cutoffs_path, |file| {
+        bucket_cutoffs.write_npy(file)?;
+        Ok(())
+    })?;
 
     let weights_path = index_dir.join("bucket_weights.npy");
-    bucket_weights.write_npy(File::create(&weights_path)?)?;
+    atomic_write_file(&weights_path, |file| {
+        bucket_weights.write_npy(file)?;
+        Ok(())
+    })?;
 
     let avg_res_path = index_dir.join("avg_residual.npy");
-    avg_res_per_dim.write_npy(File::create(&avg_res_path)?)?;
+    atomic_write_file(&avg_res_path, |file| {
+        avg_res_per_dim.write_npy(file)?;
+        Ok(())
+    })?;
 
     let threshold_path = index_dir.join("cluster_threshold.npy");
-    Array1::from_vec(vec![cluster_threshold]).write_npy(File::create(&threshold_path)?)?;
+    atomic_write_file(&threshold_path, |file| {
+        Array1::from_vec(vec![cluster_threshold]).write_npy(file)?;
+        Ok(())
+    })?;
 
     // Process documents in chunks
     let n_chunks = (num_documents as f64 / config.batch_size as f64).ceil() as usize;
@@ -663,8 +707,10 @@ pub fn create_index_files(
         "nbits": config.nbits,
         "num_chunks": n_chunks,
     });
-    let mut plan_file = File::create(&plan_path)?;
-    writeln!(plan_file, "{}", serde_json::to_string_pretty(&plan)?)?;
+    atomic_write_file(&plan_path, |file| {
+        writeln!(file, "{}", serde_json::to_string_pretty(&plan)?)?;
+        Ok(())
+    })?;
 
     let mut all_codes: Vec<usize> = Vec::with_capacity(total_embeddings);
     let mut doc_lengths: Vec<i64> = Vec::with_capacity(num_documents);
@@ -747,20 +793,36 @@ pub fn create_index_files(
         };
 
         let chunk_meta_path = index_dir.join(format!("{}.metadata.json", chunk_idx));
-        serde_json::to_writer_pretty(BufWriter::new(File::create(&chunk_meta_path)?), &chunk_meta)?;
+        atomic_write_file(&chunk_meta_path, |file| {
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer_pretty(&mut writer, &chunk_meta)?;
+            writer.flush()?;
+            Ok(())
+        })?;
 
         // Save chunk doclens
         let doclens_path = index_dir.join(format!("doclens.{}.json", chunk_idx));
-        serde_json::to_writer(BufWriter::new(File::create(&doclens_path)?), &chunk_doclens)?;
+        atomic_write_file(&doclens_path, |file| {
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer(&mut writer, &chunk_doclens)?;
+            writer.flush()?;
+            Ok(())
+        })?;
 
         // Save chunk codes
         let chunk_codes_arr: Array1<i64> = batch_codes.iter().map(|&x| x as i64).collect();
         let codes_path = index_dir.join(format!("{}.codes.npy", chunk_idx));
-        chunk_codes_arr.write_npy(File::create(&codes_path)?)?;
+        atomic_write_file(&codes_path, |file| {
+            chunk_codes_arr.write_npy(file)?;
+            Ok(())
+        })?;
 
         // Save chunk residuals
         let residuals_path = index_dir.join(format!("{}.residuals.npy", chunk_idx));
-        batch_packed.write_npy(File::create(&residuals_path)?)?;
+        atomic_write_file(&residuals_path, |file| {
+            batch_packed.write_npy(file)?;
+            Ok(())
+        })?;
     }
 
     // Update chunk metadata with global offsets
@@ -776,7 +838,12 @@ pub fn create_index_files(
             current_offset += num_emb;
         }
 
-        serde_json::to_writer_pretty(BufWriter::new(File::create(&chunk_meta_path)?), &meta)?;
+        atomic_write_file(&chunk_meta_path, |file| {
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer_pretty(&mut writer, &meta)?;
+            writer.flush()?;
+            Ok(())
+        })?;
     }
 
     // Build IVF (Inverted File)
@@ -809,10 +876,16 @@ pub fn create_index_files(
     let ivf_lengths = Array1::from_vec(ivf_lengths);
 
     let ivf_path = index_dir.join("ivf.npy");
-    ivf.write_npy(File::create(&ivf_path)?)?;
+    atomic_write_file(&ivf_path, |file| {
+        ivf.write_npy(file)?;
+        Ok(())
+    })?;
 
     let ivf_lengths_path = index_dir.join("ivf_lengths.npy");
-    ivf_lengths.write_npy(File::create(&ivf_lengths_path)?)?;
+    atomic_write_file(&ivf_lengths_path, |file| {
+        ivf_lengths.write_npy(file)?;
+        Ok(())
+    })?;
 
     // Save global metadata
     let metadata = Metadata {
@@ -827,7 +900,12 @@ pub fn create_index_files(
     };
 
     let metadata_path = index_dir.join("metadata.json");
-    serde_json::to_writer_pretty(BufWriter::new(File::create(&metadata_path)?), &metadata)?;
+    atomic_write_file(&metadata_path, |file| {
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer_pretty(&mut writer, &metadata)?;
+        writer.flush()?;
+        Ok(())
+    })?;
 
     Ok(metadata)
 }
@@ -979,9 +1057,13 @@ impl MmapIndex {
             // Mark as compatible and save metadata
             metadata.next_plaid_compatible = true;
             let metadata_path = index_dir.join("metadata.json");
-            let file = File::create(&metadata_path)
-                .map_err(|e| Error::IndexLoad(format!("Failed to update metadata: {}", e)))?;
-            serde_json::to_writer_pretty(BufWriter::new(file), &metadata)?;
+            atomic_write_file(&metadata_path, |file| {
+                let mut writer = BufWriter::new(file);
+                serde_json::to_writer_pretty(&mut writer, &metadata)?;
+                writer.flush()?;
+                Ok(())
+            })
+            .map_err(|e| Error::IndexLoad(format!("Failed to update metadata: {}", e)))?;
             eprintln!("Metadata updated with next_plaid_compatible: true");
         }
 

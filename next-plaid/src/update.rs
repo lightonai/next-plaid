@@ -6,10 +6,11 @@
 //! - Centroid expansion for outliers
 //! - Cluster threshold updates
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -23,10 +24,41 @@ use crate::error::Result;
 use crate::index::Metadata;
 use crate::kmeans::compute_kmeans;
 use crate::kmeans::ComputeKmeansConfig;
+use crate::utils::atomic_write_file;
 use crate::utils::quantile;
 
 /// Default batch size for processing documents (matches fast-plaid).
 const DEFAULT_BATCH_SIZE: usize = 50_000;
+
+thread_local! {
+    static UPDATE_PROGRESS: RefCell<Option<Box<dyn Fn(&str, &str)>>> = RefCell::new(None);
+}
+
+/// Run an update operation with a thread-local progress callback.
+///
+/// The callback is intentionally thread-local because update work runs inside one blocking
+/// worker thread; this avoids plumbing API-specific state through the public update config.
+pub fn with_update_progress<F, R>(callback: F, operation: impl FnOnce() -> R) -> R
+where
+    F: Fn(&str, &str) + 'static,
+{
+    UPDATE_PROGRESS.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(callback));
+    });
+    let result = operation();
+    UPDATE_PROGRESS.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
+    result
+}
+
+fn emit_update_progress(stage: &str, message: &str) {
+    UPDATE_PROGRESS.with(|slot| {
+        if let Some(callback) = slot.borrow().as_ref() {
+            callback(stage, message);
+        }
+    });
+}
 
 /// Configuration for index updates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,16 +188,29 @@ pub fn save_buffer(index_path: &Path, embeddings: &[Array2<f32>]) -> Result<()> 
         offset += n;
     }
 
-    flat.write_npy(File::create(&buffer_path)?)?;
+    atomic_write_file(&buffer_path, |file| {
+        flat.write_npy(file)?;
+        Ok(())
+    })?;
 
     // Save lengths
     let lengths_path = index_path.join("buffer_lengths.json");
-    serde_json::to_writer(BufWriter::new(File::create(&lengths_path)?), &lengths)?;
+    atomic_write_file(&lengths_path, |file| {
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer(&mut writer, &lengths)?;
+        writer.flush()?;
+        Ok(())
+    })?;
 
     // Save buffer info for deletion tracking (number of documents)
     let info_path = index_path.join("buffer_info.json");
     let buffer_info = serde_json::json!({ "num_docs": embeddings.len() });
-    serde_json::to_writer(BufWriter::new(File::create(&info_path)?), &buffer_info)?;
+    atomic_write_file(&info_path, |file| {
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer(&mut writer, &buffer_info)?;
+        writer.flush()?;
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -273,11 +318,19 @@ pub fn save_embeddings_npy(index_path: &Path, embeddings: &[Array2<f32>]) -> Res
 
     // Save flat embeddings
     let emb_path = index_path.join("embeddings.npy");
-    flat.write_npy(File::create(&emb_path)?)?;
+    atomic_write_file(&emb_path, |file| {
+        flat.write_npy(file)?;
+        Ok(())
+    })?;
 
     // Save lengths for reconstruction
     let lengths_path = index_path.join("embeddings_lengths.json");
-    serde_json::to_writer(BufWriter::new(File::create(&lengths_path)?), &lengths)?;
+    atomic_write_file(&lengths_path, |file| {
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer(&mut writer, &lengths)?;
+        writer.flush()?;
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -344,7 +397,10 @@ pub fn update_cluster_threshold(
         new_threshold
     };
 
-    Array1::from_vec(vec![final_threshold]).write_npy(File::create(&thresh_path)?)?;
+    atomic_write_file(&thresh_path, |file| {
+        Array1::from_vec(vec![final_threshold]).write_npy(file)?;
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -588,6 +644,10 @@ pub fn update_centroids(
     }
 
     // Find outliers
+    emit_update_progress(
+        "centroid_expansion",
+        "finding embeddings outside existing centroids",
+    );
     let threshold_sq = cluster_threshold * cluster_threshold;
     let outlier_indices = find_outliers(&flat_embeddings, &existing_centroids, threshold_sq);
 
@@ -624,6 +684,7 @@ pub fn update_centroids(
         .map(|&idx| flat_embeddings.slice(s![idx..idx + 1, ..]).to_owned())
         .collect();
 
+    emit_update_progress("kmeans", "clustering outlier embeddings");
     let new_centroids = compute_kmeans(&outlier_docs, &kmeans_config)?;
     let k_new = new_centroids.nrows();
 
@@ -638,7 +699,11 @@ pub fn update_centroids(
         .assign(&new_centroids);
 
     // Save updated centroids
-    final_centroids.write_npy(File::create(&centroids_path)?)?;
+    emit_update_progress("index_write", "writing updated centroids");
+    atomic_write_file(&centroids_path, |file| {
+        final_centroids.write_npy(file)?;
+        Ok(())
+    })?;
 
     // Extend ivf_lengths.npy with zeros for new centroids
     let ivf_lengths_path = index_path.join("ivf_lengths.npy");
@@ -648,7 +713,10 @@ pub fn update_centroids(
         new_lengths
             .slice_mut(s![..old_lengths.len()])
             .assign(&old_lengths);
-        new_lengths.write_npy(File::create(&ivf_lengths_path)?)?;
+        atomic_write_file(&ivf_lengths_path, |file| {
+            new_lengths.write_npy(file)?;
+            Ok(())
+        })?;
     }
 
     // Update metadata.json num_partitions
@@ -661,7 +729,12 @@ pub fn update_centroids(
             obj.insert("num_partitions".to_string(), new_num_centroids.into());
         }
 
-        serde_json::to_writer_pretty(BufWriter::new(File::create(&meta_path)?), &meta)?;
+        atomic_write_file(&meta_path, |file| {
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer_pretty(&mut writer, &meta)?;
+            writer.flush()?;
+            Ok(())
+        })?;
     }
 
     Ok(k_new)
@@ -693,6 +766,7 @@ pub fn update_index(
     update_threshold: bool,
     force_cpu: bool,
 ) -> Result<usize> {
+    emit_update_progress("index_write", "writing index chunks");
     let batch_size = batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
     let index_dir = Path::new(index_path);
 
@@ -865,19 +939,30 @@ pub fn update_index(
 
             let codes_arr: Array1<i64> = chk_codes_list.iter().map(|&x| x as i64).collect();
             let codes_path = index_dir.join(format!("{}.codes.npy", global_chunk_idx));
-            codes_arr.write_npy(File::create(&codes_path)?)?;
+            atomic_write_file(&codes_path, |file| {
+                codes_arr.write_npy(file)?;
+                Ok(())
+            })?;
 
             let num_tokens = chk_codes_list.len();
             let residuals_arr =
                 Array2::from_shape_vec((num_tokens, packed_dim), chk_residuals_list)
                     .map_err(|e| Error::Shape(format!("Failed to reshape residuals: {}", e)))?;
             let residuals_path = index_dir.join(format!("{}.residuals.npy", global_chunk_idx));
-            residuals_arr.write_npy(File::create(&residuals_path)?)?;
+            atomic_write_file(&residuals_path, |file| {
+                residuals_arr.write_npy(file)?;
+                Ok(())
+            })?;
         }
 
         // Save doclens
         let doclens_path = index_dir.join(format!("doclens.{}.json", global_chunk_idx));
-        serde_json::to_writer(BufWriter::new(File::create(&doclens_path)?), &chk_doclens)?;
+        atomic_write_file(&doclens_path, |file| {
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer(&mut writer, &chk_doclens)?;
+            writer.flush()?;
+            Ok(())
+        })?;
 
         // Save chunk metadata
         let chk_meta = serde_json::json!({
@@ -888,7 +973,12 @@ pub fn update_index(
         current_emb_offset += chk_codes_list.len();
 
         let meta_path = index_dir.join(format!("{}.metadata.json", global_chunk_idx));
-        serde_json::to_writer_pretty(BufWriter::new(File::create(&meta_path)?), &chk_meta)?;
+        atomic_write_file(&meta_path, |file| {
+            let mut writer = BufWriter::new(file);
+            serde_json::to_writer_pretty(&mut writer, &chk_meta)?;
+            writer.flush()?;
+            Ok(())
+        })?;
     }
 
     // Update cluster threshold if requested
@@ -968,10 +1058,16 @@ pub fn update_index(
 
         // Save updated IVF
         let new_ivf = Array1::from_vec(new_ivf_data);
-        new_ivf.write_npy(File::create(&ivf_path)?)?;
+        atomic_write_file(&ivf_path, |file| {
+            new_ivf.write_npy(file)?;
+            Ok(())
+        })?;
 
         let new_lengths = Array1::from_vec(new_ivf_lengths);
-        new_lengths.write_npy(File::create(&ivf_lengths_path)?)?;
+        atomic_write_file(&ivf_lengths_path, |file| {
+            new_lengths.write_npy(file)?;
+            Ok(())
+        })?;
     }
 
     // Update global metadata
@@ -998,7 +1094,13 @@ pub fn update_index(
         next_plaid_compatible: true,
     };
 
-    serde_json::to_writer_pretty(BufWriter::new(File::create(&metadata_path)?), &new_metadata)?;
+    emit_update_progress("metadata_write", "writing index metadata");
+    atomic_write_file(&metadata_path, |file| {
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer_pretty(&mut writer, &new_metadata)?;
+        writer.flush()?;
+        Ok(())
+    })?;
 
     // Clear merged files to force regeneration on next load.
     // This ensures the merged files are consistent with the new chunk data.

@@ -1,6 +1,85 @@
 //! Utility functions for next-plaid
 
+use std::fs::{self, File};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use ndarray::{Array1, Array2, ArrayView1, Axis};
+
+use crate::error::Result;
+
+/// Write a file through a same-directory temporary file, then atomically rename it into place.
+///
+/// This avoids leaving critical index files truncated if a process is interrupted after
+/// opening with `File::create` but before the full payload is written.
+pub fn atomic_write_file<F>(path: &Path, write_fn: F) -> Result<()>
+where
+    F: FnOnce(&mut File) -> Result<()>,
+{
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+
+    let mut temp_path = atomic_temp_path(path);
+    let mut attempts = 0u32;
+    let mut file = loop {
+        match File::options()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => break file,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists && attempts < 8 => {
+                attempts += 1;
+                temp_path = atomic_temp_path_with_attempt(path, attempts);
+            }
+            Err(err) => return Err(err.into()),
+        }
+    };
+
+    let write_result = write_fn(&mut file).and_then(|_| {
+        file.flush()?;
+        file.sync_all()?;
+        Ok(())
+    });
+
+    if let Err(err) = write_result {
+        drop(file);
+        let _ = fs::remove_file(&temp_path);
+        return Err(err);
+    }
+
+    drop(file);
+    fs::rename(&temp_path, path)?;
+
+    if let Ok(parent_dir) = File::open(parent) {
+        let _ = parent_dir.sync_all();
+    }
+
+    Ok(())
+}
+
+fn atomic_temp_path(path: &Path) -> PathBuf {
+    atomic_temp_path_with_attempt(path, 0)
+}
+
+fn atomic_temp_path_with_attempt(path: &Path, attempt: u32) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("atomic-write");
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let tmp_name = format!(
+        ".{}.{}.{}.tmp",
+        file_name,
+        std::process::id(),
+        nanos + attempt as u128
+    );
+    path.with_file_name(tmp_name)
+}
 
 /// Compute the k-th quantile of a 1D array using linear interpolation.
 ///
@@ -203,6 +282,8 @@ pub fn pad_sequences(sequences: &[Array2<f32>], pad_value: f32) -> (Array2<f32>,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Error;
+    use std::io::Write;
 
     #[test]
     fn test_quantile() {
@@ -233,5 +314,26 @@ mod tests {
 
         // Second row: [0, 5, 0] / 5 = [0, 1, 0]
         assert!((normalized[[1, 1]] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn atomic_write_failure_preserves_original_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("centroids.npy");
+        std::fs::write(&path, b"original").unwrap();
+
+        let result = atomic_write_file(&path, |file| {
+            file.write_all(b"partial")?;
+            Err(Error::Update("forced failure".to_string()))
+        });
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        let temp_entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(temp_entries.is_empty());
     }
 }

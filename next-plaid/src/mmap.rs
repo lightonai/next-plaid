@@ -435,7 +435,11 @@ pub fn detect_npy_dtype(path: &Path) -> Result<String> {
     };
 
     if mmap.len() < 10 {
-        return Err(Error::IndexLoad("NPY file too small".into()));
+        return Err(Error::IndexLoad(format!(
+            "NPY file {:?} too small: {} bytes",
+            path,
+            mmap.len()
+        )));
     }
 
     // Check magic
@@ -653,9 +657,13 @@ pub fn normalize_u8_npy(path: &Path) -> Result<()> {
 }
 
 /// Parse NPY header and return (shape, data_offset, is_fortran_order)
-fn parse_npy_header(mmap: &Mmap) -> Result<(Vec<usize>, usize, bool)> {
+fn parse_npy_header(path: &Path, mmap: &Mmap) -> Result<(Vec<usize>, usize, bool)> {
     if mmap.len() < 10 {
-        return Err(Error::IndexLoad("NPY file too small".into()));
+        return Err(Error::IndexLoad(format!(
+            "NPY file {:?} too small: {} bytes",
+            path,
+            mmap.len()
+        )));
     }
 
     // Check magic
@@ -671,7 +679,11 @@ fn parse_npy_header(mmap: &Mmap) -> Result<(Vec<usize>, usize, bool)> {
         u16::from_le_bytes([mmap[8], mmap[9]]) as usize
     } else if major_version == 2 {
         if mmap.len() < 12 {
-            return Err(Error::IndexLoad("NPY v2 file too small".into()));
+            return Err(Error::IndexLoad(format!(
+                "NPY v2 file {:?} too small: {} bytes",
+                path,
+                mmap.len()
+            )));
         }
         u32::from_le_bytes([mmap[8], mmap[9], mmap[10], mmap[11]]) as usize
     } else {
@@ -685,7 +697,12 @@ fn parse_npy_header(mmap: &Mmap) -> Result<(Vec<usize>, usize, bool)> {
     let header_end = header_start + header_len;
 
     if mmap.len() < header_end {
-        return Err(Error::IndexLoad("NPY header exceeds file size".into()));
+        return Err(Error::IndexLoad(format!(
+            "NPY header exceeds file size for {:?}: header_end={}, file_size={}",
+            path,
+            header_end,
+            mmap.len()
+        )));
     }
 
     // Parse header dict (simplified Python dict parsing)
@@ -768,7 +785,7 @@ impl MmapNpyArray1I64 {
             })?
         };
 
-        let (shape, data_offset, _fortran_order) = parse_npy_header(&mmap)?;
+        let (shape, data_offset, _fortran_order) = parse_npy_header(path, &mmap)?;
 
         if shape.is_empty() {
             return Err(Error::IndexLoad("Empty shape in NPY file".into()));
@@ -851,7 +868,7 @@ impl MmapNpyArray2F32 {
             })?
         };
 
-        let (shape_vec, data_offset, _fortran_order) = parse_npy_header(&mmap)?;
+        let (shape_vec, data_offset, _fortran_order) = parse_npy_header(path, &mmap)?;
 
         if shape_vec.len() != 2 {
             return Err(Error::IndexLoad(format!(
@@ -982,7 +999,7 @@ impl MmapNpyArray2U8 {
             })?
         };
 
-        let (shape_vec, data_offset, _fortran_order) = parse_npy_header(&mmap)?;
+        let (shape_vec, data_offset, _fortran_order) = parse_npy_header(path, &mmap)?;
 
         if shape_vec.len() != 2 {
             return Err(Error::IndexLoad(format!(

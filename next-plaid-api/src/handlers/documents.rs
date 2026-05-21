@@ -373,6 +373,7 @@ async fn process_batch(
     // Acquire per-index lock using full path for isolation
     let lock = get_index_lock_by_path(&path_str);
     let _guard = lock.lock().await;
+    state.record_update_stage(index_name, "batching", "processing queued update batch");
 
     // Run heavy work in blocking thread
     let result = task::spawn_blocking(move || -> Result<BatchMetrics, String> {
@@ -403,8 +404,14 @@ async fn process_batch(
 
         // STEP 1: Update vector index FIRST
         let index_update_start = std::time::Instant::now();
-        let index_result =
-            MmapIndex::update_or_create(&embeddings, &path_str, &index_config, &update_config);
+        let progress_state = state_clone.clone();
+        let progress_name = name_inner.clone();
+        let index_result = next_plaid::update::with_update_progress(
+            move |stage, message| {
+                progress_state.record_update_stage(&progress_name, stage, message);
+            },
+            || MmapIndex::update_or_create(&embeddings, &path_str, &index_config, &update_config),
+        );
 
         let (mut index, doc_ids) = match index_result {
             Ok((idx, ids)) => (idx, ids),
@@ -418,6 +425,7 @@ async fn process_batch(
         let last_doc_id = doc_ids.last().copied();
 
         // STEP 2: Update metadata DB using the ACTUAL doc_ids from the index
+        state_clone.record_update_stage(&name_inner, "metadata_write", "writing metadata database");
         let metadata_update_start = std::time::Instant::now();
         let db_existed = filtering::exists(&path_str);
         let db_result = if db_existed {
@@ -471,7 +479,7 @@ async fn process_batch(
         };
 
         // Reload State
-        state_clone.unload_index(&name_inner);
+        state_clone.record_update_stage(&name_inner, "reload", "loading updated index");
         let idx = MmapIndex::load(&path_str).map_err(|e| format!("Failed to load index: {}", e))?;
         state_clone.register_index(&name_inner, idx);
 
@@ -489,6 +497,7 @@ async fn process_batch(
 
     match result {
         Ok(Ok(metrics)) => {
+            state.record_update_complete(index_name, doc_count, "update complete");
             tracing::info!(
                 index = %index_name,
                 num_documents = doc_count,
@@ -512,6 +521,7 @@ async fn process_batch(
             }
         }
         Ok(Err(e)) => {
+            state.record_update_failed(index_name, &e);
             tracing::error!(
                 index = %index_name,
                 num_documents = doc_count,
@@ -521,6 +531,7 @@ async fn process_batch(
             );
         }
         Err(e) => {
+            state.record_update_failed(index_name, &e.to_string());
             tracing::error!(
                 index = %index_name,
                 num_documents = doc_count,
@@ -1159,6 +1170,7 @@ pub async fn add_documents(
     })?;
 
     let doc_count = embeddings.len();
+    state.record_update_queued(&name, doc_count, "document update queued");
 
     // Spawn background task
     tokio::spawn(async move {
@@ -1171,6 +1183,8 @@ pub async fn add_documents(
         // Clone name AGAIN for the inner closure, so `name_clone` stays valid for error logging
         let name_inner = name_clone.clone();
         let start = std::time::Instant::now();
+        state_clone.record_update_stage(&name_inner, "batching", "processing document update");
+        let result_state = state_clone.clone();
 
         // 2. Perform heavy IO work in a blocking task
         let result = task::spawn_blocking(move || -> ApiResult<u64> {
@@ -1179,11 +1193,6 @@ pub async fn add_documents(
                 .index_path(&name_inner)
                 .to_string_lossy()
                 .to_string();
-
-            // Release the shared mmap-backed index before loading a writable instance.
-            // On Windows, update/delete paths that rewrite files fail with OS error 1224
-            // if another mapped copy is still held in the state cache.
-            state_clone.unload_index(&name_inner);
 
             // Check sync before updating: if filtering DB exists, counts must match
             let index_path = std::path::Path::new(&path_str);
@@ -1205,7 +1214,14 @@ pub async fn add_documents(
             // Update with metadata (metadata is required)
             let update_config = UpdateConfig::default();
             let index_update_start = std::time::Instant::now();
-            index.update_with_metadata(&embeddings, &update_config, Some(&metadata))?;
+            let progress_state = state_clone.clone();
+            let progress_name = name_inner.clone();
+            next_plaid::update::with_update_progress(
+                move |stage, message| {
+                    progress_state.record_update_stage(&progress_name, stage, message);
+                },
+                || index.update_with_metadata(&embeddings, &update_config, Some(&metadata)),
+            )?;
             let index_update_ms = index_update_start.elapsed().as_millis() as u64;
 
             // Eviction: consult the cached config instead of racing a fresh file read.
@@ -1224,6 +1240,7 @@ pub async fn add_documents(
             }
 
             // Reload state
+            state_clone.record_update_stage(&name_inner, "reload", "loading updated index");
             state_clone.reload_index(&name_inner)?;
             Ok(index_update_ms)
         })
@@ -1234,6 +1251,11 @@ pub async fn add_documents(
         // Log result
         match result {
             Ok(Ok(index_update_ms)) => {
+                result_state.record_update_complete(
+                    &name_clone,
+                    doc_count,
+                    "document update complete",
+                );
                 tracing::info!(
                     index = %name_clone,
                     num_documents = doc_count,
@@ -1243,6 +1265,7 @@ pub async fn add_documents(
                 );
             }
             Ok(Err(e)) => {
+                result_state.record_update_failed(&name_clone, &e.to_string());
                 tracing::error!(
                     index = %name_clone,
                     num_documents = doc_count,
@@ -1252,6 +1275,7 @@ pub async fn add_documents(
                 );
             }
             Err(e) => {
+                result_state.record_update_failed(&name_clone, &e.to_string());
                 tracing::error!(
                     index = %name_clone,
                     num_documents = doc_count,
@@ -1526,6 +1550,7 @@ pub async fn update_index(
             ApiError::Internal(format!("Batch worker for index '{}' is not running", name))
         }
     })?;
+    state.record_update_queued(&name, doc_count, "update queued for batching");
 
     tracing::debug!(
         index = %name,
@@ -1670,15 +1695,24 @@ pub async fn update_index_with_encoding(
             ApiError::Internal(format!("Batch worker for index '{}' is not running", name))
         }
     })?;
+    state.record_update_queued(&name, req.documents.len(), "encoding queued documents");
+    state.record_update_stage(&name, "encoding", "encoding documents");
 
     // Now encode - we have a guaranteed slot in the batch queue
-    let embeddings = encode_texts_internal(
+    let embeddings = match encode_texts_internal(
         state.clone(),
         &req.documents,
         InputType::Document,
         req.pool_factor,
     )
-    .await?;
+    .await
+    {
+        Ok(embeddings) => embeddings,
+        Err(err) => {
+            state.record_update_failed(&name, &err.to_string());
+            return Err(err);
+        }
+    };
 
     let doc_count = embeddings.len();
 
@@ -1690,6 +1724,7 @@ pub async fn update_index_with_encoding(
 
     // Send using the reserved permit - this is guaranteed to succeed
     permit.send(batch_item);
+    state.record_update_queued(&name, doc_count, "update queued for batching");
 
     tracing::debug!(
         index = %name,

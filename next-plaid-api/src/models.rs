@@ -510,9 +510,50 @@ pub struct HealthResponse {
     pub memory_usage_bytes: u64,
     /// List of available indices with their configuration
     pub indices: Vec<IndexSummary>,
+    /// Active and recent update progress
+    pub updates: Vec<UpdateHealthStatus>,
     /// Model information (only present when --model is specified)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelHealthInfo>,
+}
+
+/// In-memory update progress surfaced by the health endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct UpdateHealthStatus {
+    /// Index name
+    #[schema(example = "my-index")]
+    pub index: String,
+    /// Update status: queued, running, complete, failed
+    #[schema(example = "running")]
+    pub status: String,
+    /// Current update stage
+    #[schema(example = "centroid_expansion")]
+    pub stage: String,
+    /// Number of documents queued for this update batch
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 300)]
+    pub queued_documents: Option<usize>,
+    /// Number of documents processed when known
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = 120)]
+    pub processed_documents: Option<usize>,
+    /// RFC3339 timestamp for when this update started
+    #[schema(example = "2026-05-22T01:04:12Z")]
+    pub started_at: String,
+    /// RFC3339 timestamp for the last progress change
+    #[schema(example = "2026-05-22T01:05:01Z")]
+    pub updated_at: String,
+    /// Milliseconds elapsed since this update started
+    #[schema(example = 49000)]
+    pub elapsed_ms: u64,
+    /// Human-readable current progress note
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "clustering outlier embeddings")]
+    pub message: Option<String>,
+    /// Failure message when status is failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "Index update failed: NPY file too small")]
+    pub error: Option<String>,
 }
 
 /// Model information for health endpoint.
