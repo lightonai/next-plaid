@@ -39,10 +39,51 @@ pub use types::{CodeUnit, Language, UnitType};
 
 // Internal imports
 use analysis::extract_file_imports;
-use ast::{get_node_name, is_class_node, is_constant_node, is_function_node};
+use ast::{find_class_body, get_node_name, is_class_node, is_constant_node, is_function_node};
 use extract::{extract_class, extract_constant, extract_function, fill_raw_code_gaps};
 use language::get_tree_sitter_language;
 use text::extract_text_units;
+
+/// When set (`COLGREP_RECURSE_CLASS_BODIES=1`), `extract_from_node` no longer
+/// returns after pushing a class unit — it recurses into the class body and
+/// extracts each method as its own `Method` unit alongside the class. This
+/// matches semble's chunking granularity (one BM25 row / one ColBERT vector
+/// per method) and stops BM25 length-normalisation from punishing the
+/// canonical-implementation file on symbol queries like `SqlMapper`,
+/// `BaseModel`, `Vitest`, `Application`. See `MISSION.md` § Lever 1.
+fn recurse_class_bodies() -> bool {
+    matches!(
+        std::env::var("COLGREP_RECURSE_CLASS_BODIES").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
+}
+
+/// Abstract type-contract nodes (interfaces, traits, protocols, type aliases,
+/// enums) where recursing into the body produces method-signature chunks that
+/// drown out the canonical name match. Empirically responsible for the
+/// circe / zod / axum / guzzle regressions when `recurse_class_bodies` is on.
+fn is_abstract_type_container(kind: &str, lang: Language) -> bool {
+    match lang {
+        Language::Rust => kind == "trait_item",
+        Language::TypeScript | Language::Vue | Language::Svelte => matches!(
+            kind,
+            "interface_declaration" | "type_alias_declaration" | "enum_declaration"
+        ),
+        Language::Java | Language::CSharp => matches!(
+            kind,
+            "interface_declaration" | "enum_declaration"
+        ),
+        Language::Scala => kind == "trait_definition",
+        Language::Swift => matches!(kind, "protocol_declaration" | "enum_declaration"),
+        Language::Kotlin => kind == "interface_declaration",
+        Language::Php => matches!(
+            kind,
+            "interface_declaration" | "trait_declaration" | "enum_declaration"
+        ),
+        Language::Cpp => kind == "enum_specifier",
+        _ => false,
+    }
+}
 
 use crate::config::{Config, DEFAULT_MAX_RECURSION_DEPTH};
 
@@ -200,13 +241,36 @@ fn extract_from_node(
     }
     // Check if this is a class definition
     else if is_class_node(kind, lang) {
-        if get_node_name(node, bytes, lang).is_some() {
-            // Extract class as a single chunk (do NOT recurse into methods)
-            // This keeps the entire class as one unit for better semantic coherence
+        if let Some(class_name) = get_node_name(node, bytes, lang) {
+            // Always push the class as its own unit so the class-level query
+            // (e.g. `SqlMapper`) still resolves to the canonical declaration.
             if let Some(unit) = extract_class(node, path, lines, bytes, lang, file_imports) {
                 units.push(unit);
             }
-            return; // Don't recurse into class body - keep class as single chunk
+            // When the env flag is on, also recurse into the body so each
+            // method / nested function becomes its own searchable unit. This
+            // is the parser-side fix for the SqlMapper/BaseModel/Application
+            // family of failures documented in MISSION.md § Lever 1.
+            if recurse_class_bodies() && !is_abstract_type_container(kind, lang) {
+                if let Some(body) = find_class_body(node, lang) {
+                    for child in body.children(&mut body.walk()) {
+                        extract_from_node(
+                            child,
+                            path,
+                            lines,
+                            bytes,
+                            lang,
+                            units,
+                            Some(&class_name),
+                            file_imports,
+                            depth + 1,
+                            max_depth,
+                            depth_limit_hit,
+                        );
+                    }
+                }
+            }
+            return; // Don't fall through to the generic recurse below.
         }
     }
     // Check if this is a top-level constant/static declaration (only at module level)

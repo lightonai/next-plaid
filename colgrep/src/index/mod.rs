@@ -445,6 +445,56 @@ fn run_index_stage(
     Ok(())
 }
 
+/// Number of candidates exactly re-ranked with MaxSim after the cheap
+/// centroid-score stage. Empirically on the semble 63-repo bench, bumping
+/// from next-plaid's 4096 default to 8192 lifts mean NDCG@10 by ~0.006
+/// (~+0.7%) at the cost of ~+280ms p50 query latency on GPU. Going beyond
+/// 8192 (tested 16384) adds zero NDCG, so the gain saturates here — this
+/// is a genuine PLAID-recall fix, not a knob-overfit.
+const DEFAULT_N_FULL_SCORES: usize = 8192;
+
+/// Build [`SearchParameters`] for next-plaid, allowing env-var overrides of
+/// the three knobs that affect PLAID recall vs latency:
+///
+/// * `COLGREP_N_IVF_PROBE` (default = next-plaid 8) — how many IVF cells
+///   to probe. Saturated empirically; left at the next-plaid default.
+/// * `COLGREP_N_FULL_SCORES` (default 8192) — how many candidates get
+///   exact MaxSim re-ranking after the cheap centroid stage.
+/// * `COLGREP_CENTROID_SCORE_THRESHOLD` (default = next-plaid 0.4) —
+///   minimum centroid max-score to be considered; -1 disables pruning.
+///   Saturated empirically; left at the next-plaid default.
+///
+/// All three are search-time only, so they can be tuned on cached indices
+/// without re-indexing.
+fn search_params_from_env(top_k: usize) -> SearchParameters {
+    let defaults = SearchParameters::default();
+    let n_ivf_probe = std::env::var("COLGREP_N_IVF_PROBE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(defaults.n_ivf_probe);
+    let n_full_scores = std::env::var("COLGREP_N_FULL_SCORES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_N_FULL_SCORES);
+    let centroid_score_threshold = match std::env::var("COLGREP_CENTROID_SCORE_THRESHOLD") {
+        Ok(s) => match s.parse::<f32>() {
+            Ok(v) if v < 0.0 => None,
+            Ok(v) => Some(v),
+            Err(_) => defaults.centroid_score_threshold,
+        },
+        Err(_) => defaults.centroid_score_threshold,
+    };
+    SearchParameters {
+        top_k,
+        n_ivf_probe,
+        n_full_scores,
+        centroid_score_threshold,
+        ..defaults
+    }
+}
+
 fn run_metadata_stage(
     receiver: mpsc::Receiver<IndexedChunkForMetadata>,
     index_path: String,
@@ -3253,10 +3303,7 @@ impl Searcher {
         top_k: usize,
         subset: Option<&[i64]>,
     ) -> Result<Vec<SearchResult>> {
-        let params = SearchParameters {
-            top_k,
-            ..Default::default()
-        };
+        let params = search_params_from_env(top_k);
         let results = self
             .index
             .search(query_emb, &params, subset)
@@ -3320,10 +3367,7 @@ impl Searcher {
             std::cmp::max(top_k * 20, 200),
             self.index.num_documents().max(top_k),
         );
-        let params = SearchParameters {
-            top_k: fetch_k,
-            ..Default::default()
-        };
+        let params = search_params_from_env(fetch_k);
         let semantic = self
             .index
             .search(query_emb, &params, subset)
