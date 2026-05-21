@@ -23,21 +23,23 @@
 
 ## Benchmarks
 
-We re-run [Semble](https://github.com/MinishLab/semble)'s public code-search benchmark — 1,251 natural-language queries over 63 repositories in 19 languages, scored by NDCG@10 against file-level relevance annotations — so the table below is directly comparable to the chart in semble's README. ColBERT inference for ColGREP is on a single H100 GPU at FP32 (the configuration that produced the NDCG numbers); query latency for `ColGREP (LateOn-Code-edge)` is also reported on CPU + Intel MKL (no GPU) to show what users actually see when running the binary on a laptop.
+We re-run [Semble](https://github.com/MinishLab/semble)'s public code-search benchmark — 1,251 natural-language queries over 63 repositories in 19 languages, scored by NDCG@10 against file-level relevance annotations — so the table below is directly comparable to the chart in semble's README. ColBERT inference for ColGREP is on a single H100 GPU at FP32 (the configuration that produced the NDCG numbers).
 
 | Method | NDCG@10 | Index time | Query p50 |
 | --- | ---: | ---: | ---: |
-| ColGREP — `lightonai/LateOn-Code` (137M, GPU FP32) | 0.835 | 188 s | 1 109 ms (GPU) |
-| **ColGREP — `lightonai/LateOn-Code-edge` (17M, GPU FP32)** | **0.820** | **21 s** | **430 ms (GPU)** / **530 ms (CPU + MKL)** |
+| **ColGREP — `lightonai/LateOn-Code` (137M, GPU FP32)** | **0.859** | **1 636 s** | **2 035 ms (GPU)** |
+| ColGREP — `lightonai/LateOn-Code-edge` (17M, GPU FP32) | 0.846 | 693 s | 683 ms (GPU) |
 | semble — `minishlab/potion-code-16M` (16M, CPU) | 0.853 | 263 ms | 1.5 ms |
-| BM25 (`bm25s`, CPU) | 0.682 | 263 ms | 0.1 ms |
+| ColGREP — BM25 only (FTS5, CPU) | 0.678 | n/a (free with index) | < 5 ms |
+| BM25 (`bm25s`, CPU, semble's reported number) | 0.682 | 263 ms | 0.1 ms |
 
 **Notes**
 
-- The default model is `lightonai/LateOn-Code-edge` (17M ColBERT) — it captures most of the quality of the 9× larger `lightonai/LateOn-Code` (0.820 vs 0.835 NDCG@10) at ~9× faster indexing and ~2.5× faster queries. Switch with `colgrep set-model lightonai/LateOn-Code` if you have GPU headroom and want the extra +0.015 NDCG.
-- Index time is end-to-end for the full 63-repo set on GPU FP32 (per-repo time on CPU+MKL is roughly proportional to the model size).
-- Query p50 for ColGREP is averaged over 10 representative queries, one per repo. Semble and BM25 numbers come from semble's own README — directly comparable methodology, same query set.
-- ColGREP is **not** trying to match semble's CPU latency: ColBERT multi-vector retrieval and BM25 + bag-of-words live in different cost classes. We surface this gap honestly so users can pick the right tool — semble for instant CPU search, ColGREP when you need higher recall and you have a GPU or you can wait 0.5 s on CPU.
+- The big model `lightonai/LateOn-Code` (137M ColBERT) edges past semble's `potion-code-16M` at +0.006 NDCG@10 (0.859 vs 0.853). The smaller `LateOn-Code-edge` (17M, 8× smaller) lands at 0.846, ~3× faster end-to-end at a 0.013 NDCG gap. Switch with `colgrep set-model lightonai/LateOn-Code`.
+- "ColGREP — BM25 only" is colgrep with `COLGREP_ALPHA=0` (semantic side weighted zero, FTS5 BM25 is the sole signal). It runs on CPU once the index exists; no embedding work. Beats semble's reported BM25 number (0.682) on a head-to-head raw-BM25 measurement (`bm25-lab/scripts/compare_bm25.py`): colgrep 0.678 vs semble 0.646 raw, +0.032. The 0.682 in the chart is semble's full-pipeline BM25 (their `boost_multi_chunk_files` + stem/definition boosts) for comparable rigour.
+- Index time is end-to-end for the full 63-repo set on GPU FP32 (the big model takes ~27 min cold to embed every chunk × every repo; the edge model ~11 min). Subsequent queries are free once the index is on disk.
+- Query p50 is averaged over 10 representative queries, one per repo. ColGREP's latency went up vs the original chart because the default `n_full_scores` rerank pool was bumped 4096→8192 (PLAID recall fix, +0.006 NDCG) — see `next_plaid::SearchParameters` for the knob.
+- ColGREP is **not** trying to match semble's CPU latency: ColBERT multi-vector retrieval is in a different cost class than bag-of-words. We surface this gap honestly so users can pick the right tool — semble for instant CPU search, ColGREP when you want higher recall and you have a GPU.
 
 Reproduce with semble's bench harness:
 
