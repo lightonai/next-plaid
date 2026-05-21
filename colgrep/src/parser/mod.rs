@@ -85,6 +85,24 @@ fn is_abstract_type_container(kind: &str, lang: Language) -> bool {
     }
 }
 
+/// True if the body has at least one direct or nested function-like child.
+/// Used to gate recursion into C++ structs: type-trait / POD structs (no
+/// function children) skip recursion to avoid drowning the canonical match
+/// with empty member chunks; behaviour-bearing structs like `formatter<T>`
+/// still recurse and contribute their methods.
+fn body_has_function_descendant(body: Node, lang: Language) -> bool {
+    let mut stack: Vec<Node> = body.children(&mut body.walk()).collect();
+    while let Some(node) = stack.pop() {
+        if is_function_node(node.kind(), lang) {
+            return true;
+        }
+        for child in node.children(&mut node.walk()) {
+            stack.push(child);
+        }
+    }
+    false
+}
+
 use crate::config::{Config, DEFAULT_MAX_RECURSION_DEPTH};
 
 use std::path::Path;
@@ -253,6 +271,18 @@ fn extract_from_node(
             // family of failures documented in MISSION.md § Lever 1.
             if recurse_class_bodies() && !is_abstract_type_container(kind, lang) {
                 if let Some(body) = find_class_body(node, lang) {
+                    // Skip recursion when the body has no function-like
+                    // descendant. Catches "type-only" containers naturally
+                    // across languages: C++ POD / type-trait structs,
+                    // Rust `struct_item` / `enum_item` (whose methods live
+                    // in separate `impl_item` blocks), Java `record` fields,
+                    // etc. Behaviour-bearing containers (Rust `impl_item`,
+                    // Python `class`, C++ structs with methods like
+                    // fmtlib's `formatter<T>`) still recurse and contribute
+                    // their methods.
+                    if !body_has_function_descendant(body, lang) {
+                        return;
+                    }
                     for child in body.children(&mut body.walk()) {
                         extract_from_node(
                             child,
