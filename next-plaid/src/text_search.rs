@@ -125,9 +125,19 @@ fn split_identifier(token: &str) -> Vec<String> {
         camel_split(token)
     };
     if parts.len() >= 2 {
-        let mut out = Vec::with_capacity(parts.len() + 1);
+        // Emit: full lowercase compound, every sub-part, plus snake-joined
+        // adjacent-pair bigrams. The bigrams let a multi-word natural-
+        // language query like "handler stack" hit a stronger compound term
+        // when the document mentions `HandlerStack`/`handler_stack`,
+        // without polluting the index with all-pairs noise.
+        let mut out = Vec::with_capacity(parts.len() * 2);
         out.push(lower);
-        out.extend(parts);
+        for p in &parts {
+            out.push(p.clone());
+        }
+        for w in parts.windows(2) {
+            out.push(format!("{}_{}", w[0], w[1]));
+        }
         out
     } else {
         vec![lower]
@@ -1243,23 +1253,31 @@ mod tests {
 
     #[test]
     fn test_split_identifier_camel_case() {
-        // PascalCase: compound + lowercase parts
+        // PascalCase: compound + lowercase parts + adjacent-pair bigrams.
         assert_eq!(
             split_identifier("HandlerStack"),
-            vec!["handlerstack", "handler", "stack"]
+            vec!["handlerstack", "handler", "stack", "handler_stack"]
         );
     }
 
     #[test]
     fn test_split_identifier_acronym_run() {
-        // Acronym followed by a capitalized word: each is its own token.
+        // Acronym followed by a capitalized word: each is its own token,
+        // plus adjacent-pair bigrams.
         assert_eq!(
             split_identifier("getHTTPResponse"),
-            vec!["gethttpresponse", "get", "http", "response"]
+            vec![
+                "gethttpresponse",
+                "get",
+                "http",
+                "response",
+                "get_http",
+                "http_response"
+            ]
         );
         assert_eq!(
             split_identifier("XMLParser"),
-            vec!["xmlparser", "xml", "parser"]
+            vec!["xmlparser", "xml", "parser", "xml_parser"]
         );
     }
 
@@ -1267,7 +1285,7 @@ mod tests {
     fn test_split_identifier_snake_case() {
         assert_eq!(
             split_identifier("my_func_name"),
-            vec!["my_func_name", "my", "func", "name"]
+            vec!["my_func_name", "my", "func", "name", "my_func", "func_name"]
         );
     }
 
@@ -1320,8 +1338,11 @@ mod tests {
     #[test]
     fn test_sanitize_fts5_query_or_basic() {
         let q = sanitize_fts5_query_or("parseRequest");
-        // Compound + parts, deduplicated, joined by OR.
-        assert_eq!(q, r#""parserequest" OR "parse" OR "request""#);
+        // Compound + parts + adjacent-pair bigrams, deduplicated.
+        assert_eq!(
+            q,
+            r#""parserequest" OR "parse" OR "request" OR "parse_request""#
+        );
     }
 
     #[test]
