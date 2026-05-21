@@ -44,20 +44,6 @@ use extract::{extract_class, extract_constant, extract_function, fill_raw_code_g
 use language::get_tree_sitter_language;
 use text::extract_text_units;
 
-/// When set (`COLGREP_RECURSE_CLASS_BODIES=1`), `extract_from_node` no longer
-/// returns after pushing a class unit — it recurses into the class body and
-/// extracts each method as its own `Method` unit alongside the class. This
-/// matches semble's chunking granularity (one BM25 row / one ColBERT vector
-/// per method) and stops BM25 length-normalisation from punishing the
-/// canonical-implementation file on symbol queries like `SqlMapper`,
-/// `BaseModel`, `Vitest`, `Application`. See `MISSION.md` § Lever 1.
-fn recurse_class_bodies() -> bool {
-    matches!(
-        std::env::var("COLGREP_RECURSE_CLASS_BODIES").as_deref(),
-        Ok("1") | Ok("true") | Ok("TRUE")
-    )
-}
-
 /// Abstract type-contract nodes (interfaces, traits, protocols, type aliases,
 /// enums) where recursing into the body produces method-signature chunks that
 /// drown out the canonical name match. Empirically responsible for the
@@ -269,7 +255,16 @@ fn extract_from_node(
             // method / nested function becomes its own searchable unit. This
             // is the parser-side fix for the SqlMapper/BaseModel/Application
             // family of failures documented in MISSION.md § Lever 1.
-            if recurse_class_bodies() && !is_abstract_type_container(kind, lang) {
+            // Recurse into the class body so each method becomes its own
+            // searchable unit alongside the class — this matches semble's
+            // chunking granularity (one BM25 row / one ColBERT vector per
+            // method) and stops BM25 length-normalisation from punishing the
+            // canonical-implementation file on symbol queries like
+            // `SqlMapper`, `BaseModel`, `Vitest`, `Application`. Abstract
+            // type contracts (interfaces, traits, protocols, type aliases,
+            // enums) are excluded — their member signatures would only
+            // dilute the canonical name match.
+            if !is_abstract_type_container(kind, lang) {
                 if let Some(body) = find_class_body(node, lang) {
                     // Skip recursion when the body has no function-like
                     // descendant. Catches "type-only" containers naturally
