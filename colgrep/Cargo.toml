@@ -75,7 +75,12 @@ anyhow = "1"
 thiserror = "1"
 
 # === Regex ===
+# `regex` is kept for the BRE→ERE preprocessor (`bre_to_ere`,
+# `escape_literal_braces` and friends), which only manipulates pattern
+# text. The actual matching engine is `fancy-regex` so users get
+# lookaround and backreferences on top of the standard ERE features.
 regex = "1"
+fancy-regex = "0.13"
 
 # === Parallelism ===
 rayon = "1.8"

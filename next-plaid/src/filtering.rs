@@ -1273,13 +1273,20 @@ pub fn where_condition_regexp(
         .and_then(|v| v.as_str())
         .ok_or_else(|| Error::Filtering("REGEXP requires a pattern parameter".into()))?;
 
-    // Compile regex with protections:
-    // - size_limit: Prevents ReDoS by limiting compiled regex size (10MB)
-    // - case_insensitive: Standard grep-like behavior
+    // Compile with `fancy-regex` so lookaround (`(?=...)`, `(?<=...)`)
+    // and backreferences (`\1`) work end-to-end. Standard regex syntax
+    // still goes through the fast `regex`-crate engine internally;
+    // fancy-regex only falls back to its NFA when the pattern actually
+    // needs a feature `regex` does not support. The default
+    // `backtrack_limit` (1M) caps catastrophic patterns.
+    //
+    // Case-insensitivity is expressed as an inline `(?i)` flag so callers
+    // who want case-sensitive behaviour can simply pass the pattern
+    // without the flag. The colgrep CLI is the source of truth — it
+    // prefixes `(?mi)` (multiline + case-insensitive) by default, and
+    // `(?m)` alone when `--case-sensitive` is requested.
     let compiled_regex = std::sync::Arc::new(
-        regex::RegexBuilder::new(regex_pattern)
-            .case_insensitive(true)
-            .size_limit(10 * (1 << 20)) // 10MB limit for ReDoS protection
+        fancy_regex::RegexBuilder::new(regex_pattern)
             .build()
             .map_err(|e| {
                 Error::Filtering(format!("Invalid regex pattern '{}': {}", regex_pattern, e))
@@ -1304,7 +1311,11 @@ pub fn where_condition_regexp(
             let _pattern: String = ctx.get(0)?;
             let text: String = ctx.get(1)?;
 
-            Ok(re.is_match(&text))
+            // `is_match` is `Result<bool>` under fancy-regex (the alt engine
+            // can fail with `backtrack_limit_exceeded` on adversarial input).
+            // Treat any such failure as "no match" so a single pathological
+            // chunk can't fail the whole query.
+            Ok(re.is_match(&text).unwrap_or(false))
         },
     )?;
 

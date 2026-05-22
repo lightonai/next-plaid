@@ -37,6 +37,9 @@ half = "2.4"
 byteorder = "1.5"
 rusqlite = { version = "0.38", features = ["bundled", "functions"] }
 regex = "1.11"
+# `fancy-regex` powers the SQLite REGEXP UDF so chunk filtering supports
+# lookaround and backreferences in addition to the standard regex syntax.
+fancy-regex = "0.13"
 cudarc = { version = "0.19", default-features = false, features = [
     "cuda-11080",
     "cublas",

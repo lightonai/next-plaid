@@ -337,6 +337,12 @@ pub struct Cli {
     #[arg(short = 'w', long = "word-regexp")]
     pub word_regexp: bool,
 
+    /// Make `-e` pattern matching case-sensitive. By default, colgrep
+    /// matches case-insensitively (grep -i behaviour) — pass this flag to
+    /// match the pattern exactly as typed.
+    #[arg(short = 's', long = "case-sensitive")]
+    pub case_sensitive: bool,
+
     /// Exclude files matching pattern (can be repeated)
     #[arg(long = "exclude", value_name = "PATTERN")]
     pub exclude_patterns: Vec<String>,
@@ -490,6 +496,10 @@ pub enum Commands {
         /// Match whole words only for -e pattern
         #[arg(short = 'w', long = "word-regexp")]
         word_regexp: bool,
+
+        /// Match -e pattern case-sensitively (default is case-insensitive)
+        #[arg(short = 's', long = "case-sensitive")]
+        case_sensitive: bool,
 
         /// Exclude files matching pattern (can be repeated)
         #[arg(long = "exclude", value_name = "PATTERN")]

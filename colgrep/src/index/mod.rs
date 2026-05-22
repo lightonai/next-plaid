@@ -3186,6 +3186,7 @@ impl Searcher {
         extended_regexp: bool,
         fixed_strings: bool,
         word_regexp: bool,
+        case_sensitive: bool,
     ) -> Result<Vec<i64>> {
         if pattern.is_empty() {
             return Ok(vec![]);
@@ -3210,22 +3211,26 @@ impl Searcher {
         // Build the regex pattern for regex-mode search.
         //
         // The SQLite-side REGEXP matches against the multi-line `code`
-        // column. Grep treats `^`/`$` as line anchors, but Rust's default
-        // regex mode anchors to start/end of the whole string, so an
-        // unanchored search for `^use ` would only match chunks whose
+        // column. Grep treats `^`/`$` as line anchors, but the regex
+        // engine's default anchors to start/end of the whole string, so
+        // an unanchored search for `^use ` would only match chunks whose
         // first byte starts with `use ` — silently dropping hits on
-        // every other line. Force multiline mode so anchors behave like
-        // grep.
+        // every other line. Force multiline mode (`m`) so anchors behave
+        // like grep, and case-insensitive mode (`i`) by default (matches
+        // colgrep's historical behaviour). `--case-sensitive` drops the
+        // `i` so the regex is matched exactly as typed.
+        let flags = if case_sensitive { "(?m)" } else { "(?mi)" };
         let regex_pattern = if word_regexp {
             // Word boundaries without escaping (user wants regex + word match)
             let ere_pattern = escape_literal_braces(&bre_to_ere(pattern));
-            format!(r"(?m)\b{}\b", ere_pattern)
+            format!(r"{}\b{}\b", flags, ere_pattern)
         } else if extended_regexp {
             // Extended regex (ERE) - convert BRE escapes to ERE, then escape literal braces
-            format!("(?m){}", escape_literal_braces(&bre_to_ere(pattern)))
+            format!("{}{}", flags, escape_literal_braces(&bre_to_ere(pattern)))
         } else {
-            // Default: basic substring matching (escape for safety)
-            regex::escape(pattern)
+            // Default: basic substring matching (escape for safety).
+            // Inline flags still apply.
+            format!("{}{}", flags, regex::escape(pattern))
         };
 
         // Build the fixed-string pattern for literal search
