@@ -454,6 +454,7 @@ pub fn cmd_search(
     query: &str,
     paths: &[PathBuf],
     top_k: usize,
+    top_k_explicit: bool,
     cli_model: Option<&str>,
     json: bool,
     include_patterns: &[String],
@@ -477,6 +478,19 @@ pub fn cmd_search(
     let context_lines = resolve_context_lines(cli_context_lines, 20);
     // Resolve relative paths: config > default (false = absolute)
     let use_relative = resolve_relative_paths();
+
+    // When -e is used and the user didn't explicitly pass -k, return *all*
+    // matching lines (parity with grep, which has no implicit cap). We keep
+    // a finite ceiling so the upstream `top_k * 4` / `top_k * 20` multipliers
+    // can't overflow; `usize::MAX / 1024` is still ~1.8e16, effectively
+    // unbounded for any real index.
+    let regex_unbounded = text_pattern.is_some() && !top_k_explicit;
+    let effective_top_k = if regex_unbounded {
+        usize::MAX / 1024
+    } else {
+        top_k
+    };
+
     // Collect results from all paths
     let mut all_results: Vec<colgrep::SearchResult> = Vec::new();
     let mut path_errors: Vec<String> = Vec::new();
@@ -485,7 +499,7 @@ pub fn cmd_search(
         match search_single_path(
             query,
             path,
-            top_k,
+            effective_top_k,
             cli_model,
             json,
             include_patterns,
@@ -546,7 +560,7 @@ pub fn cmd_search(
     } else {
         all_results
     };
-    let results: Vec<_> = filtered_results.into_iter().take(top_k).collect();
+    let results: Vec<_> = filtered_results.into_iter().take(effective_top_k).collect();
 
     // When -e is used without -F, automatically enable regex mode (ERE)
     let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
@@ -603,26 +617,22 @@ pub fn cmd_search(
 
                 let mut seen: HashSet<PathBuf> = HashSet::new();
                 let mut per_file: Vec<(&colgrep::SearchResult, Vec<(usize, String)>)> = Vec::new();
-                let mut total_matches = 0usize;
 
                 for result in &results {
                     if !seen.insert(result.unit.file.clone()) {
                         continue;
                     }
                     let file_matches = matcher.find_matches_in_file(&result.unit.file);
-                    total_matches += file_matches.len();
                     if !file_matches.is_empty() {
                         per_file.push((result, file_matches));
                     }
                 }
 
-                let mut printed = 0usize;
-                'outer: for (result, matching_lines) in &per_file {
+                // `-k` caps the number of *documents* (files), not lines.
+                // Every match in the kept documents is emitted.
+                for (result, matching_lines) in &per_file {
                     let file_path = display_path(&result.unit.file, use_relative);
                     for (line_num, raw_line) in matching_lines {
-                        if printed >= top_k {
-                            break 'outer;
-                        }
                         let trimmed = raw_line.trim();
                         let truncated: String =
                             trimmed.chars().take(COMPACT_LINE_MAX_CHARS).collect();
@@ -632,13 +642,12 @@ pub fn cmd_search(
                             ""
                         };
                         println!("{}:{}:{}{}", file_path, line_num, truncated, suffix);
-                        printed += 1;
                     }
                 }
-                if total_matches > top_k {
+                if !regex_unbounded {
                     eprintln!(
-                        "\n{} total matches, showing top {}. Use -k {} to see all.",
-                        total_matches, top_k, total_matches
+                        "\nShowing matches from top {} document(s); omit -k to see every match.",
+                        top_k
                     );
                 }
             } else {
