@@ -126,6 +126,48 @@ impl PatternMatcher {
             })
             .collect()
     }
+
+    /// Scan a file from disk for matching lines. Used by compact regex mode
+    /// so we don't miss matches in chunks that were merged into a leader
+    /// by `collapse_by_file` (the leader's `unit.code` only carries one
+    /// chunk's text). Returns 1-indexed `(line_number, line_content)`
+    /// pairs in source order.
+    fn find_matches_in_file(&self, file: &Path) -> Vec<(usize, String)> {
+        let content = match std::fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+
+        let scan = |needle: &dyn Fn(&str) -> bool| -> Vec<(usize, String)> {
+            content
+                .lines()
+                .enumerate()
+                .filter_map(|(i, line)| {
+                    if needle(line) {
+                        Some((i + 1, line.to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        match self {
+            PatternMatcher::Regex(re) => {
+                let matches = scan(&|line| re.is_match(line));
+                if !matches.is_empty() {
+                    return matches;
+                }
+                // Literal fallback when the regex (often regex metacharacters
+                // a user meant literally) finds nothing.
+                let pattern_lower = re.as_str().to_lowercase();
+                scan(&|line| line.to_lowercase().contains(&pattern_lower))
+            }
+            PatternMatcher::Literal(pattern_lower) => {
+                scan(&|line| line.to_lowercase().contains(pattern_lower))
+            }
+        }
+    }
 }
 
 /// Strip regex special characters from a pattern for use in semantic queries.
@@ -543,36 +585,53 @@ pub fn cmd_search(
             });
 
             if let Some(ref matcher) = compact_matcher {
-                // Regex mode: print matching lines, capped at top_k total lines
-                let mut printed = 0usize;
+                // Regex mode: emit *every* matching line in each result file,
+                // not just the lines that happen to fall inside the leader
+                // chunk's `unit.code`. `collapse_by_file` merges multiple
+                // matching chunks of the same file into one leader and only
+                // keeps the leader's text, so a per-`unit.code` scan silently
+                // drops matches from the merged-in chunks (a `def foo` line
+                // at line 150 plus three comment hits at line 800+ would
+                // collapse to just one of those, depending on which chunk
+                // led the file).
+                //
+                // Scanning the file from disk keeps the line-count consistent
+                // with `grep` while preserving colgrep's score-based file
+                // ordering: results are already sorted by score, so the first
+                // occurrence of each file wins.
+                use std::collections::HashSet;
+
+                let mut seen: HashSet<PathBuf> = HashSet::new();
+                let mut per_file: Vec<(&colgrep::SearchResult, Vec<(usize, String)>)> = Vec::new();
                 let mut total_matches = 0usize;
+
                 for result in &results {
-                    let matching_lines = matcher.find_matches_in_unit(&result.unit);
-                    total_matches += matching_lines.len();
+                    if !seen.insert(result.unit.file.clone()) {
+                        continue;
+                    }
+                    let file_matches = matcher.find_matches_in_file(&result.unit.file);
+                    total_matches += file_matches.len();
+                    if !file_matches.is_empty() {
+                        per_file.push((result, file_matches));
+                    }
                 }
 
-                'outer: for result in &results {
+                let mut printed = 0usize;
+                'outer: for (result, matching_lines) in &per_file {
                     let file_path = display_path(&result.unit.file, use_relative);
-                    let matching_lines = matcher.find_matches_in_unit(&result.unit);
-                    for &match_line in &matching_lines {
+                    for (line_num, raw_line) in matching_lines {
                         if printed >= top_k {
                             break 'outer;
                         }
-                        let line_content = result
-                            .unit
-                            .code
-                            .lines()
-                            .nth(match_line - result.unit.line)
-                            .unwrap_or("")
-                            .trim();
+                        let trimmed = raw_line.trim();
                         let truncated: String =
-                            line_content.chars().take(COMPACT_LINE_MAX_CHARS).collect();
-                        let suffix = if line_content.chars().count() > COMPACT_LINE_MAX_CHARS {
+                            trimmed.chars().take(COMPACT_LINE_MAX_CHARS).collect();
+                        let suffix = if trimmed.chars().count() > COMPACT_LINE_MAX_CHARS {
                             "..."
                         } else {
                             ""
                         };
-                        println!("{}:{}:{}{}", file_path, match_line, truncated, suffix);
+                        println!("{}:{}:{}{}", file_path, line_num, truncated, suffix);
                         printed += 1;
                     }
                 }
