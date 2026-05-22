@@ -2486,14 +2486,15 @@ pub fn bre_to_ere(pattern: &str) -> String {
                 i += 2;
             }
 
-            // Quantifiers — only after a preceding atom
+            // `\+` and `\?` are a GNU BRE extension meaning quantifier; in
+            // ERE (now the colgrep default) they are *literal*. The previous
+            // code stripped the backslash unconditionally, so users typing
+            // `\+` to match a literal `+` ended up running `+` as a
+            // one-or-more quantifier against the preceding atom. Keep them
+            // escaped so the regex engine sees a literal `+` / `?`.
             '+' | '?' => {
-                if result.is_empty() {
-                    result.push('\\');
-                    result.push(next);
-                } else {
-                    result.push(next);
-                }
+                result.push('\\');
+                result.push(next);
                 i += 2;
             }
 
@@ -2578,6 +2579,30 @@ pub fn escape_literal_braces(pattern: &str) -> String {
         if in_char_class {
             result.push(c);
             i += 1;
+            continue;
+        }
+
+        // `\{` and `\}` are BRE-style escapes meaning "literal brace". The
+        // caller (e.g. `bre_to_ere`) leaves them alone when unbalanced, so
+        // by the time we see them here they are user-intended literals.
+        // Convert directly to the unambiguous character-class form `[{]` /
+        // `[}]` and skip both chars. Without this short-circuit the loop
+        // pushes the `\` as-is and then mangles the `{` into `[{]`,
+        // producing `\[{]` — a regex that matches the literal substring
+        // `[{]`, not `{`.
+        if c == '\\' && i + 1 < len {
+            let next = chars[i + 1];
+            if next == '{' || next == '}' {
+                result.push('[');
+                result.push(next);
+                result.push(']');
+                i += 2;
+                continue;
+            }
+            // Other escape — keep both characters as-is.
+            result.push('\\');
+            result.push(next);
+            i += 2;
             continue;
         }
 
@@ -3944,9 +3969,15 @@ mod tests {
 
     #[test]
     fn test_bre_to_ere_quantifiers() {
-        // BRE quantifiers should become ERE
-        assert_eq!(bre_to_ere(r"a\+"), "a+");
-        assert_eq!(bre_to_ere(r"a\?"), "a?");
+        // `\+` and `\?` are kept literal: in ERE (the colgrep default)
+        // `+` and `?` *are* the quantifiers, and `\+` / `\?` mean literal
+        // `+` / `?`. The previous behaviour stripped the backslash, so
+        // `foo\+bar` (intended to match a literal `+`) silently ran as
+        // a one-or-more quantifier against `foo`. Only the balanced
+        // brace form `\{n,m\}` still converts to the ERE quantifier
+        // `{n,m}` for BRE-compatibility.
+        assert_eq!(bre_to_ere(r"a\+"), r"a\+");
+        assert_eq!(bre_to_ere(r"a\?"), r"a\?");
         assert_eq!(bre_to_ere(r"a\{2,3\}"), "a{2,3}");
     }
 
