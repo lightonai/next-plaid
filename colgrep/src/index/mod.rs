@@ -3182,14 +3182,22 @@ impl Searcher {
             .map_err(|e| anyhow::anyhow!("{}", e));
         }
 
-        // Build the regex pattern for regex-mode search
+        // Build the regex pattern for regex-mode search.
+        //
+        // The SQLite-side REGEXP matches against the multi-line `code`
+        // column. Grep treats `^`/`$` as line anchors, but Rust's default
+        // regex mode anchors to start/end of the whole string, so an
+        // unanchored search for `^use ` would only match chunks whose
+        // first byte starts with `use ` — silently dropping hits on
+        // every other line. Force multiline mode so anchors behave like
+        // grep.
         let regex_pattern = if word_regexp {
             // Word boundaries without escaping (user wants regex + word match)
             let ere_pattern = escape_literal_braces(&bre_to_ere(pattern));
-            format!(r"\b{}\b", ere_pattern)
+            format!(r"(?m)\b{}\b", ere_pattern)
         } else if extended_regexp {
             // Extended regex (ERE) - convert BRE escapes to ERE, then escape literal braces
-            escape_literal_braces(&bre_to_ere(pattern))
+            format!("(?m){}", escape_literal_braces(&bre_to_ere(pattern)))
         } else {
             // Default: basic substring matching (escape for safety)
             regex::escape(pattern)
