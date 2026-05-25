@@ -18,10 +18,22 @@ use crate::scoring::should_search_from_root;
 
 /// Pre-compiled pattern matcher for efficient repeated matching.
 /// Compiling regex is expensive (~microseconds), so we do it once and reuse.
-enum PatternMatcher {
-    /// Compiled regex for matching
-    Regex(regex::Regex),
-    /// Literal string for case-insensitive contains matching
+///
+/// Backed by `fancy-regex` so lookaround (`(?=...)`, `(?<=...)`) and
+/// backreferences (`\1`) work. Standard patterns still go through the
+/// fast `regex`-crate engine internally; the fancy backtracking NFA only
+/// kicks in for features `regex` cannot handle.
+struct PatternMatcher {
+    kind: PatternKind,
+    case_sensitive: bool,
+}
+
+enum PatternKind {
+    /// Compiled regex (case-insensitivity is baked into the pattern via
+    /// an inline `(?i)` flag — `case_sensitive` is informational here).
+    Regex(fancy_regex::Regex),
+    /// Pre-normalized literal needle. When `case_sensitive` is false this
+    /// has been lowercased and lines are lowercased before `.contains`.
     Literal(String),
 }
 
@@ -30,101 +42,191 @@ impl PatternMatcher {
     /// - `extended_regexp`: Use ERE (extended regular expressions)
     /// - `fixed_strings`: Treat pattern as literal (overrides extended_regexp)
     /// - `word_regexp`: Add word boundaries
-    fn new(pattern: &str, extended_regexp: bool, fixed_strings: bool, word_regexp: bool) -> Self {
+    /// - `case_sensitive`: When false, prefixes `(?i)` so matching is
+    ///   case-insensitive (colgrep's historical default).
+    fn new(
+        pattern: &str,
+        extended_regexp: bool,
+        fixed_strings: bool,
+        word_regexp: bool,
+        case_sensitive: bool,
+    ) -> Self {
         let effective_use_regex = extended_regexp && !fixed_strings;
+        let case_prefix = if case_sensitive { "" } else { "(?i)" };
+        let literal_needle = || {
+            if case_sensitive {
+                pattern.to_string()
+            } else {
+                pattern.to_lowercase()
+            }
+        };
 
         if effective_use_regex {
             let ere_pattern = escape_literal_braces(&bre_to_ere(pattern));
-            let regex_pattern = if word_regexp {
+            let body = if word_regexp {
                 format!(r"\b{}\b", ere_pattern)
             } else {
                 ere_pattern
             };
-            match regex::RegexBuilder::new(&regex_pattern)
-                .case_insensitive(true)
-                .size_limit(10 * (1 << 20))
-                .build()
-            {
-                Ok(re) => PatternMatcher::Regex(re),
-                Err(_) => PatternMatcher::Literal(pattern.to_lowercase()),
+            let regex_pattern = format!("{}{}", case_prefix, body);
+            match fancy_regex::Regex::new(&regex_pattern) {
+                Ok(re) => PatternMatcher {
+                    kind: PatternKind::Regex(re),
+                    case_sensitive,
+                },
+                Err(_) => PatternMatcher {
+                    kind: PatternKind::Literal(literal_needle()),
+                    case_sensitive,
+                },
             }
         } else if word_regexp {
             let escaped = regex::escape(pattern);
-            let word_pattern = format!(r"\b{}\b", escaped);
-            match regex::RegexBuilder::new(&word_pattern)
-                .case_insensitive(true)
-                .size_limit(10 * (1 << 20))
-                .build()
-            {
-                Ok(re) => PatternMatcher::Regex(re),
-                Err(_) => PatternMatcher::Literal(pattern.to_lowercase()),
+            let regex_pattern = format!(r"{}\b{}\b", case_prefix, escaped);
+            match fancy_regex::Regex::new(&regex_pattern) {
+                Ok(re) => PatternMatcher {
+                    kind: PatternKind::Regex(re),
+                    case_sensitive,
+                },
+                Err(_) => PatternMatcher {
+                    kind: PatternKind::Literal(literal_needle()),
+                    case_sensitive,
+                },
             }
         } else {
-            PatternMatcher::Literal(pattern.to_lowercase())
+            PatternMatcher {
+                kind: PatternKind::Literal(literal_needle()),
+                case_sensitive,
+            }
+        }
+    }
+
+    /// Test whether a single line matches.
+    fn line_matches(&self, line: &str) -> bool {
+        match &self.kind {
+            // `is_match` is `Result<bool>` under fancy-regex (the backtracking
+            // engine can fail with `backtrack_limit_exceeded` on adversarial
+            // patterns). Treat any such failure as "no match" so a single
+            // pathological line cannot abort the whole scan.
+            PatternKind::Regex(re) => re.is_match(line).unwrap_or(false),
+            PatternKind::Literal(needle) => {
+                if self.case_sensitive {
+                    line.contains(needle.as_str())
+                } else {
+                    line.to_lowercase().contains(needle)
+                }
+            }
         }
     }
 
     /// Find matching line numbers within a code unit's content.
     /// Returns 1-indexed line numbers where matches were found.
     fn find_matches_in_unit(&self, unit: &colgrep::CodeUnit) -> Vec<usize> {
-        match self {
-            PatternMatcher::Regex(re) => {
-                let matches: Vec<usize> = unit
-                    .code
-                    .lines()
-                    .enumerate()
-                    .filter_map(|(i, line)| {
-                        if re.is_match(line) {
-                            Some(unit.line + i)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                // If regex matches nothing, fall back to literal match
-                // (handles cases where user searches for regex metacharacters)
-                if matches.is_empty() {
-                    self.literal_fallback(unit)
+        let matches: Vec<usize> = unit
+            .code
+            .lines()
+            .enumerate()
+            .filter_map(|(i, line)| {
+                if self.line_matches(line) {
+                    Some(unit.line + i)
                 } else {
-                    matches
+                    None
                 }
+            })
+            .collect();
+
+        if matches.is_empty() {
+            if let PatternKind::Regex(_) = &self.kind {
+                return self.literal_fallback(unit);
             }
-            PatternMatcher::Literal(pattern_lower) => unit
-                .code
-                .lines()
-                .enumerate()
-                .filter_map(|(i, line)| {
-                    if line.to_lowercase().contains(pattern_lower) {
-                        Some(unit.line + i)
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
         }
+        matches
     }
 
     /// Literal fallback for when regex mode produces no matches.
     fn literal_fallback(&self, unit: &colgrep::CodeUnit) -> Vec<usize> {
-        // Extract the original pattern from regex for fallback
-        // This is a simplified fallback - just search the code directly
-        let pattern_lower = match self {
-            PatternMatcher::Regex(re) => re.as_str().to_lowercase(),
-            PatternMatcher::Literal(p) => p.clone(),
+        let pattern_str = match &self.kind {
+            PatternKind::Regex(re) => re.as_str().to_string(),
+            PatternKind::Literal(p) => p.clone(),
+        };
+        let needle = if self.case_sensitive {
+            pattern_str
+        } else {
+            pattern_str.to_lowercase()
         };
 
         unit.code
             .lines()
             .enumerate()
             .filter_map(|(i, line)| {
-                if line.to_lowercase().contains(&pattern_lower) {
+                let haystack = if self.case_sensitive {
+                    line.to_string()
+                } else {
+                    line.to_lowercase()
+                };
+                if haystack.contains(&needle) {
                     Some(unit.line + i)
                 } else {
                     None
                 }
             })
             .collect()
+    }
+
+    /// Scan a file from disk for matching lines. Used by compact regex mode
+    /// so we don't miss matches in chunks that were merged into a leader
+    /// by `collapse_by_file` (the leader's `unit.code` only carries one
+    /// chunk's text). Returns 1-indexed `(line_number, line_content)`
+    /// pairs in source order.
+    fn find_matches_in_file(&self, file: &Path) -> Vec<(usize, String)> {
+        let content = match std::fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+
+        let matches: Vec<(usize, String)> = content
+            .lines()
+            .enumerate()
+            .filter_map(|(i, line)| {
+                if self.line_matches(line) {
+                    Some((i + 1, line.to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if !matches.is_empty() {
+            return matches;
+        }
+
+        // Literal fallback when the regex (often regex metacharacters
+        // a user meant literally) finds nothing.
+        if let PatternKind::Regex(re) = &self.kind {
+            let needle_raw = re.as_str();
+            let needle = if self.case_sensitive {
+                needle_raw.to_string()
+            } else {
+                needle_raw.to_lowercase()
+            };
+            return content
+                .lines()
+                .enumerate()
+                .filter_map(|(i, line)| {
+                    let haystack = if self.case_sensitive {
+                        line.to_string()
+                    } else {
+                        line.to_lowercase()
+                    };
+                    if haystack.contains(&needle) {
+                        Some((i + 1, line.to_string()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        }
+
+        matches
     }
 }
 
@@ -412,6 +514,7 @@ pub fn cmd_search(
     query: &str,
     paths: &[PathBuf],
     top_k: usize,
+    top_k_explicit: bool,
     cli_model: Option<&str>,
     json: bool,
     include_patterns: &[String],
@@ -422,6 +525,7 @@ pub fn cmd_search(
     extended_regexp: bool,
     fixed_strings: bool,
     word_regexp: bool,
+    case_sensitive: bool,
     exclude_patterns: &[String],
     exclude_dirs: &[String],
     code_only: bool,
@@ -435,6 +539,19 @@ pub fn cmd_search(
     let context_lines = resolve_context_lines(cli_context_lines, 20);
     // Resolve relative paths: config > default (false = absolute)
     let use_relative = resolve_relative_paths();
+
+    // When -e is used and the user didn't explicitly pass -k, return *all*
+    // matching lines (parity with grep, which has no implicit cap). We keep
+    // a finite ceiling so the upstream `top_k * 4` / `top_k * 20` multipliers
+    // can't overflow; `usize::MAX / 1024` is still ~1.8e16, effectively
+    // unbounded for any real index.
+    let regex_unbounded = text_pattern.is_some() && !top_k_explicit;
+    let effective_top_k = if regex_unbounded {
+        usize::MAX / 1024
+    } else {
+        top_k
+    };
+
     // Collect results from all paths
     let mut all_results: Vec<colgrep::SearchResult> = Vec::new();
     let mut path_errors: Vec<String> = Vec::new();
@@ -443,7 +560,7 @@ pub fn cmd_search(
         match search_single_path(
             query,
             path,
-            top_k,
+            effective_top_k,
             cli_model,
             json,
             include_patterns,
@@ -452,6 +569,7 @@ pub fn cmd_search(
             extended_regexp,
             fixed_strings,
             word_regexp,
+            case_sensitive,
             exclude_patterns,
             exclude_dirs,
             code_only,
@@ -504,7 +622,7 @@ pub fn cmd_search(
     } else {
         all_results
     };
-    let results: Vec<_> = filtered_results.into_iter().take(top_k).collect();
+    let results: Vec<_> = filtered_results.into_iter().take(effective_top_k).collect();
 
     // When -e is used without -F, automatically enable regex mode (ERE)
     let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
@@ -539,47 +657,65 @@ pub fn cmd_search(
 
         if !verbose {
             let compact_matcher = text_pattern.map(|p| {
-                PatternMatcher::new(p, effective_extended_regexp, fixed_strings, word_regexp)
+                PatternMatcher::new(
+                    p,
+                    effective_extended_regexp,
+                    fixed_strings,
+                    word_regexp,
+                    case_sensitive,
+                )
             });
 
             if let Some(ref matcher) = compact_matcher {
-                // Regex mode: print matching lines, capped at top_k total lines
-                let mut printed = 0usize;
-                let mut total_matches = 0usize;
+                // Regex mode: emit *every* matching line in each result file,
+                // not just the lines that happen to fall inside the leader
+                // chunk's `unit.code`. `collapse_by_file` merges multiple
+                // matching chunks of the same file into one leader and only
+                // keeps the leader's text, so a per-`unit.code` scan silently
+                // drops matches from the merged-in chunks (a `def foo` line
+                // at line 150 plus three comment hits at line 800+ would
+                // collapse to just one of those, depending on which chunk
+                // led the file).
+                //
+                // Scanning the file from disk keeps the line-count consistent
+                // with `grep` while preserving colgrep's score-based file
+                // ordering: results are already sorted by score, so the first
+                // occurrence of each file wins.
+                use std::collections::HashSet;
+
+                let mut seen: HashSet<PathBuf> = HashSet::new();
+                let mut per_file: Vec<(&colgrep::SearchResult, Vec<(usize, String)>)> = Vec::new();
+
                 for result in &results {
-                    let matching_lines = matcher.find_matches_in_unit(&result.unit);
-                    total_matches += matching_lines.len();
+                    if !seen.insert(result.unit.file.clone()) {
+                        continue;
+                    }
+                    let file_matches = matcher.find_matches_in_file(&result.unit.file);
+                    if !file_matches.is_empty() {
+                        per_file.push((result, file_matches));
+                    }
                 }
 
-                'outer: for result in &results {
+                // `-k` caps the number of *documents* (files), not lines.
+                // Every match in the kept documents is emitted.
+                for (result, matching_lines) in &per_file {
                     let file_path = display_path(&result.unit.file, use_relative);
-                    let matching_lines = matcher.find_matches_in_unit(&result.unit);
-                    for &match_line in &matching_lines {
-                        if printed >= top_k {
-                            break 'outer;
-                        }
-                        let line_content = result
-                            .unit
-                            .code
-                            .lines()
-                            .nth(match_line - result.unit.line)
-                            .unwrap_or("")
-                            .trim();
+                    for (line_num, raw_line) in matching_lines {
+                        let trimmed = raw_line.trim();
                         let truncated: String =
-                            line_content.chars().take(COMPACT_LINE_MAX_CHARS).collect();
-                        let suffix = if line_content.chars().count() > COMPACT_LINE_MAX_CHARS {
+                            trimmed.chars().take(COMPACT_LINE_MAX_CHARS).collect();
+                        let suffix = if trimmed.chars().count() > COMPACT_LINE_MAX_CHARS {
                             "..."
                         } else {
                             ""
                         };
-                        println!("{}:{}:{}{}", file_path, match_line, truncated, suffix);
-                        printed += 1;
+                        println!("{}:{}:{}{}", file_path, line_num, truncated, suffix);
                     }
                 }
-                if total_matches > top_k {
+                if !regex_unbounded {
                     eprintln!(
-                        "\n{} total matches, showing top {}. Use -k {} to see all.",
-                        total_matches, top_k, total_matches
+                        "\nShowing matches from top {} document(s); omit -k to see every match.",
+                        top_k
                     );
                 }
             } else {
@@ -598,11 +734,17 @@ pub fn cmd_search(
             // Pre-compile pattern matchers ONCE before the display loop.
             // This avoids expensive regex compilation on every result.
             let text_pattern_matcher = text_pattern.map(|p| {
-                PatternMatcher::new(p, effective_extended_regexp, fixed_strings, word_regexp)
+                PatternMatcher::new(
+                    p,
+                    effective_extended_regexp,
+                    fixed_strings,
+                    word_regexp,
+                    case_sensitive,
+                )
             });
 
             // For query matching (when no -e pattern), use literal matching
-            let query_matcher = PatternMatcher::new(query, false, true, false);
+            let query_matcher = PatternMatcher::new(query, false, true, false, case_sensitive);
 
             // Separate results into code files and documents/config files
             let (code_results, doc_results): (Vec<_>, Vec<_>) = results
@@ -878,6 +1020,7 @@ fn search_single_path(
     extended_regexp: bool,
     fixed_strings: bool,
     word_regexp: bool,
+    case_sensitive: bool,
     exclude_patterns: &[String],
     exclude_dirs: &[String],
     code_only: bool,
@@ -1201,6 +1344,7 @@ fn search_single_path(
                 effective_extended_regexp,
                 fixed_strings,
                 word_regexp,
+                case_sensitive,
             )?;
 
             if pattern_ids.is_empty() {
@@ -1386,9 +1530,11 @@ fn search_single_path(
         };
 
         // 2. Run hybrid search: filter by query text, then semantic rank
-        // Use fixed_strings mode to treat the query as a literal pattern
+        // Use fixed_strings mode to treat the query as a literal pattern.
+        // The semantic-side query is *always* case-insensitive — ColBERT
+        // embeddings handle case fuzzily and we want broad recall here.
         let text_filtered_ids =
-            searcher.filter_by_text_pattern_with_options(query, false, true, false)?;
+            searcher.filter_by_text_pattern_with_options(query, false, true, false, false)?;
 
         let hybrid_results = if !text_filtered_ids.is_empty() {
             // Intersect with existing subset if any

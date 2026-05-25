@@ -2486,14 +2486,15 @@ pub fn bre_to_ere(pattern: &str) -> String {
                 i += 2;
             }
 
-            // Quantifiers — only after a preceding atom
+            // `\+` and `\?` are a GNU BRE extension meaning quantifier; in
+            // ERE (now the colgrep default) they are *literal*. The previous
+            // code stripped the backslash unconditionally, so users typing
+            // `\+` to match a literal `+` ended up running `+` as a
+            // one-or-more quantifier against the preceding atom. Keep them
+            // escaped so the regex engine sees a literal `+` / `?`.
             '+' | '?' => {
-                if result.is_empty() {
-                    result.push('\\');
-                    result.push(next);
-                } else {
-                    result.push(next);
-                }
+                result.push('\\');
+                result.push(next);
                 i += 2;
             }
 
@@ -2578,6 +2579,30 @@ pub fn escape_literal_braces(pattern: &str) -> String {
         if in_char_class {
             result.push(c);
             i += 1;
+            continue;
+        }
+
+        // `\{` and `\}` are BRE-style escapes meaning "literal brace". The
+        // caller (e.g. `bre_to_ere`) leaves them alone when unbalanced, so
+        // by the time we see them here they are user-intended literals.
+        // Convert directly to the unambiguous character-class form `[{]` /
+        // `[}]` and skip both chars. Without this short-circuit the loop
+        // pushes the `\` as-is and then mangles the `{` into `[{]`,
+        // producing `\[{]` — a regex that matches the literal substring
+        // `[{]`, not `{`.
+        if c == '\\' && i + 1 < len {
+            let next = chars[i + 1];
+            if next == '{' || next == '}' {
+                result.push('[');
+                result.push(next);
+                result.push(']');
+                i += 2;
+                continue;
+            }
+            // Other escape — keep both characters as-is.
+            result.push('\\');
+            result.push(next);
+            i += 2;
             continue;
         }
 
@@ -3161,6 +3186,7 @@ impl Searcher {
         extended_regexp: bool,
         fixed_strings: bool,
         word_regexp: bool,
+        case_sensitive: bool,
     ) -> Result<Vec<i64>> {
         if pattern.is_empty() {
             return Ok(vec![]);
@@ -3182,17 +3208,29 @@ impl Searcher {
             .map_err(|e| anyhow::anyhow!("{}", e));
         }
 
-        // Build the regex pattern for regex-mode search
+        // Build the regex pattern for regex-mode search.
+        //
+        // The SQLite-side REGEXP matches against the multi-line `code`
+        // column. Grep treats `^`/`$` as line anchors, but the regex
+        // engine's default anchors to start/end of the whole string, so
+        // an unanchored search for `^use ` would only match chunks whose
+        // first byte starts with `use ` — silently dropping hits on
+        // every other line. Force multiline mode (`m`) so anchors behave
+        // like grep, and case-insensitive mode (`i`) by default (matches
+        // colgrep's historical behaviour). `--case-sensitive` drops the
+        // `i` so the regex is matched exactly as typed.
+        let flags = if case_sensitive { "(?m)" } else { "(?mi)" };
         let regex_pattern = if word_regexp {
             // Word boundaries without escaping (user wants regex + word match)
             let ere_pattern = escape_literal_braces(&bre_to_ere(pattern));
-            format!(r"\b{}\b", ere_pattern)
+            format!(r"{}\b{}\b", flags, ere_pattern)
         } else if extended_regexp {
             // Extended regex (ERE) - convert BRE escapes to ERE, then escape literal braces
-            escape_literal_braces(&bre_to_ere(pattern))
+            format!("{}{}", flags, escape_literal_braces(&bre_to_ere(pattern)))
         } else {
-            // Default: basic substring matching (escape for safety)
-            regex::escape(pattern)
+            // Default: basic substring matching (escape for safety).
+            // Inline flags still apply.
+            format!("{}{}", flags, regex::escape(pattern))
         };
 
         // Build the fixed-string pattern for literal search
@@ -3936,9 +3974,15 @@ mod tests {
 
     #[test]
     fn test_bre_to_ere_quantifiers() {
-        // BRE quantifiers should become ERE
-        assert_eq!(bre_to_ere(r"a\+"), "a+");
-        assert_eq!(bre_to_ere(r"a\?"), "a?");
+        // `\+` and `\?` are kept literal: in ERE (the colgrep default)
+        // `+` and `?` *are* the quantifiers, and `\+` / `\?` mean literal
+        // `+` / `?`. The previous behaviour stripped the backslash, so
+        // `foo\+bar` (intended to match a literal `+`) silently ran as
+        // a one-or-more quantifier against `foo`. Only the balanced
+        // brace form `\{n,m\}` still converts to the ERE quantifier
+        // `{n,m}` for BRE-compatibility.
+        assert_eq!(bre_to_ere(r"a\+"), r"a\+");
+        assert_eq!(bre_to_ere(r"a\?"), r"a\?");
         assert_eq!(bre_to_ere(r"a\{2,3\}"), "a{2,3}");
     }
 
