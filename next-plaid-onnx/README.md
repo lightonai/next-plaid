@@ -79,6 +79,12 @@ next-plaid-onnx = { version = "0.2", features = ["directml"] }
 
 `ExecutionProvider::Auto` tries providers in order: CUDA → TensorRT → CoreML → DirectML → CPU. Set `NEXT_PLAID_FORCE_CPU=1` to bypass all GPU providers.
 
+For ROCm, install AMD's ONNX Runtime wheel for your ROCm release (for example
+`pip install onnxruntime-migraphx -f https://repo.radeon.com/rocm/manylinux/rocm-rel-<ROCM_VERSION>/`)
+or provide a custom ONNX Runtime build, then set `ORT_DYLIB_PATH` to
+`.../site-packages/onnxruntime/capi/libonnxruntime.so` before starting the
+process. The official GitHub CPU ONNX Runtime package does not include MIGraphX.
+
 ### Token Pooling
 
 Reduce token count with hierarchical clustering (Ward's method):

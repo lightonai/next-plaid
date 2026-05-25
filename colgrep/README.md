@@ -642,14 +642,29 @@ Then: `cargo install colgrep --features openblas`
 
 ### ONNX Runtime
 
-ONNX Runtime is downloaded automatically on first use. No manual installation required.
+ONNX Runtime CPU and CUDA builds are downloaded automatically on first use.
+ROCm/MIGraphX builds are ROCm-versioned and are not downloaded automatically;
+install AMD's wheel and point ColGREP at its runtime library if auto-discovery
+does not find it:
+
+```bash
+pip install onnxruntime-migraphx \
+  -f https://repo.radeon.com/rocm/manylinux/rocm-rel-<ROCM_VERSION>/
+
+export ORT_DYLIB_PATH=/path/to/site-packages/onnxruntime/capi/libonnxruntime.so
+colgrep --force-gpu search "your query"
+```
 
 Lookup order:
 
 1. `ORT_DYLIB_PATH` environment variable
-2. Python environments (pip/conda/venv)
-3. System paths
-4. Auto-download to `~/.cache/onnxruntime/`
+2. MIGraphX-capable Python/system installs (`migraphx` builds)
+3. Python environments (pip/conda/venv)
+4. System paths
+5. Auto-download to `~/.cache/colgrep/onnxruntime/`
+
+On Linux, ColGREP may re-exec itself once to add the ONNX Runtime, cuDNN, or
+ROCm library directories to `LD_LIBRARY_PATH` before ONNX Runtime is loaded.
 
 ---
 

@@ -306,6 +306,41 @@ pub fn is_gpu_available() -> bool {
     preferred_gpu_execution_provider().is_some()
 }
 
+fn execution_provider_list_display(providers: &[ExecutionProvider]) -> String {
+    providers
+        .iter()
+        .map(|provider| provider.display_name())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn unavailable_gpu_execution_provider_reason() -> String {
+    let compiled = compiled_gpu_execution_providers();
+    if compiled.is_empty() {
+        "no GPU execution provider was compiled. Enable a feature such as 'cuda', 'migraphx', 'coreml', or 'directml'.".to_string()
+    } else {
+        let names = execution_provider_list_display(&compiled);
+        let rocm_hint = if compiled.contains(&ExecutionProvider::MIGraphX) {
+            " For ROCm/MIGraphX, install AMD's `onnxruntime-migraphx` wheel or use a custom ORT build, then set ORT_DYLIB_PATH to its `onnxruntime/capi/libonnxruntime.so`."
+        } else {
+            ""
+        };
+        format!(
+            "no compiled GPU execution provider is available in the loaded ONNX Runtime library. Compiled provider(s): {names}.{rocm_hint}"
+        )
+    }
+}
+
+/// Return the preferred available GPU execution provider or a user-facing error.
+pub fn require_gpu_execution_provider() -> Result<ExecutionProvider> {
+    preferred_gpu_execution_provider().ok_or_else(|| {
+        anyhow::anyhow!(
+            "GPU execution requested, but {}",
+            unavailable_gpu_execution_provider_reason()
+        )
+    })
+}
+
 fn configure_execution_provider(
     builder: SessionBuilder,
     provider: ExecutionProvider,
