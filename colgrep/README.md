@@ -250,7 +250,7 @@ colgrep settings --pool-factor 2
 # Set parallel encoding sessions (default: CPU count, max 16)
 colgrep settings --parallel 8
 
-# Set batch size per session (default: 1 for CPU, 64 for CUDA)
+# Set batch size per session (default: 1 for CPU, 64 for GPU inference providers)
 colgrep settings --batch-size 2
 
 # Set parser recursion depth guard (default: 1024)

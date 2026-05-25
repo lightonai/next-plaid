@@ -68,15 +68,31 @@ use tokenizers::Encoding;
 use tokenizers::Tokenizer;
 
 // Conditional imports for execution providers
-#[cfg(feature = "cuda")]
+#[cfg(any(
+    feature = "cuda",
+    feature = "tensorrt",
+    feature = "coreml",
+    feature = "directml",
+    feature = "migraphx"
+))]
 use ort::ep::ExecutionProvider as OrtExecutionProviderTrait;
 #[cfg(feature = "cuda")]
 use ort::execution_providers::CUDAExecutionProvider;
 
-/// Run a closure, catching panics without printing the default panic message.
-/// See `next_plaid::cuda::catch_cuda_panic` for the rationale.
-#[cfg(feature = "cuda")]
-fn catch_cuda_panic<F, R>(f: F) -> std::result::Result<R, Box<dyn std::any::Any + Send>>
+/// Run a closure, catching execution-provider panics without printing the
+/// default panic message. Provider availability checks can panic when the ORT
+/// dylib has not been initialized yet or when a provider's driver libraries are
+/// stubs/incompatible; callers convert that into "provider unavailable".
+#[cfg(any(
+    feature = "cuda",
+    feature = "tensorrt",
+    feature = "coreml",
+    feature = "directml",
+    feature = "migraphx"
+))]
+fn catch_execution_provider_panic<F, R>(
+    f: F,
+) -> std::result::Result<R, Box<dyn std::any::Any + Send>>
 where
     F: FnOnce() -> R + std::panic::UnwindSafe,
 {
@@ -181,7 +197,7 @@ fn find_onnxruntime_library() -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExecutionProvider {
     /// Automatically detect and use the best available hardware.
-    /// Tries in order: CUDA > TensorRT > CoreML > DirectML > CPU
+    /// Tries in order: CUDA > TensorRT > CoreML > DirectML > MIGraphX > CPU
     #[default]
     Auto,
     /// CPU execution only
@@ -196,6 +212,98 @@ pub enum ExecutionProvider {
     DirectML,
     /// MIGraphX execution (AMD GPUs, requires `migraphx` feature)
     MIGraphX,
+}
+
+impl ExecutionProvider {
+    /// Human-readable provider name for diagnostics and CLI messages.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            ExecutionProvider::Auto => "auto",
+            ExecutionProvider::Cpu => "CPU",
+            ExecutionProvider::Cuda => "CUDA",
+            ExecutionProvider::TensorRT => "TensorRT",
+            ExecutionProvider::CoreML => "CoreML",
+            ExecutionProvider::DirectML => "DirectML",
+            ExecutionProvider::MIGraphX => "MIGraphX",
+        }
+    }
+
+    /// Whether this provider represents a hardware accelerator rather than CPU.
+    pub fn is_gpu(self) -> bool {
+        matches!(
+            self,
+            ExecutionProvider::Cuda
+                | ExecutionProvider::TensorRT
+                | ExecutionProvider::CoreML
+                | ExecutionProvider::DirectML
+                | ExecutionProvider::MIGraphX
+        )
+    }
+}
+
+const GPU_PROVIDER_ORDER: [ExecutionProvider; 5] = [
+    ExecutionProvider::Cuda,
+    ExecutionProvider::TensorRT,
+    ExecutionProvider::CoreML,
+    ExecutionProvider::DirectML,
+    ExecutionProvider::MIGraphX,
+];
+
+/// GPU execution providers compiled into this crate, in auto-selection order.
+pub fn compiled_gpu_execution_providers() -> Vec<ExecutionProvider> {
+    #[allow(unused_mut)]
+    let mut providers = Vec::new();
+
+    #[cfg(feature = "cuda")]
+    providers.push(ExecutionProvider::Cuda);
+    #[cfg(feature = "tensorrt")]
+    providers.push(ExecutionProvider::TensorRT);
+    #[cfg(feature = "coreml")]
+    providers.push(ExecutionProvider::CoreML);
+    #[cfg(feature = "directml")]
+    providers.push(ExecutionProvider::DirectML);
+    #[cfg(feature = "migraphx")]
+    providers.push(ExecutionProvider::MIGraphX);
+
+    providers
+}
+
+/// First compiled GPU execution provider in auto-selection order.
+pub fn compiled_gpu_execution_provider() -> Option<ExecutionProvider> {
+    compiled_gpu_execution_providers().into_iter().next()
+}
+
+/// Return whether a specific execution provider is available in the currently
+/// loaded ONNX Runtime library.
+pub fn is_execution_provider_available(provider: ExecutionProvider) -> bool {
+    match provider {
+        ExecutionProvider::Auto => preferred_gpu_execution_provider().is_some(),
+        ExecutionProvider::Cpu => true,
+        ExecutionProvider::Cuda => is_cuda_available(),
+        ExecutionProvider::TensorRT => is_tensorrt_available(),
+        ExecutionProvider::CoreML => is_coreml_available(),
+        ExecutionProvider::DirectML => is_directml_available(),
+        ExecutionProvider::MIGraphX => is_migraphx_available(),
+    }
+}
+
+/// Available GPU execution providers in auto-selection order.
+pub fn available_gpu_execution_providers() -> Vec<ExecutionProvider> {
+    GPU_PROVIDER_ORDER
+        .iter()
+        .copied()
+        .filter(|provider| is_execution_provider_available(*provider))
+        .collect()
+}
+
+/// Preferred available GPU execution provider, if any.
+pub fn preferred_gpu_execution_provider() -> Option<ExecutionProvider> {
+    available_gpu_execution_providers().into_iter().next()
+}
+
+/// Whether any compiled GPU execution provider is available.
+pub fn is_gpu_available() -> bool {
+    preferred_gpu_execution_provider().is_some()
 }
 
 fn configure_execution_provider(
@@ -285,7 +393,7 @@ pub fn is_cuda_available() -> bool {
 
     // Try to check if CUDA EP is available, catching any panics from CUDA driver loading
     // This can panic if CUDA libraries are present but corrupted/incomplete (stub libraries)
-    catch_cuda_panic(|| {
+    catch_execution_provider_panic(|| {
         CUDAExecutionProvider::default()
             .is_available()
             .unwrap_or(false)
@@ -303,9 +411,102 @@ pub fn is_cuda_available() -> bool {
     false
 }
 
+/// Check if TensorRT execution provider is available.
+#[cfg(feature = "tensorrt")]
+pub fn is_tensorrt_available() -> bool {
+    !is_force_cpu()
+        && catch_execution_provider_panic(|| {
+            TensorRTExecutionProvider::default()
+                .is_available()
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+/// Check if TensorRT execution provider is available.
+/// Always returns false when TensorRT feature is not enabled.
+#[cfg(not(feature = "tensorrt"))]
+pub fn is_tensorrt_available() -> bool {
+    false
+}
+
+/// Check if CoreML execution provider is available.
+#[cfg(feature = "coreml")]
+pub fn is_coreml_available() -> bool {
+    !is_force_cpu()
+        && catch_execution_provider_panic(|| {
+            CoreMLExecutionProvider::default()
+                .is_available()
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+/// Check if CoreML execution provider is available.
+/// Always returns false when CoreML feature is not enabled.
+#[cfg(not(feature = "coreml"))]
+pub fn is_coreml_available() -> bool {
+    false
+}
+
+/// Check if DirectML execution provider is available.
+#[cfg(feature = "directml")]
+pub fn is_directml_available() -> bool {
+    !is_force_cpu()
+        && catch_execution_provider_panic(|| {
+            DirectMLExecutionProvider::default()
+                .is_available()
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+/// Check if DirectML execution provider is available.
+/// Always returns false when DirectML feature is not enabled.
+#[cfg(not(feature = "directml"))]
+pub fn is_directml_available() -> bool {
+    false
+}
+
+/// Check if MIGraphX execution provider is available.
+#[cfg(feature = "migraphx")]
+pub fn is_migraphx_available() -> bool {
+    !is_force_cpu()
+        && catch_execution_provider_panic(|| {
+            MIGraphXExecutionProvider::default()
+                .is_available()
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+/// Check if MIGraphX execution provider is available.
+/// Always returns false when MIGraphX feature is not enabled.
+#[cfg(not(feature = "migraphx"))]
+pub fn is_migraphx_available() -> bool {
+    false
+}
+
 fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
     if is_force_gpu() {
-        return configure_cuda(builder);
+        let provider = preferred_gpu_execution_provider().ok_or_else(|| {
+            let compiled = compiled_gpu_execution_providers();
+            if compiled.is_empty() {
+                anyhow::anyhow!(
+                    "NEXT_PLAID_FORCE_GPU is set, but no GPU execution provider was compiled. Enable a feature such as 'cuda', 'migraphx', 'coreml', or 'directml'."
+                )
+            } else {
+                let names = compiled
+                    .iter()
+                    .map(|provider| provider.display_name())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                anyhow::anyhow!(
+                    "NEXT_PLAID_FORCE_GPU is set, but no compiled GPU execution provider is available in the loaded ONNX Runtime library. Compiled provider(s): {names}."
+                )
+            }
+        })?;
+        return configure_execution_provider(builder, provider);
     }
 
     // Skip GPU providers entirely if CPU-only mode is forced
@@ -322,10 +523,8 @@ fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
     if !force_cpu {
         // Wrap CUDA initialization in catch_cuda_panic to handle panics from stub libraries
         // without printing the default panic message to stderr
-        let cuda_result = catch_cuda_panic(std::panic::AssertUnwindSafe(|| {
-            builder
-                .clone()
-                .with_execution_providers([configured_cuda_execution_provider().build()])
+        let cuda_result = catch_execution_provider_panic(std::panic::AssertUnwindSafe(|| {
+            configure_cuda(builder.clone())
         }));
         match cuda_result {
             Ok(Ok(b)) => return Ok(b),
@@ -338,40 +537,28 @@ fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
 
     #[cfg(feature = "tensorrt")]
     if !force_cpu {
-        if let Ok(b) = builder
-            .clone()
-            .with_execution_providers([TensorRTExecutionProvider::default().build()])
-        {
+        if let Ok(b) = configure_tensorrt(builder.clone()) {
             return Ok(b);
         }
     }
 
     #[cfg(feature = "coreml")]
-    {
-        if let Ok(b) = builder
-            .clone()
-            .with_execution_providers([CoreMLExecutionProvider::default().build()])
-        {
+    if !force_cpu {
+        if let Ok(b) = configure_coreml(builder.clone()) {
             return Ok(b);
         }
     }
 
     #[cfg(feature = "directml")]
     if !force_cpu {
-        if let Ok(b) = builder
-            .clone()
-            .with_execution_providers([DirectMLExecutionProvider::default().build()])
-        {
+        if let Ok(b) = configure_directml(builder.clone()) {
             return Ok(b);
         }
     }
 
     #[cfg(feature = "migraphx")]
     if !force_cpu {
-        if let Ok(b) = builder
-            .clone()
-            .with_execution_providers([MIGraphXExecutionProvider::default().build()])
-        {
+        if let Ok(b) = configure_migraphx(builder.clone()) {
             return Ok(b);
         }
     }
@@ -388,10 +575,12 @@ fn configure_cuda(builder: SessionBuilder) -> Result<SessionBuilder> {
 
     // Wrap CUDA initialization in catch_cuda_panic to handle panics from stub/invalid libraries
     // without printing the default panic message to stderr
-    let cuda_result = catch_cuda_panic(std::panic::AssertUnwindSafe(|| {
+    let cuda_result = catch_execution_provider_panic(std::panic::AssertUnwindSafe(|| {
         builder
             .clone()
-            .with_execution_providers([configured_cuda_execution_provider().build()])
+            .with_execution_providers([configured_cuda_execution_provider()
+                .build()
+                .error_on_failure()])
     }));
 
     match cuda_result {
@@ -400,10 +589,9 @@ fn configure_cuda(builder: SessionBuilder) -> Result<SessionBuilder> {
                 "Failed to configure CUDA execution provider: {e:?}. Ensure CUDA toolkit and cuDNN are installed."
             )
         }),
-        Err(_) => {
-            eprintln!("[next-plaid-onnx] CUDA init panicked (invalid/stub library?), falling back to CPU");
-            Ok(builder)
-        }
+        Err(_) => Err(anyhow::anyhow!(
+            "Failed to configure CUDA execution provider: CUDA initialization panicked (invalid/stub library?)"
+        )),
     }
 }
 
@@ -415,7 +603,9 @@ fn configure_cuda(_builder: SessionBuilder) -> Result<SessionBuilder> {
 #[cfg(feature = "tensorrt")]
 fn configure_tensorrt(builder: SessionBuilder) -> Result<SessionBuilder> {
     builder
-        .with_execution_providers([TensorRTExecutionProvider::default().build()])
+        .with_execution_providers([TensorRTExecutionProvider::default()
+            .build()
+            .error_on_failure()])
         .map_err(|e| anyhow::anyhow!("Failed to configure TensorRT execution provider: {e:?}"))
 }
 
@@ -427,7 +617,9 @@ fn configure_tensorrt(_builder: SessionBuilder) -> Result<SessionBuilder> {
 #[cfg(feature = "coreml")]
 fn configure_coreml(builder: SessionBuilder) -> Result<SessionBuilder> {
     builder
-        .with_execution_providers([CoreMLExecutionProvider::default().build()])
+        .with_execution_providers([CoreMLExecutionProvider::default()
+            .build()
+            .error_on_failure()])
         .map_err(|e| anyhow::anyhow!("Failed to configure CoreML execution provider: {e:?}"))
 }
 
@@ -439,7 +631,9 @@ fn configure_coreml(_builder: SessionBuilder) -> Result<SessionBuilder> {
 #[cfg(feature = "directml")]
 fn configure_directml(builder: SessionBuilder) -> Result<SessionBuilder> {
     builder
-        .with_execution_providers([DirectMLExecutionProvider::default().build()])
+        .with_execution_providers([DirectMLExecutionProvider::default()
+            .build()
+            .error_on_failure()])
         .map_err(|e| anyhow::anyhow!("Failed to configure DirectML execution provider: {e:?}"))
 }
 
@@ -454,7 +648,9 @@ fn configure_migraphx(builder: SessionBuilder) -> Result<SessionBuilder> {
         return Ok(builder);
     }
     builder
-        .with_execution_providers([MIGraphXExecutionProvider::default().build()])
+        .with_execution_providers([MIGraphXExecutionProvider::default()
+            .build()
+            .error_on_failure()])
         .context("Failed to configure MIGraphX execution provider. Ensure ROCm and MIGraphX are installed.")
 }
 
@@ -918,14 +1114,15 @@ impl ColbertBuilder {
         update_token_ids(&mut config, &tokenizer);
         let skiplist_ids = build_skiplist(&config, &tokenizer);
 
+        let gpu_execution_requested = match self.execution_provider {
+            ExecutionProvider::Auto => preferred_gpu_execution_provider().is_some(),
+            provider => provider.is_gpu(),
+        };
+
         // For GPU execution, cap intra-op threads to 1 — the GPU handles parallelism
         // and extra threads only cause ORT to allocate per-thread CUDA workspace buffers,
         // wasting GPU memory. The high thread count only benefits CPU sessions.
-        let threads_per_session = if matches!(
-            self.execution_provider,
-            ExecutionProvider::Cuda | ExecutionProvider::Auto
-        ) && self.num_sessions == 1
-        {
+        let threads_per_session = if gpu_execution_requested && self.num_sessions == 1 {
             1
         } else {
             self.threads_per_session
@@ -961,11 +1158,10 @@ impl ColbertBuilder {
         // Determine batch size
         let batch_size = self.batch_size.unwrap_or(if self.num_sessions > 1 {
             2 // Small batches optimal for parallel sessions
+        } else if gpu_execution_requested {
+            DEFAULT_GPU_BATCH_SIZE
         } else {
-            match self.execution_provider {
-                ExecutionProvider::Cpu => DEFAULT_CPU_BATCH_SIZE,
-                _ => DEFAULT_GPU_BATCH_SIZE,
-            }
+            DEFAULT_CPU_BATCH_SIZE
         });
 
         Ok(Colbert {
@@ -1067,8 +1263,10 @@ impl Colbert {
         let processed_texts = preprocess_texts(&self.config, documents);
         let tokenized = tokenize_processed_texts_individually(&self.tokenizer, &processed_texts)?;
         let truncate_limit = self.config.document_length.saturating_sub(1);
-        let use_gpu_batch_modes =
-            !matches!(self.requested_execution_provider, ExecutionProvider::Cpu);
+        let use_gpu_batch_modes = match self.requested_execution_provider {
+            ExecutionProvider::Auto => is_gpu_available(),
+            provider => provider.is_gpu(),
+        };
         let use_dynamic_batch = self.dynamic_batch && use_gpu_batch_modes;
 
         // CPU path: simple fixed-size batches. Documents are batched in input
