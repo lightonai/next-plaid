@@ -9,6 +9,7 @@ use colgrep::{
     get_index_dir_for_project, get_vector_index_path, index_exists, is_text_format,
     path_contains_ignored_dir, Config, IndexBuilder, IndexState, Searcher, DEFAULT_MODEL,
 };
+use next_plaid_onnx::ExecutionProvider;
 
 use crate::display::{
     calc_display_ranges, find_representative_lines, group_results_by_file,
@@ -558,6 +559,64 @@ pub fn cmd_search(
     auto_confirm: bool,
     static_batch: bool,
 ) -> Result<()> {
+    colgrep::profile::command_result("search", || {
+        cmd_search_impl(
+            query,
+            paths,
+            top_k,
+            top_k_explicit,
+            cli_model,
+            json,
+            include_patterns,
+            files_only,
+            show_content,
+            cli_context_lines,
+            text_pattern,
+            extended_regexp,
+            fixed_strings,
+            word_regexp,
+            case_sensitive,
+            exclude_patterns,
+            exclude_dirs,
+            code_only,
+            no_fts,
+            alpha,
+            pool_factor,
+            auto_confirm,
+            static_batch,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_search_impl(
+    query: &str,
+    paths: &[PathBuf],
+    top_k: usize,
+    top_k_explicit: bool,
+    cli_model: Option<&str>,
+    json: bool,
+    include_patterns: &[String],
+    files_only: bool,
+    show_content: bool,
+    cli_context_lines: Option<usize>,
+    text_pattern: Option<&str>,
+    extended_regexp: bool,
+    fixed_strings: bool,
+    word_regexp: bool,
+    case_sensitive: bool,
+    exclude_patterns: &[String],
+    exclude_dirs: &[String],
+    code_only: bool,
+    no_fts: bool,
+    alpha: Option<f32>,
+    pool_factor: Option<usize>,
+    auto_confirm: bool,
+    static_batch: bool,
+) -> Result<()> {
+    colgrep::profile::set_metadata("query", query);
+    colgrep::profile::set_metadata("top_k", top_k);
+    colgrep::profile::set_metadata("path_count", paths.len());
     // Resolve context_lines: CLI > config > default (20)
     let context_lines = resolve_context_lines(cli_context_lines, 20);
     // Resolve relative paths: config > default (false = absolute)
@@ -1053,13 +1112,17 @@ fn search_single_path(
     auto_confirm: bool,
     static_batch: bool,
 ) -> Result<Vec<colgrep::SearchResult>> {
-    let path = match std::fs::canonicalize(path) {
-        Ok(p) => p,
-        Err(_) => {
-            let help = find_existing_parent_and_list(path);
-            anyhow::bail!("Path does not exist: {}\n\n{}", path.display(), help);
-        }
-    };
+    let path =
+        colgrep::profile::time_result("search.canonicalize_path", || match std::fs::canonicalize(
+            path,
+        ) {
+            Ok(p) => Ok(p),
+            Err(_) => {
+                let help = find_existing_parent_and_list(path);
+                anyhow::bail!("Path does not exist: {}\n\n{}", path.display(), help);
+            }
+        })?;
+    colgrep::profile::set_metadata("path", path.display().to_string());
 
     // Check if path is a file (not a directory)
     // If so, we'll use the parent directory for indexing and filter to this specific file
@@ -1079,6 +1142,7 @@ fn search_single_path(
 
     // Resolve model: CLI > config > default
     let model = resolve_model(cli_model);
+    colgrep::profile::set_metadata("model", &model);
 
     // Load config for settings
     let config = Config::load().unwrap_or_default();
@@ -1094,20 +1158,23 @@ fn search_single_path(
         index_exists(&search_path, &model) || find_parent_index(&search_path, &model)?.is_some();
 
     // Ensure model is downloaded (quiet if we already have an index)
-    let model_path = ensure_model(Some(&model), has_existing_index)?;
+    let model_path = colgrep::profile::time_result("search.ensure_model", || {
+        ensure_model(Some(&model), has_existing_index)
+    })?;
+    colgrep::profile::set_metadata("model_path", model_path.display().to_string());
 
     // Check for parent index (scoped to current model) unless the resolved path
     // is outside the current directory (external project)
-    let parent_info = {
+    let parent_info = colgrep::profile::time_result("search.find_parent_index", || {
         let current_dir = std::env::current_dir().ok();
         let is_external_project = is_external_project_path(&search_path, current_dir.as_deref());
 
         if is_external_project {
-            None
+            Ok(None)
         } else {
-            find_parent_index(&search_path, &model)?
+            find_parent_index(&search_path, &model)
         }
-    };
+    })?;
 
     // Determine effective project root and subdirectory filter
     let (effective_root, subdir_filter): (PathBuf, Option<PathBuf>) = match &parent_info {
@@ -1154,11 +1221,15 @@ fn search_single_path(
             parallel_sessions,
             batch_size,
         )?;
+        builder.set_cpu_fallback_quantized(
+            !config.use_fp32_for_execution_provider(ExecutionProvider::Cpu),
+        );
         builder.set_auto_confirm(auto_confirm);
         builder.set_dynamic_batch(!static_batch);
 
         // Try non-blocking index update
-        match builder.try_index(None, false) {
+        match colgrep::profile::time_result("search.auto_index", || builder.try_index(None, false))
+        {
             Ok(Some(stats)) => {
                 let changes = stats.added + stats.changed + stats.deleted;
                 if changes > 0 && !json && !files_only {
@@ -1217,9 +1288,14 @@ fn search_single_path(
                         parallel_sessions,
                         batch_size,
                     )?;
+                    new_builder.set_cpu_fallback_quantized(
+                        !config.use_fp32_for_execution_provider(ExecutionProvider::Cpu),
+                    );
                     new_builder.set_auto_confirm(auto_confirm);
                     new_builder.set_dynamic_batch(!static_batch);
-                    new_builder.index(None, false)?;
+                    colgrep::profile::time_result("search.rebuild_index", || {
+                        new_builder.index(None, false)
+                    })?;
                 } else {
                     return Err(e);
                 }
@@ -1251,18 +1327,26 @@ fn search_single_path(
     // If loading fails while another process holds the lock, retry a few times in case
     // the failure is due to a transient mid-write state.
     // If loading fails without a concurrent updater, clear and rebuild the index.
+    let cpu_fallback_quantized = !config.use_fp32_for_execution_provider(ExecutionProvider::Cpu);
     let load_searcher = || -> Result<Searcher> {
         match &parent_info {
-            Some(info) => Searcher::load_from_index_dir_with_quantized(
+            Some(info) => Searcher::load_from_index_dir_with_quantized_options(
                 &info.index_dir,
                 &model_path,
                 quantized,
+                cpu_fallback_quantized,
             ),
-            None => Searcher::load_with_quantized(&effective_root, &model, &model_path, quantized),
+            None => Searcher::load_with_quantized_options(
+                &effective_root,
+                &model,
+                &model_path,
+                quantized,
+                cpu_fallback_quantized,
+            ),
         }
     };
 
-    let searcher = match load_searcher() {
+    let searcher = match colgrep::profile::time_result("search.load_searcher", || load_searcher()) {
         Ok(s) => s,
         Err(e) if index_locked => {
             // Another process is updating the index — the load failure is likely
@@ -1277,7 +1361,9 @@ fn search_single_path(
             let mut loaded = None;
             for _ in 0..MAX_RETRIES {
                 std::thread::sleep(RETRY_DELAY);
-                match load_searcher() {
+                match colgrep::profile::time_result("search.load_searcher_retry", || {
+                    load_searcher()
+                }) {
                     Ok(s) => {
                         loaded = Some(s);
                         break;
@@ -1328,11 +1414,14 @@ fn search_single_path(
                 parallel_sessions,
                 batch_size,
             )?;
+            builder.set_cpu_fallback_quantized(
+                !config.use_fp32_for_execution_provider(ExecutionProvider::Cpu),
+            );
             builder.set_auto_confirm(auto_confirm);
             builder.set_dynamic_batch(!static_batch);
-            builder.index(None, false)?;
+            colgrep::profile::time_result("search.rebuild_index", || builder.index(None, false))?;
 
-            load_searcher()?
+            colgrep::profile::time_result("search.load_searcher", || load_searcher())?
         }
         Err(e) => return Err(e),
     };
@@ -1512,6 +1601,7 @@ fn search_single_path(
 
     // When no -e flag is provided, run BOTH semantic/hybrid search and text-pattern search
     // This ensures exact matches are found even if the vector database doesn't rank them highly
+    let search_execute_phase = colgrep::profile::phase("search.execute");
     let results = if let Some(pattern) = &text_pattern {
         // -e flag provided: use existing hybrid search logic
         // Enhance semantic query with -e pattern (strip regex metacharacters and dedupe tokens)
@@ -1632,6 +1722,7 @@ fn search_single_path(
         }
         merged.into_values().collect::<Vec<_>>()
     };
+    drop(search_execute_phase);
 
     // Note: When -e is used, results are already filtered to units containing the pattern
     // via filter_by_text_pattern_with_options() above, which supports -E, -F, -w flags.

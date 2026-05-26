@@ -6,6 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use next_plaid_onnx::ExecutionProvider;
 use serde::{Deserialize, Serialize};
 
 #[cfg(any(
@@ -32,6 +33,15 @@ pub const DEFAULT_BATCH_SIZE_CPU: usize = 1;
 /// Default batch size per encoding session for GPU inference providers.
 /// With 1 session, larger batch size (64) is optimal for GPU throughput
 pub const DEFAULT_BATCH_SIZE_GPU: usize = 64;
+
+pub fn default_batch_size_for_execution_provider(provider: ExecutionProvider) -> usize {
+    match provider {
+        ExecutionProvider::Cpu => DEFAULT_BATCH_SIZE_CPU,
+        provider if provider.is_gpu() => DEFAULT_BATCH_SIZE_GPU,
+        ExecutionProvider::Auto => get_default_batch_size(),
+        _ => DEFAULT_BATCH_SIZE_CPU,
+    }
+}
 
 /// Default batch size - use GPU default when a GPU inference provider is enabled, CPU otherwise.
 /// Note: At compile time we set the GPU default, but at runtime we check provider availability.
@@ -301,6 +311,20 @@ impl Config {
         {
             self.fp32.unwrap_or(false)
         }
+    }
+
+    /// Check whether FP32/non-INT8 should be used for a resolved execution provider.
+    ///
+    /// An explicit `settings --fp32` / `settings --int8` preference is honored
+    /// for every provider. Without an explicit preference, GPU providers use
+    /// the non-INT8 ONNX graph (MIGraphX may prefer `model_fp16.onnx` or apply
+    /// FP16 conversion), while CPU uses the pre-quantized INT8 graph.
+    pub fn use_fp32_for_execution_provider(&self, provider: ExecutionProvider) -> bool {
+        if let Some(fp32) = self.fp32 {
+            return fp32;
+        }
+
+        matches!(provider, ExecutionProvider::MIGraphX) || provider.is_gpu()
     }
 
     /// Set whether to use FP32 (non-quantized) model

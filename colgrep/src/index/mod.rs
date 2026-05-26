@@ -158,6 +158,7 @@ const DEFAULT_ENCODE_BATCH_SIZE: usize = 64;
 /// Threshold for forcing CPU encoding even when a GPU provider is available.
 /// For small batches (< this many units), CPU is faster due to GPU initialization overhead.
 const SMALL_BATCH_CPU_THRESHOLD: usize = 300;
+
 /// Bounded channel capacity between the pool and index stages.
 /// Kept small (4 chunks) to limit memory: each chunk holds full embeddings
 /// waiting to be written to disk. Back-pressure here slows encoding when
@@ -331,6 +332,85 @@ fn prepare_deduplicated_chunk(unit_chunk: &[SortedUnit]) -> PreparedChunk {
             .collect(),
         unique_texts,
         original_to_unique,
+    }
+}
+
+fn should_auto_use_warm_migraphx_for_indexing(
+    model_path: &Path,
+    quantized: bool,
+    batch_size: usize,
+    num_units: usize,
+) -> bool {
+    let trace_enabled = std::env::var("NEXT_PLAID_MIGRAPHX_TRACE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if let Ok(cache_root) = std::env::var("NEXT_PLAID_MIGRAPHX_STATIC_CACHE_ROOT") {
+        let cache_root = Path::new(&cache_root);
+        if !cache_root.exists() {
+            if trace_enabled {
+                eprintln!(
+                    "__MIGRAPHX_CACHE_STATUS__ cache_root={} missing",
+                    cache_root.display()
+                );
+            }
+            return false;
+        }
+        if cache_root
+            .read_dir()
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false)
+        {
+            if trace_enabled {
+                eprintln!(
+                    "__MIGRAPHX_CACHE_STATUS__ cache_root={} empty",
+                    cache_root.display()
+                );
+            }
+            return false;
+        }
+    }
+
+    let _ = crate::onnx_runtime::ensure_migraphx_onnx_runtime_path_for_cache_key();
+
+    match next_plaid_onnx::migraphx_static_shape_cache_status(model_path, quantized, batch_size) {
+        Ok(status) => {
+            if trace_enabled {
+                eprintln!(
+                    "__MIGRAPHX_CACHE_STATUS__ cache_root={} model_key={} document_shapes={:?} warm_document_shapes={:?} cold_document_shapes={:?}",
+                    status.cache_root.display(),
+                    status.model_cache_key,
+                    status.document_shapes,
+                    status.warm_document_shapes,
+                    status.cold_document_shapes
+                );
+            }
+            if status.warm_document_shapes.is_empty() {
+                return false;
+            }
+
+            let min_warm_sequence_len = status
+                .warm_document_shapes
+                .iter()
+                .map(|shape| shape.sequence_length)
+                .min()
+                .unwrap_or(0);
+            let estimated_warm_tokens = num_units.saturating_mul(min_warm_sequence_len.max(1));
+            let min_run_tokens = next_plaid_onnx::migraphx_default_min_run_tokens();
+            if trace_enabled {
+                eprintln!(
+                    "__MIGRAPHX_CACHE_STATUS__ estimated_warm_tokens={} min_run_tokens={}",
+                    estimated_warm_tokens, min_run_tokens
+                );
+            }
+            estimated_warm_tokens >= min_run_tokens
+        }
+        Err(err) => {
+            if trace_enabled {
+                eprintln!("__MIGRAPHX_CACHE_STATUS__ error={err:#}");
+            }
+            false
+        }
     }
 }
 
@@ -727,21 +807,23 @@ fn run_chunk_pipeline(
     // all downstream stages.
     drop(tokenize_tx);
 
-    tokenize_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Tokenize stage thread panicked"))??;
-    encode_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Encode stage thread panicked"))??;
-    pool_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Pool stage thread panicked"))??;
-    index_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Index stage thread panicked"))??;
-    metadata_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Metadata stage thread panicked"))??;
+    let mut stage_errors = Vec::new();
+    for (stage, result) in [
+        ("tokenize", tokenize_handle.join()),
+        ("encode", encode_handle.join()),
+        ("pool", pool_handle.join()),
+        ("index", index_handle.join()),
+        ("metadata", metadata_handle.join()),
+    ] {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => stage_errors.push(format!("{stage}: {err:#}")),
+            Err(_) => stage_errors.push(format!("{stage}: stage thread panicked")),
+        }
+    }
+    if !stage_errors.is_empty() {
+        anyhow::bail!("Indexing pipeline failed:\n{}", stage_errors.join("\n"));
+    }
 
     Ok(was_interrupted)
 }
@@ -833,7 +915,10 @@ pub struct IndexBuilder {
     model: Option<Colbert>,
     /// Builder parameters for lazy model creation
     model_path: PathBuf,
+    /// Quantization setting for the primary execution provider.
     quantized: bool,
+    /// Quantization setting to use when execution resolves to CPU fallback.
+    cpu_fallback_quantized: bool,
     parallel_sessions: Option<usize>,
     batch_size: Option<usize>,
     project_root: PathBuf,
@@ -888,6 +973,7 @@ impl IndexBuilder {
             model: None, // Lazily created when needed
             model_path: model_path.to_path_buf(),
             quantized,
+            cpu_fallback_quantized: quantized,
             parallel_sessions,
             batch_size,
             project_root: project_root.to_path_buf(),
@@ -918,14 +1004,20 @@ impl IndexBuilder {
         self.dynamic_batch = dynamic_batch;
     }
 
+    pub fn set_cpu_fallback_quantized(&mut self, quantized: bool) {
+        self.cpu_fallback_quantized = quantized;
+    }
+
     /// Ensure the model is created for encoding.
     /// The model is lazily created on first use to avoid overhead when just scanning files
     /// or when checking for index updates that have no changes.
     ///
     /// # Arguments
     /// * `num_units` - Number of code units to encode. Used to decide whether to use GPU or CPU.
-    ///   For small batches (< SMALL_BATCH_CPU_THRESHOLD), CPU is preferred even when a GPU
-    ///   provider is available, as GPU initialization overhead outweighs the benefits for small workloads.
+    ///   For small batches (< SMALL_BATCH_CPU_THRESHOLD), CPU is preferred for dynamic GPU
+    ///   providers because startup overhead outweighs the benefits. MIGraphX is handled
+    ///   separately: warm static-shape caches are used even for small repos, while cold
+    ///   caches fall back to CPU to avoid compilation cost.
     fn ensure_model_created(&mut self, num_units: usize) -> Result<()> {
         if self.model.is_none() {
             let acceleration_mode = env_acceleration_mode_lossy();
@@ -955,24 +1047,72 @@ impl IndexBuilder {
                     )
                 }
                 AccelerationMode::Auto => {
-                    let force_cpu_for_small_batch = num_units < SMALL_BATCH_CPU_THRESHOLD;
-                    if force_cpu_for_small_batch {
-                        apply_acceleration_mode(AccelerationMode::ForceCpu);
-                    } else {
-                        apply_acceleration_mode(AccelerationMode::Auto);
-                    }
-
-                    crate::onnx_runtime::ensure_onnx_runtime()
-                        .context("Failed to initialize ONNX Runtime")?;
-
-                    if !force_cpu_for_small_batch {
-                        if let Some(provider) = preferred_gpu_provider() {
-                            (
-                                self.parallel_sessions
-                                    .unwrap_or(crate::config::DEFAULT_PARALLEL_SESSIONS_GPU),
-                                provider,
+                    // On ROCm/MIGraphX, probing provider availability starts
+                    // the ROCm/ORT stack. For the common cold-cache/CPU path,
+                    // decide first and force CPU before ORT initialization so
+                    // a MIGraphX-feature build does not regress normal indexing.
+                    if next_plaid_onnx::compiled_gpu_execution_provider()
+                        == Some(ExecutionProvider::MIGraphX)
+                    {
+                        let migraphx_batch = self.batch_size.unwrap_or_else(|| {
+                            crate::config::default_batch_size_for_execution_provider(
+                                ExecutionProvider::MIGraphX,
                             )
+                        });
+                        let migraphx_policy =
+                            crate::hardware::migraphx_auto_policy_for_model(Some(&self.model_path));
+                        let migraphx_min_units = migraphx_policy.min_units;
+                        crate::profile::set_metadata(
+                            "index.migraphx_auto_policy",
+                            &migraphx_policy,
+                        );
+                        if num_units < migraphx_min_units {
+                            apply_acceleration_mode(AccelerationMode::ForceCpu);
+                            crate::onnx_runtime::ensure_onnx_runtime()
+                                .context("Failed to initialize ONNX Runtime")?;
+                            eprintln!(
+                                    "ℹ️  Auto mode using CPU inference for indexing: {num_units} code units is below the MIGraphX auto threshold ({migraphx_min_units}). Use --force-gpu to benchmark MIGraphX."
+                                );
+                            (
+                                self.parallel_sessions.unwrap_or_else(
+                                    crate::config::get_default_cpu_parallel_sessions,
+                                ),
+                                ExecutionProvider::Cpu,
+                            )
+                        } else if should_auto_use_warm_migraphx_for_indexing(
+                            &self.model_path,
+                            self.quantized,
+                            migraphx_batch,
+                            num_units,
+                        ) {
+                            apply_acceleration_mode(AccelerationMode::Auto);
+                            crate::onnx_runtime::ensure_onnx_runtime()
+                                .context("Failed to initialize ONNX Runtime")?;
+                            if preferred_gpu_provider() == Some(ExecutionProvider::MIGraphX) {
+                                eprintln!(
+                                        "ℹ️  Warm MIGraphX cache shape(s) detected; auto mode using GPU inference for matching indexing batches with CPU fallback for cold shapes."
+                                    );
+                                (
+                                    self.parallel_sessions
+                                        .unwrap_or(crate::config::DEFAULT_PARALLEL_SESSIONS_GPU),
+                                    ExecutionProvider::MIGraphX,
+                                )
+                            } else {
+                                apply_acceleration_mode(AccelerationMode::ForceCpu);
+                                (
+                                    self.parallel_sessions.unwrap_or_else(
+                                        crate::config::get_default_cpu_parallel_sessions,
+                                    ),
+                                    ExecutionProvider::Cpu,
+                                )
+                            }
                         } else {
+                            apply_acceleration_mode(AccelerationMode::ForceCpu);
+                            crate::onnx_runtime::ensure_onnx_runtime()
+                                .context("Failed to initialize ONNX Runtime")?;
+                            eprintln!(
+                                    "ℹ️  Auto mode using CPU inference for indexing: MIGraphX static-shape caches are not warm for this model/batch."
+                                );
                             (
                                 self.parallel_sessions.unwrap_or_else(
                                     crate::config::get_default_cpu_parallel_sessions,
@@ -981,11 +1121,46 @@ impl IndexBuilder {
                             )
                         }
                     } else {
-                        (
-                            self.parallel_sessions
-                                .unwrap_or_else(crate::config::get_default_cpu_parallel_sessions),
-                            ExecutionProvider::Cpu,
-                        )
+                        apply_acceleration_mode(AccelerationMode::Auto);
+                        crate::onnx_runtime::ensure_onnx_runtime()
+                            .context("Failed to initialize ONNX Runtime")?;
+
+                        if let Some(provider) = preferred_gpu_provider() {
+                            if num_units >= SMALL_BATCH_CPU_THRESHOLD {
+                                (
+                                    self.parallel_sessions
+                                        .unwrap_or(crate::config::DEFAULT_PARALLEL_SESSIONS_GPU),
+                                    provider,
+                                )
+                            } else {
+                                apply_acceleration_mode(AccelerationMode::ForceCpu);
+                                eprintln!(
+                                    "ℹ️  Auto mode using CPU inference for indexing: {num_units} code units is below the small-batch threshold ({SMALL_BATCH_CPU_THRESHOLD})."
+                                );
+                                (
+                                    self.parallel_sessions.unwrap_or_else(
+                                        crate::config::get_default_cpu_parallel_sessions,
+                                    ),
+                                    ExecutionProvider::Cpu,
+                                )
+                            }
+                        } else if num_units >= SMALL_BATCH_CPU_THRESHOLD {
+                            apply_acceleration_mode(AccelerationMode::ForceCpu);
+                            (
+                                self.parallel_sessions.unwrap_or_else(
+                                    crate::config::get_default_cpu_parallel_sessions,
+                                ),
+                                ExecutionProvider::Cpu,
+                            )
+                        } else {
+                            apply_acceleration_mode(AccelerationMode::ForceCpu);
+                            (
+                                self.parallel_sessions.unwrap_or_else(
+                                    crate::config::get_default_cpu_parallel_sessions,
+                                ),
+                                ExecutionProvider::Cpu,
+                            )
+                        }
                     }
                 }
             };
@@ -994,26 +1169,56 @@ impl IndexBuilder {
             eprintln!("🤖 Model: {}", self.model_id);
             eprintln!("📂 Building index...");
 
-            // Use runtime default for batch size (respects provider availability)
-            let batch = self
-                .batch_size
-                .unwrap_or_else(crate::config::get_default_batch_size);
+            // Use a provider-specific runtime default. For MIGraphX the batch
+            // size determines the static-shape token budget that colgrep can
+            // warm and reuse, so its default is intentionally smaller than
+            // throughput-oriented GPU providers.
+            let batch = self.batch_size.unwrap_or_else(|| {
+                crate::config::default_batch_size_for_execution_provider(execution_provider)
+            });
+            let model_quantized = if execution_provider == ExecutionProvider::Cpu {
+                self.cpu_fallback_quantized
+            } else {
+                self.quantized
+            };
+            crate::profile::set_metadata(
+                "index.execution_provider",
+                execution_provider.display_name(),
+            );
+            crate::profile::set_metadata("index.num_sessions", num_sessions);
+            crate::profile::set_metadata("index.batch_size", batch);
+            crate::profile::set_metadata("index.model_quantized", model_quantized);
 
             // Suppress stderr during model loading to hide CoreML's harmless
             // "Context leak detected" warnings on macOS.
             // `with_suppressed_stderr` captures any panic message via a temporary
             // panic hook and prints it to the restored stderr before resuming,
             // so panics inside the suppressed region remain visible.
-            let model = crate::stderr::with_suppressed_stderr(|| {
-                Colbert::builder(&self.model_path)
-                    .with_quantized(self.quantized)
-                    .with_parallel(num_sessions)
-                    .with_batch_size(batch)
-                    .with_dynamic_batch(self.dynamic_batch)
-                    .with_execution_provider(execution_provider)
-                    .build()
-            })
-            .context("Failed to load ColBERT model")?;
+            let model = crate::profile::time_result("index.model_load", || {
+                crate::stderr::with_suppressed_stderr(|| {
+                    let mut builder = Colbert::builder(&self.model_path)
+                        .with_quantized(model_quantized)
+                        .with_parallel(num_sessions)
+                        .with_batch_size(batch)
+                        .with_dynamic_batch(self.dynamic_batch)
+                        .with_execution_provider(execution_provider)
+                        .with_migraphx_cpu_fallback_quantized(self.cpu_fallback_quantized);
+
+                    if acceleration_mode == AccelerationMode::Auto
+                        && execution_provider == ExecutionProvider::MIGraphX
+                    {
+                        // Auto selection already applied the command-level
+                        // warm-work threshold. Do not re-apply it per index
+                        // chunk, otherwise normal 1024-unit index chunks never
+                        // reach the intended run-level threshold for short
+                        // document buckets.
+                        builder = builder.with_migraphx_min_run_tokens(0);
+                    }
+
+                    builder.build()
+                })
+                .context("Failed to load ColBERT model")
+            })?;
 
             self.model = Some(model);
         }
@@ -1051,7 +1256,7 @@ impl IndexBuilder {
 
         let model = crate::stderr::with_suppressed_stderr(|| {
             Colbert::builder(&self.model_path)
-                .with_quantized(self.quantized)
+                .with_quantized(self.cpu_fallback_quantized)
                 .with_parallel(num_sessions)
                 .with_batch_size(batch)
                 .with_dynamic_batch(false)
@@ -1107,8 +1312,8 @@ impl IndexBuilder {
                     if accel == AccelerationMode::ForceGpu {
                         anyhow::bail!(
                             "GPU encoding failed with --force-gpu. \
-                             Not enough GPU memory for batch size {batch} and document length. \
-                             Try reducing the batch size or use auto mode to allow CPU fallback.\n\
+                             This can be caused by a missing warm static shape, a MIGraphX runtime error, or insufficient GPU memory for batch size {batch} and document length. \
+                             Warm matching MIGraphX shapes, adjust --batch-size, or use auto mode to allow CPU fallback.\n\
                              \nCaused by: {gpu_err}",
                             batch = self
                                 .batch_size
@@ -2020,7 +2225,9 @@ impl IndexBuilder {
             std::fs::remove_dir_all(&old_path)?;
         }
 
-        let (files, skipped) = self.scan_files(languages)?;
+        let (files, skipped) =
+            crate::profile::time_result("index.scan_files", || self.scan_files(languages))?;
+        crate::profile::set_metadata("index.files", files.len());
         let mut state = IndexState::default();
         let mut all_units: Vec<CodeUnit> = Vec::new();
 
@@ -2036,18 +2243,22 @@ impl IndexBuilder {
         pb.set_message("Parsing files...");
 
         // Extract units from all files
-        for parsed in parse_files_parallel(&self.project_root, &files, Some(&pb)) {
-            if let Some(reason) = parsed.skip_reason {
-                eprintln!("⚠️  {}", reason);
-                state.ignored_files.insert(parsed.path);
-                continue;
-            }
+        {
+            let _phase = crate::profile::phase("index.parse_files");
+            for parsed in parse_files_parallel(&self.project_root, &files, Some(&pb)) {
+                if let Some(reason) = parsed.skip_reason {
+                    eprintln!("⚠️  {}", reason);
+                    state.ignored_files.insert(parsed.path);
+                    continue;
+                }
 
-            all_units.extend(parsed.units);
-            if let Some(file_info) = parsed.file_info {
-                state.files.insert(parsed.path, file_info);
+                all_units.extend(parsed.units);
+                if let Some(file_info) = parsed.file_info {
+                    state.files.insert(parsed.path, file_info);
+                }
             }
         }
+        crate::profile::set_metadata("index.units", all_units.len());
         let parsing_interrupted = is_interrupted();
         pb.finish_and_clear();
 
@@ -2057,7 +2268,9 @@ impl IndexBuilder {
         }
 
         // Build call graph to populate called_by
-        build_call_graph(&mut all_units);
+        crate::profile::time("index.build_call_graph", || {
+            build_call_graph(&mut all_units)
+        });
 
         // Prompt for confirmation if indexing a large codebase
         if !self.auto_confirm
@@ -2069,7 +2282,9 @@ impl IndexBuilder {
 
         let was_interrupted = if !all_units.is_empty() {
             // Ensure model is created before encoding (lazy initialization)
-            self.ensure_model_created(all_units.len())?;
+            crate::profile::time_result("index.model_ready", || {
+                self.ensure_model_created(all_units.len())
+            })?;
 
             #[cfg(feature = "cuda")]
             if !self.is_using_gpu()
@@ -2081,7 +2296,9 @@ impl IndexBuilder {
             }
 
             // Build new index in temp directory to avoid destroying the old one
-            self.write_index_impl(&all_units, true, Some(&temp_path))?
+            crate::profile::time_result("index.write_index", || {
+                self.write_index_impl(&all_units, true, Some(&temp_path))
+            })?
         } else {
             false
         };
@@ -2093,34 +2310,40 @@ impl IndexBuilder {
         }
 
         // Atomic swap: replace old index with newly built one
-        if all_units.is_empty() {
-            // No files to index — just remove the old index if it exists
-            if index_path.exists() {
-                std::fs::remove_dir_all(&index_path)?;
-            }
-        } else {
-            if index_path.exists() {
-                std::fs::rename(&index_path, &old_path)
-                    .context("Failed to move old index aside")?;
-            }
-            if let Err(e) = std::fs::rename(&temp_path, &index_path) {
-                // Try to restore old index
-                if old_path.exists() && !index_path.exists() {
-                    let _ = std::fs::rename(&old_path, &index_path);
+        crate::profile::time_result("index.atomic_swap", || -> Result<()> {
+            if all_units.is_empty() {
+                // No files to index — just remove the old index if it exists
+                if index_path.exists() {
+                    std::fs::remove_dir_all(&index_path)?;
                 }
-                return Err(anyhow::anyhow!(
-                    "Failed to move new index into place: {}",
-                    e
-                ));
+            } else {
+                if index_path.exists() {
+                    std::fs::rename(&index_path, &old_path)
+                        .context("Failed to move old index aside")?;
+                }
+                if let Err(e) = std::fs::rename(&temp_path, &index_path) {
+                    // Try to restore old index
+                    if old_path.exists() && !index_path.exists() {
+                        let _ = std::fs::rename(&old_path, &index_path);
+                    }
+                    return Err(anyhow::anyhow!(
+                        "Failed to move new index into place: {}",
+                        e
+                    ));
+                }
+                if old_path.exists() {
+                    let _ = std::fs::remove_dir_all(&old_path);
+                }
             }
-            if old_path.exists() {
-                let _ = std::fs::remove_dir_all(&old_path);
-            }
-        }
+            Ok(())
+        })?;
 
         // Save state and project metadata only on successful completion
-        state.save(&self.index_dir)?;
-        ProjectMetadata::new(&self.project_root, &self.model_id).save(&self.index_dir)?;
+        crate::profile::time_result("index.save_state", || -> Result<()> {
+            state.save(&self.index_dir)?;
+            ProjectMetadata::new(&self.project_root, &self.model_id).save(&self.index_dir)?;
+            Ok(())
+        })?;
 
         Ok(UpdateStats {
             added: files.len(),
@@ -2137,7 +2360,13 @@ impl IndexBuilder {
         old_state: &IndexState,
         languages: Option<&[Language]>,
     ) -> Result<UpdateStats> {
-        let plan = self.compute_update_plan(old_state, languages)?;
+        let plan = crate::profile::time_result("index.compute_update_plan", || {
+            self.compute_update_plan(old_state, languages)
+        })?;
+        crate::profile::set_metadata("index.plan_added", plan.added.len());
+        crate::profile::set_metadata("index.plan_changed", plan.changed.len());
+        crate::profile::set_metadata("index.plan_deleted", plan.deleted.len());
+        crate::profile::set_metadata("index.plan_unchanged", plan.unchanged);
         let index_dir = get_vector_index_path(&self.index_dir);
         let index_path = index_dir.to_str().unwrap();
 
@@ -2151,7 +2380,9 @@ impl IndexBuilder {
 
         // 0. Clean up orphaned entries (files in index but not on disk)
         // This handles directory deletion/rename and any inconsistencies
-        let orphaned_deleted = self.cleanup_orphaned_entries(index_path)?;
+        let orphaned_deleted = crate::profile::time_result("index.cleanup_orphans", || {
+            self.cleanup_orphaned_entries(index_path)
+        })?;
 
         // Nothing to do
         if plan.added.is_empty()
@@ -2233,20 +2464,24 @@ impl IndexBuilder {
         };
 
         let mut skipped_files: Vec<PathBuf> = Vec::new();
-        for parsed in parse_files_parallel(&self.project_root, &files_to_index, pb.as_ref()) {
-            if let Some(reason) = parsed.skip_reason {
-                eprintln!("⚠️  {}", reason);
-                state.files.remove(&parsed.path);
-                state.ignored_files.insert(parsed.path.clone());
-                skipped_files.push(parsed.path);
-                continue;
-            }
+        {
+            let _phase = crate::profile::phase("index.parse_files");
+            for parsed in parse_files_parallel(&self.project_root, &files_to_index, pb.as_ref()) {
+                if let Some(reason) = parsed.skip_reason {
+                    eprintln!("⚠️  {}", reason);
+                    state.files.remove(&parsed.path);
+                    state.ignored_files.insert(parsed.path.clone());
+                    skipped_files.push(parsed.path);
+                    continue;
+                }
 
-            new_units.extend(parsed.units);
-            if let Some(file_info) = parsed.file_info {
-                state.files.insert(parsed.path, file_info);
+                new_units.extend(parsed.units);
+                if let Some(file_info) = parsed.file_info {
+                    state.files.insert(parsed.path, file_info);
+                }
             }
         }
+        crate::profile::set_metadata("index.units", new_units.len());
         let parsing_interrupted = is_interrupted();
         if let Some(pb) = pb {
             pb.finish_and_clear();
@@ -2272,7 +2507,9 @@ impl IndexBuilder {
         let mut was_interrupted = false;
         if !new_units.is_empty() {
             // Build call graph for new units
-            build_call_graph(&mut new_units);
+            crate::profile::time("index.build_call_graph", || {
+                build_call_graph(&mut new_units)
+            });
 
             // Prompt for confirmation if indexing a large number of new units
             if !self.auto_confirm
@@ -2283,7 +2520,9 @@ impl IndexBuilder {
             }
 
             // Ensure model is created before encoding (lazy initialization)
-            self.ensure_model_created(new_units.len())?;
+            crate::profile::time_result("index.model_ready", || {
+                self.ensure_model_created(new_units.len())
+            })?;
 
             // Progress bar for encoding
             let pb = ProgressBar::new(new_units.len() as u64);
@@ -2311,14 +2550,19 @@ impl IndexBuilder {
             // into a single index rewrite — see delete_files_from_index / issue #116.
             delete_files_from_index(index_path, &plan.changed)?;
 
-            let sorted_units = prepare_units_for_encoding(&new_units, index_chunk_size);
-            let pipeline_interrupted = self.run_encoding_pipeline(
-                &sorted_units,
-                index_chunk_size,
-                pool_factor,
-                index_path,
-                Some(&pb),
-            )?;
+            let sorted_units = crate::profile::time("index.prepare_units", || {
+                prepare_units_for_encoding(&new_units, index_chunk_size)
+            });
+            let pipeline_interrupted =
+                crate::profile::time_result("index.encoding_pipeline", || {
+                    self.run_encoding_pipeline(
+                        &sorted_units,
+                        index_chunk_size,
+                        pool_factor,
+                        index_path,
+                        Some(&pb),
+                    )
+                })?;
             was_interrupted |= pipeline_interrupted;
 
             pb.finish_and_clear();
@@ -2331,7 +2575,7 @@ impl IndexBuilder {
         }
 
         state.dirty = false;
-        state.save(&self.index_dir)?;
+        crate::profile::time_result("index.save_state", || state.save(&self.index_dir))?;
 
         Ok(UpdateStats {
             added: plan.added.len(),
@@ -2719,15 +2963,21 @@ impl IndexBuilder {
         // Compute effective pool factor based on batch size
         let pool_factor = self.resolve_pool_factor(units.len());
 
-        let sorted_units = prepare_units_for_encoding(units, index_chunk_size);
-        self.ensure_model_created(units.len())?;
-        let was_interrupted = self.run_encoding_pipeline(
-            &sorted_units,
-            index_chunk_size,
-            pool_factor,
-            index_path,
-            pb.as_ref(),
-        )?;
+        let sorted_units = crate::profile::time("index.prepare_units", || {
+            prepare_units_for_encoding(units, index_chunk_size)
+        });
+        crate::profile::time_result("index.model_ready", || {
+            self.ensure_model_created(units.len())
+        })?;
+        let was_interrupted = crate::profile::time_result("index.encoding_pipeline", || {
+            self.run_encoding_pipeline(
+                &sorted_units,
+                index_chunk_size,
+                pool_factor,
+                index_path,
+                pb.as_ref(),
+            )
+        })?;
 
         if let Some(pb) = pb {
             pb.finish_and_clear();
@@ -3243,18 +3493,24 @@ fn apply_search_acceleration_mode(acceleration_mode: AccelerationMode) {
     match acceleration_mode {
         AccelerationMode::ForceGpu => apply_acceleration_mode(AccelerationMode::ForceGpu),
         AccelerationMode::ForceCpu => apply_acceleration_mode(AccelerationMode::ForceCpu),
-        // Keep the existing search behavior: single-query searches default to
-        // CPU to avoid GPU initialization overhead, except on CoreML builds
-        // where automatic acceleration has historically been the default.
-        AccelerationMode::Auto if cfg!(feature = "coreml") => {
-            apply_acceleration_mode(AccelerationMode::Auto)
+        // Search is a tiny, one-query workload in the CLI. On Linux, auto GPU
+        // discovery (especially ROCm/MIGraphX) can add hundreds of ms even if
+        // we ultimately resolve to CPU. Keep auto search CPU-first unless the
+        // user explicitly requests `--force-gpu`. macOS is left in Auto so the
+        // cheap CoreML path can still be selected below.
+        AccelerationMode::Auto => {
+            #[cfg(target_os = "macos")]
+            apply_acceleration_mode(AccelerationMode::Auto);
+            #[cfg(not(target_os = "macos"))]
+            apply_acceleration_mode(AccelerationMode::ForceCpu);
         }
-        AccelerationMode::Auto => apply_acceleration_mode(AccelerationMode::ForceCpu),
     }
 }
 
 fn resolve_search_execution_provider(
     acceleration_mode: AccelerationMode,
+    _model_path: &Path,
+    _quantized: bool,
 ) -> Result<ExecutionProvider> {
     match acceleration_mode {
         AccelerationMode::ForceGpu => require_gpu_provider(),
@@ -3263,6 +3519,9 @@ fn resolve_search_execution_provider(
             if next_plaid_onnx::is_coreml_available() {
                 Ok(ExecutionProvider::CoreML)
             } else {
+                eprintln!(
+                    "ℹ️  Auto mode using CPU inference for search. Use --force-gpu to benchmark GPU query encoding."
+                );
                 Ok(ExecutionProvider::Cpu)
             }
         }
@@ -3280,6 +3539,16 @@ impl Searcher {
         model_path: &Path,
         quantized: bool,
     ) -> Result<Self> {
+        Self::load_with_quantized_options(project_root, model_id, model_path, quantized, quantized)
+    }
+
+    pub fn load_with_quantized_options(
+        project_root: &Path,
+        model_id: &str,
+        model_path: &Path,
+        quantized: bool,
+        cpu_fallback_quantized: bool,
+    ) -> Result<Self> {
         let index_dir = get_index_dir_for_project(project_root, model_id)?;
         let vector_dir = get_vector_index_path(&index_dir);
         let index_path = vector_dir.to_str().unwrap().to_string();
@@ -3287,8 +3556,25 @@ impl Searcher {
         let acceleration_mode = env_acceleration_mode_lossy();
         apply_search_acceleration_mode(acceleration_mode);
 
-        crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")?;
-        let execution_provider = resolve_search_execution_provider(acceleration_mode)?;
+        crate::profile::time_result("search.ort_init", || {
+            crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")
+        })?;
+        let execution_provider = crate::profile::time_result("search.resolve_provider", || {
+            resolve_search_execution_provider(acceleration_mode, model_path, quantized)
+        })?;
+        if execution_provider == ExecutionProvider::Cpu {
+            apply_acceleration_mode(AccelerationMode::ForceCpu);
+        }
+        let model_quantized = if execution_provider == ExecutionProvider::Cpu {
+            cpu_fallback_quantized
+        } else {
+            quantized
+        };
+        crate::profile::set_metadata(
+            "search.execution_provider",
+            execution_provider.display_name(),
+        );
+        crate::profile::set_metadata("search.model_quantized", model_quantized);
 
         // Cap intra-op threads to avoid overhead on high-core-count systems
         let num_threads = std::thread::available_parallelism()
@@ -3298,17 +3584,21 @@ impl Searcher {
 
         // Suppress stderr during model loading to hide CoreML's harmless
         // "Context leak detected" warnings on macOS
-        let model = crate::stderr::with_suppressed_stderr(|| {
-            Colbert::builder(model_path)
-                .with_quantized(quantized)
-                .with_threads(num_threads)
-                .with_execution_provider(execution_provider)
-                .build()
-        })
-        .context("Failed to load ColBERT model")?;
+        let model = crate::profile::time_result("search.model_load", || {
+            crate::stderr::with_suppressed_stderr(|| {
+                Colbert::builder(model_path)
+                    .with_quantized(model_quantized)
+                    .with_threads(num_threads)
+                    .with_execution_provider(execution_provider)
+                    .build()
+            })
+            .context("Failed to load ColBERT model")
+        })?;
 
         // Load index
-        let index = MmapIndex::load(&index_path).context("Failed to load index")?;
+        let index = crate::profile::time_result("search.index_load", || {
+            MmapIndex::load(&index_path).context("Failed to load index")
+        })?;
 
         Ok(Self {
             model,
@@ -3328,14 +3618,42 @@ impl Searcher {
         model_path: &Path,
         quantized: bool,
     ) -> Result<Self> {
+        Self::load_from_index_dir_with_quantized_options(
+            index_dir, model_path, quantized, quantized,
+        )
+    }
+
+    pub fn load_from_index_dir_with_quantized_options(
+        index_dir: &Path,
+        model_path: &Path,
+        quantized: bool,
+        cpu_fallback_quantized: bool,
+    ) -> Result<Self> {
         let vector_dir = get_vector_index_path(index_dir);
         let index_path = vector_dir.to_str().unwrap().to_string();
 
         let acceleration_mode = env_acceleration_mode_lossy();
         apply_search_acceleration_mode(acceleration_mode);
 
-        crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")?;
-        let execution_provider = resolve_search_execution_provider(acceleration_mode)?;
+        crate::profile::time_result("search.ort_init", || {
+            crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")
+        })?;
+        let execution_provider = crate::profile::time_result("search.resolve_provider", || {
+            resolve_search_execution_provider(acceleration_mode, model_path, quantized)
+        })?;
+        if execution_provider == ExecutionProvider::Cpu {
+            apply_acceleration_mode(AccelerationMode::ForceCpu);
+        }
+        let model_quantized = if execution_provider == ExecutionProvider::Cpu {
+            cpu_fallback_quantized
+        } else {
+            quantized
+        };
+        crate::profile::set_metadata(
+            "search.execution_provider",
+            execution_provider.display_name(),
+        );
+        crate::profile::set_metadata("search.model_quantized", model_quantized);
 
         // Cap intra-op threads to avoid overhead on high-core-count systems
         let num_threads = std::thread::available_parallelism()
@@ -3345,16 +3663,20 @@ impl Searcher {
 
         // Suppress stderr during model loading to hide CoreML's harmless
         // "Context leak detected" warnings on macOS
-        let model = crate::stderr::with_suppressed_stderr(|| {
-            Colbert::builder(model_path)
-                .with_quantized(quantized)
-                .with_threads(num_threads)
-                .with_execution_provider(execution_provider)
-                .build()
-        })
-        .context("Failed to load ColBERT model")?;
+        let model = crate::profile::time_result("search.model_load", || {
+            crate::stderr::with_suppressed_stderr(|| {
+                Colbert::builder(model_path)
+                    .with_quantized(model_quantized)
+                    .with_threads(num_threads)
+                    .with_execution_provider(execution_provider)
+                    .build()
+            })
+            .context("Failed to load ColBERT model")
+        })?;
 
-        let index = MmapIndex::load(&index_path).context("Failed to load index")?;
+        let index = crate::profile::time_result("search.index_load", || {
+            MmapIndex::load(&index_path).context("Failed to load index")
+        })?;
 
         Ok(Self {
             model,
@@ -3614,9 +3936,10 @@ impl Searcher {
 
     /// Encode a query once for reuse across multiple searches.
     pub fn encode_query(&self, query: &str) -> Result<ndarray::Array2<f32>> {
-        let query_embeddings =
+        let query_embeddings = crate::profile::time_result("search.encode_query", || {
             crate::stderr::with_suppressed_stderr(|| self.model.encode_queries(&[query]))
-                .context("Failed to encode query")?;
+                .context("Failed to encode query")
+        })?;
         Ok(query_embeddings.into_iter().next().unwrap())
     }
 
@@ -3640,12 +3963,19 @@ impl Searcher {
         if sanitized_query.is_empty() {
             return None;
         }
-        if let Some(sub) = subset {
-            next_plaid::text_search::search_filtered(&self.index_path, &sanitized_query, top_k, sub)
+        crate::profile::time("search.fts5", || {
+            if let Some(sub) = subset {
+                next_plaid::text_search::search_filtered(
+                    &self.index_path,
+                    &sanitized_query,
+                    top_k,
+                    sub,
+                )
                 .ok()
-        } else {
-            next_plaid::text_search::search(&self.index_path, &sanitized_query, top_k).ok()
-        }
+            } else {
+                next_plaid::text_search::search(&self.index_path, &sanitized_query, top_k).ok()
+            }
+        })
     }
 
     pub fn search(
@@ -3666,14 +3996,17 @@ impl Searcher {
         subset: Option<&[i64]>,
     ) -> Result<Vec<SearchResult>> {
         let params = search_params_from_env(top_k);
-        let results = self
-            .index
-            .search(query_emb, &params, subset)
-            .context("Search failed")?;
+        let results = crate::profile::time_result("search.semantic_index", || {
+            self.index
+                .search(query_emb, &params, subset)
+                .context("Search failed")
+        })?;
 
         let doc_ids: Vec<i64> = results.passage_ids.to_vec();
-        let metadata = filtering::get(&self.index_path, None, &[], Some(&doc_ids))
-            .context("Failed to retrieve metadata")?;
+        let metadata = crate::profile::time_result("search.metadata_fetch", || {
+            filtering::get(&self.index_path, None, &[], Some(&doc_ids))
+                .context("Failed to retrieve metadata")
+        })?;
 
         let search_results: Vec<SearchResult> = metadata
             .into_iter()
@@ -3730,10 +4063,11 @@ impl Searcher {
             self.index.num_documents().max(top_k),
         );
         let params = search_params_from_env(fetch_k);
-        let semantic = self
-            .index
-            .search(query_emb, &params, subset)
-            .context("Semantic search failed")?;
+        let semantic = crate::profile::time_result("search.semantic_index", || {
+            self.index
+                .search(query_emb, &params, subset)
+                .context("Semantic search failed")
+        })?;
         trace_log(
             query,
             "semantic",
@@ -3811,8 +4145,10 @@ impl Searcher {
         };
         trace_log(query, "fused", &fused_ids, &fused_scores, 20);
 
-        let metadata = filtering::get(&self.index_path, None, &[], Some(&fused_ids))
-            .context("Failed to retrieve metadata")?;
+        let metadata = crate::profile::time_result("search.metadata_fetch", || {
+            filtering::get(&self.index_path, None, &[], Some(&fused_ids))
+                .context("Failed to retrieve metadata")
+        })?;
 
         let apply_penalty = crate::ranking::should_apply_path_penalty(query);
 
@@ -4710,6 +5046,7 @@ mod tests {
             model: None,
             model_path: PathBuf::from("/nonexistent-model"),
             quantized: false,
+            cpu_fallback_quantized: false,
             parallel_sessions: None,
             batch_size: None,
             project_root: project_root.to_path_buf(),
