@@ -219,6 +219,7 @@ colgrep --json "auth" | jq '.[] | .unit.file'
 | `colgrep clear`          | Clear index for current project        |
 | `colgrep clear --all`    | Clear all indexes                      |
 | `colgrep set-model <ID>` | Change the default ColBERT model       |
+| `colgrep warm-cache --provider migraphx` | Warm MIGraphX runtime caches |
 | `colgrep settings`       | View or modify configuration           |
 | `colgrep settings --ignore` | Add extra ignore patterns (persistent) |
 | `colgrep settings --force-include` | Force-include normally ignored paths |
@@ -492,6 +493,22 @@ This is useful for:
 - **Pre-warming** the index so the first search is instant
 - **CI/dev setup** scripts where you want indexing to happen ahead of time
 - **Updating** the index after pulling new code
+
+### `colgrep warm-cache`
+
+Warm provider-specific runtime caches without indexing. For MIGraphX this
+pre-compiles only eligible expensive static shapes that colgrep can later reuse
+for experimental GPU indexing. Cold or ineligible shapes continue to use CPU;
+warming can take minutes and usually only pays off for repeated large batches.
+
+```bash
+colgrep warm-cache --provider migraphx
+colgrep warm-cache --provider migraphx --batch-size 64 --max-sequence-len 1024
+```
+
+Advanced MIGraphX thresholds can be tuned with
+`NEXT_PLAID_MIGRAPHX_MIN_STATIC_SHAPE_TOKENS` and
+`NEXT_PLAID_MIGRAPHX_MIN_RUN_TOKENS`.
 
 ```bash
 # Check index status

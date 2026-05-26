@@ -6,6 +6,7 @@ pub mod search;
 mod stats;
 mod status;
 mod update;
+mod warm_cache;
 
 pub use clear::cmd_clear;
 pub use config::{cmd_config, cmd_set_model};
@@ -15,3 +16,4 @@ pub use search::cmd_search;
 pub use stats::{cmd_reset_stats, cmd_stats};
 pub use status::cmd_status;
 pub use update::cmd_update;
+pub use warm_cache::cmd_warm_cache;
