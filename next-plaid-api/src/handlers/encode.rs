@@ -22,6 +22,8 @@ use crate::error::{ApiError, ApiResult};
 use crate::models::InputType;
 use crate::models::{EncodeRequest, EncodeResponse};
 use crate::state::AppState;
+#[cfg(feature = "model")]
+use crate::state::{EncodeLane, EncodePoolKind};
 
 // --- Batch Configuration ---
 
@@ -82,28 +84,66 @@ struct EncodeWorkerPool {
     sender: mpsc::Sender<EncodeBatchItem>,
 }
 
-/// Global encode worker pool (singleton).
 #[cfg(feature = "model")]
-static ENCODE_WORKER_POOL: OnceLock<std::sync::Mutex<Option<EncodeWorkerPool>>> = OnceLock::new();
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct EncodePoolCacheKey {
+    pool_kind: EncodePoolKind,
+    path: std::path::PathBuf,
+    use_cuda: bool,
+    use_int8: bool,
+    parallel_sessions: Option<usize>,
+    batch_size: Option<usize>,
+    threads: Option<usize>,
+    query_length: Option<usize>,
+    document_length: Option<usize>,
+    pool_size: usize,
+}
 
-/// Get or create the global encode worker pool.
-/// Spawns multiple workers, each owning its own Colbert model instance.
 #[cfg(feature = "model")]
-fn get_or_create_encode_pool(state: Arc<AppState>) -> ApiResult<mpsc::Sender<EncodeBatchItem>> {
-    let pool_lock: &std::sync::Mutex<Option<EncodeWorkerPool>> =
-        ENCODE_WORKER_POOL.get_or_init(|| std::sync::Mutex::new(None));
+impl EncodePoolCacheKey {
+    fn new(
+        pool_kind: EncodePoolKind,
+        model_config: &crate::state::ModelConfig,
+        pool_size: usize,
+    ) -> Self {
+        Self {
+            pool_kind,
+            path: model_config.path.clone(),
+            use_cuda: model_config.use_cuda,
+            use_int8: model_config.use_int8,
+            parallel_sessions: model_config.parallel_sessions,
+            batch_size: model_config.batch_size,
+            threads: model_config.threads,
+            query_length: model_config.query_length,
+            document_length: model_config.document_length,
+            pool_size,
+        }
+    }
+}
 
-    let mut pool_opt = pool_lock.lock().unwrap();
+/// Global encode worker pools keyed by model configuration and physical lane.
+#[cfg(feature = "model")]
+static ENCODE_WORKER_POOLS: OnceLock<
+    std::sync::Mutex<HashMap<EncodePoolCacheKey, EncodeWorkerPool>>,
+> = OnceLock::new();
 
-    if let Some(pool) = pool_opt.as_ref() {
+/// Get or create the encode worker pool for the selected physical lane.
+#[cfg(feature = "model")]
+fn get_or_create_encode_pool(
+    state: Arc<AppState>,
+    pool_kind: EncodePoolKind,
+) -> ApiResult<mpsc::Sender<EncodeBatchItem>> {
+    let pool_lock: &std::sync::Mutex<HashMap<EncodePoolCacheKey, EncodeWorkerPool>> =
+        ENCODE_WORKER_POOLS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let model_pool = state
+        .model_pool_for_kind(pool_kind)
+        .ok_or_else(|| ApiError::ModelNotLoaded)?;
+    let cache_key =
+        EncodePoolCacheKey::new(pool_kind, &model_pool.model_config, model_pool.pool_size);
+    let mut pools = pool_lock.lock().unwrap();
+    if let Some(pool) = pools.get(&cache_key) {
         return Ok(pool.sender.clone());
     }
-
-    // Get model pool configuration
-    let model_pool = state
-        .model_pool
-        .as_ref()
-        .ok_or_else(|| ApiError::ModelNotLoaded)?;
 
     let pool_size = model_pool.pool_size;
     let model_config = model_pool.model_config.clone();
@@ -115,23 +155,33 @@ fn get_or_create_encode_pool(state: Arc<AppState>) -> ApiResult<mpsc::Sender<Enc
     let shared_receiver = Arc::new(tokio::sync::Mutex::new(receiver));
 
     // Spawn N workers, each building and owning its own model
-    tracing::info!(pool_size = pool_size, "encode.worker.pool.starting");
+    tracing::info!(
+        pool_kind = pool_kind.as_str(),
+        pool_size = pool_size,
+        "encode.worker.pool.starting"
+    );
 
     for worker_id in 0..pool_size {
         let receiver_clone = Arc::clone(&shared_receiver);
         let config_clone = model_config.clone();
+        let pool_kind_copy = pool_kind;
 
         // Spawn worker in a blocking task since model building is CPU-intensive
         tokio::spawn(async move {
             // Build model for this worker
             let model = match build_model_from_config(&config_clone) {
                 Ok(m) => {
-                    tracing::info!(worker_id = worker_id, "encode.worker.started");
+                    tracing::info!(
+                        worker_id = worker_id,
+                        pool_kind = pool_kind_copy.as_str(),
+                        "encode.worker.started"
+                    );
                     m
                 }
                 Err(e) => {
                     tracing::error!(
                         worker_id = worker_id,
+                        pool_kind = pool_kind_copy.as_str(),
                         error = %e,
                         "encode.worker.start.failed"
                     );
@@ -147,7 +197,7 @@ fn get_or_create_encode_pool(state: Arc<AppState>) -> ApiResult<mpsc::Sender<Enc
     let pool = EncodeWorkerPool {
         sender: sender.clone(),
     };
-    *pool_opt = Some(pool);
+    pools.insert(cache_key, pool);
 
     Ok(sender)
 }
@@ -516,9 +566,27 @@ pub async fn encode_texts_internal(
     input_type: InputType,
     pool_factor: Option<usize>,
 ) -> ApiResult<Vec<ndarray::Array2<f32>>> {
+    let encode_lane = match &input_type {
+        InputType::Query => EncodeLane::Query,
+        InputType::Document => EncodeLane::Ingest,
+    };
+
+    encode_texts_internal_with_lane(state, texts, input_type, encode_lane, pool_factor).await
+}
+
+/// Internal function to encode texts on an explicit logical lane.
+#[cfg(feature = "model")]
+pub(crate) async fn encode_texts_internal_with_lane(
+    state: Arc<AppState>,
+    texts: &[String],
+    input_type: InputType,
+    encode_lane: EncodeLane,
+    pool_factor: Option<usize>,
+) -> ApiResult<Vec<ndarray::Array2<f32>>> {
     if !state.has_model() {
         return Err(ApiError::ModelNotLoaded);
     }
+    let pool_kind = state.encode_pool_kind_for_lane(encode_lane);
 
     // Create oneshot channel for receiving results
     let (response_tx, response_rx) = oneshot::channel();
@@ -532,7 +600,7 @@ pub async fn encode_texts_internal(
     };
 
     // Get or create the worker pool
-    let sender = get_or_create_encode_pool(state)?;
+    let sender = get_or_create_encode_pool(state, pool_kind)?;
 
     // Send to worker pool
     sender.try_send(batch_item).map_err(|e| match e {
