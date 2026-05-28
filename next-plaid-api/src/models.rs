@@ -246,10 +246,10 @@ pub struct SearchRequest {
     #[serde(default)]
     #[schema(example = 0.75)]
     pub alpha: Option<f32>,
-    /// Fusion strategy for hybrid search: "rrf" (reciprocal rank fusion, default)
-    /// or "relative_score" (min-max normalize then alpha-weight).
+    /// Fusion strategy for hybrid search: "relative_score" (min-max normalize then
+    /// alpha-weight, default) or "rrf" (reciprocal rank fusion).
     #[serde(default)]
-    #[schema(example = "rrf")]
+    #[schema(example = "relative_score")]
     pub fusion: Option<String>,
     /// SQL WHERE condition for metadata filtering.
     #[serde(default)]
@@ -778,7 +778,7 @@ pub struct SearchWithEncodingRequest {
     /// Balance between keyword and semantic (0.0 = pure keyword, 1.0 = pure semantic, default: 0.75)
     #[serde(default)]
     pub alpha: Option<f32>,
-    /// Fusion strategy: "rrf" (default) or "relative_score"
+    /// Fusion strategy: "relative_score" (default) or "rrf"
     #[serde(default)]
     pub fusion: Option<String>,
 }
@@ -805,7 +805,7 @@ pub struct FilteredSearchWithEncodingRequest {
     /// Balance between keyword and semantic (0.0 = pure keyword, 1.0 = pure semantic, default: 0.75)
     #[serde(default)]
     pub alpha: Option<f32>,
-    /// Fusion strategy: "rrf" (default) or "relative_score"
+    /// Fusion strategy: "relative_score" (default) or "rrf"
     #[serde(default)]
     pub fusion: Option<String>,
 }

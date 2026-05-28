@@ -57,9 +57,9 @@ client.add("docs",
 # Semantic search
 results = client.search("docs", ["vector database"])
 
-# Hybrid search (semantic + keyword fused with RRF)
+# Hybrid search (semantic + keyword, fused by relative-score normalization)
 results = client.search("docs", ["vector database"],
-    text_query=["multi-vector"], alpha=0.75, fusion="rrf",
+    text_query=["multi-vector"], alpha=0.75, fusion="relative_score",
 )
 
 # Search with metadata filtering
@@ -318,7 +318,7 @@ POST /indices/my_index/search
   "queries": [{"embeddings": [[0.1, 0.2, ...], [0.3, 0.4, ...]]}],
   "text_query": ["capital France"],
   "alpha": 0.75,
-  "fusion": "rrf",
+  "fusion": "relative_score",
   "params": { "top_k": 10 }
 }
 ```
@@ -329,7 +329,7 @@ Combines semantic (ColBERT) and keyword (FTS5 BM25) search using fusion:
 | ------------ | -------- | ------------------------------------------------------------------ |
 | `text_query` | `null`   | List of FTS5 query strings (must match `queries` length in hybrid) |
 | `alpha`      | `0.75`   | Balance: 0.0 = pure keyword, 1.0 = pure semantic                  |
-| `fusion`     | `"rrf"`  | `"rrf"` (reciprocal rank fusion) or `"relative_score"` (min-max)   |
+| `fusion`     | `"relative_score"` | `"relative_score"` (min-max normalize then alpha-weight) or `"rrf"` (reciprocal rank fusion) |
 
 The `filter_condition` and `filter_parameters` fields can also be included directly in the `/search` body, replacing the need for the separate `/search/filtered` endpoint.
 

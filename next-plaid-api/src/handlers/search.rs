@@ -151,7 +151,10 @@ pub async fn search(
         ));
     }
 
-    let fusion_mode = req.fusion.as_deref().unwrap_or("rrf");
+    // Default to relative-score fusion (min-max normalize each score list, then
+    // alpha-weight). It uses the actual ColBERT/BM25 score magnitudes rather than
+    // only rank positions, which generally fuses better given FTS5's high recall.
+    let fusion_mode = req.fusion.as_deref().unwrap_or("relative_score");
     if fusion_mode != "rrf" && fusion_mode != "relative_score" {
         return Err(ApiError::BadRequest(
             "fusion must be 'rrf' or 'relative_score'".to_string(),
@@ -341,7 +344,9 @@ pub async fn search(
         // Fuse
         let (document_ids, scores) = match (semantic, keyword) {
             (Some((sem_ids, sem_scores)), Some((kw_ids, kw_scores))) => match fusion_mode {
-                "relative_score" => text_search::fuse_relative_score(
+                "rrf" => text_search::fuse_rrf(&sem_ids, &kw_ids, alpha, top_k),
+                // Default (and explicit "relative_score").
+                _ => text_search::fuse_relative_score(
                     &sem_ids,
                     &sem_scores,
                     &kw_ids,
@@ -349,7 +354,6 @@ pub async fn search(
                     alpha,
                     top_k,
                 ),
-                _ => text_search::fuse_rrf(&sem_ids, &kw_ids, alpha, top_k),
             },
             (Some((ids, scores)), None) => {
                 let mut r: Vec<(i64, f32)> = ids.into_iter().zip(scores).collect();
