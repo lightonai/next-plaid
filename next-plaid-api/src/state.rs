@@ -46,51 +46,6 @@ impl IndexSlot {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{ApiConfig, AppState, UPDATE_STATUS_RETENTION};
-    use std::time::{Duration, SystemTime};
-
-    #[test]
-    fn update_health_status_tracks_active_and_completed_updates() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let state = AppState::new(ApiConfig {
-            index_dir: temp_dir.path().to_path_buf(),
-            default_top_k: 10,
-        });
-
-        assert!(state.get_update_health_statuses().is_empty());
-
-        state.record_update_queued("docs", 3, "queued");
-        let queued = state.get_update_health_statuses();
-        assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].index, "docs");
-        assert_eq!(queued[0].status, "queued");
-        assert_eq!(queued[0].queued_documents, Some(3));
-
-        state.record_update_stage("docs", "kmeans", "clustering outlier embeddings");
-        let running = state.get_update_health_statuses();
-        assert_eq!(running[0].status, "running");
-        assert_eq!(running[0].stage, "kmeans");
-
-        state.record_update_complete("docs", 3, "update complete");
-        let complete = state.get_update_health_statuses();
-        assert_eq!(complete[0].status, "complete");
-        assert_eq!(complete[0].processed_documents, Some(3));
-
-        state
-            .update_progress
-            .write()
-            .get_mut("docs")
-            .unwrap()
-            .updated_at = SystemTime::now() - UPDATE_STATUS_RETENTION - Duration::from_secs(1);
-        assert!(state.get_update_health_statuses().is_empty());
-
-        state.record_update_queued("other", 1, "queued");
-        assert!(!state.update_progress.read().contains_key("docs"));
-    }
-}
-
 /// Get or create a loading lock for the given index name.
 fn get_loading_lock(name: &str) -> Arc<std::sync::Mutex<()>> {
     let locks = LOADING_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
@@ -695,7 +650,14 @@ impl AppState {
             .iter()
             .filter(|(_, item)| update_progress_is_visible(item, now))
             .map(|(index, item)| {
-                let elapsed_ms = now
+                // For terminal states, freeze elapsed at the last update so a finished job
+                // doesn't keep "running up the clock" on every /health poll until it's pruned.
+                let end = if item.status == "complete" || item.status == "failed" {
+                    item.updated_at
+                } else {
+                    now
+                };
+                let elapsed_ms = end
                     .duration_since(item.started_at)
                     .unwrap_or_default()
                     .as_millis()
@@ -789,5 +751,78 @@ impl AppState {
             has_metadata,
             max_documents,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApiConfig, AppState, UPDATE_STATUS_RETENTION};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn update_health_status_tracks_active_and_completed_updates() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(ApiConfig {
+            index_dir: temp_dir.path().to_path_buf(),
+            default_top_k: 10,
+        });
+
+        assert!(state.get_update_health_statuses().is_empty());
+
+        state.record_update_queued("docs", 3, "queued");
+        let queued = state.get_update_health_statuses();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].index, "docs");
+        assert_eq!(queued[0].status, "queued");
+        assert_eq!(queued[0].queued_documents, Some(3));
+
+        state.record_update_stage("docs", "kmeans", "clustering outlier embeddings");
+        let running = state.get_update_health_statuses();
+        assert_eq!(running[0].status, "running");
+        assert_eq!(running[0].stage, "kmeans");
+
+        state.record_update_complete("docs", 3, "update complete");
+        let complete = state.get_update_health_statuses();
+        assert_eq!(complete[0].status, "complete");
+        assert_eq!(complete[0].processed_documents, Some(3));
+
+        state
+            .update_progress
+            .write()
+            .get_mut("docs")
+            .unwrap()
+            .updated_at = SystemTime::now() - UPDATE_STATUS_RETENTION - Duration::from_secs(1);
+        assert!(state.get_update_health_statuses().is_empty());
+
+        state.record_update_queued("other", 1, "queued");
+        assert!(!state.update_progress.read().contains_key("docs"));
+    }
+
+    #[test]
+    fn completed_update_elapsed_is_frozen_at_last_update() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(ApiConfig {
+            index_dir: temp_dir.path().to_path_buf(),
+            default_top_k: 10,
+        });
+
+        state.record_update_complete("docs", 5, "done");
+
+        // Pin the timeline: started 60s ago, last updated (completed) 55s ago, so the true
+        // duration is 5s even though 55s of wall-clock have since elapsed.
+        {
+            let now = SystemTime::now();
+            let mut progress = state.update_progress.write();
+            let item = progress.get_mut("docs").unwrap();
+            item.started_at = now - Duration::from_secs(60);
+            item.updated_at = now - Duration::from_secs(55);
+        }
+
+        let elapsed = state.get_update_health_statuses()[0].elapsed_ms;
+        // Frozen at updated_at - started_at (~5s), not wall-clock-since-start (~60s).
+        assert!(
+            (4_000..=6_000).contains(&elapsed),
+            "completed update elapsed_ms should freeze near 5s, got {elapsed}ms"
+        );
     }
 }

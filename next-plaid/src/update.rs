@@ -30,8 +30,11 @@ use crate::utils::quantile;
 /// Default batch size for processing documents (matches fast-plaid).
 const DEFAULT_BATCH_SIZE: usize = 50_000;
 
+/// Thread-local progress callback invoked with `(stage, message)` during an update.
+type ProgressCallback = Box<dyn Fn(&str, &str)>;
+
 thread_local! {
-    static UPDATE_PROGRESS: RefCell<Option<Box<dyn Fn(&str, &str)>>> = RefCell::new(None);
+    static UPDATE_PROGRESS: RefCell<Option<ProgressCallback>> = const { RefCell::new(None) };
 }
 
 struct ProgressGuard;
