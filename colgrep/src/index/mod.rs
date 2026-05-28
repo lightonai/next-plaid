@@ -1800,6 +1800,23 @@ impl IndexBuilder {
         let already = state.files.len();
         let mut added = 0usize;
 
+        // Files that parsed but yielded no code units (empty or import-only files) need no
+        // embedding. Record them as done now — and persist — so they're not re-parsed on every
+        // resume round (parity with full_rebuild, which also stores them). `file_info` only
+        // holds this run's freshly-parsed files, none of which are in `state` yet.
+        let mut recorded_empty = false;
+        for (path, fi) in &file_info {
+            if !units_by_file.contains_key(path) {
+                state.files.insert(path.clone(), fi.clone());
+                added += 1;
+                recorded_empty = true;
+            }
+        }
+        if recorded_empty {
+            state.dirty = false;
+            state.save(&self.index_dir)?;
+        }
+
         // Encode in file-coherent batches of ~BUILD_CHECKPOINT_UNITS units, committing state
         // after each batch so interruptions keep finished work.
         let encode_pb = ProgressBar::new(total_units as u64);
