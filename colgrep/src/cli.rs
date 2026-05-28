@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::color::ColorChoice;
+
 pub const MAIN_HELP: &str = "\
 EXAMPLES:
     # Search for code semantically (auto-indexes if needed)
@@ -427,6 +429,16 @@ pub struct Cli {
     /// Automatically confirm indexing without prompting (for large codebases > 10K code units)
     #[arg(short = 'y', long = "yes")]
     pub auto_confirm: bool,
+
+    /// When to colorize output and syntax highlighting: auto, always, or never.
+    /// `never` emits plain text with no ANSI escape sequences (useful for agents/pipes).
+    #[arg(
+        long = "color",
+        value_name = "WHEN",
+        default_value = "auto",
+        global = true
+    )]
+    pub color: ColorChoice,
 
     /// Force CPU execution for all runtime paths
     #[arg(long = "force-cpu", global = true, conflicts_with = "force_gpu")]
