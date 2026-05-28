@@ -403,7 +403,7 @@ fn print_install_success() {
     println!("    • Index updates automatically when files change");
     println!();
     println!("  {}", "To uninstall:".cyan().bold());
-    println!("    {}", "colgrep --uninstall-claude-code".green());
+    println!("    {}", "colgrep --uninstall-agent claude".green());
     println!();
     println!("{}", border.yellow());
     println!();
