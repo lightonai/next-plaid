@@ -1,5 +1,6 @@
 pub mod paths;
 pub mod state;
+pub mod worktree;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1263,6 +1264,10 @@ impl IndexBuilder {
         let _ = std::fs::remove_dir_all(self.index_dir.join("index.tmp"));
         let _ = std::fs::remove_dir_all(self.index_dir.join("index.old"));
 
+        // Fresh git worktree? Seed from a sibling's index so we re-embed only the diff
+        // instead of rebuilding from scratch. No-op for non-worktree projects.
+        self.maybe_seed_from_worktree(force);
+
         let state = IndexState::load(&self.index_dir)?;
         let index_dir = get_vector_index_path(&self.index_dir);
         let index_path = index_dir.to_str().unwrap();
@@ -1351,6 +1356,10 @@ impl IndexBuilder {
         // Clean up any leftover temp/old dirs from previous failed full rebuilds
         let _ = std::fs::remove_dir_all(self.index_dir.join("index.tmp"));
         let _ = std::fs::remove_dir_all(self.index_dir.join("index.old"));
+
+        // Fresh git worktree? Seed from a sibling's index so we re-embed only the diff
+        // instead of rebuilding from scratch. No-op for non-worktree projects.
+        self.maybe_seed_from_worktree(force);
 
         let state = IndexState::load(&self.index_dir)?;
         let index_dir = get_vector_index_path(&self.index_dir);
@@ -1636,6 +1645,81 @@ impl IndexBuilder {
     }
 
     /// Full rebuild (used when force=true or no index exists)
+    /// If this project has no index yet but is a git worktree whose sibling has a usable
+    /// index for the same model, seed this index from the sibling instead of rebuilding
+    /// from scratch. After seeding, the normal incremental path re-embeds only the files
+    /// that differ between the two branches.
+    ///
+    /// Best-effort: any failure (no git, no sibling index, copy error) is reported and the
+    /// caller falls back to a full rebuild. Must be called while holding the index lock.
+    fn maybe_seed_from_worktree(&self, force: bool) {
+        // A forced rebuild or an already-populated index never seeds.
+        if force
+            || get_vector_index_path(&self.index_dir)
+                .join("metadata.json")
+                .exists()
+        {
+            return;
+        }
+        match self.try_seed_from_sibling_worktree() {
+            Ok(true) | Ok(false) => {}
+            Err(e) => eprintln!("⚠️  Worktree index seeding skipped ({e}); building from scratch"),
+        }
+    }
+
+    /// Copy a usable sibling worktree's index into this project's index directory.
+    /// Returns `Ok(true)` if an index was seeded, `Ok(false)` if no suitable sibling exists.
+    fn try_seed_from_sibling_worktree(&self) -> Result<bool> {
+        let current_version = env!("CARGO_PKG_VERSION");
+        let candidates = worktree::seed_candidates(&self.project_root, &self.model_id)?;
+
+        for candidate in candidates {
+            let src_dir = &candidate.index_dir;
+            let src_vector = get_vector_index_path(src_dir);
+            let Some(src_vector_str) = src_vector.to_str() else {
+                continue;
+            };
+
+            // The sibling must have a complete, current-version index. Skip otherwise so we
+            // never copy a half-built or stale-format index that index() would discard anyway.
+            if !src_vector.join("metadata.json").exists() || !filtering::exists(src_vector_str) {
+                continue;
+            }
+            let src_state = match IndexState::load(src_dir) {
+                Ok(s) if !s.files.is_empty() && s.cli_version == current_version && !s.dirty => s,
+                _ => continue,
+            };
+
+            // Copy the vector/filtering store via a temp dir, then rename into place so an
+            // interrupted copy never leaves a half-written index/ behind.
+            let dest_vector = get_vector_index_path(&self.index_dir);
+            let tmp = self.index_dir.join("index.tmp");
+            if tmp.exists() {
+                std::fs::remove_dir_all(&tmp)?;
+            }
+            worktree::copy_dir_all(&src_vector, &tmp)?;
+            if dest_vector.exists() {
+                std::fs::remove_dir_all(&dest_vector)?;
+            }
+            std::fs::rename(&tmp, &dest_vector)
+                .context("Failed to move seeded index into place")?;
+
+            // Persist state (rewriting cli_version to current — guaranteed equal here) and a
+            // fresh project.json pointing at THIS worktree, not the source.
+            src_state.save(&self.index_dir)?;
+            ProjectMetadata::new(&self.project_root, &self.model_id).save(&self.index_dir)?;
+
+            eprintln!(
+                "📋 Seeded index from worktree {} ({} files); re-embedding only changed files",
+                candidate.worktree_root.display(),
+                src_state.files.len()
+            );
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
     fn full_rebuild(&mut self, languages: Option<&[Language]>) -> Result<UpdateStats> {
         let index_path = get_vector_index_path(&self.index_dir);
         let temp_path = self.index_dir.join("index.tmp");
