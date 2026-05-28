@@ -363,8 +363,23 @@ impl ResidualCodec {
 
         let n = residuals.nrows();
         let dim = residuals.ncols();
-        let packed_dim = dim * self.nbits / 8;
         let nbits = self.nbits;
+
+        // The bit-packing layout stores exactly `8 / nbits` dimensions per byte, and the
+        // decompress path reads whole bytes, so the codec only supports dimensions where
+        // `dim * nbits` is a multiple of 8 (true for real ColBERT dims such as 96 or 128).
+        // For other dims, `packed_dim` would floor-divide below the number of bits actually
+        // written, and the packing loop indexed past the end of the row — previously a
+        // worker-thread panic ("index out of bounds"). Reject it up front with a clear error.
+        if dim != 0 && !(dim * nbits).is_multiple_of(8) {
+            return Err(Error::Codec(format!(
+                "unsupported embedding dimension {dim} for nbits={nbits}: \
+                 dim * nbits ({}) must be a multiple of 8",
+                dim * nbits
+            )));
+        }
+
+        let packed_dim = dim * nbits / 8;
 
         if n == 0 {
             return Ok(Array2::zeros((0, packed_dim)));
@@ -749,5 +764,51 @@ mod tests {
 
         let codes = codec.compress_into_codes_cpu(&embeddings);
         assert_eq!(codes[0], 1);
+    }
+
+    /// Build a 4-bit codec (16 buckets) for quantization tests.
+    fn codec_4bit(dim: usize) -> ResidualCodec {
+        let bucket_cutoffs: Vec<f32> = (1..16).map(|i| (i as f32 / 16.0 - 0.5) * 2.0).collect();
+        let bucket_weights: Vec<f32> = (0..16)
+            .map(|i| ((i as f32 + 0.5) / 16.0 - 0.5) * 2.0)
+            .collect();
+        ResidualCodec::new(
+            4,
+            Array2::zeros((4, dim)),
+            Array1::zeros(dim),
+            Some(Array1::from_vec(bucket_cutoffs)),
+            Some(Array1::from_vec(bucket_weights)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn quantize_rejects_unaligned_dim_instead_of_panicking() {
+        // dim * nbits must be a multiple of 8. dim=3, nbits=4 -> 12 bits, not byte-aligned;
+        // this previously panicked with an out-of-bounds index deep inside a worker thread.
+        let codec = codec_4bit(3);
+        let residuals =
+            Array2::from_shape_vec((2, 3), vec![0.1, -0.2, 0.3, -0.4, 0.5, -0.6]).unwrap();
+
+        let result = codec.quantize_residuals(&residuals);
+        assert!(result.is_err(), "unaligned dim must return Err, not panic");
+        let msg = format!("{:?}", result.err().unwrap());
+        assert!(
+            msg.contains("multiple of 8"),
+            "error should explain the constraint, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn quantize_accepts_byte_aligned_dim() {
+        // dim=2, nbits=4 -> 8 bits = exactly one byte. Valid even though 2 isn't a
+        // multiple of 8: the guard checks dim * nbits, not dim alone.
+        let codec = codec_4bit(2);
+        let residuals = Array2::from_shape_vec((2, 2), vec![0.1, -0.2, 0.3, -0.4]).unwrap();
+
+        let packed = codec
+            .quantize_residuals(&residuals)
+            .expect("byte-aligned dim should quantize");
+        assert_eq!(packed.ncols(), 1); // 2 * 4 / 8 = 1 byte per row
     }
 }
