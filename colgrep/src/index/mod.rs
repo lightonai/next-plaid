@@ -1735,6 +1735,16 @@ impl IndexBuilder {
             .cloned()
             .collect();
 
+        // A prior run already committed some files — resume from there rather than re-embedding
+        // them. The committed files are excluded from `todo` above, so they are never recomputed.
+        if !state.files.is_empty() {
+            eprintln!(
+                "📋 Resuming interrupted build: {} files already indexed, {} remaining",
+                state.files.len(),
+                todo.len()
+            );
+        }
+
         // Parse the remaining files (cheap relative to embedding) and build the call graph
         // over them so `called_by` is populated for this build's units.
         let pb = ProgressBar::new(todo.len() as u64);
