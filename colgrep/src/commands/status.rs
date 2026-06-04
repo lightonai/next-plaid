@@ -25,15 +25,18 @@ pub fn cmd_status(path: &PathBuf) -> Result<()> {
         return Ok(());
     }
 
-    let (_display_path, index_dir) = match &parent_info {
-        Some(info) => (info.project_path.clone(), info.index_dir.clone()),
-        None => (path.clone(), get_index_dir_for_project(&path, &model)?),
+    let index_dir = match &parent_info {
+        Some(info) => info.index_dir.clone(),
+        None => get_index_dir_for_project(&path, &model)?,
     };
 
-    println!("Project: {}", path.display());
     if let Some(ref info) = parent_info {
-        println!("  Parent project: {}", info.project_path.display());
-        println!("  Subdirectory:   {}", info.relative_subdir.display());
+        // Running from a subdirectory: show the actual indexed project first,
+        // then where the user is within it.
+        println!("Project: {}", info.project_path.display());
+        println!("  Subdirectory: {}", info.relative_subdir.display());
+    } else {
+        println!("Project: {}", path.display());
     }
     println!("Model:   {}", model);
     println!("Index:   {}", index_dir.display());
