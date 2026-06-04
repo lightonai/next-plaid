@@ -41,16 +41,11 @@ const ORT_LIB_NAME: &str = "libonnxruntime.so";
 #[cfg(target_os = "windows")]
 const ORT_LIB_NAME: &str = "onnxruntime.dll";
 
-/// Whether to use GPU (CUDA) version of ONNX Runtime
-#[cfg(feature = "cuda")]
-const USE_GPU: bool = true;
-#[cfg(not(feature = "cuda"))]
-const USE_GPU: bool = false;
 
 /// Subdirectory name for caching (gpu vs cpu)
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "directml"))]
 const ORT_CACHE_SUBDIR: &str = "gpu";
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(any(feature = "cuda", feature = "directml")))]
 const ORT_CACHE_SUBDIR: &str = "cpu";
 
 /// Ensure ONNX Runtime is available.
@@ -557,7 +552,10 @@ fn download_onnx_runtime() -> Result<PathBuf> {
         && cache_dir.join("onnxruntime_providers_shared.dll").exists()
         && cache_dir.join("onnxruntime_providers_cuda.dll").exists();
 
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(all(feature = "directml", not(feature = "cuda")))]
+    let already_cached = lib_path.exists();
+
+    #[cfg(not(any(feature = "cuda", feature = "directml")))]
     let already_cached = lib_path.exists();
 
     if already_cached {
@@ -568,11 +566,12 @@ fn download_onnx_runtime() -> Result<PathBuf> {
 
     let (url, files_to_extract) = get_download_info()?;
 
-    if USE_GPU {
-        eprintln!("⚙️  Runtime: ONNX {} (GPU/CUDA)", ORT_VERSION);
-    } else {
-        eprintln!("⚙️  Runtime: ONNX {} (CPU)", ORT_VERSION);
-    }
+    #[cfg(feature = "cuda")]
+    eprintln!("⚙️  Runtime: ONNX {} (GPU/CUDA)", ORT_VERSION);
+    #[cfg(all(feature = "directml", not(feature = "cuda")))]
+    eprintln!("⚙️  Runtime: ONNX {} (GPU/DirectML)", ORT_VERSION);
+    #[cfg(not(any(feature = "cuda", feature = "directml")))]
+    eprintln!("⚙️  Runtime: ONNX {} (CPU)", ORT_VERSION);
 
     // Download archive
     let response = ureq::get(&url)
@@ -593,6 +592,24 @@ type FileToExtract = (String, String);
 
 /// Get download URL and files to extract for current platform
 fn get_download_info() -> Result<(String, Vec<FileToExtract>)> {
+    // DirectML: download from NuGet (Microsoft GPU package does not include DirectML)
+    #[cfg(all(target_os = "windows", target_arch = "x86_64", feature = "directml", not(feature = "cuda")))]
+    return Ok((
+        format!(
+            "https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime.DirectML/{}",
+            ORT_VERSION
+        ),
+        vec![
+            (
+                "runtimes/win-x64/native/onnxruntime.dll".to_string(),
+                "onnxruntime.dll".to_string(),
+            ),
+        ],
+    ));
+
+    // All other configurations: download from GitHub releases
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64", feature = "directml", not(feature = "cuda"))))]
+    {
     let base = format!(
         "https://github.com/microsoft/onnxruntime/releases/download/v{}",
         ORT_VERSION
@@ -694,7 +711,7 @@ fn get_download_info() -> Result<(String, Vec<FileToExtract>)> {
         )
     };
 
-    #[cfg(all(target_os = "windows", target_arch = "x86_64", not(feature = "cuda")))]
+    #[cfg(all(target_os = "windows", target_arch = "x86_64", not(any(feature = "cuda", feature = "directml"))))]
     let (archive, files) = (
         format!("onnxruntime-win-x64-{}.zip", ORT_VERSION),
         vec![(
@@ -715,6 +732,7 @@ fn get_download_info() -> Result<(String, Vec<FileToExtract>)> {
     ));
 
     Ok((format!("{}/{}", base, archive), files))
+    }
 }
 
 /// Extract libraries from tgz archive

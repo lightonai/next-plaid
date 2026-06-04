@@ -999,11 +999,10 @@ impl IndexBuilder {
                     }
                 }
             };
-            #[cfg(not(feature = "cuda"))]
+            #[cfg(not(any(feature = "cuda", feature = "directml", feature = "migraphx", feature = "coreml")))]
             let (num_sessions, execution_provider) = {
-                let _ = num_units; // Silence unused warning when cuda feature is disabled
+                let _ = num_units;
 
-                // Initialize ONNX Runtime (CPU-only build)
                 crate::onnx_runtime::ensure_onnx_runtime()
                     .context("Failed to initialize ONNX Runtime")?;
 
@@ -1014,8 +1013,31 @@ impl IndexBuilder {
                 )
             };
 
+            #[cfg(any(feature = "directml", feature = "migraphx", feature = "coreml"))]
+            #[cfg(not(feature = "cuda"))]
+            let (num_sessions, execution_provider) = {
+                let _ = num_units;
+
+                crate::onnx_runtime::ensure_onnx_runtime()
+                    .context("Failed to initialize ONNX Runtime")?;
+
+                let provider = if cfg!(feature = "directml") {
+                    ExecutionProvider::DirectML
+                } else if cfg!(feature = "migraphx") {
+                    ExecutionProvider::MIGraphX
+                } else {
+                    ExecutionProvider::CoreML
+                };
+
+                (
+                    self.parallel_sessions
+                        .unwrap_or_else(crate::config::get_default_cpu_parallel_sessions),
+                    provider,
+                )
+            };
+
             // Print model info after ONNX runtime is initialized (and any potential re-exec)
-            eprintln!("🤖 Model: {}", self.model_id);
+            eprintln!("🤖 Model: {} ({})", self.model_id, execution_provider);
             eprintln!("📂 Building index...");
 
             // Use runtime default for batch size (respects cuDNN availability)
@@ -3286,6 +3308,10 @@ impl Searcher {
             AccelerationMode::Auto => {
                 if cfg!(feature = "coreml") {
                     ExecutionProvider::CoreML
+                } else if cfg!(feature = "directml") {
+                    ExecutionProvider::DirectML
+                } else if cfg!(feature = "migraphx") {
+                    ExecutionProvider::MIGraphX
                 } else {
                     ExecutionProvider::Cpu
                 }
@@ -3362,6 +3388,10 @@ impl Searcher {
             AccelerationMode::Auto => {
                 if cfg!(feature = "coreml") {
                     ExecutionProvider::CoreML
+                } else if cfg!(feature = "directml") {
+                    ExecutionProvider::DirectML
+                } else if cfg!(feature = "migraphx") {
+                    ExecutionProvider::MIGraphX
                 } else {
                     ExecutionProvider::Cpu
                 }

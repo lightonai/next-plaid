@@ -198,6 +198,23 @@ pub enum ExecutionProvider {
     MIGraphX,
 }
 
+impl std::fmt::Display for ExecutionProvider {
+    /// Short user-facing label matching the tokens used in onnx_runtime.rs
+    /// download messages (e.g. "CPU", "CUDA", "DirectML"). Stable across
+    /// releases; do not change without updating callers that log the label.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => f.write_str("auto"),
+            Self::Cpu => f.write_str("CPU"),
+            Self::Cuda => f.write_str("CUDA"),
+            Self::TensorRT => f.write_str("TensorRT"),
+            Self::CoreML => f.write_str("CoreML"),
+            Self::DirectML => f.write_str("DirectML"),
+            Self::MIGraphX => f.write_str("MIGraphX"),
+        }
+    }
+}
+
 fn configure_execution_provider(
     builder: SessionBuilder,
     provider: ExecutionProvider,
@@ -2401,6 +2418,19 @@ mod tests {
         let provider = ExecutionProvider::Cuda;
         let debug_str = format!("{:?}", provider);
         assert_eq!(debug_str, "Cuda");
+    }
+
+    #[test]
+    fn test_execution_provider_display() {
+        // Labels are part of the user-facing surface (e.g. colgrep's
+        // `Model: <id> (<backend>)` line); lock them in.
+        assert_eq!(format!("{}", ExecutionProvider::Auto), "auto");
+        assert_eq!(format!("{}", ExecutionProvider::Cpu), "CPU");
+        assert_eq!(format!("{}", ExecutionProvider::Cuda), "CUDA");
+        assert_eq!(format!("{}", ExecutionProvider::TensorRT), "TensorRT");
+        assert_eq!(format!("{}", ExecutionProvider::CoreML), "CoreML");
+        assert_eq!(format!("{}", ExecutionProvider::DirectML), "DirectML");
+        assert_eq!(format!("{}", ExecutionProvider::MIGraphX), "MIGraphX");
     }
 
     // =========================================================================
