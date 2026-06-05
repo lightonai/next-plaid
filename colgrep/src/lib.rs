@@ -8,11 +8,13 @@
 pub mod acceleration;
 pub mod config;
 pub mod embed;
+pub mod hardware;
 pub mod index;
 pub mod install;
 pub mod model;
 pub mod onnx_runtime;
 pub mod parser;
+pub mod profile;
 pub mod ranking;
 pub mod signal;
 pub mod stderr;

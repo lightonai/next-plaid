@@ -1,5 +1,6 @@
 use anyhow::Result;
 use hf_hub::api::sync::ApiBuilder;
+use hf_hub::Cache;
 use std::path::PathBuf;
 
 pub const DEFAULT_MODEL: &str = "lightonai/LateOn-Code-edge";
@@ -8,19 +9,24 @@ pub const DEFAULT_MODEL: &str = "lightonai/LateOn-Code-edge";
 const REQUIRED_FILES: &[&str] = &[
     "model_int8.onnx",
     "tokenizer.json",
-    "config_sentence_transformers.json",
     "config.json",
     "onnx_config.json",
 ];
 
-/// Optional files (non-quantized model)
-const OPTIONAL_FILES: &[&str] = &["model.onnx"];
+/// Optional files (non-quantized models)
+const OPTIONAL_FILES: &[&str] = &[
+    "model.onnx",
+    "model_fp16.onnx",
+    "config_sentence_transformers.json",
+];
 
 /// Load model from cache or download from HuggingFace.
 /// Returns path to the model directory.
-/// The `quiet` parameter is kept for API compatibility but no longer used
-/// (output is now handled in IndexBuilder::ensure_model_created after ONNX runtime init).
-pub fn ensure_model(model_id: Option<&str>, _quiet: bool) -> Result<PathBuf> {
+/// When `quiet` is true (the common search path for an already-indexed repo),
+/// optional files are resolved from the local HuggingFace cache only. This
+/// avoids a network metadata check for missing optional artifacts on every
+/// query while still downloading required files if they are absent.
+pub fn ensure_model(model_id: Option<&str>, quiet: bool) -> Result<PathBuf> {
     let model_id = model_id.unwrap_or(DEFAULT_MODEL);
 
     // Check if it's a local path
@@ -62,9 +68,19 @@ pub fn ensure_model(model_id: Option<&str>, _quiet: bool) -> Result<PathBuf> {
         }
     }
 
-    // Try to download optional files (non-quantized model) - ignore errors
+    let local_cache = Cache::from_env().model(model_id.to_string());
+
+    // Try to download optional files (non-quantized models) - ignore errors.
+    // In quiet/search mode, only touch files already present in the local cache
+    // so missing optional artifacts do not add a remote HEAD/GET round trip to
+    // every query.
     for file in OPTIONAL_FILES {
-        let _ = repo.get(file);
+        if local_cache.get(file).is_some() {
+            continue;
+        }
+        if !quiet {
+            let _ = repo.get(file);
+        }
     }
 
     model_dir.ok_or_else(|| anyhow::anyhow!("Failed to determine model directory"))

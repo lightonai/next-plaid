@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::color::ColorChoice;
 
@@ -181,6 +181,21 @@ NOTES:
     • Incrementally updates the index if files changed
     • Useful for pre-warming the index before searching
     • Subsequent searches will be fast since the index is already built";
+
+pub const WARM_CACHE_HELP: &str = "\
+MIGraphX cache warming is experimental. It can take minutes and usually only
+pays off for repeated large indexing batches. ColGREP never compiles cold
+MIGraphX shapes during normal indexing; cold or ineligible shapes use CPU.
+
+EXAMPLES:
+    # Warm eligible expensive MIGraphX static-shape caches for the configured model
+    colgrep warm-cache --provider migraphx
+
+    # Warm caches for a specific model and batch size
+    colgrep warm-cache --provider migraphx --model lightonai/LateOn-Code-edge --batch-size 64
+
+    # Limit warming to shorter document shapes only
+    colgrep warm-cache --provider migraphx --max-sequence-len 1024";
 
 pub const CONFIG_HELP: &str = "\
 EXAMPLES:
@@ -449,6 +464,11 @@ pub struct Cli {
     pub force_gpu: bool,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum CacheProvider {
+    Migraphx,
+}
+
 #[derive(Subcommand)]
 pub enum Commands {
     /// Search for code semantically (auto-indexes if needed)
@@ -619,6 +639,26 @@ pub enum Commands {
         /// Use strict batch-size batching instead of fixed dynamic GPU batching
         #[arg(long = "static-batch")]
         static_batch: bool,
+    },
+
+    /// Warm provider-specific runtime caches without indexing
+    #[command(name = "warm-cache", after_help = WARM_CACHE_HELP)]
+    WarmCache {
+        /// Cache provider to warm
+        #[arg(long, value_enum, default_value_t = CacheProvider::Migraphx)]
+        provider: CacheProvider,
+
+        /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Model/session batch size whose MIGraphX static shapes should be warmed
+        #[arg(long = "batch-size", value_name = "SIZE")]
+        batch_size: Option<usize>,
+
+        /// Maximum sequence length of MIGraphX static shapes to warm (default: all eligible expensive shapes)
+        #[arg(long = "max-sequence-len")]
+        max_sequence_len: Option<usize>,
     },
 
     /// View or set configuration options (default k, n values)

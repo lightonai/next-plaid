@@ -75,9 +75,18 @@ next-plaid-onnx = { version = "0.2", features = ["coreml"] }
 
 # Windows DirectML (DirectX 12)
 next-plaid-onnx = { version = "0.2", features = ["directml"] }
+
+# AMD ROCm / MIGraphX
+next-plaid-onnx = { version = "0.2", features = ["migraphx"] }
 ```
 
-`ExecutionProvider::Auto` tries providers in order: CUDA → TensorRT → CoreML → DirectML → CPU. Set `NEXT_PLAID_FORCE_CPU=1` to bypass all GPU providers.
+`ExecutionProvider::Auto` tries providers in order: CUDA → TensorRT → CoreML → DirectML → MIGraphX → CPU. Set `NEXT_PLAID_FORCE_CPU=1` to bypass all GPU providers.
+
+For ROCm, install AMD's ONNX Runtime wheel for your ROCm release (for example
+`pip install onnxruntime-migraphx -f https://repo.radeon.com/rocm/manylinux/rocm-rel-<ROCM_VERSION>/`)
+or provide a custom ONNX Runtime build, then set `ORT_DYLIB_PATH` to
+`.../site-packages/onnxruntime/capi/libonnxruntime.so` before starting the
+process. The official GitHub CPU ONNX Runtime package does not include MIGraphX.
 
 ### Token Pooling
 
@@ -138,6 +147,33 @@ impl ColbertBuilder {
 }
 ```
 
+#### MIGraphX cache helpers
+
+```rust
+pub fn migraphx_static_shape_cache_status(
+    model_dir: impl AsRef<Path>,
+    quantized: bool,
+    batch_size: usize,
+) -> Result<MigraphxStaticShapeCacheStatus>;
+
+pub fn migraphx_document_static_shape_caches_warm(
+    model_dir: impl AsRef<Path>,
+    quantized: bool,
+    batch_size: usize,
+) -> Result<bool>;
+
+impl Colbert {
+    pub fn warm_migraphx_static_shape_cache_up_to(
+        &self,
+        max_sequence_len: usize,
+    ) -> Result<usize>;
+}
+```
+
+These inspect per-shape validation markers and MXR files without creating ONNX
+sessions, so callers can route fully warmed MIGraphX workloads to MIGraphX and
+keep cold/incomplete workloads on CPU.
+
 #### `ExecutionProvider`
 
 ```rust
@@ -148,6 +184,7 @@ pub enum ExecutionProvider {
     TensorRT,  // NVIDIA TensorRT (requires `tensorrt` feature)
     CoreML,    // Apple Silicon (requires `coreml` feature)
     DirectML,  // Windows DirectX 12 (requires `directml` feature)
+    MIGraphX,  // AMD ROCm/MIGraphX (requires `migraphx` feature)
 }
 ```
 

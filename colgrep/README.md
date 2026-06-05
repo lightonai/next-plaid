@@ -219,6 +219,7 @@ colgrep --json "auth" | jq '.[] | .unit.file'
 | `colgrep clear`          | Clear index for current project        |
 | `colgrep clear --all`    | Clear all indexes                      |
 | `colgrep set-model <ID>` | Change the default ColBERT model       |
+| `colgrep warm-cache --provider migraphx` | Warm MIGraphX runtime caches |
 | `colgrep settings`       | View or modify configuration           |
 | `colgrep settings --ignore` | Add extra ignore patterns (persistent) |
 | `colgrep settings --force-include` | Force-include normally ignored paths |
@@ -250,7 +251,7 @@ colgrep settings --pool-factor 2
 # Set parallel encoding sessions (default: CPU count, max 16)
 colgrep settings --parallel 8
 
-# Set batch size per session (default: 1 for CPU, 64 for CUDA)
+# Set batch size per session (default: 1 for CPU, 64 for GPU inference providers)
 colgrep settings --batch-size 2
 
 # Set parser recursion depth guard (default: 1024)
@@ -493,6 +494,22 @@ This is useful for:
 - **CI/dev setup** scripts where you want indexing to happen ahead of time
 - **Updating** the index after pulling new code
 
+### `colgrep warm-cache`
+
+Warm provider-specific runtime caches without indexing. For MIGraphX this
+pre-compiles only eligible expensive static shapes that colgrep can later reuse
+for experimental GPU indexing. Cold or ineligible shapes continue to use CPU;
+warming can take minutes and usually only pays off for repeated large batches.
+
+```bash
+colgrep warm-cache --provider migraphx
+colgrep warm-cache --provider migraphx --batch-size 64 --max-sequence-len 1024
+```
+
+Advanced MIGraphX thresholds can be tuned with
+`NEXT_PLAID_MIGRAPHX_MIN_STATIC_SHAPE_TOKENS` and
+`NEXT_PLAID_MIGRAPHX_MIN_RUN_TOKENS`.
+
 ```bash
 # Check index status
 colgrep status
@@ -642,14 +659,29 @@ Then: `cargo install colgrep --features openblas`
 
 ### ONNX Runtime
 
-ONNX Runtime is downloaded automatically on first use. No manual installation required.
+ONNX Runtime CPU and CUDA builds are downloaded automatically on first use.
+ROCm/MIGraphX builds are ROCm-versioned and are not downloaded automatically;
+install AMD's wheel and point ColGREP at its runtime library if auto-discovery
+does not find it:
+
+```bash
+pip install onnxruntime-migraphx \
+  -f https://repo.radeon.com/rocm/manylinux/rocm-rel-<ROCM_VERSION>/
+
+export ORT_DYLIB_PATH=/path/to/site-packages/onnxruntime/capi/libonnxruntime.so
+colgrep --force-gpu search "your query"
+```
 
 Lookup order:
 
 1. `ORT_DYLIB_PATH` environment variable
-2. Python environments (pip/conda/venv)
-3. System paths
-4. Auto-download to `~/.cache/onnxruntime/`
+2. MIGraphX-capable Python/system installs (`migraphx` builds)
+3. Python environments (pip/conda/venv)
+4. System paths
+5. Auto-download to `~/.cache/colgrep/onnxruntime/`
+
+On Linux, ColGREP may re-exec itself once to add the ONNX Runtime, cuDNN, or
+ROCm library directories to `LD_LIBRARY_PATH` before ONNX Runtime is loaded.
 
 ---
 

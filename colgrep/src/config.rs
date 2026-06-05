@@ -6,9 +6,16 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use next_plaid_onnx::ExecutionProvider;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "cuda")]
+#[cfg(any(
+    feature = "cuda",
+    feature = "tensorrt",
+    feature = "coreml",
+    feature = "directml",
+    feature = "migraphx"
+))]
 use crate::acceleration::{env_acceleration_mode_lossy, AccelerationMode};
 use crate::index::paths::get_colgrep_data_dir;
 
@@ -23,26 +30,53 @@ pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1024;
 /// Testing shows batch_size=1 gives best performance with parallel sessions on CPU
 pub const DEFAULT_BATCH_SIZE_CPU: usize = 1;
 
-/// Default batch size per encoding session for GPU (CUDA)
+/// Default batch size per encoding session for GPU inference providers.
 /// With 1 session, larger batch size (64) is optimal for GPU throughput
 pub const DEFAULT_BATCH_SIZE_GPU: usize = 64;
 
-/// Default batch size - use GPU default when CUDA is enabled AND available, CPU otherwise
-/// Note: At compile time we set the GPU default, but at runtime we check cuDNN availability
-#[cfg(feature = "cuda")]
+pub fn default_batch_size_for_execution_provider(provider: ExecutionProvider) -> usize {
+    match provider {
+        ExecutionProvider::Cpu => DEFAULT_BATCH_SIZE_CPU,
+        provider if provider.is_gpu() => DEFAULT_BATCH_SIZE_GPU,
+        ExecutionProvider::Auto => get_default_batch_size(),
+        _ => DEFAULT_BATCH_SIZE_CPU,
+    }
+}
+
+/// Default batch size - use GPU default when a GPU inference provider is enabled, CPU otherwise.
+/// Note: At compile time we set the GPU default, but at runtime we check provider availability.
+#[cfg(any(
+    feature = "cuda",
+    feature = "tensorrt",
+    feature = "coreml",
+    feature = "directml",
+    feature = "migraphx"
+))]
 pub const DEFAULT_BATCH_SIZE: usize = DEFAULT_BATCH_SIZE_GPU;
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(any(
+    feature = "cuda",
+    feature = "tensorrt",
+    feature = "coreml",
+    feature = "directml",
+    feature = "migraphx"
+)))]
 pub const DEFAULT_BATCH_SIZE: usize = DEFAULT_BATCH_SIZE_CPU;
 
 /// Get the effective default batch size at runtime.
-/// When CUDA feature is enabled but cuDNN is not available, returns CPU default.
-#[cfg(feature = "cuda")]
+/// When GPU features are enabled but no provider is available, returns CPU default.
+#[cfg(any(
+    feature = "cuda",
+    feature = "tensorrt",
+    feature = "coreml",
+    feature = "directml",
+    feature = "migraphx"
+))]
 pub fn get_default_batch_size() -> usize {
     match env_acceleration_mode_lossy() {
         AccelerationMode::ForceCpu => DEFAULT_BATCH_SIZE_CPU,
         AccelerationMode::ForceGpu => DEFAULT_BATCH_SIZE_GPU,
         AccelerationMode::Auto => {
-            if crate::onnx_runtime::is_cudnn_available() {
+            if crate::acceleration::has_gpu_provider() {
                 DEFAULT_BATCH_SIZE_GPU
             } else {
                 DEFAULT_BATCH_SIZE_CPU
@@ -51,7 +85,13 @@ pub fn get_default_batch_size() -> usize {
     }
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(any(
+    feature = "cuda",
+    feature = "tensorrt",
+    feature = "coreml",
+    feature = "directml",
+    feature = "migraphx"
+)))]
 pub fn get_default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE_CPU
 }
@@ -64,14 +104,20 @@ pub fn get_default_cpu_parallel_sessions() -> usize {
 }
 
 /// Get the effective default parallel sessions at runtime.
-/// When CUDA feature is enabled but cuDNN is not available, returns CPU default.
-#[cfg(feature = "cuda")]
+/// When GPU features are enabled but no provider is available, returns CPU default.
+#[cfg(any(
+    feature = "cuda",
+    feature = "tensorrt",
+    feature = "coreml",
+    feature = "directml",
+    feature = "migraphx"
+))]
 pub fn get_default_parallel_sessions() -> usize {
     match env_acceleration_mode_lossy() {
         AccelerationMode::ForceCpu => get_default_cpu_parallel_sessions(),
         AccelerationMode::ForceGpu => DEFAULT_PARALLEL_SESSIONS_GPU,
         AccelerationMode::Auto => {
-            if crate::onnx_runtime::is_cudnn_available() {
+            if crate::acceleration::has_gpu_provider() {
                 DEFAULT_PARALLEL_SESSIONS_GPU
             } else {
                 get_default_cpu_parallel_sessions()
@@ -80,13 +126,19 @@ pub fn get_default_parallel_sessions() -> usize {
     }
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(any(
+    feature = "cuda",
+    feature = "tensorrt",
+    feature = "coreml",
+    feature = "directml",
+    feature = "migraphx"
+)))]
 pub fn get_default_parallel_sessions() -> usize {
     get_default_cpu_parallel_sessions()
 }
 
-/// Default number of parallel sessions for GPU (CUDA)
-/// Using 1 session with larger batch is optimal for CUDA to minimize session creation overhead
+/// Default number of parallel sessions for GPU inference providers.
+/// Using 1 session with larger batch minimizes session creation overhead.
 /// The GPU handles batched inference more efficiently than multiple parallel sessions
 pub const DEFAULT_PARALLEL_SESSIONS_GPU: usize = 1;
 
@@ -247,17 +299,32 @@ impl Config {
         self.default_n = None;
     }
 
-    /// Check if FP32 (non-quantized) model should be used
-    /// Defaults to true when cuda feature is enabled (better CUDA performance with FP32)
+    /// Check if FP32 (non-quantized) model should be used.
+    /// Defaults to true for CUDA/ROCm-family GPU builds, where FP32 models are
+    /// generally better supported and faster than quantized ONNX graphs.
     pub fn use_fp32(&self) -> bool {
-        #[cfg(feature = "cuda")]
+        #[cfg(any(feature = "cuda", feature = "tensorrt", feature = "migraphx"))]
         {
             self.fp32.unwrap_or(true)
         }
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(any(feature = "cuda", feature = "tensorrt", feature = "migraphx")))]
         {
             self.fp32.unwrap_or(false)
         }
+    }
+
+    /// Check whether FP32/non-INT8 should be used for a resolved execution provider.
+    ///
+    /// An explicit `settings --fp32` / `settings --int8` preference is honored
+    /// for every provider. Without an explicit preference, GPU providers use
+    /// the non-INT8 ONNX graph (MIGraphX may prefer `model_fp16.onnx` or apply
+    /// FP16 conversion), while CPU uses the pre-quantized INT8 graph.
+    pub fn use_fp32_for_execution_provider(&self, provider: ExecutionProvider) -> bool {
+        if let Some(fp32) = self.fp32 {
+            return fp32;
+        }
+
+        matches!(provider, ExecutionProvider::MIGraphX) || provider.is_gpu()
     }
 
     /// Set whether to use FP32 (non-quantized) model
@@ -295,7 +362,7 @@ impl Config {
 
     /// Get the number of parallel sessions for encoding
     /// Returns the configured value or:
-    /// - 1 session when CUDA is enabled AND cuDNN is available (GPUs work best with single session + large batches)
+    /// - 1 session when a GPU inference provider is available
     /// - min(CPU count, 16) otherwise (CPUs benefit from parallel sessions)
     pub fn get_parallel_sessions(&self) -> usize {
         self.configured_parallel_sessions()
@@ -320,7 +387,7 @@ impl Config {
 
     /// Get the batch size for encoding
     /// Returns the configured value or the runtime default:
-    /// - 64 when CUDA is enabled AND cuDNN is available
+    /// - 64 when a GPU inference provider is available
     /// - 1 otherwise (CPU mode)
     pub fn get_batch_size(&self) -> usize {
         self.configured_batch_size()
@@ -653,7 +720,13 @@ mod tests {
         assert_eq!(MAX_PARALLEL_SESSIONS_CPU, 16);
 
         let sessions = get_default_parallel_sessions();
-        #[cfg(feature = "cuda")]
+        #[cfg(any(
+            feature = "cuda",
+            feature = "tensorrt",
+            feature = "coreml",
+            feature = "directml",
+            feature = "migraphx"
+        ))]
         let expected = match env_acceleration_mode_lossy() {
             AccelerationMode::ForceCpu => std::thread::available_parallelism()
                 .map(|p| p.get())
@@ -661,7 +734,7 @@ mod tests {
                 .min(MAX_PARALLEL_SESSIONS_CPU),
             AccelerationMode::ForceGpu => DEFAULT_PARALLEL_SESSIONS_GPU,
             AccelerationMode::Auto => {
-                if crate::onnx_runtime::is_cudnn_available() {
+                if crate::acceleration::has_gpu_provider() {
                     DEFAULT_PARALLEL_SESSIONS_GPU
                 } else {
                     std::thread::available_parallelism()
@@ -671,7 +744,13 @@ mod tests {
                 }
             }
         };
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(any(
+            feature = "cuda",
+            feature = "tensorrt",
+            feature = "coreml",
+            feature = "directml",
+            feature = "migraphx"
+        )))]
         let expected = std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(16)

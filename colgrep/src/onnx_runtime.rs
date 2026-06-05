@@ -2,6 +2,8 @@
 //!
 //! Automatically finds or downloads ONNX Runtime library.
 //! When the `cuda` feature is enabled, downloads the GPU version with CUDA support.
+//! When the `migraphx` feature is enabled, discovers an externally installed
+//! ONNX Runtime build with MIGraphX support (AMD publishes these as Python wheels).
 
 use anyhow::{Context, Result};
 use std::env;
@@ -41,7 +43,11 @@ const ORT_LIB_NAME: &str = "libonnxruntime.so";
 #[cfg(target_os = "windows")]
 const ORT_LIB_NAME: &str = "onnxruntime.dll";
 
-/// Whether to use GPU (CUDA) version of ONNX Runtime
+/// Whether the managed auto-download should use the CUDA GPU ONNX Runtime.
+///
+/// CUDA is available from the official GitHub release artifacts. MIGraphX/ROCm
+/// is not: AMD publishes ROCm-versioned Python wheels, so those are discovered
+/// from the environment instead of downloaded here.
 #[cfg(feature = "cuda")]
 const USE_GPU: bool = true;
 #[cfg(not(feature = "cuda"))]
@@ -55,7 +61,10 @@ const ORT_CACHE_SUBDIR: &str = "cpu";
 
 /// Ensure ONNX Runtime is available.
 /// Sets ORT_DYLIB_PATH if found or downloaded.
-/// When `cuda` feature is enabled, ensures GPU version is used and checks for cuDNN.
+/// When `cuda` feature is enabled, ensures the managed CUDA GPU version is used
+/// unless an explicit compatible runtime is provided, and checks for cuDNN.
+/// When `migraphx` is enabled, discovers an installed MIGraphX-capable
+/// runtime and avoids downloading the CPU-only runtime when GPU is forced.
 ///
 /// NOTE: To force CPU-only mode and avoid CUDA initialization overhead, set
 /// COLGREP_FORCE_CPU="1" before calling this function. This makes the GPU
@@ -65,13 +74,22 @@ const ORT_CACHE_SUBDIR: &str = "cpu";
 /// this function will re-exec the current process with the updated LD_LIBRARY_PATH.
 /// This is necessary because Linux caches LD_LIBRARY_PATH at process startup.
 pub fn ensure_onnx_runtime() -> Result<PathBuf> {
+    #[cfg(any(feature = "migraphx", all(target_os = "linux", feature = "cuda")))]
+    let acceleration_mode = crate::acceleration::env_acceleration_mode_lossy();
+
+    // ROCm/MIGraphX wheels depend on ROCm shared libraries that are often under
+    // /opt/rocm*/lib or a conda environment. Linux caches LD_LIBRARY_PATH at
+    // process startup, so prepare those directories before we dlopen ORT.
+    #[cfg(all(target_os = "linux", feature = "migraphx"))]
+    if acceleration_mode != crate::acceleration::AccelerationMode::ForceCpu {
+        ensure_rocm_loader_path().context("Failed to prepare ROCm library path")?;
+    }
+
     // For CUDA builds on Linux, check if we need to re-exec with cuDNN in LD_LIBRARY_PATH
     // This is only needed on Linux because it caches LD_LIBRARY_PATH at process startup
     // Skip CUDA setup if COLGREP_FORCE_CPU is set (CPU-only mode)
     #[cfg(all(target_os = "linux", feature = "cuda"))]
-    if crate::acceleration::env_acceleration_mode_lossy()
-        != crate::acceleration::AccelerationMode::ForceCpu
-    {
+    if acceleration_mode != crate::acceleration::AccelerationMode::ForceCpu {
         // Check if we already have the marker indicating we've set up LD_LIBRARY_PATH
         if env::var("_COLGREP_CUDA_SETUP").is_err() {
             // First pass: find cuDNN and set up LD_LIBRARY_PATH, then re-exec
@@ -133,8 +151,7 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
     if let Ok(path) = env::var("ORT_DYLIB_PATH") {
         let path = PathBuf::from(&path);
         if path.exists() && is_valid_ort_dylib(&path) {
-            pin_runtime_library(&path);
-            return Ok(path);
+            return activate_runtime_library(&path);
         }
         // Path from env is missing or can't be loaded (wrong arch, broken
         // symlink, stale Homebrew formula, ...). Clear it so the search and
@@ -147,17 +164,43 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
         env::remove_var("ORT_DYLIB_PATH");
     }
 
+    // Prefer an already-installed MIGraphX-enabled ORT over managed CPU/CUDA
+    // downloads whenever ROCm GPU usage is allowed. This is what makes
+    // `--features migraphx --force-gpu` usable without accidentally downloading the
+    // official CPU-only GitHub artifact first.
+    #[cfg(feature = "migraphx")]
+    if acceleration_mode != crate::acceleration::AccelerationMode::ForceCpu {
+        if let Some(path) = find_migraphx_onnx_runtime() {
+            return activate_runtime_library(&path);
+        }
+    }
+
+    // A ROCm-only binary has no managed GPU runtime to download. If the user
+    // explicitly requested GPU and no MIGraphX runtime was found, fail now with
+    // installation guidance instead of downloading a CPU runtime and failing
+    // later with a less actionable provider-availability error.
+    #[cfg(all(feature = "migraphx", not(feature = "cuda")))]
+    if acceleration_mode == crate::acceleration::AccelerationMode::ForceGpu {
+        return Err(migraphx_runtime_not_found_error());
+    }
+
     // 2. Search common locations (skip for CUDA - we want our managed GPU version)
     #[cfg(not(feature = "cuda"))]
     if let Some(path) = find_onnx_runtime() {
-        pin_runtime_library(&path);
-        return Ok(path);
+        return activate_runtime_library(&path);
     }
 
     // 3. Download and cache
     let path = download_onnx_runtime()?;
-    pin_runtime_library(&path);
-    Ok(path)
+    activate_runtime_library(&path)
+}
+
+fn activate_runtime_library(path: &Path) -> Result<PathBuf> {
+    #[cfg(target_os = "linux")]
+    ensure_runtime_loader_path(path).context("Failed to prepare ONNX Runtime library path")?;
+
+    pin_runtime_library(path);
+    Ok(path.to_path_buf())
 }
 
 fn pin_runtime_library(path: &Path) {
@@ -173,6 +216,31 @@ fn pin_runtime_library(path: &Path) {
         // Check for cuDNN availability (result is stored in CUDNN_AVAILABLE)
         let _ = check_cudnn_available();
     }
+}
+
+/// Set `ORT_DYLIB_PATH` to the MIGraphX-capable ONNX Runtime ColGREP would
+/// use, without initializing ORT sessions.
+///
+/// MIGraphX static-cache keys include the ORT dylib fingerprint. Auto indexing
+/// checks cache warmth before full ORT initialization to avoid startup overhead
+/// on cold-cache CPU fallback paths, so it still needs this env var to match
+/// `warm-cache` and the eventual GPU session path.
+#[cfg(feature = "migraphx")]
+pub fn ensure_migraphx_onnx_runtime_path_for_cache_key() -> Option<PathBuf> {
+    if let Ok(path) = env::var("ORT_DYLIB_PATH") {
+        if !path.trim().is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+
+    find_migraphx_onnx_runtime().inspect(|path| {
+        env::set_var("ORT_DYLIB_PATH", path);
+    })
+}
+
+#[cfg(not(feature = "migraphx"))]
+pub fn ensure_migraphx_onnx_runtime_path_for_cache_key() -> Option<PathBuf> {
+    None
 }
 
 /// Find the cuDNN library directory (without setting any global state)
@@ -220,6 +288,209 @@ fn prepend_ld_library_path(dir: &Path) {
         };
         env::set_var("LD_LIBRARY_PATH", &new_path);
     }
+}
+
+#[cfg(target_os = "linux")]
+fn ld_library_path_contains(dir: &Path) -> bool {
+    env::var("LD_LIBRARY_PATH")
+        .ok()
+        .map(|current| {
+            current
+                .split(':')
+                .filter(|entry| !entry.is_empty())
+                .any(|entry| Path::new(entry) == dir)
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn reexec_with_library_dirs(dirs: &[PathBuf], marker: &str, context: &str) -> Result<()> {
+    if dirs.is_empty() {
+        return Ok(());
+    }
+
+    if env::var(marker).is_ok() {
+        return Ok(());
+    }
+
+    let mut missing = Vec::new();
+    for dir in dirs {
+        if dir.exists()
+            && dir.is_dir()
+            && !ld_library_path_contains(dir)
+            && !missing.iter().any(|existing: &PathBuf| existing == dir)
+        {
+            missing.push(dir.clone());
+        }
+    }
+
+    if missing.is_empty() {
+        env::set_var(marker, "1");
+        return Ok(());
+    }
+
+    let current_ld = env::var("LD_LIBRARY_PATH").unwrap_or_default();
+    let prefix = missing
+        .iter()
+        .map(|dir| dir.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(":");
+    let new_ld = if current_ld.is_empty() {
+        prefix
+    } else {
+        format!("{}:{}", prefix, current_ld)
+    };
+
+    env::set_var("LD_LIBRARY_PATH", &new_ld);
+    env::set_var(marker, "1");
+
+    let exe = env::current_exe().context("Failed to get current executable")?;
+    let args: Vec<String> = env::args().collect();
+
+    let err = exec::execvp(&exe, &args);
+    Err(anyhow::anyhow!(
+        "Failed to re-exec with updated {context} library path: {err}"
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_runtime_loader_path(path: &Path) -> Result<()> {
+    let mut dirs = Vec::new();
+
+    // Provider shared libraries are loaded by ONNX Runtime after startup. Make
+    // their directory visible to the dynamic loader before ORT initializes.
+    if runtime_has_any_provider_companion(path) {
+        if let Some(parent) = path.parent() {
+            dirs.push(parent.to_path_buf());
+        }
+    }
+
+    #[cfg(feature = "migraphx")]
+    if runtime_has_migraphx_provider_companion(path) {
+        dirs.extend(get_rocm_library_dirs());
+    }
+
+    #[cfg(feature = "cuda")]
+    if runtime_has_cuda_provider_companion(path) {
+        if let Some(cudnn_dir) = find_cudnn_directory() {
+            dirs.push(cudnn_dir);
+        }
+    }
+
+    reexec_with_library_dirs(&dirs, "_COLGREP_ORT_PROVIDER_SETUP", "ONNX Runtime")
+}
+
+/// Prepare the Linux dynamic loader for ROCm/MIGraphX before validating ORT.
+///
+/// Some ROCm ONNX Runtime wheels link directly or indirectly against ROCm
+/// libraries. If those directories are not in LD_LIBRARY_PATH at process
+/// startup, `dlopen(libonnxruntime.so)` can fail even when ORT_DYLIB_PATH is
+/// correct.
+#[cfg(all(target_os = "linux", feature = "migraphx"))]
+fn ensure_rocm_loader_path() -> Result<()> {
+    let mut dirs = get_rocm_library_dirs();
+
+    if let Ok(path) = env::var("ORT_DYLIB_PATH") {
+        let path = PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            dirs.push(parent.to_path_buf());
+        }
+    }
+
+    reexec_with_library_dirs(&dirs, "_COLGREP_ROCM_SETUP", "ROCm")
+}
+
+#[cfg(all(target_os = "linux", feature = "migraphx"))]
+fn get_rocm_library_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    fn push_existing_unique(dirs: &mut Vec<PathBuf>, dir: PathBuf) {
+        if dir.exists() && dir.is_dir() && !dirs.iter().any(|existing| existing == &dir) {
+            dirs.push(dir);
+        }
+    }
+
+    fn dir_contains_rocm_library(dir: &Path) -> bool {
+        fs::read_dir(dir)
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.flatten())
+            .any(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("libmigraphx")
+                    || name.starts_with("libamdhip64")
+                    || name.starts_with("libhsa-runtime64")
+                    || name.starts_with("librocblas")
+                    || name.starts_with("librocm")
+                    || name.starts_with("librocrand")
+                    || name.starts_with("librocsolver")
+                    || name.starts_with("librocsparse")
+                    || name.starts_with("libroctracer")
+                    || name.starts_with("libroctx")
+            })
+    }
+
+    fn push_if_contains_rocm_library(dirs: &mut Vec<PathBuf>, dir: PathBuf) {
+        if dir.exists()
+            && dir.is_dir()
+            && dir_contains_rocm_library(&dir)
+            && !dirs.iter().any(|existing| existing == &dir)
+        {
+            dirs.push(dir);
+        }
+    }
+
+    if let Ok(conda_prefix) = env::var("CONDA_PREFIX") {
+        let conda = PathBuf::from(conda_prefix);
+        push_existing_unique(&mut dirs, conda.join("lib"));
+        push_existing_unique(&mut dirs, conda.join("lib64"));
+    }
+
+    for var in [
+        "ROCM_PATH",
+        "ROCM_HOME",
+        "HIP_PATH",
+        "HIP_HOME",
+        "MIGRAPHX_PATH",
+        "MIGRAPHX_HOME",
+    ] {
+        if let Ok(value) = env::var(var) {
+            let base = PathBuf::from(value);
+            push_existing_unique(&mut dirs, base.join("lib"));
+            push_existing_unique(&mut dirs, base.join("lib64"));
+            push_if_contains_rocm_library(&mut dirs, base);
+        }
+    }
+
+    for dir in [
+        PathBuf::from("/opt/rocm/lib"),
+        PathBuf::from("/opt/rocm/lib64"),
+    ] {
+        push_existing_unique(&mut dirs, dir);
+    }
+
+    for dir in [
+        PathBuf::from("/usr/lib/x86_64-linux-gnu"),
+        PathBuf::from("/usr/lib64"),
+        PathBuf::from("/usr/lib"),
+    ] {
+        push_if_contains_rocm_library(&mut dirs, dir);
+    }
+
+    if let Ok(entries) = fs::read_dir("/opt") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == "rocm" || name.starts_with("rocm-") {
+                let base = entry.path();
+                push_existing_unique(&mut dirs, base.join("lib"));
+                push_existing_unique(&mut dirs, base.join("lib64"));
+            }
+        }
+    }
+
+    dirs
 }
 
 /// Get all directories to search for cuDNN library (Linux only)
@@ -374,41 +645,110 @@ fn is_valid_ort_dylib(path: &Path) -> bool {
     }
 }
 
-/// Search for ONNX Runtime in common locations
+fn provider_companion_path(path: &Path, provider: &str) -> Option<PathBuf> {
+    let parent = path.parent()?;
+
+    #[cfg(target_os = "linux")]
+    let file_name = format!("libonnxruntime_providers_{provider}.so");
+
+    #[cfg(target_os = "macos")]
+    let file_name = format!("libonnxruntime_providers_{provider}.dylib");
+
+    #[cfg(target_os = "windows")]
+    let file_name = format!("onnxruntime_providers_{provider}.dll");
+
+    Some(parent.join(file_name))
+}
+
+fn runtime_has_provider_companion(path: &Path, provider: &str) -> bool {
+    provider_companion_path(path, provider).is_some_and(|path| path.exists())
+}
+
+fn runtime_has_migraphx_provider_companion(path: &Path) -> bool {
+    runtime_has_provider_companion(path, "migraphx")
+}
+
+fn runtime_has_cuda_provider_companion(path: &Path) -> bool {
+    runtime_has_provider_companion(path, "cuda")
+}
+
+fn runtime_has_any_provider_companion(path: &Path) -> bool {
+    runtime_has_provider_companion(path, "shared")
+        || runtime_has_cuda_provider_companion(path)
+        || runtime_has_migraphx_provider_companion(path)
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrtRequirement {
+    Any,
+    MIGraphX,
+}
+
+/// Search for any loadable ONNX Runtime in common locations.
 #[cfg(not(feature = "cuda"))]
 fn find_onnx_runtime() -> Option<PathBuf> {
-    let search_paths = get_search_paths();
-    let mut rejected: Vec<PathBuf> = Vec::new();
+    find_onnx_runtime_with_requirement(get_search_paths(), OrtRequirement::Any)
+}
 
-    let try_candidate = |candidate: PathBuf, rejected: &mut Vec<PathBuf>| -> Option<PathBuf> {
-        if !candidate.exists() {
+/// Search for an ONNX Runtime installation that includes the MIGraphX provider.
+#[cfg(feature = "migraphx")]
+fn find_migraphx_onnx_runtime() -> Option<PathBuf> {
+    find_onnx_runtime_with_requirement(get_migraphx_search_paths(), OrtRequirement::MIGraphX)
+}
+
+#[cfg(any(not(feature = "cuda"), feature = "migraphx"))]
+fn find_onnx_runtime_with_requirement(
+    search_paths: Vec<PathBuf>,
+    requirement: OrtRequirement,
+) -> Option<PathBuf> {
+    let mut rejected: Vec<PathBuf> = Vec::new();
+    let mut seen_candidates = std::collections::HashSet::new();
+
+    let mut try_candidate = |candidate: PathBuf, rejected: &mut Vec<PathBuf>| -> Option<PathBuf> {
+        if !candidate.exists() || !candidate.is_file() {
             return None;
         }
-        if is_valid_ort_dylib(&candidate) {
-            Some(candidate)
-        } else {
-            rejected.push(candidate);
-            None
+
+        let canonical = candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.clone());
+        if !seen_candidates.insert(canonical) {
+            return None;
         }
+
+        if !is_valid_ort_dylib(&candidate) {
+            rejected.push(candidate);
+            return None;
+        }
+
+        if !candidate_satisfies_ort_requirement(&candidate, requirement) {
+            return None;
+        }
+
+        Some(candidate)
     };
 
     for base_path in search_paths {
+        // The search list may include either directories or a direct dylib path.
+        if let Some(p) = try_candidate(base_path.clone(), &mut rejected) {
+            return Some(p);
+        }
+
         // Direct library file
         if let Some(p) = try_candidate(base_path.join(ORT_LIB_NAME), &mut rejected) {
             return Some(p);
         }
 
-        // Versioned library (e.g., libonnxruntime.so.1.23.0 on Linux, libonnxruntime.1.20.1.dylib on macOS)
-        // Match "libonnxruntime.so*" or "libonnxruntime.*dylib" only — NOT companion libraries
-        // like libonnxruntime_providers_shared.so which lack OrtGetApiBase.
+        // Versioned library (e.g., libonnxruntime.so.1.23.0 on Linux,
+        // libonnxruntime.1.20.1.dylib on macOS). Match only the core ORT
+        // library — NOT companion libraries like
+        // libonnxruntime_providers_shared.so, which lack OrtGetApiBase.
         if let Ok(entries) = fs::read_dir(&base_path) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
-                if name_str.starts_with("libonnxruntime.so")
-                    || name_str.starts_with("libonnxruntime.dylib")
-                    || (name_str.starts_with("libonnxruntime.") && name_str.ends_with(".dylib"))
-                {
+                if is_onnxruntime_library_name(&name_str) {
                     if let Some(p) = try_candidate(entry.path(), &mut rejected) {
                         return Some(p);
                     }
@@ -422,40 +762,113 @@ fn find_onnx_runtime() -> Option<PathBuf> {
         }
     }
 
-    if !rejected.is_empty() {
-        // Guard against repeat logging: `ensure_onnx_runtime` can be re-entered
-        // within a single process (tests, re-execs that restore the env, code
-        // paths that clear ORT_DYLIB_PATH), and once we've explained the
-        // rejection the user doesn't need to see it again.
-        use std::sync::atomic::{AtomicBool, Ordering};
-        static WARNED: AtomicBool = AtomicBool::new(false);
-        if !WARNED.swap(true, Ordering::Relaxed) {
-            let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-            let unique: Vec<&PathBuf> = rejected
-                .iter()
-                .filter(|p| {
-                    let canon = p.canonicalize().unwrap_or_else(|_| (*p).clone());
-                    seen.insert(canon)
-                })
-                .collect();
-            eprintln!(
-                "⚠️  Found {} ONNX Runtime candidate(s) that failed to load (wrong arch, broken \
-                 signature, or companion library); downloading a managed copy instead:",
-                unique.len()
-            );
-            for p in unique {
-                eprintln!("    - {}", p.display());
-            }
-        }
-    }
+    warn_rejected_ort_candidates(&rejected, requirement);
 
     None
 }
 
+#[cfg(any(not(feature = "cuda"), feature = "migraphx"))]
+fn candidate_satisfies_ort_requirement(path: &Path, requirement: OrtRequirement) -> bool {
+    match requirement {
+        OrtRequirement::Any => true,
+        OrtRequirement::MIGraphX => runtime_has_migraphx_provider_companion(path),
+    }
+}
+
+#[cfg(any(not(feature = "cuda"), feature = "migraphx"))]
+fn is_onnxruntime_library_name(name: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    return name.starts_with("libonnxruntime.so");
+
+    #[cfg(target_os = "macos")]
+    return name.starts_with("libonnxruntime.dylib")
+        || (name.starts_with("libonnxruntime.") && name.ends_with(".dylib"));
+
+    #[cfg(target_os = "windows")]
+    return name.eq_ignore_ascii_case("onnxruntime.dll");
+}
+
+#[cfg(any(not(feature = "cuda"), feature = "migraphx"))]
+fn warn_rejected_ort_candidates(rejected: &[PathBuf], requirement: OrtRequirement) {
+    if rejected.is_empty() {
+        return;
+    }
+
+    // Guard against repeat logging: `ensure_onnx_runtime` can be re-entered
+    // within a single process (tests, re-execs that restore the env, code paths
+    // that clear ORT_DYLIB_PATH), and once we've explained the rejection the
+    // user doesn't need to see it again.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let unique: Vec<&PathBuf> = rejected
+        .iter()
+        .filter(|p| {
+            let canon = p.canonicalize().unwrap_or_else(|_| (*p).clone());
+            seen.insert(canon)
+        })
+        .collect();
+
+    let fallback = match requirement {
+        OrtRequirement::Any => "downloading a managed copy instead",
+        OrtRequirement::MIGraphX => "continuing to other runtime options",
+    };
+    eprintln!(
+        "⚠️  Found {} ONNX Runtime candidate(s) that failed to load (wrong arch, broken \
+         signature, missing dependencies, or companion library); {fallback}:",
+        unique.len()
+    );
+    for p in unique {
+        eprintln!("    - {}", p.display());
+    }
+}
+
+#[cfg(all(feature = "migraphx", not(feature = "cuda")))]
+fn migraphx_runtime_not_found_error() -> anyhow::Error {
+    anyhow::anyhow!(
+        "GPU execution was requested for a ROCm/MIGraphX build, but no ONNX Runtime library with MIGraphX support was found. Install AMD's ONNX Runtime package, for example `pip install onnxruntime-migraphx -f https://repo.radeon.com/rocm/manylinux/rocm-rel-<ROCM_VERSION>/`, then set ORT_DYLIB_PATH to the wheel's `onnxruntime/capi/{}`. The official GitHub CPU ONNX Runtime package does not include MIGraphX.",
+        ORT_LIB_NAME
+    )
+}
+
 /// Get list of paths to search for ONNX Runtime
-#[cfg(not(feature = "cuda"))]
+#[cfg(any(not(feature = "cuda"), feature = "migraphx"))]
 fn get_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
+
+    // Explicit library/home env vars used by source builds and package managers.
+    for var in [
+        "ORT_LIB_DIR",
+        "ORT_HOME",
+        "ONNXRUNTIME_LIB_DIR",
+        "ONNXRUNTIME_HOME",
+    ] {
+        if let Ok(value) = env::var(var) {
+            let path = PathBuf::from(value);
+            paths.push(path.clone());
+            paths.push(path.join("lib"));
+        }
+    }
+
+    if let Ok(conda_prefix) = env::var("CONDA_PREFIX") {
+        let conda_path = PathBuf::from(conda_prefix);
+        paths.push(conda_path.join("lib"));
+        push_python_prefix_runtime_dirs(&mut paths, &conda_path);
+    }
+
+    if let Ok(virtual_env) = env::var("VIRTUAL_ENV") {
+        push_python_prefix_runtime_dirs(&mut paths, Path::new(&virtual_env));
+    }
+
+    if let Ok(current_dir) = env::current_dir() {
+        for venv_name in [".venv", "venv", ".env", "env", "python/.venv"] {
+            push_python_prefix_runtime_dirs(&mut paths, &current_dir.join(venv_name));
+        }
+    }
 
     // Home directory for cache
     if let Some(home) = dirs::home_dir() {
@@ -470,48 +883,8 @@ fn get_search_paths() -> Vec<PathBuf> {
         // Legacy cache location (for backwards compatibility)
         paths.push(home.join(".cache").join("onnxruntime").join(ORT_VERSION));
 
-        // Conda environments
-        if let Ok(conda_prefix) = env::var("CONDA_PREFIX") {
-            let conda_path = PathBuf::from(&conda_prefix);
-            paths.push(conda_path.join("lib"));
-
-            // Python site-packages in conda
-            for entry in [
-                "lib/python3.12",
-                "lib/python3.11",
-                "lib/python3.10",
-                "lib/python3.9",
-            ] {
-                paths.push(
-                    conda_path
-                        .join(entry)
-                        .join("site-packages/onnxruntime/capi"),
-                );
-            }
-        }
-
-        // Virtual environments
-        for venv_name in [".venv", "venv", ".env", "env"] {
-            let venv_path = std::env::current_dir()
-                .map(|cwd| cwd.join(venv_name))
-                .unwrap_or_default();
-
-            #[cfg(target_os = "windows")]
-            paths.push(venv_path.join("Lib/site-packages/onnxruntime/capi"));
-
-            #[cfg(not(target_os = "windows"))]
-            for py in ["python3.12", "python3.11", "python3.10", "python3.9"] {
-                paths.push(
-                    venv_path
-                        .join("lib")
-                        .join(py)
-                        .join("site-packages/onnxruntime/capi"),
-                );
-            }
-        }
-
-        // UV cache
-        paths.push(home.join(".cache/uv"));
+        push_python_prefix_runtime_dirs(&mut paths, &home.join(".local"));
+        push_uv_runtime_dirs(&mut paths, &home);
 
         // Homebrew (macOS)
         #[cfg(target_os = "macos")]
@@ -530,6 +903,134 @@ fn get_search_paths() -> Vec<PathBuf> {
     }
 
     paths
+}
+
+#[cfg(any(not(feature = "cuda"), feature = "migraphx"))]
+fn push_site_packages_runtime_dirs(paths: &mut Vec<PathBuf>, site_packages: &Path) {
+    for package_dir in ["onnxruntime", "onnxruntime_migraphx"] {
+        paths.push(site_packages.join(package_dir).join("capi"));
+    }
+}
+
+#[cfg(any(not(feature = "cuda"), feature = "migraphx"))]
+fn push_python_prefix_runtime_dirs(paths: &mut Vec<PathBuf>, prefix: &Path) {
+    #[cfg(target_os = "windows")]
+    push_site_packages_runtime_dirs(paths, &prefix.join("Lib").join("site-packages"));
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let lib_dir = prefix.join("lib");
+
+        // Dynamic discovery handles Python 3.13+ without hardcoding every minor
+        // version, while the fallback list still covers prefixes that do not
+        // exist yet at search-list construction time.
+        if let Ok(entries) = fs::read_dir(&lib_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with("python") {
+                    push_site_packages_runtime_dirs(paths, &entry.path().join("site-packages"));
+                }
+            }
+        }
+
+        for py in [
+            "python3.14",
+            "python3.13",
+            "python3.12",
+            "python3.11",
+            "python3.10",
+            "python3.9",
+        ] {
+            push_site_packages_runtime_dirs(paths, &lib_dir.join(py).join("site-packages"));
+        }
+    }
+}
+
+#[cfg(any(not(feature = "cuda"), feature = "migraphx"))]
+fn push_uv_runtime_dirs(paths: &mut Vec<PathBuf>, home: &Path) {
+    let uv_cache = home.join(".cache").join("uv");
+    paths.push(uv_cache.clone());
+
+    if let Ok(entries) = fs::read_dir(&uv_cache) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if !name.to_string_lossy().starts_with("archive-v") {
+                continue;
+            }
+
+            if let Ok(archives) = fs::read_dir(entry.path()) {
+                for archive in archives.flatten() {
+                    for package_dir in ["onnxruntime", "onnxruntime_migraphx"] {
+                        paths.push(archive.path().join(package_dir).join("capi"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "migraphx")]
+fn get_migraphx_search_paths() -> Vec<PathBuf> {
+    let mut paths = get_search_paths();
+
+    // Custom/source-built ORT installs. These are only searched for MIGraphX
+    // because `candidate_satisfies_ort_requirement` filters out CPU-only ORT
+    // libraries by requiring the MIGraphX provider companion library.
+    #[cfg(target_os = "linux")]
+    {
+        for base in [
+            PathBuf::from("/opt"),
+            PathBuf::from("/usr/local"),
+            PathBuf::from("/usr"),
+        ] {
+            paths.push(base.join("lib"));
+            if let Ok(entries) = fs::read_dir(&base) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy().to_ascii_lowercase();
+                    if name.contains("onnxruntime") || name.contains("ort") {
+                        let path = entry.path();
+                        paths.push(path.clone());
+                        paths.push(path.join("lib"));
+                    }
+                }
+            }
+        }
+
+        for rocm_dir in get_rocm_library_dirs() {
+            paths.push(rocm_dir);
+        }
+    }
+
+    paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_migraphx_provider_companion_next_to_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join(ORT_LIB_NAME);
+        fs::write(&runtime, b"").unwrap();
+
+        let migraphx = provider_companion_path(&runtime, "migraphx").unwrap();
+        fs::write(migraphx, b"").unwrap();
+
+        assert!(runtime_has_migraphx_provider_companion(&runtime));
+        assert!(runtime_has_any_provider_companion(&runtime));
+    }
+
+    #[test]
+    fn missing_migraphx_provider_companion_is_not_migraphx_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join(ORT_LIB_NAME);
+        fs::write(&runtime, b"").unwrap();
+
+        assert!(!runtime_has_migraphx_provider_companion(&runtime));
+        assert!(!runtime_has_any_provider_companion(&runtime));
+    }
 }
 
 /// Download ONNX Runtime from GitHub releases

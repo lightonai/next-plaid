@@ -2552,6 +2552,7 @@ name = "next-plaid-onnx"
 version = "1.5.2"
 dependencies = [
  "anyhow",
+ "fs2",
  "glob",
  "ndarray 0.16.1",
  "numpy",
@@ -2560,6 +2561,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "sha2",
  "tokenizers",
 ]
 

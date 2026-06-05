@@ -61,6 +61,7 @@ mkl = ["next-plaid/mkl"]
 metal_gpu = ["next-plaid/metal_gpu"]
 model = ["dep:next-plaid-onnx"]
 cuda = ["model", "next-plaid-onnx/cuda", "next-plaid/cuda"]
+migraphx = ["model", "next-plaid-onnx/migraphx"]
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json"] }
