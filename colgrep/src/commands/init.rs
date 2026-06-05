@@ -44,15 +44,21 @@ pub fn cmd_init(path: &PathBuf, options: InitOptions<'_>) -> Result<()> {
     let (parallel_sessions, batch_size) =
         resolve_index_runtime_overrides(&config, options.batch_size);
 
-    // Check if index already exists (for the currently selected model)
-    let has_existing_index =
-        index_exists(&path, &model) || find_parent_index(&path, &model)?.is_some();
+    // Check if path is inside an already-indexed parent project
+    let parent_info = find_parent_index(&path, &model)?;
+    let effective_root = match &parent_info {
+        Some(info) => info.project_path.clone(),
+        None => path.clone(),
+    };
+
+    // Check if index already exists for the effective root
+    let has_existing_index = index_exists(&effective_root, &model);
 
     // Ensure model is downloaded
     let model_path = ensure_model(Some(&model), has_existing_index)?;
 
     let mut builder = IndexBuilder::with_options(
-        &path,
+        &effective_root,
         &model,
         &model_path,
         quantized,
@@ -72,18 +78,30 @@ pub fn cmd_init(path: &PathBuf, options: InitOptions<'_>) -> Result<()> {
 
     let changes = stats.added + stats.changed + stats.deleted;
     if changes > 0 {
-        eprintln!(
-            "Indexed {} (added: {}, changed: {}, deleted: {}, unchanged: {})",
-            path.display(),
-            stats.added,
-            stats.changed,
-            stats.deleted,
-            stats.unchanged,
-        );
+        if let Some(ref info) = parent_info {
+            eprintln!(
+                "Indexed {} (subdir: {}) (added: {}, changed: {}, deleted: {}, unchanged: {})",
+                info.project_path.display(),
+                info.relative_subdir.display(),
+                stats.added,
+                stats.changed,
+                stats.deleted,
+                stats.unchanged,
+            );
+        } else {
+            eprintln!(
+                "Indexed {} (added: {}, changed: {}, deleted: {}, unchanged: {})",
+                effective_root.display(),
+                stats.added,
+                stats.changed,
+                stats.deleted,
+                stats.unchanged,
+            );
+        }
     } else {
         eprintln!(
             "Index is up to date for {} ({} files)",
-            path.display(),
+            effective_root.display(),
             stats.unchanged
         );
     }
