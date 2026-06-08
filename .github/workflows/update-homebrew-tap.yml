@@ -1,11 +1,14 @@
 name: Update Homebrew Tap
 
 on:
-  # Trigger when the Release workflow completes successfully
+  # Trigger when the Release workflow completes successfully.
+  # NOTE: no `branches` filter here — the Release workflow is triggered by a
+  # tag push (refs/tags/vX.Y.Z), so its head_branch is the tag name, never
+  # `main`. A `branches: [main]` filter would (and previously did) silently
+  # block this trigger from ever firing on a release.
   workflow_run:
     workflows: ["Release"]
     types: [completed]
-    branches: [main]
 
   # Allow manual trigger with a version override
   workflow_dispatch:
@@ -17,8 +20,11 @@ on:
 jobs:
   update-tap:
     runs-on: ubuntu-22.04
-    # Only run if the release succeeded (or if manually triggered)
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # Only run if the release succeeded (or if manually triggered).
+    # `workflow_run.event == 'push'` restricts auto-runs to tag pushes — the
+    # Release workflow's only `push` trigger is `push: tags:` — so PR-triggered
+    # Release completions (cargo-dist's `plan` job) don't fire a tap update.
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:

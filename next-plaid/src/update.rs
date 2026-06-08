@@ -100,7 +100,7 @@ impl Default for UpdateConfig {
             max_points_per_centroid: 256,
             n_samples_kmeans: None,
             seed: 42,
-            start_from_scratch: 999,
+            start_from_scratch: crate::default_start_from_scratch(),
             buffer_size: 100,
             force_cpu: false,
         }
@@ -1132,7 +1132,39 @@ mod tests {
         let config = UpdateConfig::default();
         assert_eq!(config.batch_size, 50_000);
         assert_eq!(config.buffer_size, 100);
-        assert_eq!(config.start_from_scratch, 999);
+        assert_eq!(
+            config.start_from_scratch,
+            crate::default_start_from_scratch()
+        );
+    }
+
+    #[test]
+    fn test_update_progress_clears_after_panic() {
+        let stale_count = Arc::new(AtomicUsize::new(0));
+        let stale_count_for_callback = Arc::clone(&stale_count);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_update_progress(
+                move |_, _| {
+                    stale_count_for_callback.fetch_add(1, Ordering::SeqCst);
+                },
+                || panic!("forced progress panic"),
+            );
+        }));
+
+        assert!(result.is_err());
+
+        emit_update_progress("after_panic", "must not hit stale callback");
+        assert_eq!(stale_count.load(Ordering::SeqCst), 0);
+
+        let fresh_count = Arc::new(AtomicUsize::new(0));
+        let fresh_count_for_callback = Arc::clone(&fresh_count);
+        with_update_progress(
+            move |_, _| {
+                fresh_count_for_callback.fetch_add(1, Ordering::SeqCst);
+            },
+            || emit_update_progress("fresh", "fresh callback"),
+        );
+        assert_eq!(fresh_count.load(Ordering::SeqCst), 1);
     }
 
     #[test]

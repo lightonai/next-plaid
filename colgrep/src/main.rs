@@ -1,4 +1,5 @@
 mod cli;
+mod color;
 mod commands;
 mod display;
 mod scoring;
@@ -30,6 +31,11 @@ fn main() -> Result<()> {
     init_global_rayon_pool();
 
     let cli = Cli::parse();
+
+    // Resolve --color once, before any output, so both the `colored` crate and the syntect
+    // highlighter agree on whether to emit ANSI escapes.
+    color::init(cli.color);
+
     let env_mode = env_acceleration_mode()?;
     let acceleration_mode = if cli.force_cpu {
         AccelerationMode::ForceCpu

@@ -25,13 +25,13 @@
 ```bash
 # CPU with built-in model
 docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cpu-1.4.0 \
+  ghcr.io/lightonai/next-plaid:cpu-1.5.3 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/answerai-colbert-small-v1-onnx --int8
 
 # GPU with CUDA
 docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cuda-1.4.0 \
+  ghcr.io/lightonai/next-plaid:cuda-1.5.3 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/GTE-ModernColBERT-v1 --cuda
 ```
@@ -57,9 +57,9 @@ client.add("docs",
 # Semantic search
 results = client.search("docs", ["vector database"])
 
-# Hybrid search (semantic + keyword fused with RRF)
+# Hybrid search (semantic + keyword, fused by relative-score normalization)
 results = client.search("docs", ["vector database"],
-    text_query=["multi-vector"], alpha=0.75, fusion="rrf",
+    text_query=["multi-vector"], alpha=0.75, fusion="relative_score",
 )
 
 # Search with metadata filtering
@@ -318,7 +318,7 @@ POST /indices/my_index/search
   "queries": [{"embeddings": [[0.1, 0.2, ...], [0.3, 0.4, ...]]}],
   "text_query": ["capital France"],
   "alpha": 0.75,
-  "fusion": "rrf",
+  "fusion": "relative_score",
   "params": { "top_k": 10 }
 }
 ```
@@ -329,7 +329,7 @@ Combines semantic (ColBERT) and keyword (FTS5 BM25) search using fusion:
 | ------------ | -------- | ------------------------------------------------------------------ |
 | `text_query` | `null`   | List of FTS5 query strings (must match `queries` length in hybrid) |
 | `alpha`      | `0.75`   | Balance: 0.0 = pure keyword, 1.0 = pure semantic                  |
-| `fusion`     | `"rrf"`  | `"rrf"` (reciprocal rank fusion) or `"relative_score"` (min-max)   |
+| `fusion`     | `"relative_score"` | `"relative_score"` (min-max normalize then alpha-weight) or `"rrf"` (reciprocal rank fusion) |
 
 The `filter_condition` and `filter_parameters` fields can also be included directly in the `/search` body, replacing the need for the separate `/search/filtered` endpoint.
 
@@ -565,10 +565,10 @@ Set `NEXT_PLAID_URL` to avoid repeating `--url`. See the [Python SDK README](pyt
 
 ```bash
 # CPU (amd64 + arm64)
-docker pull ghcr.io/lightonai/next-plaid:cpu-1.4.0
+docker pull ghcr.io/lightonai/next-plaid:cpu-1.5.3
 
 # CUDA (amd64, requires NVIDIA GPU)
-docker pull ghcr.io/lightonai/next-plaid:cuda-1.4.0
+docker pull ghcr.io/lightonai/next-plaid:cuda-1.5.3
 ```
 
 The Docker entrypoint auto-downloads HuggingFace models. Pass `org/model` as `--model` and it handles the rest. Set `HF_TOKEN` for private models.
@@ -578,7 +578,7 @@ The Docker entrypoint auto-downloads HuggingFace models. Pass `org/model` as `--
 ```yaml
 services:
   next-plaid-api:
-    image: ghcr.io/lightonai/next-plaid:cpu-1.4.0
+    image: ghcr.io/lightonai/next-plaid:cpu-1.5.3
     ports:
       - "8080:8080"
     volumes:
@@ -619,7 +619,7 @@ services:
 ```yaml
 services:
   next-plaid-api:
-    image: ghcr.io/lightonai/next-plaid:cuda-1.4.0
+    image: ghcr.io/lightonai/next-plaid:cuda-1.5.3
     ports:
       - "8080:8080"
     volumes:
@@ -804,6 +804,19 @@ Rate limiting is **optional and disabled by default**. Enable it by setting `RAT
 ---
 
 ## Environment Variables
+
+### Indexing
+
+| Variable                          | Default | Description                                                                 |
+| --------------------------------- | ------- | --------------------------------------------------------------------------- |
+| `INDEX_DEFAULT_START_FROM_SCRATCH` | `999`   | Default `start_from_scratch` threshold for new indexes (see below)          |
+
+When an index update runs, indexes holding **fewer** documents than `start_from_scratch`
+are rebuilt from scratch (higher quality centroids) instead of updated incrementally;
+larger indexes are updated incrementally (faster). This env var sets the **default**
+threshold applied when an index is created without an explicit `config.start_from_scratch`.
+A per-index value supplied at creation time always takes precedence. The value is read once
+at startup.
 
 ### Rate Limiting & Concurrency
 

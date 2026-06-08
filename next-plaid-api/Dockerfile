@@ -37,6 +37,7 @@
 #   RATE_LIMIT_ENABLED: Enable rate limiting (default: false)
 #   RATE_LIMIT_PER_SECOND: Max requests/s when rate limiting is enabled (default: 50)
 #   RATE_LIMIT_BURST_SIZE: Burst size when rate limiting is enabled (default: 100)
+#   INDEX_DEFAULT_START_FROM_SCRATCH: Default rebuild-from-scratch threshold for new indexes (default: 999)
 # =============================================================================
 
 # =============================================================================
@@ -225,6 +226,10 @@ ENV INDEX_DIR=/data/indices
 # x86_64: MKL statically linked (sequential, no thread explosion)
 # aarch64: OpenBLAS with single thread to avoid contention with rayon
 ENV OPENBLAS_NUM_THREADS=1
+# Default start_from_scratch threshold for new indexes: indexes holding fewer documents
+# are rebuilt from scratch on update (higher-quality centroids), larger ones update
+# incrementally. Override per-deployment, or per-index via the create-index config.
+ENV INDEX_DEFAULT_START_FROM_SCRATCH=999
 # Memory-mapped indices are always enabled for efficient memory usage
 # Set HF_MODEL_ID to auto-download model from HuggingFace Hub
 # Example: ENV HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1
@@ -286,6 +291,10 @@ ENV RUST_LOG=info
 ENV INDEX_DIR=/data/indices
 # Prevent OpenBLAS thread explosion when used alongside rayon parallelism
 ENV OPENBLAS_NUM_THREADS=1
+# Default start_from_scratch threshold for new indexes: indexes holding fewer documents
+# are rebuilt from scratch on update (higher-quality centroids), larger ones update
+# incrementally. Override per-deployment, or per-index via the create-index config.
+ENV INDEX_DEFAULT_START_FROM_SCRATCH=999
 # Memory-mapped indices are always enabled for efficient memory usage
 # Set HF_MODEL_ID to auto-download model from HuggingFace Hub
 # Example: ENV HF_MODEL_ID=lightonai/GTE-ModernColBERT-v1

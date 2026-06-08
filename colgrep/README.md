@@ -515,6 +515,8 @@ Indexes are stored outside the project directory:
 | macOS    | `~/Library/Application Support/colgrep/indices/` |
 | Windows  | `%APPDATA%\colgrep\indices\`                     |
 
+`XDG_DATA_HOME` is honored on all platforms, including macOS — set it to keep your colgrep data under `~/.local/share` (or anywhere else) on macOS too.
+
 Each project gets a directory named `{project}-{hash8}`. Inside:
 
 - `index/` &mdash; PLAID vector index + SQLite metadata

@@ -469,6 +469,45 @@ pub fn truncate_ansi_string(s: &str, max_width: usize) -> String {
     result
 }
 
+/// Truncate a plain (escape-free) string to a maximum visible width, appending "..." if cut.
+fn truncate_plain(s: &str, max_width: usize) -> String {
+    if s.chars().count() <= max_width {
+        return s.to_string();
+    }
+    let mut result: String = s.chars().take(max_width).collect();
+    result.push_str("...");
+    result
+}
+
+/// Print a range of lines as plain text (line number + code, no ANSI escapes).
+/// Used when color is disabled (`--color=never`, `NO_COLOR`, or a non-terminal stdout).
+/// Line numbers go through `.dimmed()`, which the `colored` override renders plain.
+fn print_plain_ranges(
+    lines: &[&str],
+    ranges: &[(usize, usize)],
+    unit_end: usize,
+    line_num_width: usize,
+) {
+    for (range_idx, &(start, end)) in ranges.iter().enumerate() {
+        let display_end = end.min(lines.len());
+        let display_start = start.min(lines.len());
+        if display_start >= lines.len() {
+            continue;
+        }
+        for (offset, line) in lines[display_start..display_end].iter().enumerate() {
+            let line_num = display_start + offset + 1;
+            println!(
+                "{} {}",
+                format!("{:>width$}", line_num, width = line_num_width).dimmed(),
+                truncate_plain(line.trim_end_matches('\n'), MAX_LINE_WIDTH)
+            );
+        }
+        if range_idx < ranges.len() - 1 || display_end < unit_end {
+            println!("{}", "...".dimmed());
+        }
+    }
+}
+
 /// Print content with syntax highlighting for multiple ranges
 pub fn print_highlighted_ranges(
     file_path: &Path,
@@ -477,6 +516,11 @@ pub fn print_highlighted_ranges(
     unit_end: usize,
     line_num_width: usize,
 ) {
+    if !crate::color::colorize_enabled() {
+        print_plain_ranges(lines, ranges, unit_end, line_num_width);
+        return;
+    }
+
     let ps = SyntaxSet::load_defaults_newlines();
     let ts = ThemeSet::load_defaults();
     let theme = &ts.themes["base16-ocean.dark"];
@@ -537,6 +581,24 @@ pub fn print_highlighted_content(
     end_line: usize,
     line_num_width: usize,
 ) {
+    let display_end = end_line.min(start_line.saturating_add(max_lines));
+    let truncated = end_line > display_end;
+
+    if !crate::color::colorize_enabled() {
+        for (i, line) in lines[start_line..display_end].iter().enumerate() {
+            let line_num = start_line + i + 1;
+            println!(
+                "{} {}",
+                format!("{:>width$}", line_num, width = line_num_width).dimmed(),
+                truncate_plain(line.trim_end_matches('\n'), MAX_LINE_WIDTH)
+            );
+        }
+        if truncated {
+            println!("{}", "...".dimmed());
+        }
+        return;
+    }
+
     let ps = SyntaxSet::load_defaults_newlines();
     let ts = ThemeSet::load_defaults();
     let theme = &ts.themes["base16-ocean.dark"];
@@ -549,9 +611,6 @@ pub fn print_highlighted_content(
         .unwrap_or_else(|| ps.find_syntax_plain_text());
 
     let mut highlighter = HighlightLines::new(syntax, theme);
-
-    let display_end = end_line.min(start_line.saturating_add(max_lines));
-    let truncated = end_line > display_end;
 
     // Reconstruct the content for highlighting
     let content_to_highlight: String = lines[start_line..display_end]

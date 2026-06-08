@@ -490,6 +490,29 @@ pub fn resolve_verbose() -> bool {
     false
 }
 
+/// Deterministic ordering for search results: highest score first, then a
+/// stable tie-break on (file, line, end_line).
+///
+/// Scores are floats produced by the ranking pipeline and can be exactly
+/// equal for multiple candidates. Sorting on score alone leaves tied entries
+/// in whatever order they came out of the upstream `HashMap` merge, whose
+/// iteration order is randomized per process. That made the candidate order
+/// (and, at the `take(top_k)` boundary, the candidate *set*) differ between
+/// otherwise-identical runs — including the same query with and without
+/// `--json`. The tie-break removes that nondeterminism so the result list is
+/// purely a function of the index + query + flags.
+fn cmp_results_deterministic(
+    a: &colgrep::SearchResult,
+    b: &colgrep::SearchResult,
+) -> std::cmp::Ordering {
+    b.score
+        .partial_cmp(&a.score)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| a.unit.file.cmp(&b.unit.file))
+        .then_with(|| a.unit.line.cmp(&b.unit.line))
+        .then_with(|| a.unit.end_line.cmp(&b.unit.end_line))
+}
+
 /// Resolve pool_factor: --no-pool > --pool-factor > config > default (2)
 pub fn resolve_pool_factor(cli_pool_factor: Option<usize>, no_pool: bool) -> Option<usize> {
     if no_pool {
@@ -606,12 +629,12 @@ pub fn cmd_search(
         }
     }
 
-    // Sort all results by score and take top_k
-    all_results.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Sort all results by score and take top_k.
+    // Tie-break on (file, line, end_line) so the ordering is fully
+    // deterministic: tied scores must not depend on HashMap iteration order
+    // (randomized per process), otherwise two identical invocations — e.g.
+    // with and without `--json` — could return a different candidate order.
+    all_results.sort_by(cmp_results_deterministic);
 
     // Filter out text/config files if --code-only is enabled
     let filtered_results: Vec<_> = if code_only {
@@ -1618,11 +1641,7 @@ fn search_single_path(
     // complete language-aware test/bench/example/compat penalty) inside
     // `Searcher::search_hybrid_with_embedding`.
     let mut results: Vec<_> = results;
-    results.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    results.sort_by(cmp_results_deterministic);
 
     // Increment search count
     let index_dir = get_index_dir_for_project(&effective_root, &model)?;
@@ -1684,6 +1703,90 @@ mod tests {
         let result = resolve_context_lines(None, 20);
         // Should be either 20 (default) or whatever is in config
         assert!(result <= 100); // sanity check
+    }
+
+    fn mk_result(file: &str, line: usize, end_line: usize, score: f32) -> colgrep::SearchResult {
+        let unit = colgrep::CodeUnit::new(
+            "u".to_string(),
+            std::path::PathBuf::from(file),
+            line,
+            end_line,
+            colgrep::Language::Rust,
+            colgrep::UnitType::Function,
+            None,
+        );
+        colgrep::SearchResult { unit, score }
+    }
+
+    /// The deterministic comparator must order purely by (score desc, file,
+    /// line, end_line) so that two identical runs — including the same query
+    /// with and without `--json` — always produce the same candidate order,
+    /// regardless of the input order coming out of the upstream HashMap merge.
+    #[test]
+    fn test_cmp_results_deterministic_is_stable_under_ties() {
+        let a = mk_result("a.rs", 10, 20, 1.0);
+        let b = mk_result("b.rs", 5, 8, 1.0); // tied score with a
+        let c = mk_result("c.rs", 1, 2, 2.0); // higher score
+
+        // Higher score always wins regardless of argument order.
+        assert_eq!(cmp_results_deterministic(&c, &a), std::cmp::Ordering::Less);
+        assert_eq!(
+            cmp_results_deterministic(&a, &c),
+            std::cmp::Ordering::Greater
+        );
+
+        // Tied scores break on file path, deterministically and antisymmetric.
+        assert_eq!(cmp_results_deterministic(&a, &b), std::cmp::Ordering::Less);
+        assert_eq!(
+            cmp_results_deterministic(&b, &a),
+            std::cmp::Ordering::Greater
+        );
+
+        // Sorting any permutation of a tied set yields one canonical order.
+        let expected = vec!["c.rs", "a.rs", "b.rs"];
+        for perm in [
+            vec![
+                mk_result("a.rs", 10, 20, 1.0),
+                mk_result("b.rs", 5, 8, 1.0),
+                mk_result("c.rs", 1, 2, 2.0),
+            ],
+            vec![
+                mk_result("c.rs", 1, 2, 2.0),
+                mk_result("b.rs", 5, 8, 1.0),
+                mk_result("a.rs", 10, 20, 1.0),
+            ],
+            vec![
+                mk_result("b.rs", 5, 8, 1.0),
+                mk_result("c.rs", 1, 2, 2.0),
+                mk_result("a.rs", 10, 20, 1.0),
+            ],
+        ] {
+            let mut v = perm;
+            v.sort_by(cmp_results_deterministic);
+            let order: Vec<_> = v
+                .iter()
+                .map(|r| r.unit.file.to_string_lossy().to_string())
+                .collect();
+            assert_eq!(order, expected);
+        }
+    }
+
+    #[test]
+    fn test_cmp_results_deterministic_breaks_ties_on_line() {
+        // Same file and score: order by line, then end_line.
+        let early = mk_result("x.rs", 1, 50, 1.0);
+        let late = mk_result("x.rs", 40, 45, 1.0);
+        assert_eq!(
+            cmp_results_deterministic(&early, &late),
+            std::cmp::Ordering::Less
+        );
+
+        let short = mk_result("x.rs", 1, 10, 1.0);
+        let long = mk_result("x.rs", 1, 99, 1.0);
+        assert_eq!(
+            cmp_results_deterministic(&short, &long),
+            std::cmp::Ordering::Less
+        );
     }
 
     // Test strip_regex_for_semantic function

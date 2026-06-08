@@ -24,8 +24,9 @@ use super::SKILL_MD;
 
 /// Get the marketplace directory path (in user's data directory)
 fn get_marketplace_dir() -> Result<PathBuf> {
-    let data_dir = dirs::data_dir().context("Could not determine data directory")?;
-    Ok(data_dir.join("colgrep").join("claude-marketplace"))
+    Ok(crate::index::paths::xdg_data_home_or_default()?
+        .join("colgrep")
+        .join("claude-marketplace"))
 }
 
 /// Create the full marketplace directory structure with all files

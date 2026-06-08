@@ -11,8 +11,7 @@ use super::{uninstall_claude_code, uninstall_codex, uninstall_hermes, uninstall_
 
 /// Get the colgrep data directory (contains indices and config)
 fn get_colgrep_data_dir() -> Result<PathBuf> {
-    let data_dir = dirs::data_dir().context("Could not determine data directory")?;
-    Ok(data_dir.join("colgrep"))
+    Ok(crate::index::paths::xdg_data_home_or_default()?.join("colgrep"))
 }
 
 /// Get the colgrep cache directory (contains ONNX runtime)

@@ -1,5 +1,6 @@
 pub mod paths;
 pub mod state;
+pub mod worktree;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -43,6 +44,105 @@ const MAX_FILE_SIZE: u64 = 512 * 1024;
 /// Number of documents to process before writing to the index.
 /// Larger values reduce I/O overhead but use more memory.
 const INDEX_CHUNK_SIZE: usize = 1024;
+
+/// Marker file (in the index dir, next to state.json) that records an in-progress
+/// resumable build. Its presence routes the next run back into `build_resumable` so an
+/// interrupted initial build (e.g. an agent's command timeout) resumes from where it left
+/// off instead of restarting from scratch.
+const BUILDING_MARKER: &str = ".building";
+
+/// Approximate number of code units to embed per resumable-build batch before committing
+/// state to disk. Each committed batch survives an interruption, so smaller values checkpoint
+/// more often (more resumable) at the cost of more index-append overhead.
+const BUILD_CHECKPOINT_UNITS: usize = 4096;
+
+/// Test-only counter of expensive `delete_from_index` invocations.
+///
+/// Issue #116: deleting many files used to call the full-index-rewrite primitive once per
+/// file, making an incremental update O(changed_files × index_size). Batching collapses that
+/// to a single call; this counter lets regression tests assert the batching holds.
+#[cfg(test)]
+static DELETE_FROM_INDEX_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Wrapper over [`next_plaid::delete_from_index`] that counts calls under `cfg(test)`.
+/// Zero overhead in release builds.
+fn delete_from_index_counted(ids: &[i64], index_path: &str) -> Result<usize> {
+    #[cfg(test)]
+    DELETE_FROM_INDEX_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(delete_from_index(ids, index_path)?)
+}
+
+/// Remove every index entry belonging to any of `files`, in a single index rewrite.
+///
+/// Both deletion primitives are full-index operations: `delete_from_index` rewrites every
+/// chunk and rebuilds the IVF, and `filtering::delete` rewrites the whole metadata table.
+/// Calling them once per file makes an incremental update O(changed_files × index_size) — the
+/// cause of issue #116, where ~276 deleted files hung for minutes on a ~1.2 GB index.
+/// Collecting every doc ID up front and deleting once collapses that to a single O(index_size)
+/// rewrite, regardless of how many files changed.
+///
+/// The doc IDs for ALL files must be read before any deletion: both primitives renumber the
+/// surviving documents, so interleaving reads and deletes would invalidate the IDs that haven't
+/// been deleted yet. Returns the number of documents removed.
+fn delete_files_from_index(index_path: &str, files: &[PathBuf]) -> Result<usize> {
+    if files.is_empty() {
+        return Ok(0);
+    }
+
+    // Gather the doc IDs for every file first (dedup in case a path appears twice), then
+    // delete the whole set in one pass.
+    let mut ids: Vec<i64> = Vec::new();
+    let mut seen: HashSet<i64> = HashSet::new();
+    for file_path in files {
+        let file_str = file_path.to_string_lossy().to_string();
+        let file_ids =
+            filtering::where_condition(index_path, "file = ?", &[serde_json::json!(file_str)])
+                .unwrap_or_default();
+        for id in file_ids {
+            if seen.insert(id) {
+                ids.push(id);
+            }
+        }
+    }
+
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    delete_from_index_counted(&ids, index_path)?;
+    filtering::delete(index_path, &ids)?;
+    Ok(ids.len())
+}
+
+/// Decide whether a sibling worktree's index directory is a usable seed source, returning its
+/// loaded [`IndexState`] when so (and `None` otherwise).
+///
+/// A source is usable only if it is a **complete**, current-version, non-dirty index:
+/// - No `.building` marker. A resumable build writes `metadata.json` and checkpoints state with
+///   `dirty = false` after each committed batch, so an interrupted build looks complete by every
+///   other check while only holding a fraction of its documents. The marker is the sole signal
+///   that the build hasn't finished; seeding from it would copy a partial store and treat it as
+///   whole. See issue #115.
+/// - `metadata.json` present and a filtering DB present (rules out absent/stale-format stores
+///   that `index()` would discard anyway).
+/// - State loads, is non-empty, matches the current CLI version, and isn't dirty.
+fn seed_source_state(src_dir: &Path, current_version: &str) -> Option<IndexState> {
+    if src_dir.join(BUILDING_MARKER).exists() {
+        return None;
+    }
+
+    let src_vector = get_vector_index_path(src_dir);
+    let src_vector_str = src_vector.to_str()?;
+    if !src_vector.join("metadata.json").exists() || !filtering::exists(src_vector_str) {
+        return None;
+    }
+
+    match IndexState::load(src_dir) {
+        Ok(s) if !s.files.is_empty() && s.cli_version == current_version && !s.dirty => Some(s),
+        _ => None,
+    }
+}
 
 /// Threshold for switching to higher pool factor (fewer embeddings per doc).
 /// When encoding more than this many units, use LARGE_BATCH_POOL_FACTOR.
@@ -899,11 +999,15 @@ impl IndexBuilder {
                     }
                 }
             };
-            #[cfg(not(feature = "cuda"))]
+            #[cfg(not(any(
+                feature = "cuda",
+                feature = "directml",
+                feature = "migraphx",
+                feature = "coreml"
+            )))]
             let (num_sessions, execution_provider) = {
-                let _ = num_units; // Silence unused warning when cuda feature is disabled
+                let _ = num_units;
 
-                // Initialize ONNX Runtime (CPU-only build)
                 crate::onnx_runtime::ensure_onnx_runtime()
                     .context("Failed to initialize ONNX Runtime")?;
 
@@ -914,8 +1018,31 @@ impl IndexBuilder {
                 )
             };
 
+            #[cfg(any(feature = "directml", feature = "migraphx", feature = "coreml"))]
+            #[cfg(not(feature = "cuda"))]
+            let (num_sessions, execution_provider) = {
+                let _ = num_units;
+
+                crate::onnx_runtime::ensure_onnx_runtime()
+                    .context("Failed to initialize ONNX Runtime")?;
+
+                let provider = if cfg!(feature = "directml") {
+                    ExecutionProvider::DirectML
+                } else if cfg!(feature = "migraphx") {
+                    ExecutionProvider::MIGraphX
+                } else {
+                    ExecutionProvider::CoreML
+                };
+
+                (
+                    self.parallel_sessions
+                        .unwrap_or_else(crate::config::get_default_cpu_parallel_sessions),
+                    provider,
+                )
+            };
+
             // Print model info after ONNX runtime is initialized (and any potential re-exec)
-            eprintln!("🤖 Model: {}", self.model_id);
+            eprintln!("🤖 Model: {} ({})", self.model_id, execution_provider);
             eprintln!("📂 Building index...");
 
             // Use runtime default for batch size (respects cuDNN availability)
@@ -1258,30 +1385,54 @@ impl IndexBuilder {
     /// - Full rebuild if CLI version changed (clears outdated index)
     pub fn index(&mut self, languages: Option<&[Language]>, force: bool) -> Result<UpdateStats> {
         let _lock = acquire_index_lock(&self.index_dir)?;
+        self.run_indexing(languages, force)
+    }
 
+    /// Shared indexing dispatch, run while the index lock is held by the caller.
+    ///
+    /// Routing:
+    /// - forced or CLI-version change → atomic `full_rebuild` (protects a working index);
+    /// - a fresh build, or resuming an interrupted resumable build → `build_resumable`
+    ///   (checkpoints per batch so interruptions keep their progress);
+    /// - corrupted filtering DB → atomic `full_rebuild`;
+    /// - otherwise → `incremental_update`.
+    fn run_indexing(&mut self, languages: Option<&[Language]>, force: bool) -> Result<UpdateStats> {
         // Clean up any leftover temp/old dirs from previous failed full rebuilds
         let _ = std::fs::remove_dir_all(self.index_dir.join("index.tmp"));
         let _ = std::fs::remove_dir_all(self.index_dir.join("index.old"));
+
+        // Fresh git worktree? Seed from a sibling's index so we re-embed only the diff
+        // instead of rebuilding from scratch. No-op for non-worktree projects.
+        self.maybe_seed_from_worktree(force);
 
         let state = IndexState::load(&self.index_dir)?;
         let index_dir = get_vector_index_path(&self.index_dir);
         let index_path = index_dir.to_str().unwrap();
         let index_exists = index_dir.join("metadata.json").exists();
         let filtering_exists = filtering::exists(index_path);
+        let building = self.index_dir.join(BUILDING_MARKER).exists();
 
         // Check if CLI version changed - if so, clear and rebuild the index
         let current_version = env!("CARGO_PKG_VERSION");
         let version_mismatch =
             index_exists && !state.cli_version.is_empty() && state.cli_version != current_version;
 
-        // Need full rebuild if forced, index doesn't exist, filtering DB is missing,
-        // or CLI version changed
-        if force || !index_exists || !filtering_exists || version_mismatch {
+        // Forced or CLI-version change: clean atomic rebuild. Drop any in-progress
+        // resumable-build marker so we don't try to resume an index we're discarding.
+        if force || version_mismatch {
+            let _ = std::fs::remove_file(self.index_dir.join(BUILDING_MARKER));
             return self.full_rebuild(languages);
         }
 
-        // Validate filtering DB is not corrupted (can be read)
-        if filtering::count(index_path).is_err() {
+        // Fresh first build, or resume of an interrupted resumable build: build directly
+        // into the real index dir and checkpoint state per batch, so an interrupted run
+        // (e.g. an agent command timeout) keeps its progress instead of restarting.
+        if building || !index_exists {
+            return self.build_resumable(languages);
+        }
+
+        // metadata.json exists but the filtering DB is missing or unreadable → corrupted.
+        if !filtering_exists || filtering::count(index_path).is_err() {
             eprintln!("⚠️  Filtering database corrupted, rebuilding index...");
             return self.full_rebuild(languages);
         }
@@ -1348,70 +1499,7 @@ impl IndexBuilder {
             return Ok(None);
         };
 
-        // Clean up any leftover temp/old dirs from previous failed full rebuilds
-        let _ = std::fs::remove_dir_all(self.index_dir.join("index.tmp"));
-        let _ = std::fs::remove_dir_all(self.index_dir.join("index.old"));
-
-        let state = IndexState::load(&self.index_dir)?;
-        let index_dir = get_vector_index_path(&self.index_dir);
-        let index_path = index_dir.to_str().unwrap();
-        let index_exists = index_dir.join("metadata.json").exists();
-        let filtering_exists = filtering::exists(index_path);
-
-        let current_version = env!("CARGO_PKG_VERSION");
-        let version_mismatch =
-            index_exists && !state.cli_version.is_empty() && state.cli_version != current_version;
-
-        if force || !index_exists || !filtering_exists || version_mismatch {
-            return self.full_rebuild(languages).map(Some);
-        }
-
-        if filtering::count(index_path).is_err() {
-            eprintln!("⚠️  Filtering database corrupted, rebuilding index...");
-            return self.full_rebuild(languages).map(Some);
-        }
-
-        let state = if state.files.is_empty() {
-            match self.reconstruct_state_from_filtering_db(index_path) {
-                Ok(reconstructed) => {
-                    eprintln!(
-                        "📋 Reconstructed state from index ({} files)",
-                        reconstructed.files.len()
-                    );
-                    reconstructed.save(&self.index_dir)?;
-                    reconstructed
-                }
-                Err(_) => {
-                    return self.full_rebuild(languages).map(Some);
-                }
-            }
-        } else {
-            state
-        };
-
-        if let Ok(metadata_count) = filtering::count(index_path) {
-            if let Ok(index_metadata) = Metadata::load_from_path(&index_dir) {
-                if metadata_count != index_metadata.num_documents {
-                    match self.reconcile_document_counts(
-                        index_path,
-                        metadata_count,
-                        index_metadata.num_documents,
-                    ) {
-                        Ok(()) => {
-                            eprintln!(
-                                "🔧 Reconciled index (filtering: {}, vector: {})",
-                                metadata_count, index_metadata.num_documents
-                            );
-                        }
-                        Err(_) => {
-                            return self.full_rebuild(languages).map(Some);
-                        }
-                    }
-                }
-            }
-        }
-
-        self.incremental_update(&state, languages).map(Some)
+        self.run_indexing(languages, force).map(Some)
     }
 
     /// Index only specific files (for filtered search).
@@ -1586,10 +1674,9 @@ impl IndexBuilder {
 
         // Delete changed files from index right before writing new data.
         // Deferred from earlier to minimize the window where data is missing
-        // from the index (for concurrent readers and interrupt safety).
-        for file_path in &files_changed {
-            self.delete_file_from_index(index_path, file_path)?;
-        }
+        // from the index (for concurrent readers and interrupt safety). Batched
+        // into a single index rewrite — see delete_files_from_index / issue #116.
+        delete_files_from_index(index_path, &files_changed)?;
 
         let sorted_units = prepare_units_for_encoding(&new_units, index_chunk_size);
         let was_interrupted = self.run_encoding_pipeline(
@@ -1636,7 +1723,344 @@ impl IndexBuilder {
     }
 
     /// Full rebuild (used when force=true or no index exists)
+    /// If this project has no index yet but is a git worktree whose sibling has a usable
+    /// index for the same model, seed this index from the sibling instead of rebuilding
+    /// from scratch. After seeding, the normal incremental path re-embeds only the files
+    /// that differ between the two branches.
+    ///
+    /// Best-effort: any failure (no git, no sibling index, copy error) is reported and the
+    /// caller falls back to a full rebuild. Must be called while holding the index lock.
+    fn maybe_seed_from_worktree(&self, force: bool) {
+        // A forced rebuild or an already-populated index never seeds.
+        if force
+            || get_vector_index_path(&self.index_dir)
+                .join("metadata.json")
+                .exists()
+        {
+            return;
+        }
+        match self.try_seed_from_sibling_worktree() {
+            Ok(true) | Ok(false) => {}
+            Err(e) => eprintln!("⚠️  Worktree index seeding skipped ({e}); building from scratch"),
+        }
+    }
+
+    /// Copy a usable sibling worktree's index into this project's index directory.
+    /// Returns `Ok(true)` if an index was seeded, `Ok(false)` if no suitable sibling exists.
+    fn try_seed_from_sibling_worktree(&self) -> Result<bool> {
+        let current_version = env!("CARGO_PKG_VERSION");
+        let candidates = worktree::seed_candidates(&self.project_root, &self.model_id)?;
+
+        for candidate in candidates {
+            let src_dir = &candidate.index_dir;
+            // Validate the sibling holds a complete, current-version, non-dirty index that
+            // isn't mid-build. Skip otherwise so we never seed from a half-built or stale store.
+            let Some(src_state) = seed_source_state(src_dir, current_version) else {
+                continue;
+            };
+            let src_vector = get_vector_index_path(src_dir);
+
+            // Copy the vector/filtering store via a temp dir, then rename into place so an
+            // interrupted copy never leaves a half-written index/ behind.
+            let dest_vector = get_vector_index_path(&self.index_dir);
+            let tmp = self.index_dir.join("index.tmp");
+            if tmp.exists() {
+                std::fs::remove_dir_all(&tmp)?;
+            }
+            worktree::copy_dir_all(&src_vector, &tmp)?;
+            if dest_vector.exists() {
+                std::fs::remove_dir_all(&dest_vector)?;
+            }
+            std::fs::rename(&tmp, &dest_vector)
+                .context("Failed to move seeded index into place")?;
+
+            // Persist state (rewriting cli_version to current — guaranteed equal here) and a
+            // fresh project.json pointing at THIS worktree, not the source.
+            src_state.save(&self.index_dir)?;
+            ProjectMetadata::new(&self.project_root, &self.model_id).save(&self.index_dir)?;
+
+            eprintln!(
+                "📋 Seeded index from worktree {} ({} files); re-embedding only changed files",
+                candidate.worktree_root.display(),
+                src_state.files.len()
+            );
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    /// Build (or resume building) the index directly into the real index directory,
+    /// committing `state.json` after every batch of ~[`BUILD_CHECKPOINT_UNITS`] units.
+    ///
+    /// Unlike [`full_rebuild`], which encodes into a throwaway `index.tmp` and only persists
+    /// on success, this commits incrementally — so an interrupted run (an agent's command
+    /// timeout, Ctrl-C) keeps the batches it already finished. The presence of the
+    /// [`BUILDING_MARKER`] file routes the next run back here to resume; it's removed once the
+    /// build completes. Used for the first build and its resumes, never to rebuild over an
+    /// already-complete index (that path stays on the atomic [`full_rebuild`]).
+    fn build_resumable(&mut self, languages: Option<&[Language]>) -> Result<UpdateStats> {
+        let index_dir = get_vector_index_path(&self.index_dir);
+        std::fs::create_dir_all(&index_dir)?;
+        let index_path = index_dir.to_str().unwrap().to_string();
+
+        // Mark the build in progress so the next run resumes here even after some chunks
+        // (and thus metadata.json) have been written.
+        let marker = self.index_dir.join(BUILDING_MARKER);
+        std::fs::write(&marker, "")?;
+
+        // Resume: keep whatever a previous run already committed.
+        let mut state = IndexState::load(&self.index_dir)?;
+
+        // A prior run interrupted mid-batch may have left the vector index and filtering DB
+        // slightly out of sync (a partially written chunk). Trim that before re-embedding so
+        // we don't accumulate orphan documents across resumes.
+        if index_dir.join("metadata.json").exists() && filtering::exists(&index_path) {
+            let _ = self.repair_index_db_sync(&index_dir);
+        }
+
+        let (scanned, skipped) = self.scan_files(languages)?;
+        let scanned_set: HashSet<PathBuf> = scanned.iter().cloned().collect();
+
+        // Drop files that disappeared since a prior partial run.
+        let stale: Vec<PathBuf> = state
+            .files
+            .keys()
+            .filter(|p| !scanned_set.contains(*p))
+            .cloned()
+            .collect();
+        delete_files_from_index(&index_path, &stale)?;
+        for path in &stale {
+            state.files.remove(path);
+        }
+
+        // Files still needing work: scanned, not already committed, not known-unparseable.
+        let todo: Vec<PathBuf> = scanned
+            .iter()
+            .filter(|p| !state.files.contains_key(*p) && !state.ignored_files.contains(*p))
+            .cloned()
+            .collect();
+
+        // A prior run already committed some files — resume from there rather than re-embedding
+        // them. The committed files are excluded from `todo` above, so they are never recomputed.
+        if !state.files.is_empty() {
+            eprintln!(
+                "📋 Resuming interrupted build: {} files already indexed, {} remaining",
+                state.files.len(),
+                todo.len()
+            );
+        }
+
+        // Parse the remaining files (cheap relative to embedding) and build the call graph
+        // over them so `called_by` is populated for this build's units.
+        let pb = ProgressBar::new(todo.len() as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+                .unwrap()
+                .progress_chars("█▓░"),
+        );
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        pb.set_message("Parsing files...");
+
+        let mut all_units: Vec<CodeUnit> = Vec::new();
+        let mut file_info: HashMap<PathBuf, FileInfo> = HashMap::new();
+        for parsed in parse_files_parallel(&self.project_root, &todo, Some(&pb)) {
+            if let Some(reason) = parsed.skip_reason {
+                eprintln!("⚠️  {}", reason);
+                state.ignored_files.insert(parsed.path);
+                continue;
+            }
+            if let Some(fi) = parsed.file_info {
+                file_info.insert(parsed.path.clone(), fi);
+                all_units.extend(parsed.units);
+            }
+        }
+        let parsing_interrupted = is_interrupted();
+        pb.finish_and_clear();
+        if parsing_interrupted {
+            // Nothing was embedded this run; committed batches (if any) already persisted.
+            state.dirty = false;
+            state.save(&self.index_dir)?;
+            anyhow::bail!("Indexing interrupted by user");
+        }
+
+        build_call_graph(&mut all_units);
+
+        // Confirm once up front for very large codebases (auto-confirmed on non-TTY/agents).
+        if !self.auto_confirm
+            && all_units.len() > CONFIRMATION_THRESHOLD
+            && !prompt_large_index_confirmation(all_units.len())
+        {
+            let _ = std::fs::remove_file(&marker);
+            anyhow::bail!("Indexing cancelled by user");
+        }
+
+        // Regroup units per file so each batch contains whole files — that lets us checkpoint
+        // `state` at file granularity after each committed batch.
+        let mut units_by_file: HashMap<PathBuf, Vec<CodeUnit>> = HashMap::new();
+        for unit in all_units {
+            units_by_file
+                .entry(unit.file.clone())
+                .or_default()
+                .push(unit);
+        }
+
+        let encode_batch_size = self.encode_batch_size.unwrap_or(DEFAULT_ENCODE_BATCH_SIZE);
+        let index_chunk_size = self
+            .index_chunk_size
+            .unwrap_or(INDEX_CHUNK_SIZE)
+            .max(encode_batch_size);
+
+        let total_units: usize = units_by_file.values().map(|u| u.len()).sum();
+        let already = state.files.len();
+        let mut added = 0usize;
+
+        // Files that parsed but yielded no code units (empty or import-only files) need no
+        // embedding. Record them as done now — and persist — so they're not re-parsed on every
+        // resume round (parity with full_rebuild, which also stores them). `file_info` only
+        // holds this run's freshly-parsed files, none of which are in `state` yet.
+        let mut recorded_empty = false;
+        for (path, fi) in &file_info {
+            if !units_by_file.contains_key(path) {
+                state.files.insert(path.clone(), fi.clone());
+                added += 1;
+                recorded_empty = true;
+            }
+        }
+        if recorded_empty {
+            state.dirty = false;
+            state.save(&self.index_dir)?;
+        }
+
+        // Encode in file-coherent batches of ~BUILD_CHECKPOINT_UNITS units, committing state
+        // after each batch so interruptions keep finished work.
+        let encode_pb = ProgressBar::new(total_units as u64);
+        encode_pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("█▓░"),
+        );
+        encode_pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        encode_pb.set_message("Encoding...");
+
+        let mut batch_files: Vec<PathBuf> = Vec::new();
+        let mut batch_units: Vec<CodeUnit> = Vec::new();
+        let mut interrupted = false;
+
+        // Deterministic order for stable checkpoints/resumes.
+        let mut ordered: Vec<PathBuf> = units_by_file.keys().cloned().collect();
+        ordered.sort();
+
+        for file in ordered {
+            let units = units_by_file.remove(&file).unwrap_or_default();
+            batch_units.extend(units);
+            batch_files.push(file);
+
+            if batch_units.len() >= BUILD_CHECKPOINT_UNITS {
+                if self.flush_build_batch(
+                    &index_path,
+                    &batch_files,
+                    &batch_units,
+                    index_chunk_size,
+                    Some(&encode_pb),
+                )? {
+                    interrupted = true;
+                    break;
+                }
+                for f in batch_files.drain(..) {
+                    if let Some(fi) = file_info.get(&f) {
+                        state.files.insert(f, fi.clone());
+                        added += 1;
+                    }
+                }
+                batch_units.clear();
+                state.dirty = false;
+                state.save(&self.index_dir)?; // checkpoint
+            }
+        }
+
+        // Final partial batch.
+        if !interrupted && !batch_units.is_empty() {
+            if self.flush_build_batch(
+                &index_path,
+                &batch_files,
+                &batch_units,
+                index_chunk_size,
+                Some(&encode_pb),
+            )? {
+                interrupted = true;
+            } else {
+                for f in batch_files.drain(..) {
+                    if let Some(fi) = file_info.get(&f) {
+                        state.files.insert(f, fi.clone());
+                        added += 1;
+                    }
+                }
+                state.dirty = false;
+                state.save(&self.index_dir)?;
+            }
+        }
+
+        encode_pb.finish_and_clear();
+
+        if interrupted {
+            // Persist the committed batches; keep the marker so the next run resumes.
+            state.dirty = false;
+            state.save(&self.index_dir)?;
+            anyhow::bail!("Indexing interrupted by user");
+        }
+
+        // Build complete: drop the marker and persist final metadata.
+        state.dirty = false;
+        state.save(&self.index_dir)?;
+        ProjectMetadata::new(&self.project_root, &self.model_id).save(&self.index_dir)?;
+        let _ = std::fs::remove_file(&marker);
+
+        Ok(UpdateStats {
+            added,
+            changed: 0,
+            deleted: stale.len(),
+            unchanged: already,
+            skipped,
+        })
+    }
+
+    /// Encode one resumable-build batch into the index. Each file's stale entries are deleted
+    /// first so re-running after a mid-batch interruption is idempotent (no duplicate docs).
+    /// Returns `Ok(true)` if encoding was interrupted.
+    fn flush_build_batch(
+        &mut self,
+        index_path: &str,
+        batch_files: &[PathBuf],
+        batch_units: &[CodeUnit],
+        index_chunk_size: usize,
+        pb: Option<&ProgressBar>,
+    ) -> Result<bool> {
+        if batch_units.is_empty() {
+            return Ok(false);
+        }
+        // Idempotent resume: clear any partial docs a prior interrupted run wrote for these
+        // files, in a single batched index rewrite (issue #116).
+        delete_files_from_index(index_path, batch_files)?;
+        self.ensure_model_created(batch_units.len())?;
+        let pool_factor = self.resolve_pool_factor(batch_units.len());
+        let sorted_units = prepare_units_for_encoding(batch_units, index_chunk_size);
+        let was_interrupted = self.run_encoding_pipeline(
+            &sorted_units,
+            index_chunk_size,
+            pool_factor,
+            index_path,
+            pb,
+        )?;
+        Ok(was_interrupted || is_interrupted())
+    }
+
     fn full_rebuild(&mut self, languages: Option<&[Language]>) -> Result<UpdateStats> {
+        // A clean atomic rebuild supersedes any in-progress resumable build.
+        let _ = std::fs::remove_file(self.index_dir.join(BUILDING_MARKER));
+
         let index_path = get_vector_index_path(&self.index_dir);
         let temp_path = self.index_dir.join("index.tmp");
         let old_path = self.index_dir.join("index.old");
@@ -1787,6 +2211,15 @@ impl IndexBuilder {
             && plan.deleted.is_empty()
             && orphaned_deleted == 0
         {
+            // If the previous run left the index dirty, the repair above already brought the
+            // store back in sync — so clear the flag now. Returning without persisting would
+            // leave the index permanently dirty, forcing a (costly) repair on every future
+            // run even though nothing is wrong. See issue #115.
+            if old_state.dirty {
+                let mut state = old_state.clone();
+                state.dirty = false;
+                state.save(&self.index_dir)?;
+            }
             return Ok(UpdateStats {
                 added: 0,
                 changed: 0,
@@ -1803,10 +2236,9 @@ impl IndexBuilder {
             state.save(&self.index_dir)?;
         }
 
-        // 1. Delete chunks for deleted files (safe — not re-adding these)
-        for file_path in &plan.deleted {
-            self.delete_file_from_index(index_path, file_path)?;
-        }
+        // 1. Delete chunks for deleted files (safe — not re-adding these). Batched into a
+        //    single index rewrite — see delete_files_from_index / issue #116.
+        delete_files_from_index(index_path, &plan.deleted)?;
 
         // Remove deleted files from state
         for path in &plan.deleted {
@@ -1880,12 +2312,13 @@ impl IndexBuilder {
         }
 
         // Delete stale index entries for skipped files that were previously indexed
-        // (e.g., files that became unreadable due to invalid UTF-8)
-        for file_path in &skipped_files {
-            if plan.changed.contains(file_path) {
-                let _ = self.delete_file_from_index(index_path, file_path);
-            }
-        }
+        // (e.g., files that became unreadable due to invalid UTF-8). Batched into one rewrite.
+        let stale_skipped: Vec<PathBuf> = skipped_files
+            .iter()
+            .filter(|p| plan.changed.contains(p))
+            .cloned()
+            .collect();
+        let _ = delete_files_from_index(index_path, &stale_skipped);
 
         // 3. Add new units to index
         let mut was_interrupted = false;
@@ -1926,10 +2359,9 @@ impl IndexBuilder {
 
             // Delete changed files from index right before writing new data.
             // Deferred from earlier to minimize the window where data is missing
-            // from the index (for concurrent readers and interrupt safety).
-            for file_path in &plan.changed {
-                self.delete_file_from_index(index_path, file_path)?;
-            }
+            // from the index (for concurrent readers and interrupt safety). Batched
+            // into a single index rewrite — see delete_files_from_index / issue #116.
+            delete_files_from_index(index_path, &plan.changed)?;
 
             let sorted_units = prepare_units_for_encoding(&new_units, index_chunk_size);
             let pipeline_interrupted = self.run_encoding_pipeline(
@@ -2272,22 +2704,6 @@ impl IndexBuilder {
         Ok(plan)
     }
 
-    /// Delete all chunks for a file from vector index and filtering DB.
-    fn delete_file_from_index(&self, index_path: &str, file_path: &Path) -> Result<()> {
-        let file_str = file_path.to_string_lossy().to_string();
-
-        // Get doc IDs directly from filtering DB
-        let ids =
-            filtering::where_condition(index_path, "file = ?", &[serde_json::json!(file_str)])
-                .unwrap_or_default();
-
-        if !ids.is_empty() {
-            delete_from_index(&ids, index_path)?;
-            filtering::delete(index_path, &ids)?;
-        }
-        Ok(())
-    }
-
     /// Clean up orphaned entries: files in index but not on disk
     /// This handles directory deletion/rename and any state inconsistencies
     fn cleanup_orphaned_entries(&self, index_path: &str) -> Result<usize> {
@@ -2297,27 +2713,15 @@ impl IndexBuilder {
         // tens-of-megabytes JSON deserialize on large indexes.
         let files = filtering::get_distinct_strings(index_path, "file").unwrap_or_default();
 
-        let mut deleted_count = 0;
-        for file_str in files {
-            let full_path = self.project_root.join(&file_str);
-            if !full_path.exists() {
-                // File no longer exists on disk - delete from index
-                let ids = filtering::where_condition(
-                    index_path,
-                    "file = ?",
-                    &[serde_json::json!(file_str)],
-                )
-                .unwrap_or_default();
+        // Collect every orphaned file, then remove them all in one batched index rewrite
+        // rather than rewriting the whole index once per orphan (issue #116).
+        let orphaned: Vec<PathBuf> = files
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|rel| !self.project_root.join(rel).exists())
+            .collect();
 
-                if !ids.is_empty() {
-                    delete_from_index(&ids, index_path)?;
-                    filtering::delete(index_path, &ids)?;
-                    deleted_count += ids.len();
-                }
-            }
-        }
-
-        Ok(deleted_count)
+        delete_files_from_index(index_path, &orphaned)
     }
 
     #[allow(dead_code)]
@@ -2909,6 +3313,10 @@ impl Searcher {
             AccelerationMode::Auto => {
                 if cfg!(feature = "coreml") {
                     ExecutionProvider::CoreML
+                } else if cfg!(feature = "directml") {
+                    ExecutionProvider::DirectML
+                } else if cfg!(feature = "migraphx") {
+                    ExecutionProvider::MIGraphX
                 } else {
                     ExecutionProvider::Cpu
                 }
@@ -2985,6 +3393,10 @@ impl Searcher {
             AccelerationMode::Auto => {
                 if cfg!(feature = "coreml") {
                     ExecutionProvider::CoreML
+                } else if cfg!(feature = "directml") {
+                    ExecutionProvider::DirectML
+                } else if cfg!(feature = "migraphx") {
+                    ExecutionProvider::MIGraphX
                 } else {
                     ExecutionProvider::Cpu
                 }
@@ -4377,5 +4789,199 @@ mod tests {
             &extra,
             &force
         ));
+    }
+
+    /// Build a minimal `IndexBuilder` pointing at the given (project, index) directories,
+    /// without a model. Suitable for exercising index-maintenance paths that don't encode.
+    fn test_builder(project_root: &Path, index_dir: &Path) -> IndexBuilder {
+        IndexBuilder {
+            model: None,
+            model_path: PathBuf::from("/nonexistent-model"),
+            quantized: false,
+            parallel_sessions: None,
+            batch_size: None,
+            project_root: project_root.to_path_buf(),
+            index_dir: index_dir.to_path_buf(),
+            pool_factor: None,
+            encode_batch_size: None,
+            index_chunk_size: None,
+            dynamic_batch: true,
+            auto_confirm: true,
+            model_id: "test-model".to_string(),
+        }
+    }
+
+    /// Build a small vector index + filtering DB at `index_path`, distributing `n` documents
+    /// evenly across `files` (each doc tagged with its file in the filtering DB). Model-free.
+    fn build_fixture_index(index_path: &str, files: &[&str], docs_per_file: usize) {
+        use ndarray::Array2;
+        use next_plaid::IndexConfig;
+
+        let n = files.len() * docs_per_file;
+        let mut embeddings: Vec<Array2<f32>> = Vec::new();
+        for i in 0..n {
+            let mut doc = Array2::<f32>::zeros((5, 32));
+            for j in 0..5 {
+                for k in 0..32 {
+                    doc[[j, k]] = (i as f32 * 0.1) + (j as f32 * 0.01) + (k as f32 * 0.001);
+                }
+            }
+            for mut row in doc.rows_mut() {
+                let norm: f32 = row.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm > 0.0 {
+                    row.iter_mut().for_each(|x| *x /= norm);
+                }
+            }
+            embeddings.push(doc);
+        }
+
+        let config = IndexConfig {
+            nbits: 2,
+            batch_size: 50,
+            seed: Some(42),
+            kmeans_niters: 2,
+            max_points_per_centroid: 256,
+            n_samples_kmeans: None,
+            start_from_scratch: 999,
+            force_cpu: false,
+            ..Default::default()
+        };
+        MmapIndex::create_with_kmeans(&embeddings, index_path, &config).unwrap();
+
+        let metadata: Vec<serde_json::Value> = (0..n)
+            .map(|i| serde_json::json!({ "file": files[i / docs_per_file] }))
+            .collect();
+        let doc_ids: Vec<i64> = (0..n as i64).collect();
+        filtering::create(index_path, &metadata, &doc_ids).unwrap();
+    }
+
+    /// Issue #116: deleting many files must collapse into a *single* full-index rewrite, not one
+    /// rewrite per file (which made incremental updates O(changed_files × index_size) and hung
+    /// for minutes). Asserts both the call count and that exactly the right documents survive.
+    #[test]
+    fn test_delete_files_from_index_is_a_single_rewrite() {
+        use std::sync::atomic::Ordering;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let index_path = tmp.path().to_str().unwrap();
+
+        let files = ["a.rs", "b.rs", "c.rs", "d.rs"];
+        let docs_per_file = 3;
+        build_fixture_index(index_path, &files, docs_per_file);
+
+        // Delete three of the four files in one batched call.
+        let to_delete: Vec<PathBuf> = ["a.rs", "b.rs", "c.rs"].iter().map(PathBuf::from).collect();
+
+        let before = DELETE_FROM_INDEX_CALLS.load(Ordering::Relaxed);
+        let removed = delete_files_from_index(index_path, &to_delete).unwrap();
+        let calls = DELETE_FROM_INDEX_CALLS.load(Ordering::Relaxed) - before;
+
+        assert_eq!(removed, 9, "should remove 3 files × 3 docs");
+        assert_eq!(
+            calls, 1,
+            "issue #116: deleting N files must be ONE index rewrite, not one per file"
+        );
+
+        // Only d.rs survives, with its 3 documents.
+        let remaining = filtering::get_distinct_strings(index_path, "file").unwrap();
+        assert_eq!(remaining, vec!["d.rs".to_string()]);
+        let idx = MmapIndex::load(index_path).unwrap();
+        assert_eq!(idx.metadata.num_documents, 3);
+    }
+
+    /// Deleting nothing (or only unknown files) must not rewrite the index at all.
+    #[test]
+    fn test_delete_files_from_index_noop_does_not_rewrite() {
+        use std::sync::atomic::Ordering;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let index_path = tmp.path().to_str().unwrap();
+        build_fixture_index(index_path, &["a.rs"], 2);
+
+        let before = DELETE_FROM_INDEX_CALLS.load(Ordering::Relaxed);
+        assert_eq!(delete_files_from_index(index_path, &[]).unwrap(), 0);
+        assert_eq!(
+            delete_files_from_index(index_path, &[PathBuf::from("missing.rs")]).unwrap(),
+            0
+        );
+        assert_eq!(DELETE_FROM_INDEX_CALLS.load(Ordering::Relaxed) - before, 0);
+    }
+
+    /// Issue #115 (bug 1): an index left dirty by an interrupted run must be cleaned once the
+    /// repair has reconciled it, even when there are no file changes. Otherwise the dirty flag
+    /// is never cleared and every future run pays for a needless repair — "permanently dirty".
+    #[test]
+    fn test_incremental_update_clears_dirty_with_no_changes() {
+        let proj = tempfile::tempdir().unwrap();
+        let idx = tempfile::tempdir().unwrap();
+
+        // Persist a dirty state with no tracked files; the project tree is empty, so the update
+        // plan is empty and we hit the "nothing to do" path.
+        let dirty_state = IndexState {
+            dirty: true,
+            ..Default::default()
+        };
+        dirty_state.save(idx.path()).unwrap();
+        assert!(IndexState::load(idx.path()).unwrap().dirty);
+
+        let mut builder = test_builder(proj.path(), idx.path());
+        builder.incremental_update(&dirty_state, None).unwrap();
+
+        assert!(
+            !IndexState::load(idx.path()).unwrap().dirty,
+            "issue #115: dirty flag must be cleared after a no-op update, not left set forever"
+        );
+    }
+
+    /// Issue #115 (bug 2): a sibling worktree whose resumable build is in progress / was
+    /// interrupted (a `.building` marker is present) must be rejected as a seed source. Such an
+    /// index passes every other completeness check — metadata.json, filtering DB, non-empty
+    /// non-dirty current-version state — yet only holds a fraction of its documents.
+    #[test]
+    fn test_seed_source_rejects_in_progress_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path();
+        let vector = get_vector_index_path(src_dir);
+        std::fs::create_dir_all(&vector).unwrap();
+        std::fs::write(vector.join("metadata.json"), "{}").unwrap();
+        filtering::create(
+            vector.to_str().unwrap(),
+            &[serde_json::json!({ "file": "a.rs" })],
+            &[0],
+        )
+        .unwrap();
+
+        let mut state = IndexState::default();
+        state.files.insert(
+            PathBuf::from("a.rs"),
+            FileInfo {
+                content_hash: 1,
+                mtime: 1,
+            },
+        );
+        state.save(src_dir).unwrap(); // save() stamps cli_version to the current version
+        let version = env!("CARGO_PKG_VERSION");
+
+        // Complete index, no marker → usable seed source.
+        assert!(seed_source_state(src_dir, version).is_some());
+
+        // Interrupted/in-progress build → rejected.
+        std::fs::write(src_dir.join(BUILDING_MARKER), "").unwrap();
+        assert!(
+            seed_source_state(src_dir, version).is_none(),
+            "issue #115: an in-progress (.building) sibling index must not be used as a seed"
+        );
+        std::fs::remove_file(src_dir.join(BUILDING_MARKER)).unwrap();
+
+        // Sanity: the other rejection reasons still hold.
+        assert!(
+            seed_source_state(src_dir, "0.0.0-other").is_none(),
+            "version mismatch"
+        );
+        let mut dirty = IndexState::load(src_dir).unwrap();
+        dirty.dirty = true;
+        // Re-save with dirty set (save() preserves the flag, only rewrites cli_version).
+        dirty.save(src_dir).unwrap();
+        assert!(seed_source_state(src_dir, version).is_none(), "dirty index");
     }
 }

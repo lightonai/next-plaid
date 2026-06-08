@@ -62,6 +62,19 @@ impl ProjectMetadata {
     }
 }
 
+/// Base data directory, honoring `XDG_DATA_HOME` on all platforms (including
+/// macOS, where `dirs::data_dir()` ignores it by design — see
+/// <https://codeberg.org/dirs/dirs-rs/issues/56>).
+/// Falls back to `dirs::data_dir()` (platform default) when unset or empty.
+pub fn xdg_data_home_or_default() -> Result<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        if !xdg.is_empty() {
+            return Ok(PathBuf::from(xdg));
+        }
+    }
+    dirs::data_dir().context("Could not determine data directory")
+}
+
 /// Get the base colgrep data directory (XDG_DATA_HOME/colgrep or platform equivalent).
 ///
 /// Honours the `COLGREP_DATA_DIR` env var so concurrent benchmark
@@ -73,8 +86,7 @@ pub fn get_colgrep_data_dir() -> Result<PathBuf> {
             return Ok(PathBuf::from(env_dir));
         }
     }
-    let data_dir = dirs::data_dir().context("Could not determine data directory")?;
-    Ok(data_dir.join("colgrep").join("indices"))
+    Ok(xdg_data_home_or_default()?.join("colgrep").join("indices"))
 }
 
 /// Compute the index directory name for a (project_path, model) pair.
