@@ -25,13 +25,13 @@
 ```bash
 # CPU with built-in model
 docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cpu-1.5.2 \
+  ghcr.io/lightonai/next-plaid:cpu-1.5.3 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/answerai-colbert-small-v1-onnx --int8
 
 # GPU with CUDA
 docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cuda-1.5.2 \
+  ghcr.io/lightonai/next-plaid:cuda-1.5.3 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/GTE-ModernColBERT-v1 --cuda
 ```
@@ -565,10 +565,10 @@ Set `NEXT_PLAID_URL` to avoid repeating `--url`. See the [Python SDK README](pyt
 
 ```bash
 # CPU (amd64 + arm64)
-docker pull ghcr.io/lightonai/next-plaid:cpu-1.5.2
+docker pull ghcr.io/lightonai/next-plaid:cpu-1.5.3
 
 # CUDA (amd64, requires NVIDIA GPU)
-docker pull ghcr.io/lightonai/next-plaid:cuda-1.5.2
+docker pull ghcr.io/lightonai/next-plaid:cuda-1.5.3
 ```
 
 The Docker entrypoint auto-downloads HuggingFace models. Pass `org/model` as `--model` and it handles the rest. Set `HF_TOKEN` for private models.
@@ -578,7 +578,7 @@ The Docker entrypoint auto-downloads HuggingFace models. Pass `org/model` as `--
 ```yaml
 services:
   next-plaid-api:
-    image: ghcr.io/lightonai/next-plaid:cpu-1.5.2
+    image: ghcr.io/lightonai/next-plaid:cpu-1.5.3
     ports:
       - "8080:8080"
     volumes:
@@ -619,7 +619,7 @@ services:
 ```yaml
 services:
   next-plaid-api:
-    image: ghcr.io/lightonai/next-plaid:cuda-1.5.2
+    image: ghcr.io/lightonai/next-plaid:cuda-1.5.3
     ports:
       - "8080:8080"
     volumes:
