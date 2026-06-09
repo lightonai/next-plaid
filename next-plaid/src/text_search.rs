@@ -1217,7 +1217,7 @@ pub fn search_filtered(
                 chunk_result
                     .passage_ids
                     .into_iter()
-                    .zip(chunk_result.scores.into_iter()),
+                    .zip(chunk_result.scores),
             );
         }
 
