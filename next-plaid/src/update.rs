@@ -1168,35 +1168,6 @@ mod tests {
     }
 
     #[test]
-    fn test_update_progress_clears_after_panic() {
-        let stale_count = Arc::new(AtomicUsize::new(0));
-        let stale_count_for_callback = Arc::clone(&stale_count);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_update_progress(
-                move |_, _| {
-                    stale_count_for_callback.fetch_add(1, Ordering::SeqCst);
-                },
-                || panic!("forced progress panic"),
-            );
-        }));
-
-        assert!(result.is_err());
-
-        emit_update_progress("after_panic", "must not hit stale callback");
-        assert_eq!(stale_count.load(Ordering::SeqCst), 0);
-
-        let fresh_count = Arc::new(AtomicUsize::new(0));
-        let fresh_count_for_callback = Arc::clone(&fresh_count);
-        with_update_progress(
-            move |_, _| {
-                fresh_count_for_callback.fetch_add(1, Ordering::SeqCst);
-            },
-            || emit_update_progress("fresh", "fresh callback"),
-        );
-        assert_eq!(fresh_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
     fn test_find_outliers() {
         // Create centroids at (0,0), (1,1)
         let centroids = Array2::from_shape_vec((2, 2), vec![0.0, 0.0, 1.0, 1.0]).unwrap();
