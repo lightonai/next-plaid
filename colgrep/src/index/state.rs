@@ -298,7 +298,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         state.save(temp_dir.path()).unwrap();
         assert_eq!(
-            IndexState::load(temp_dir.path()).unwrap().index_format_version,
+            IndexState::load(temp_dir.path())
+                .unwrap()
+                .index_format_version,
             INDEX_FORMAT_VERSION
         );
     }

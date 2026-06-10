@@ -2278,7 +2278,7 @@ impl IndexBuilder {
         // expensive to run on every search. Deletions in the plan already cover the
         // common case; the periodic trigger is a safety net for true desyncs.
         let should_cleanup = !plan.deleted.is_empty()
-            || (old_state.search_count > 0 && old_state.search_count % 50 == 0);
+            || (old_state.search_count > 0 && old_state.search_count.is_multiple_of(50));
         let orphaned_deleted = if should_cleanup {
             self.cleanup_orphaned_entries(index_path)?
         } else {
@@ -4347,9 +4347,13 @@ mod tests {
             std::fs::write(&full, &blob).unwrap();
             let content_hash = hash_file(&full).unwrap();
             let mtime = get_mtime(&full).unwrap();
-            matching_mtimes
-                .files
-                .insert(rel.clone(), FileInfo { content_hash, mtime });
+            matching_mtimes.files.insert(
+                rel.clone(),
+                FileInfo {
+                    content_hash,
+                    mtime,
+                },
+            );
             mismatched_mtimes.files.insert(
                 rel,
                 FileInfo {
@@ -4362,7 +4366,9 @@ mod tests {
         let builder = test_builder(temp.path(), &temp.path().join("index"));
 
         let started = std::time::Instant::now();
-        let plan = builder.compute_update_plan(&mismatched_mtimes, None).unwrap();
+        let plan = builder
+            .compute_update_plan(&mismatched_mtimes, None)
+            .unwrap();
         let hashed_every_file = started.elapsed();
         assert_eq!(plan.unchanged, FILES);
 
@@ -5217,9 +5223,16 @@ mod tests {
         // the reconstruct path sees the on-disk file as unchanged.
         let stats = builder.run_indexing(None, false).unwrap();
 
-        assert_eq!(stats.unchanged, 1, "file must be recognized, not re-embedded");
+        assert_eq!(
+            stats.unchanged, 1,
+            "file must be recognized, not re-embedded"
+        );
         let state = IndexState::load(idx.path()).unwrap();
-        assert_eq!(state.files.len(), 1, "state must be reconstructed from the DB");
+        assert_eq!(
+            state.files.len(),
+            1,
+            "state must be reconstructed from the DB"
+        );
         assert_eq!(state.index_format_version, INDEX_FORMAT_VERSION);
     }
 }
