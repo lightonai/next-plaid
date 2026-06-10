@@ -2201,9 +2201,18 @@ impl IndexBuilder {
             }
         }
 
-        // 0. Clean up orphaned entries (files in index but not on disk)
-        // This handles directory deletion/rename and any inconsistencies
-        let orphaned_deleted = self.cleanup_orphaned_entries(index_path)?;
+        // 0. Clean up orphaned entries (files in index but not on disk).
+        // This handles directory deletion/rename and any inconsistencies, but it
+        // queries every distinct file in the metadata DB and stats each one — too
+        // expensive to run on every search. Deletions in the plan already cover the
+        // common case; the periodic trigger is a safety net for true desyncs.
+        let should_cleanup = !plan.deleted.is_empty()
+            || (old_state.search_count > 0 && old_state.search_count % 50 == 0);
+        let orphaned_deleted = if should_cleanup {
+            self.cleanup_orphaned_entries(index_path)?
+        } else {
+            0
+        };
 
         // Nothing to do
         if plan.added.is_empty()
@@ -2680,6 +2689,19 @@ impl IndexBuilder {
                 continue;
             }
             let full_path = self.project_root.join(path);
+
+            // Fast path: if mtime is unchanged, skip expensive content hashing.
+            // Without this gate every search reads and hashes every file in the
+            // repo before returning results.
+            if let Some(info) = state.files.get(path) {
+                if let Ok(current_mtime) = get_mtime(&full_path) {
+                    if info.mtime == current_mtime {
+                        plan.unchanged += 1;
+                        continue;
+                    }
+                }
+            }
+
             let hash = match hash_file(&full_path) {
                 Ok(h) => h,
                 Err(e) => {
@@ -4182,6 +4204,119 @@ fn prompt_large_index_confirmation(num_units: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The mtime fast path in `compute_update_plan` must skip content hashing
+    /// for files whose stored mtime is unchanged. The stored hash is wrong on
+    /// purpose: if the plan still reports the file as unchanged, hashing was
+    /// skipped; once the mtime moves, the hash mismatch must be detected.
+    /// Regression test — this gate was added in d0423d9 (4x query speedup on
+    /// large repos) and silently lost in the d76cb4a rewrite.
+    #[test]
+    fn test_update_plan_skips_hashing_when_mtime_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("lib.py");
+        std::fs::write(&file_path, "def f():\n    return 1\n").unwrap();
+
+        let builder = test_builder(temp.path(), &temp.path().join("index"));
+
+        let mut state = IndexState::default();
+        state.files.insert(
+            PathBuf::from("lib.py"),
+            FileInfo {
+                content_hash: 0xDEAD_BEEF,
+                mtime: get_mtime(&file_path).unwrap(),
+            },
+        );
+
+        let plan = builder.compute_update_plan(&state, None).unwrap();
+        assert_eq!(
+            plan.unchanged, 1,
+            "matching mtime must skip the content-hash comparison"
+        );
+        assert!(plan.changed.is_empty());
+
+        // Move the mtime forward: the fast path no longer applies, so the
+        // stale stored hash must now be detected as a change.
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&file_path)
+            .unwrap();
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(120))
+            .unwrap();
+        drop(file);
+
+        let plan = builder.compute_update_plan(&state, None).unwrap();
+        assert_eq!(plan.changed, vec![PathBuf::from("lib.py")]);
+        assert_eq!(plan.unchanged, 0);
+    }
+
+    /// Measures what the mtime fast path saves on the per-search update plan:
+    /// the same synthetic tree planned once with matching stored mtimes
+    /// (stat-only fast path) and once with mismatched mtimes but identical
+    /// content (forces a read + xxh3 of every byte — what every search paid
+    /// without the fast path). Hashing runs with a warm page cache, so the
+    /// printed ratio understates the cold-cache real world.
+    ///
+    ///   cargo test -p colgrep --release measure_update_plan -- --ignored --nocapture
+    #[test]
+    #[ignore = "timing measurement; run manually in release mode"]
+    fn measure_update_plan_mtime_fast_path() {
+        const FILES: usize = 5_000;
+        const FILE_BYTES: usize = 200 * 1024;
+
+        let temp = tempfile::tempdir().unwrap();
+        let line = "x = 1  # padding so the hasher does representative work\n";
+        let blob = line.repeat(FILE_BYTES / line.len());
+
+        let mut matching_mtimes = IndexState::default();
+        let mut mismatched_mtimes = IndexState::default();
+        for i in 0..FILES {
+            let rel = PathBuf::from(format!("mod_{i:04}.py"));
+            let full = temp.path().join(&rel);
+            std::fs::write(&full, &blob).unwrap();
+            let content_hash = hash_file(&full).unwrap();
+            let mtime = get_mtime(&full).unwrap();
+            matching_mtimes
+                .files
+                .insert(rel.clone(), FileInfo { content_hash, mtime });
+            mismatched_mtimes.files.insert(
+                rel,
+                FileInfo {
+                    content_hash,
+                    mtime: mtime + 1,
+                },
+            );
+        }
+
+        let builder = test_builder(temp.path(), &temp.path().join("index"));
+
+        let started = std::time::Instant::now();
+        let plan = builder.compute_update_plan(&mismatched_mtimes, None).unwrap();
+        let hashed_every_file = started.elapsed();
+        assert_eq!(plan.unchanged, FILES);
+
+        let started = std::time::Instant::now();
+        let plan = builder.compute_update_plan(&matching_mtimes, None).unwrap();
+        let stat_only = started.elapsed();
+        assert_eq!(plan.unchanged, FILES);
+
+        // The walk scales with file count and is paid either way; the
+        // read+hash component the fast path removes scales with repo bytes.
+        let removed = hashed_every_file.saturating_sub(stat_only);
+        println!(
+            "update plan, {} files x {} KiB ({} MiB total):\n  \
+             full hashing (pre-fix per-search cost): {:?}\n  \
+             mtime fast path:                        {:?}  ({:.1}x faster)\n  \
+             read+hash component removed per search: {:?} (scales with repo bytes)",
+            FILES,
+            FILE_BYTES / 1024,
+            FILES * FILE_BYTES / (1024 * 1024),
+            hashed_every_file,
+            stat_only,
+            hashed_every_file.as_secs_f64() / stat_only.as_secs_f64().max(f64::EPSILON),
+            removed,
+        );
+    }
 
     #[test]
     fn test_glob_simple_extension() {
