@@ -1770,6 +1770,7 @@ impl MmapIndex {
     /// The number of documents actually deleted
     pub fn delete_with_options(&mut self, doc_ids: &[i64], delete_metadata: bool) -> Result<usize> {
         let path = self.path.clone();
+        let old_num_documents = self.metadata.num_documents as i64;
 
         // Release mmap handles before deletion. delete_from_index calls
         // clear_merged_files which removes the memory-mapped merged files.
@@ -1784,9 +1785,28 @@ impl MmapIndex {
             let index_path = std::path::Path::new(&path);
             let db_path = index_path.join("metadata.db");
             if db_path.exists() {
+                // filtering::delete re-sequences the surviving _subset_ IDs. When the
+                // deleted IDs are exactly the tail of the ID space, every survivor
+                // keeps its ID, so the FTS5 rows for survivors stay aligned and only
+                // the deleted rows need removing — O(deleted) instead of the
+                // O(total documents) drop-and-rebuild.
+                let mut valid: Vec<i64> = doc_ids
+                    .iter()
+                    .copied()
+                    .filter(|&id| id >= 0 && id < old_num_documents)
+                    .collect();
+                valid.sort_unstable();
+                valid.dedup();
+                let suffix_start = old_num_documents - valid.len() as i64;
+                let is_suffix_delete = valid.first().is_some_and(|&min| min >= suffix_start);
+
                 crate::filtering::delete(&path, doc_ids)?;
-                // Rebuild FTS5 index after metadata re-indexing
-                crate::text_search::rebuild(&path)?;
+                if is_suffix_delete {
+                    crate::text_search::delete(&path, &valid)?;
+                } else {
+                    // Survivor IDs shifted; FTS5 rowids no longer match METADATA.
+                    crate::text_search::rebuild(&path)?;
+                }
             }
         }
 
@@ -1808,6 +1828,85 @@ mod tests {
             config.start_from_scratch,
             crate::default_start_from_scratch()
         );
+    }
+
+    /// FTS5 must stay aligned with METADATA `_subset_` IDs after deletes.
+    /// Suffix deletes keep every survivor's ID, so only the deleted FTS rows
+    /// are removed (O(deleted)); any other delete shifts survivor IDs and
+    /// must fall back to the full rebuild.
+    #[test]
+    fn test_delete_keeps_fts_aligned() {
+        use ndarray::Array2;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let index_path = temp_dir.path().to_str().unwrap();
+
+        let mut embeddings: Vec<Array2<f32>> = Vec::new();
+        for i in 0..5 {
+            let mut doc = Array2::<f32>::zeros((5, 32));
+            for j in 0..5 {
+                for k in 0..32 {
+                    doc[[j, k]] = (i as f32 * 0.1) + (j as f32 * 0.01) + (k as f32 * 0.001);
+                }
+            }
+            for mut row in doc.rows_mut() {
+                let norm: f32 = row.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm > 0.0 {
+                    row.iter_mut().for_each(|x| *x /= norm);
+                }
+            }
+            embeddings.push(doc);
+        }
+
+        let config = IndexConfig {
+            nbits: 2,
+            batch_size: 50,
+            seed: Some(42),
+            kmeans_niters: 2,
+            max_points_per_centroid: 256,
+            n_samples_kmeans: None,
+            start_from_scratch: 999,
+            force_cpu: false,
+            ..Default::default()
+        };
+        let mut index = MmapIndex::create_with_kmeans(&embeddings, index_path, &config).unwrap();
+
+        let words = ["alpha", "bravo", "charlie", "delta", "echo"];
+        let metadata: Vec<serde_json::Value> = words
+            .iter()
+            .map(|w| serde_json::json!({ "text": w }))
+            .collect();
+        let doc_ids: Vec<i64> = (0..5).collect();
+        crate::filtering::create(index_path, &metadata, &doc_ids).unwrap();
+        crate::text_search::index(
+            index_path,
+            &metadata,
+            &doc_ids,
+            &crate::text_search::FtsTokenizer::default(),
+        )
+        .unwrap();
+
+        // Suffix delete: survivors 0..=2 keep their IDs; only rows 3 and 4
+        // leave the FTS index.
+        let deleted = index.delete_with_options(&[3, 4], true).unwrap();
+        assert_eq!(deleted, 2);
+        index.reload().unwrap();
+
+        let hits = crate::text_search::search(index_path, "charlie", 10).unwrap();
+        assert_eq!(hits.passage_ids, vec![2]);
+        let gone = crate::text_search::search(index_path, "delta", 10).unwrap();
+        assert!(gone.passage_ids.is_empty());
+
+        // Non-suffix delete: survivor IDs shift (bravo→0, charlie→1), so the
+        // FTS index must be rebuilt against the new numbering.
+        let deleted = index.delete_with_options(&[0], true).unwrap();
+        assert_eq!(deleted, 1);
+
+        let hits = crate::text_search::search(index_path, "charlie", 10).unwrap();
+        assert_eq!(hits.passage_ids, vec![1]);
+        let gone = crate::text_search::search(index_path, "alpha", 10).unwrap();
+        assert!(gone.passage_ids.is_empty());
     }
 
     #[test]
