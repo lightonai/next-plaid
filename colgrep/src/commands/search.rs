@@ -1065,16 +1065,16 @@ fn search_single_path(
     let parallel_sessions = config.configured_parallel_sessions();
     let batch_size = config.configured_batch_size();
 
-    // Check if index already exists for this model (suppress model output if so)
-    let has_existing_index =
-        index_exists(&search_path, &model) || find_parent_index(&search_path, &model)?.is_some();
-
-    // Ensure model is downloaded (quiet if we already have an index)
-    let model_path = ensure_model(Some(&model), has_existing_index)?;
-
-    // Check for parent index (scoped to current model) unless the resolved path
-    // is outside the current directory (external project)
-    let parent_info = {
+    // An index for this exact (path, model) pair takes precedence over any
+    // ancestor project's index, so the parent scan — a read_dir plus a
+    // project.json parse for every indexed project on the machine — runs only
+    // when there is no local index, and at most once per search. The parent
+    // scan is also skipped when the resolved path is outside the current
+    // directory (external project).
+    let local_index_exists = index_exists(&search_path, &model);
+    let parent_info = if local_index_exists {
+        None
+    } else {
         let current_dir = std::env::current_dir().ok();
         let is_external_project = is_external_project_path(&search_path, current_dir.as_deref());
 
@@ -1084,6 +1084,10 @@ fn search_single_path(
             find_parent_index(&search_path, &model)?
         }
     };
+
+    // Ensure model is downloaded (quiet if we already have an index)
+    let has_existing_index = local_index_exists || parent_info.is_some();
+    let model_path = ensure_model(Some(&model), has_existing_index)?;
 
     // Determine effective project root and subdirectory filter
     let (effective_root, subdir_filter): (PathBuf, Option<PathBuf>) = match &parent_info {
