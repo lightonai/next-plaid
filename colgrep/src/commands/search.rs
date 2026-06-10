@@ -360,60 +360,31 @@ fn merge_query_with_pattern(query: &str, sanitized_pattern: &str) -> String {
 }
 
 /// Resolve the model to use: CLI arg > saved config > default
-pub fn resolve_model(cli_model: Option<&str>) -> String {
+pub fn resolve_model(config: &Config, cli_model: Option<&str>) -> String {
     if let Some(model) = cli_model {
         return model.to_string();
     }
 
-    // Try to load from config
-    if let Ok(config) = Config::load() {
-        if let Some(model) = config.get_default_model() {
-            return model.to_string();
-        }
+    if let Some(model) = config.get_default_model() {
+        return model.to_string();
     }
 
-    // Fall back to default
     DEFAULT_MODEL.to_string()
 }
 
 /// Resolve top_k: CLI arg > saved config > default
-pub fn resolve_top_k(cli_k: Option<usize>, default: usize) -> usize {
-    if let Some(k) = cli_k {
-        return k;
-    }
-
-    // Try to load from config
-    if let Ok(config) = Config::load() {
-        if let Some(k) = config.get_default_k() {
-            return k;
-        }
-    }
-
-    default
+pub fn resolve_top_k(config: &Config, cli_k: Option<usize>, default: usize) -> usize {
+    cli_k.or_else(|| config.get_default_k()).unwrap_or(default)
 }
 
 /// Resolve context_lines (n): CLI arg > saved config > default
-pub fn resolve_context_lines(cli_n: Option<usize>, default: usize) -> usize {
-    if let Some(n) = cli_n {
-        return n;
-    }
-
-    // Try to load from config
-    if let Ok(config) = Config::load() {
-        if let Some(n) = config.get_default_n() {
-            return n;
-        }
-    }
-
-    default
+pub fn resolve_context_lines(config: &Config, cli_n: Option<usize>, default: usize) -> usize {
+    cli_n.or_else(|| config.get_default_n()).unwrap_or(default)
 }
 
 /// Resolve relative_paths: saved config > default (true = relative paths)
-pub fn resolve_relative_paths() -> bool {
-    if let Ok(config) = Config::load() {
-        return config.use_relative_paths();
-    }
-    true
+pub fn resolve_relative_paths(config: &Config) -> bool {
+    config.use_relative_paths()
 }
 
 /// Format a path for display, using relative or absolute based on config.
@@ -483,11 +454,8 @@ fn normalize_windows_path(path: &Path) -> PathBuf {
 }
 
 /// Resolve verbose: saved config > default (false)
-pub fn resolve_verbose() -> bool {
-    if let Ok(config) = Config::load() {
-        return config.is_verbose();
-    }
-    false
+pub fn resolve_verbose(config: &Config) -> bool {
+    config.is_verbose()
 }
 
 /// Deterministic ordering for search results: highest score first, then a
@@ -514,7 +482,11 @@ fn cmp_results_deterministic(
 }
 
 /// Resolve pool_factor: --no-pool > --pool-factor > config > default (2)
-pub fn resolve_pool_factor(cli_pool_factor: Option<usize>, no_pool: bool) -> Option<usize> {
+pub fn resolve_pool_factor(
+    config: &Config,
+    cli_pool_factor: Option<usize>,
+    no_pool: bool,
+) -> Option<usize> {
     if no_pool {
         return Some(1); // Disable pooling
     }
@@ -523,21 +495,15 @@ pub fn resolve_pool_factor(cli_pool_factor: Option<usize>, no_pool: bool) -> Opt
         return Some(factor.max(1)); // Minimum is 1
     }
 
-    // Try to load from config
-    if let Ok(config) = Config::load() {
-        return Some(config.get_pool_factor());
-    }
-
-    // Default pool factor
-    Some(colgrep::DEFAULT_POOL_FACTOR)
+    Some(config.get_pool_factor())
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_search(
     query: &str,
     paths: &[PathBuf],
-    top_k: usize,
-    top_k_explicit: bool,
+    cli_top_k: Option<usize>,
+    default_k: usize,
     cli_model: Option<&str>,
     json: bool,
     include_patterns: &[String],
@@ -554,22 +520,30 @@ pub fn cmd_search(
     code_only: bool,
     no_fts: bool,
     alpha: Option<f32>,
-    pool_factor: Option<usize>,
+    cli_pool_factor: Option<usize>,
+    no_pool: bool,
     auto_confirm: bool,
     static_batch: bool,
     no_update: bool,
 ) -> Result<()> {
+    // Load the user config once for the whole command; every per-path search
+    // and resolver below reads from this snapshot instead of re-parsing the
+    // config file.
+    let config = Config::load().unwrap_or_default();
+
+    let top_k = resolve_top_k(&config, cli_top_k, default_k);
+    let pool_factor = resolve_pool_factor(&config, cli_pool_factor, no_pool);
     // Resolve context_lines: CLI > config > default (20)
-    let context_lines = resolve_context_lines(cli_context_lines, 20);
+    let context_lines = resolve_context_lines(&config, cli_context_lines, 20);
     // Resolve relative paths: config > default (false = absolute)
-    let use_relative = resolve_relative_paths();
+    let use_relative = resolve_relative_paths(&config);
 
     // When -e is used and the user didn't explicitly pass -k, return *all*
     // matching lines (parity with grep, which has no implicit cap). We keep
     // a finite ceiling so the upstream `top_k * 4` / `top_k * 20` multipliers
     // can't overflow; `usize::MAX / 1024` is still ~1.8e16, effectively
     // unbounded for any real index.
-    let regex_unbounded = text_pattern.is_some() && !top_k_explicit;
+    let regex_unbounded = text_pattern.is_some() && cli_top_k.is_none();
     let effective_top_k = if regex_unbounded {
         usize::MAX / 1024
     } else {
@@ -582,6 +556,7 @@ pub fn cmd_search(
 
     for path in paths {
         match search_single_path(
+            &config,
             query,
             path,
             effective_top_k,
@@ -674,7 +649,7 @@ pub fn cmd_search(
         let verbose = if show_content || cli_context_lines.is_some_and(|n| n > 0) {
             true // Force verbose when user explicitly requests content display
         } else {
-            resolve_verbose()
+            resolve_verbose(&config)
         };
 
         // Maximum characters of matching line content to show in compact mode
@@ -1034,6 +1009,7 @@ fn find_existing_parent_and_list(path: &Path) -> String {
 /// Search a single path and return results with absolute file paths
 #[allow(clippy::too_many_arguments)]
 fn search_single_path(
+    config: &Config,
     query: &str,
     path: &PathBuf,
     top_k: usize,
@@ -1081,10 +1057,7 @@ fn search_single_path(
     let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
 
     // Resolve model: CLI > config > default
-    let model = resolve_model(cli_model);
-
-    // Load config for settings
-    let config = Config::load().unwrap_or_default();
+    let model = resolve_model(config, cli_model);
 
     // Resolve quantized setting from config (default: false = use FP32)
     let quantized = !config.use_fp32();
@@ -1517,7 +1490,6 @@ fn search_single_path(
     let search_top_k = if code_only { top_k * 4 } else { top_k * 3 };
 
     // Resolve hybrid search: --semantic-only CLI flag overrides, then config, default is enabled
-    let config = colgrep::Config::load().unwrap_or_default();
     let hybrid_disabled = if no_fts {
         true
     } else {
@@ -1691,35 +1663,32 @@ mod tests {
     #[test]
     fn test_resolve_top_k_cli_provided() {
         // CLI value should take precedence
-        assert_eq!(resolve_top_k(Some(30), 15), 30);
-        assert_eq!(resolve_top_k(Some(1), 20), 1);
-        assert_eq!(resolve_top_k(Some(100), 15), 100);
+        let config = Config::default();
+        assert_eq!(resolve_top_k(&config, Some(30), 15), 30);
+        assert_eq!(resolve_top_k(&config, Some(1), 20), 1);
+        assert_eq!(resolve_top_k(&config, Some(100), 15), 100);
     }
 
     #[test]
     fn test_resolve_top_k_fallback_to_default() {
-        // When CLI not provided and no config, should use default
-        // Note: This test may be affected by actual config file
-        let result = resolve_top_k(None, 15);
-        // Should be either 25 (default) or whatever is in config
-        assert!(result > 0);
+        // When CLI not provided and config has no value, use the default
+        assert_eq!(resolve_top_k(&Config::default(), None, 15), 15);
     }
 
     // Test resolve_context_lines function
     #[test]
     fn test_resolve_context_lines_cli_provided() {
         // CLI value should take precedence
-        assert_eq!(resolve_context_lines(Some(10), 20), 10);
-        assert_eq!(resolve_context_lines(Some(0), 20), 0);
-        assert_eq!(resolve_context_lines(Some(30), 20), 30);
+        let config = Config::default();
+        assert_eq!(resolve_context_lines(&config, Some(10), 20), 10);
+        assert_eq!(resolve_context_lines(&config, Some(0), 20), 0);
+        assert_eq!(resolve_context_lines(&config, Some(30), 20), 30);
     }
 
     #[test]
     fn test_resolve_context_lines_fallback_to_default() {
-        // When CLI not provided and no config, should use default
-        let result = resolve_context_lines(None, 20);
-        // Should be either 20 (default) or whatever is in config
-        assert!(result <= 100); // sanity check
+        // When CLI not provided and config has no value, use the default
+        assert_eq!(resolve_context_lines(&Config::default(), None, 20), 20);
     }
 
     fn mk_result(file: &str, line: usize, end_line: usize, score: f32) -> colgrep::SearchResult {
