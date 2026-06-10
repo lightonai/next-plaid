@@ -8,11 +8,21 @@ use xxhash_rust::xxh3::xxh3_64;
 
 use super::paths::get_state_path;
 
+/// Version of the on-disk index format (chunk layout, embedding pipeline,
+/// metadata schema). Bump ONLY for incompatible changes: a mismatch discards
+/// the index and re-embeds the entire project on the next run. Routine CLI
+/// releases must NOT bump this.
+pub const INDEX_FORMAT_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IndexState {
-    /// CLI version that created/updated this index
+    /// CLI version that created/updated this index (diagnostic only)
     #[serde(default)]
     pub cli_version: String,
+    /// Index format version this index was written with. Indexes from before
+    /// this field existed deserialize as 0 and rebuild once.
+    #[serde(default)]
+    pub index_format_version: u32,
     pub files: HashMap<PathBuf, FileInfo>,
     /// Files that failed to parse (e.g. invalid UTF-8) — skipped on future runs
     #[serde(default)]
@@ -52,9 +62,10 @@ impl IndexState {
     pub fn save(&self, index_dir: &Path) -> Result<()> {
         fs::create_dir_all(index_dir)?;
 
-        // Update CLI version before saving
+        // Stamp the writing binary's CLI version and index format before saving
         let mut state = self.clone();
         state.cli_version = env!("CARGO_PKG_VERSION").to_string();
+        state.index_format_version = INDEX_FORMAT_VERSION;
 
         let state_path = get_state_path(index_dir);
         let content = serde_json::to_string_pretty(&state)?;
@@ -139,6 +150,7 @@ mod tests {
         );
         let state = IndexState {
             cli_version: "1.0.0".to_string(),
+            index_format_version: INDEX_FORMAT_VERSION,
             files,
             ignored_files: HashSet::new(),
             search_count: 0,
@@ -272,6 +284,23 @@ mod tests {
     fn test_get_mtime_nonexistent() {
         let result = get_mtime(Path::new("/nonexistent/file.txt"));
         assert!(result.is_err());
+    }
+
+    /// A state.json written before index_format_version existed must load as
+    /// version 0 (forcing a one-time rebuild), and save() must stamp the
+    /// current format so the rebuild happens exactly once.
+    #[test]
+    fn test_legacy_state_without_format_version_loads_as_zero() {
+        let json = r#"{"cli_version":"1.5.4","files":{},"search_count":3}"#;
+        let state: IndexState = serde_json::from_str(json).unwrap();
+        assert_eq!(state.index_format_version, 0);
+
+        let temp_dir = TempDir::new().unwrap();
+        state.save(temp_dir.path()).unwrap();
+        assert_eq!(
+            IndexState::load(temp_dir.path()).unwrap().index_format_version,
+            INDEX_FORMAT_VERSION
+        );
     }
 
     #[test]

@@ -32,7 +32,7 @@ use paths::{
     acquire_index_lock, get_index_dir_for_project, get_vector_index_path, try_acquire_index_lock,
     ProjectMetadata,
 };
-use state::{get_mtime, hash_file, FileInfo, IndexState};
+use state::{get_mtime, hash_file, FileInfo, IndexState, INDEX_FORMAT_VERSION};
 
 /// Maximum file size to index (512 KB)
 /// Files larger than this are skipped to avoid:
@@ -126,8 +126,8 @@ fn delete_files_from_index(index_path: &str, files: &[PathBuf]) -> Result<usize>
 ///   whole. See issue #115.
 /// - `metadata.json` present and a filtering DB present (rules out absent/stale-format stores
 ///   that `index()` would discard anyway).
-/// - State loads, is non-empty, matches the current CLI version, and isn't dirty.
-fn seed_source_state(src_dir: &Path, current_version: &str) -> Option<IndexState> {
+/// - State loads, is non-empty, has a compatible index format, and isn't dirty.
+fn seed_source_state(src_dir: &Path) -> Option<IndexState> {
     if src_dir.join(BUILDING_MARKER).exists() {
         return None;
     }
@@ -139,7 +139,13 @@ fn seed_source_state(src_dir: &Path, current_version: &str) -> Option<IndexState
     }
 
     match IndexState::load(src_dir) {
-        Ok(s) if !s.files.is_empty() && s.cli_version == current_version && !s.dirty => Some(s),
+        Ok(s)
+            if !s.files.is_empty()
+                && s.index_format_version == INDEX_FORMAT_VERSION
+                && !s.dirty =>
+        {
+            Some(s)
+        }
         _ => None,
     }
 }
@@ -1382,7 +1388,7 @@ impl IndexBuilder {
     /// - Creates index if none exists
     /// - Updates incrementally if files changed
     /// - Full rebuild if `force = true`
-    /// - Full rebuild if CLI version changed (clears outdated index)
+    /// - Full rebuild if the on-disk index format is incompatible
     pub fn index(&mut self, languages: Option<&[Language]>, force: bool) -> Result<UpdateStats> {
         let _lock = acquire_index_lock(&self.index_dir)?;
         self.run_indexing(languages, force)
@@ -1391,7 +1397,7 @@ impl IndexBuilder {
     /// Shared indexing dispatch, run while the index lock is held by the caller.
     ///
     /// Routing:
-    /// - forced or CLI-version change → atomic `full_rebuild` (protects a working index);
+    /// - forced or index-format change → atomic `full_rebuild` (protects a working index);
     /// - a fresh build, or resuming an interrupted resumable build → `build_resumable`
     ///   (checkpoints per batch so interruptions keep their progress);
     /// - corrupted filtering DB → atomic `full_rebuild`;
@@ -1412,14 +1418,21 @@ impl IndexBuilder {
         let filtering_exists = filtering::exists(index_path);
         let building = self.index_dir.join(BUILDING_MARKER).exists();
 
-        // Check if CLI version changed - if so, clear and rebuild the index
-        let current_version = env!("CARGO_PKG_VERSION");
-        let version_mismatch =
-            index_exists && !state.cli_version.is_empty() && state.cli_version != current_version;
+        // Rebuild only when the on-disk index format is incompatible with this
+        // binary. Gating on the CLI version instead meant every routine release
+        // discarded every index and re-embedded the entire project.
+        //
+        // A missing/empty state.json also deserializes to format version 0, but
+        // that case must stay on the cheap reconstruct-from-filtering-DB path
+        // below rather than a full re-embed — hence the non-empty-files guard
+        // (a genuine legacy-format state always has tracked files).
+        let format_mismatch = index_exists
+            && !state.files.is_empty()
+            && state.index_format_version != INDEX_FORMAT_VERSION;
 
-        // Forced or CLI-version change: clean atomic rebuild. Drop any in-progress
+        // Forced or index-format change: clean atomic rebuild. Drop any in-progress
         // resumable-build marker so we don't try to resume an index we're discarding.
-        if force || version_mismatch {
+        if force || format_mismatch {
             let _ = std::fs::remove_file(self.index_dir.join(BUILDING_MARKER));
             return self.full_rebuild(languages);
         }
@@ -1748,14 +1761,13 @@ impl IndexBuilder {
     /// Copy a usable sibling worktree's index into this project's index directory.
     /// Returns `Ok(true)` if an index was seeded, `Ok(false)` if no suitable sibling exists.
     fn try_seed_from_sibling_worktree(&self) -> Result<bool> {
-        let current_version = env!("CARGO_PKG_VERSION");
         let candidates = worktree::seed_candidates(&self.project_root, &self.model_id)?;
 
         for candidate in candidates {
             let src_dir = &candidate.index_dir;
-            // Validate the sibling holds a complete, current-version, non-dirty index that
+            // Validate the sibling holds a complete, format-compatible, non-dirty index that
             // isn't mid-build. Skip otherwise so we never seed from a half-built or stale store.
-            let Some(src_state) = seed_source_state(src_dir, current_version) else {
+            let Some(src_state) = seed_source_state(src_dir) else {
                 continue;
             };
             let src_vector = get_vector_index_path(src_dir);
@@ -1774,7 +1786,7 @@ impl IndexBuilder {
             std::fs::rename(&tmp, &dest_vector)
                 .context("Failed to move seeded index into place")?;
 
-            // Persist state (rewriting cli_version to current — guaranteed equal here) and a
+            // Persist state (save() restamps the version/format fields) and a
             // fresh project.json pointing at THIS worktree, not the source.
             src_state.save(&self.index_dir)?;
             ProjectMetadata::new(&self.project_root, &self.model_id).save(&self.index_dir)?;
@@ -5094,29 +5106,61 @@ mod tests {
                 mtime: 1,
             },
         );
-        state.save(src_dir).unwrap(); // save() stamps cli_version to the current version
-        let version = env!("CARGO_PKG_VERSION");
+        state.save(src_dir).unwrap(); // save() stamps the current format version
 
         // Complete index, no marker → usable seed source.
-        assert!(seed_source_state(src_dir, version).is_some());
+        assert!(seed_source_state(src_dir).is_some());
 
         // Interrupted/in-progress build → rejected.
         std::fs::write(src_dir.join(BUILDING_MARKER), "").unwrap();
         assert!(
-            seed_source_state(src_dir, version).is_none(),
+            seed_source_state(src_dir).is_none(),
             "issue #115: an in-progress (.building) sibling index must not be used as a seed"
         );
         std::fs::remove_file(src_dir.join(BUILDING_MARKER)).unwrap();
 
         // Sanity: the other rejection reasons still hold.
-        assert!(
-            seed_source_state(src_dir, "0.0.0-other").is_none(),
-            "version mismatch"
-        );
+        // Incompatible index format (save() always stamps the current one, so
+        // patch the persisted JSON directly).
+        let state_path = paths::get_state_path(src_dir);
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+        raw["index_format_version"] = serde_json::json!(INDEX_FORMAT_VERSION + 1);
+        std::fs::write(&state_path, serde_json::to_string(&raw).unwrap()).unwrap();
+        assert!(seed_source_state(src_dir).is_none(), "format mismatch");
+
         let mut dirty = IndexState::load(src_dir).unwrap();
         dirty.dirty = true;
-        // Re-save with dirty set (save() preserves the flag, only rewrites cli_version).
+        // Re-save with dirty set (save() preserves the flag, restamps version/format).
         dirty.save(src_dir).unwrap();
-        assert!(seed_source_state(src_dir, version).is_none(), "dirty index");
+        assert!(seed_source_state(src_dir).is_none(), "dirty index");
+    }
+
+    /// A missing state.json must not be mistaken for an incompatible index format.
+    /// A default-constructed state deserializes with `index_format_version == 0`,
+    /// which differs from `INDEX_FORMAT_VERSION`; gating the rebuild on that alone
+    /// would send a healthy index through a full re-embed instead of the cheap
+    /// reconstruct-from-filtering-DB path.
+    #[test]
+    fn test_missing_state_reconstructs_instead_of_full_rebuild() {
+        let proj = tempfile::tempdir().unwrap();
+        let idx = tempfile::tempdir().unwrap();
+
+        // A real (model-free) vector index + filtering DB referencing one project
+        // file, but no state.json (deleted, or written by a pre-versioning build).
+        std::fs::write(proj.path().join("a.rs"), "fn a() {}\n").unwrap();
+        let vector = get_vector_index_path(idx.path());
+        std::fs::create_dir_all(&vector).unwrap();
+        build_fixture_index(vector.to_str().unwrap(), &["a.rs"], 2);
+
+        let mut builder = test_builder(proj.path(), idx.path());
+        // A full rebuild would need the builder's model (nonexistent) and fail;
+        // the reconstruct path sees the on-disk file as unchanged.
+        let stats = builder.run_indexing(None, false).unwrap();
+
+        assert_eq!(stats.unchanged, 1, "file must be recognized, not re-embedded");
+        let state = IndexState::load(idx.path()).unwrap();
+        assert_eq!(state.files.len(), 1, "state must be reconstructed from the DB");
+        assert_eq!(state.index_format_version, INDEX_FORMAT_VERSION);
     }
 }
