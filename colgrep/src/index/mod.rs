@@ -175,6 +175,12 @@ const POOLED_EMBEDDING_QUEUE_CAPACITY: usize = 4;
 /// (just unit refs + doc IDs, no embedding data).
 const METADATA_QUEUE_CAPACITY: usize = 8;
 
+/// Maximum documents accumulated on the update path before flushing to the
+/// PLAID index. Each flush rewrites the full IVF and invalidates the merged
+/// mmap files (O(index size) regardless of batch size), so bigger batches mean
+/// fewer full-index rewrites; the cap bounds the embeddings held in memory.
+const UPDATE_FLUSH_DOC_LIMIT: usize = 8192;
+
 struct ParsedFileResult {
     path: PathBuf,
     units: Vec<CodeUnit>,
@@ -535,20 +541,67 @@ fn run_index_stage(
         return Ok(());
     }
 
-    while let Ok(chunk) = receiver.recv() {
-        let _guard = CriticalSectionGuard::new();
-        let (_, doc_ids) =
-            MmapIndex::update_or_create(&chunk.embeddings, &index_path, &config, &update_config)?;
+    // Update path: accumulate pipeline chunks and flush in large batches.
+    // Every MmapIndex::update_or_create call rewrites the full IVF and deletes
+    // the merged mmap files no matter how few documents it adds, so its cost is
+    // O(index size) per call. Flushing once per UPDATE_FLUSH_DOC_LIMIT documents
+    // instead of once per pipeline chunk means a typical incremental update pays
+    // that cost exactly once.
+    let mut pending_units: Vec<Arc<CodeUnit>> = Vec::new();
+    let mut pending_embeddings: Vec<ndarray::Array2<f32>> = Vec::new();
 
-        sender
-            .send(IndexedChunkForMetadata {
-                units: chunk.units,
-                doc_ids,
-            })
-            .context("Failed to send indexed chunk to metadata stage")?;
+    while let Ok(chunk) = receiver.recv() {
+        pending_units.extend(chunk.units);
+        pending_embeddings.extend(chunk.embeddings);
+
+        if pending_embeddings.len() >= UPDATE_FLUSH_DOC_LIMIT {
+            flush_update_batch(
+                &mut pending_units,
+                &mut pending_embeddings,
+                &sender,
+                &index_path,
+                &config,
+                &update_config,
+            )?;
+        }
     }
 
+    flush_update_batch(
+        &mut pending_units,
+        &mut pending_embeddings,
+        &sender,
+        &index_path,
+        &config,
+        &update_config,
+    )?;
+
     Ok(())
+}
+
+/// Write one accumulated batch to the PLAID index and hand the assigned doc IDs
+/// to the metadata stage. No-op when the batch is empty.
+fn flush_update_batch(
+    units: &mut Vec<Arc<CodeUnit>>,
+    embeddings: &mut Vec<ndarray::Array2<f32>>,
+    sender: &mpsc::SyncSender<IndexedChunkForMetadata>,
+    index_path: &str,
+    config: &IndexConfig,
+    update_config: &UpdateConfig,
+) -> Result<()> {
+    if embeddings.is_empty() {
+        return Ok(());
+    }
+
+    let _guard = CriticalSectionGuard::new();
+    let (_, doc_ids) = MmapIndex::update_or_create(embeddings, index_path, config, update_config)?;
+    embeddings.clear();
+
+    sender
+        .send(IndexedChunkForMetadata {
+            units: std::mem::take(units),
+            doc_ids,
+        })
+        .context("Failed to send indexed chunk to metadata stage")
 }
 
 /// Number of candidates exactly re-ranked with MaxSim after the cheap
