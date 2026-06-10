@@ -977,6 +977,17 @@ impl IndexBuilder {
         self.dynamic_batch = dynamic_batch;
     }
 
+    /// Default session count for an encoding workload of `num_units` units.
+    /// Each ONNX session pays a full graph parse/optimize/allocate on build, so
+    /// spinning up the machine-wide default (up to 16) to encode a handful of
+    /// changed units costs far more in session builds than it saves in
+    /// parallelism. One session per DEFAULT_ENCODE_BATCH_SIZE units amortizes
+    /// the build cost; explicit user configuration bypasses this cap.
+    fn capped_default_sessions(num_units: usize) -> usize {
+        let max_useful_sessions = num_units.div_ceil(DEFAULT_ENCODE_BATCH_SIZE).max(1);
+        crate::config::get_default_cpu_parallel_sessions().min(max_useful_sessions)
+    }
+
     /// Ensure the model is created for encoding.
     /// The model is lazily created on first use to avoid overhead when just scanning files
     /// or when checking for index updates that have no changes.
@@ -1000,7 +1011,7 @@ impl IndexBuilder {
 
                         (
                             self.parallel_sessions
-                                .unwrap_or_else(crate::config::get_default_cpu_parallel_sessions),
+                                .unwrap_or_else(|| Self::capped_default_sessions(num_units)),
                             ExecutionProvider::Cpu,
                         )
                     }
@@ -1049,9 +1060,8 @@ impl IndexBuilder {
                             )
                         } else {
                             (
-                                self.parallel_sessions.unwrap_or_else(
-                                    crate::config::get_default_cpu_parallel_sessions,
-                                ),
+                                self.parallel_sessions
+                                    .unwrap_or_else(|| Self::capped_default_sessions(num_units)),
                                 ExecutionProvider::Cpu,
                             )
                         }
@@ -1065,14 +1075,12 @@ impl IndexBuilder {
                 feature = "coreml"
             )))]
             let (num_sessions, execution_provider) = {
-                let _ = num_units;
-
                 crate::onnx_runtime::ensure_onnx_runtime()
                     .context("Failed to initialize ONNX Runtime")?;
 
                 (
                     self.parallel_sessions
-                        .unwrap_or_else(crate::config::get_default_cpu_parallel_sessions),
+                        .unwrap_or_else(|| Self::capped_default_sessions(num_units)),
                     ExecutionProvider::Cpu,
                 )
             };
@@ -1080,8 +1088,6 @@ impl IndexBuilder {
             #[cfg(any(feature = "directml", feature = "migraphx", feature = "coreml"))]
             #[cfg(not(feature = "cuda"))]
             let (num_sessions, execution_provider) = {
-                let _ = num_units;
-
                 crate::onnx_runtime::ensure_onnx_runtime()
                     .context("Failed to initialize ONNX Runtime")?;
 
@@ -1095,7 +1101,7 @@ impl IndexBuilder {
 
                 (
                     self.parallel_sessions
-                        .unwrap_or_else(crate::config::get_default_cpu_parallel_sessions),
+                        .unwrap_or_else(|| Self::capped_default_sessions(num_units)),
                     provider,
                 )
             };
