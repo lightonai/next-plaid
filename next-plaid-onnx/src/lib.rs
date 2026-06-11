@@ -1112,6 +1112,7 @@ impl Colbert {
                     false,
                     true,
                     piece_indices,
+                    None,
                 )?);
             }
 
@@ -1170,6 +1171,7 @@ impl Colbert {
                     false,
                     true,
                     piece_indices,
+                    Some(shape.planned_len),
                 )?);
             }
         }
@@ -1658,9 +1660,10 @@ struct FixedDynamicShape {
 }
 
 fn build_fixed_dynamic_shapes(batch_size: usize, document_length: usize) -> Vec<FixedDynamicShape> {
-    let total_budget = batch_size.max(1).saturating_mul(document_length.max(1));
+    let max_len = document_length.max(1);
+    let total_budget = batch_size.max(1).saturating_mul(max_len);
     let mut shapes = Vec::new();
-    let mut planned_len = round_up_len_for_planning(document_length.max(1));
+    let mut planned_len = round_up_len_for_planning(max_len).min(max_len);
     let min_planned_len = 128.min(planned_len.max(1));
 
     loop {
@@ -1677,7 +1680,8 @@ fn build_fixed_dynamic_shapes(batch_size: usize, document_length: usize) -> Vec<
             break;
         }
 
-        let next_len = round_up_len_for_planning((planned_len / 2).max(min_planned_len));
+        let next_len =
+            round_up_len_for_planning((planned_len / 2).max(min_planned_len)).min(max_len);
         if next_len == planned_len {
             break;
         }
@@ -1785,6 +1789,7 @@ fn prepare_batch_from_tokenized_documents(
     is_query: bool,
     filter_skiplist: bool,
     original_input_indices: Vec<usize>,
+    pad_to_len: Option<usize>,
 ) -> Result<PreparedDocumentBatch> {
     let (prefix_str, prefix_token_id_opt, max_length) = if is_query {
         (
@@ -1819,6 +1824,9 @@ fn prepare_batch_from_tokenized_documents(
             doc.ids.len() + 1
         };
         batch_max_len = batch_max_len.max(effective_len);
+    }
+    if let Some(pad_to_len) = pad_to_len {
+        batch_max_len = batch_max_len.max(pad_to_len.min(max_length));
     }
     if is_query && config.do_query_expansion {
         batch_max_len = max_length;
@@ -2431,6 +2439,27 @@ mod tests {
         assert_eq!(format!("{}", ExecutionProvider::CoreML), "CoreML");
         assert_eq!(format!("{}", ExecutionProvider::DirectML), "DirectML");
         assert_eq!(format!("{}", ExecutionProvider::MIGraphX), "MIGraphX");
+    }
+
+    #[test]
+    fn test_fixed_dynamic_shapes_do_not_exceed_document_length() {
+        let shapes = build_fixed_dynamic_shapes(1, 300);
+
+        assert!(!shapes.is_empty());
+        assert!(shapes.iter().all(|shape| shape.planned_len <= 300));
+        assert_eq!(shapes.last().unwrap().planned_len, 300);
+    }
+
+    #[test]
+    fn test_fixed_dynamic_shapes_preserve_token_budget() {
+        let batch_size = 4;
+        let document_length = 300;
+        let budget = batch_size * document_length;
+        let shapes = build_fixed_dynamic_shapes(batch_size, document_length);
+
+        assert!(shapes
+            .iter()
+            .all(|shape| shape.docs * shape.planned_len <= budget));
     }
 
     // =========================================================================
