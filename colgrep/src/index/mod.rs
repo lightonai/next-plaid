@@ -2678,31 +2678,20 @@ fn is_file_too_large(path: &Path) -> bool {
 /// The check is done by canonicalizing both paths and verifying
 /// the resolved path starts with the project root.
 fn is_within_project_root(project_root: &Path, relative_path: &Path) -> bool {
-    // Check for obvious path traversal patterns first (fast path)
     let path_str = relative_path.to_string_lossy();
-    if path_str.contains("..") {
-        // Could be a traversal attempt - do full canonicalization check
-        let full_path = project_root.join(relative_path);
-        match full_path.canonicalize() {
-            Ok(canonical) => {
-                // Canonicalize project root as well for accurate comparison
-                match project_root.canonicalize() {
-                    Ok(canonical_root) => canonical.starts_with(&canonical_root),
-                    Err(_) => false,
-                }
-            }
-            Err(_) => false, // If canonicalization fails, reject the path
-        }
-    } else {
-        // No ".." in path, but still verify the path doesn't escape via symlinks
-        let full_path = project_root.join(relative_path);
-        if !full_path.exists() {
-            return true; // Non-existent paths will be skipped later anyway
-        }
-        match (full_path.canonicalize(), project_root.canonicalize()) {
-            (Ok(canonical), Ok(canonical_root)) => canonical.starts_with(&canonical_root),
-            _ => false,
-        }
+    if !path_str.contains("..") {
+        // The walker uses follow_links(false), so without ".." in the relative
+        // path there is no way for the entry to escape the project root.
+        return true;
+    }
+    // Path contains ".." - do full canonicalization check
+    let full_path = project_root.join(relative_path);
+    match full_path.canonicalize() {
+        Ok(canonical) => match project_root.canonicalize() {
+            Ok(canonical_root) => canonical.starts_with(&canonical_root),
+            Err(_) => false,
+        },
+        Err(_) => false,
     }
 }
 
