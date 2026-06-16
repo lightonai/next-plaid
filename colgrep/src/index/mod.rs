@@ -110,8 +110,38 @@ fn delete_files_from_index(index_path: &str, files: &[PathBuf]) -> Result<usize>
         return Ok(0);
     }
 
+    // Vector index (codes/residuals/IVF). Single batched rewrite (issue #116).
     delete_from_index_counted(&ids, index_path)?;
+
+    // Metadata and FTS5 must be deleted together and kept aligned. `filtering::delete`
+    // re-sequences the surviving `_subset_` IDs, so the FTS5 rows have to follow: a
+    // tail-only delete keeps every survivor's ID (drop just the deleted FTS rows,
+    // O(deleted)); any other delete shifts survivor IDs and needs a full FTS5 rebuild.
+    // This mirrors `next_plaid::MmapIndex::delete_with_options` — the standalone delete
+    // path used here previously updated the vector index and metadata but skipped FTS5,
+    // leaving deleted documents' text discoverable via regex/keyword (`-e`) search and,
+    // after re-sequencing, misaligned with the surviving rows. Detect the suffix case
+    // before `filtering::delete` renumbers the table.
+    let old_num_documents = filtering::count(index_path).map(|n| n as i64).unwrap_or(0);
+    let mut valid: Vec<i64> = ids
+        .iter()
+        .copied()
+        .filter(|&id| id >= 0 && id < old_num_documents)
+        .collect();
+    valid.sort_unstable();
+    valid.dedup();
+    let is_suffix_delete = {
+        let suffix_start = old_num_documents - valid.len() as i64;
+        valid.first().is_some_and(|&min| min >= suffix_start)
+    };
+
     filtering::delete(index_path, &ids)?;
+    if is_suffix_delete {
+        next_plaid::text_search::delete(index_path, &valid)?;
+    } else {
+        // Survivor IDs shifted; FTS5 rowids no longer match METADATA.
+        next_plaid::text_search::rebuild(index_path)?;
+    }
     Ok(ids.len())
 }
 
@@ -5252,11 +5282,45 @@ mod tests {
         MmapIndex::create_with_kmeans(&embeddings, index_path, &config).unwrap();
 
         let metadata: Vec<serde_json::Value> = (0..n)
-            .map(|i| serde_json::json!({ "file": files[i / docs_per_file] }))
+            .map(|i| {
+                let f = files[i / docs_per_file];
+                // Per-file unique, identifier-friendly token so FTS5 alignment after a
+                // delete can be asserted (each surviving file's token must still match,
+                // each deleted file's token must not).
+                let token = format!("marker_{}", f.replace('.', "_"));
+                serde_json::json!({ "file": f, "text": format!("def x(): # {token} body") })
+            })
             .collect();
         let doc_ids: Vec<i64> = (0..n as i64).collect();
         filtering::create(index_path, &metadata, &doc_ids).unwrap();
+        next_plaid::text_search::index(
+            index_path,
+            &metadata,
+            &doc_ids,
+            &next_plaid::FtsTokenizer::IdentifierAware,
+        )
+        .unwrap();
     }
+
+    /// Token a `build_fixture_index` file is indexed under in FTS5.
+    #[cfg(test)]
+    fn fixture_token(file: &str) -> String {
+        format!("marker_{}", file.replace('.', "_"))
+    }
+
+    /// Number of FTS5 hits for `token` (keyword path used by `-e`/hybrid search).
+    #[cfg(test)]
+    fn fts_hits(index_path: &str, token: &str) -> usize {
+        next_plaid::text_search::search(index_path, token, 100)
+            .map(|r| r.passage_ids.len())
+            .unwrap_or(0)
+    }
+
+    /// Serializes every test that calls `delete_files_from_index`. The tests that assert
+    /// the global `DELETE_FROM_INDEX_CALLS` counter read a before/after delta, which any
+    /// concurrent deleting test would otherwise corrupt under parallel execution.
+    #[cfg(test)]
+    static DELETE_TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Issue #116: deleting many files must collapse into a *single* full-index rewrite, not one
     /// rewrite per file (which made incremental updates O(changed_files × index_size) and hung
@@ -5264,6 +5328,7 @@ mod tests {
     #[test]
     fn test_delete_files_from_index_is_a_single_rewrite() {
         use std::sync::atomic::Ordering;
+        let _serial = DELETE_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
 
         let tmp = tempfile::tempdir().unwrap();
         let index_path = tmp.path().to_str().unwrap();
@@ -5296,6 +5361,7 @@ mod tests {
     #[test]
     fn test_delete_files_from_index_noop_does_not_rewrite() {
         use std::sync::atomic::Ordering;
+        let _serial = DELETE_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
 
         let tmp = tempfile::tempdir().unwrap();
         let index_path = tmp.path().to_str().unwrap();
@@ -5308,6 +5374,71 @@ mod tests {
             0
         );
         assert_eq!(DELETE_FROM_INDEX_CALLS.load(Ordering::Relaxed) - before, 0);
+    }
+
+    /// Regression: `delete_files_from_index` must prune FTS5, not just the vector index
+    /// and metadata. Deleting a MIDDLE file re-sequences survivor IDs (the rebuild path),
+    /// so a stale FTS5 must not leave the deleted file's text searchable, and survivors'
+    /// keyword hits must still map to exactly their own docs. Previously the standalone
+    /// delete path skipped FTS5 entirely, so `-e`/keyword search kept finding deleted files.
+    #[test]
+    fn test_delete_files_from_index_prunes_fts5_middle() {
+        let _serial = DELETE_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let index_path = tmp.path().to_str().unwrap();
+        let files = ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"];
+        let dpf = 2;
+        build_fixture_index(index_path, &files, dpf);
+
+        // sanity: every file is keyword-searchable before deletion
+        for f in files {
+            assert_eq!(fts_hits(index_path, &fixture_token(f)), dpf, "pre {f}");
+        }
+
+        // delete a middle file -> survivor IDs shift -> FTS5 rebuild path
+        let removed = delete_files_from_index(index_path, &[PathBuf::from("c.rs")]).unwrap();
+        assert_eq!(removed, dpf);
+
+        // deleted file's text must be gone from FTS5...
+        assert_eq!(
+            fts_hits(index_path, &fixture_token("c.rs")),
+            0,
+            "deleted file still keyword-searchable (stale FTS5)"
+        );
+        // ...and every survivor's keyword hits must still map to exactly its own docs
+        // (no cross-contamination from misaligned FTS5 rowids).
+        for f in ["a.rs", "b.rs", "d.rs", "e.rs"] {
+            assert_eq!(
+                fts_hits(index_path, &fixture_token(f)),
+                dpf,
+                "survivor {f} keyword hits misaligned after delete"
+            );
+        }
+    }
+
+    /// Regression: tail-of-ID-space delete takes the O(deleted) FTS5 suffix path; it must
+    /// still drop the deleted file's rows and leave survivors aligned.
+    #[test]
+    fn test_delete_files_from_index_prunes_fts5_suffix() {
+        let _serial = DELETE_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let index_path = tmp.path().to_str().unwrap();
+        let files = ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"];
+        let dpf = 2;
+        build_fixture_index(index_path, &files, dpf);
+
+        // delete the LAST file -> its doc IDs are the tail -> FTS5 suffix-delete path
+        let removed = delete_files_from_index(index_path, &[PathBuf::from("e.rs")]).unwrap();
+        assert_eq!(removed, dpf);
+
+        assert_eq!(
+            fts_hits(index_path, &fixture_token("e.rs")),
+            0,
+            "tail-deleted still found"
+        );
+        for f in ["a.rs", "b.rs", "c.rs", "d.rs"] {
+            assert_eq!(fts_hits(index_path, &fixture_token(f)), dpf, "survivor {f}");
+        }
     }
 
     /// Issue #115 (bug 1): an index left dirty by an interrupted run must be cleaned once the
