@@ -247,7 +247,8 @@ colgrep settings --fp32
 # Set embedding pool factor (2 = 50% smaller index, 1 = full precision)
 colgrep settings --pool-factor 2
 
-# Set parallel encoding sessions (default: CPU count, max 16)
+# Set parallel encoding sessions (persists across sessions and all indexes)
+# Default: CPU count (max 16) on CPU; 1 on GPU/CoreML. Use 0 to reset to auto.
 colgrep settings --parallel 8
 
 # Set batch size per session (default: 1 for CPU, 64 for CUDA)
@@ -262,6 +263,38 @@ colgrep settings --verbose
 # Reset a value to default (pass 0)
 colgrep settings --k 0 --n 0
 ```
+
+### Indexing Speed vs. Memory
+
+Cold indexing encodes every code unit with the ColBERT model. colgrep runs several ONNX
+sessions in parallel to speed this up, and the pipeline queues between encoding and index
+writing are bounded so memory stays flat regardless of repo size.
+
+The number of parallel sessions is the main speed/memory knob, and it is a **persistent
+setting** — set it once and it applies to every future `colgrep` run and every index:
+
+```bash
+# Use more sessions for faster indexing on multi-core machines
+colgrep settings --parallel 8
+
+# Use a single session to minimise memory (recommended on GPU/CoreML,
+# where each session is a full copy of the model in device memory)
+colgrep settings --parallel 1
+
+# Reset to the automatic default
+colgrep settings --parallel 0
+```
+
+Default when unset (`--parallel 0`):
+
+| Execution provider      | Default sessions          | Why                                                              |
+| ----------------------- | ------------------------- | ---------------------------------------------------------------- |
+| CPU                     | CPU core count (max 16)   | Fastest; bounded queues keep memory in check even at many cores  |
+| GPU / CoreML / DirectML | 1                         | Each session duplicates the model in device memory               |
+
+On a CPU build, raising sessions speeds up cold indexing roughly linearly with cores at only
+a modest, bounded memory increase. On accelerator builds the trade-off is steeper, so the
+default stays at 1 — raise it explicitly with `--parallel` if you have the device memory.
 
 ### Hybrid Search
 

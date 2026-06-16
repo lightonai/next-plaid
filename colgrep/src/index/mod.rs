@@ -175,9 +175,28 @@ const PIPELINE_QUEUE_CAPACITY: usize = 2;
 /// so this queue must stay small or pooled embeddings pile up in memory.
 const CODING_QUEUE_CAPACITY: usize = 2;
 
-/// Default ONNX sessions for indexing when the user has not configured `settings --parallel`.
-/// Extra sessions duplicate model/runtime memory and are especially costly during cold builds.
-const DEFAULT_INDEX_PARALLEL_SESSIONS: usize = 1;
+/// Default ONNX sessions for indexing on accelerator providers (CoreML/DirectML/MIGraphX)
+/// when the user has not configured `settings --parallel`. On these providers every session
+/// is a full model copy held in device memory, so default to a single session and let users
+/// opt into more with `--parallel`. CPU indexing uses [`default_index_parallel_sessions`]
+/// instead, which scales with cores because CPU encoding cannot run ahead of the bounded
+/// pipeline queues (so extra sessions add throughput at modest, bounded memory cost).
+const DEFAULT_INDEX_ACCEL_PARALLEL_SESSIONS: usize = 1;
+
+/// Pick the default number of ONNX sessions for indexing based on the chosen execution
+/// provider, when the user has not set `settings --parallel`.
+///
+/// - **CPU**: scale with available cores. The bounded pipeline queues cap how far encoding
+///   can run ahead of indexing, so more sessions improve throughput without the unbounded
+///   memory growth that motivated the queue bounds — this is the fast default.
+/// - **Accelerators** (CoreML/CUDA/DirectML/MIGraphX): keep a single session by default,
+///   since each one duplicates the model in device memory. Users can raise it explicitly.
+fn default_index_parallel_sessions(execution_provider: ExecutionProvider) -> usize {
+    match execution_provider {
+        ExecutionProvider::Cpu => crate::config::get_default_cpu_parallel_sessions(),
+        _ => DEFAULT_INDEX_ACCEL_PARALLEL_SESSIONS,
+    }
+}
 
 /// Bounded channel capacity between the index and metadata stages.
 /// Larger than the pooled queue because metadata rows are lightweight
@@ -1005,8 +1024,9 @@ impl IndexBuilder {
                             .context("Failed to initialize ONNX Runtime")?;
 
                         (
-                            self.parallel_sessions
-                                .unwrap_or(DEFAULT_INDEX_PARALLEL_SESSIONS),
+                            self.parallel_sessions.unwrap_or_else(|| {
+                                default_index_parallel_sessions(ExecutionProvider::Cpu)
+                            }),
                             ExecutionProvider::Cpu,
                         )
                     }
@@ -1055,8 +1075,9 @@ impl IndexBuilder {
                             )
                         } else {
                             (
-                                self.parallel_sessions
-                                    .unwrap_or(DEFAULT_INDEX_PARALLEL_SESSIONS),
+                                self.parallel_sessions.unwrap_or_else(|| {
+                                    default_index_parallel_sessions(ExecutionProvider::Cpu)
+                                }),
                                 ExecutionProvider::Cpu,
                             )
                         }
@@ -1077,7 +1098,7 @@ impl IndexBuilder {
 
                 (
                     self.parallel_sessions
-                        .unwrap_or(DEFAULT_INDEX_PARALLEL_SESSIONS),
+                        .unwrap_or_else(|| default_index_parallel_sessions(ExecutionProvider::Cpu)),
                     ExecutionProvider::Cpu,
                 )
             };
@@ -1096,7 +1117,7 @@ impl IndexBuilder {
 
                 (
                     self.parallel_sessions
-                        .unwrap_or(DEFAULT_INDEX_PARALLEL_SESSIONS),
+                        .unwrap_or_else(|| default_index_parallel_sessions(execution_provider)),
                     execution_provider,
                 )
             };
@@ -1159,7 +1180,7 @@ impl IndexBuilder {
 
         let num_sessions = self
             .parallel_sessions
-            .unwrap_or(DEFAULT_INDEX_PARALLEL_SESSIONS);
+            .unwrap_or_else(|| default_index_parallel_sessions(ExecutionProvider::Cpu));
         let batch = crate::config::DEFAULT_BATCH_SIZE_CPU;
 
         let model = crate::stderr::with_suppressed_stderr(|| {
@@ -4234,8 +4255,24 @@ mod tests {
     }
 
     #[test]
-    fn test_indexing_parallel_default_is_memory_bounded() {
-        assert_eq!(DEFAULT_INDEX_PARALLEL_SESSIONS, 1);
+    fn test_accelerator_indexing_parallel_default_is_memory_bounded() {
+        // Accelerator providers keep one session by default: each is a full model copy in
+        // device memory.
+        assert_eq!(DEFAULT_INDEX_ACCEL_PARALLEL_SESSIONS, 1);
+        assert_eq!(
+            default_index_parallel_sessions(ExecutionProvider::CoreML),
+            1
+        );
+    }
+
+    #[test]
+    fn test_cpu_indexing_parallel_default_scales_with_cores() {
+        // CPU indexing defaults to the cores-based session count for speed; the bounded
+        // pipeline queues keep memory in check regardless of session count.
+        assert_eq!(
+            default_index_parallel_sessions(ExecutionProvider::Cpu),
+            crate::config::get_default_cpu_parallel_sessions()
+        );
     }
 
     #[test]
