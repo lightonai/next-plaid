@@ -36,10 +36,10 @@ pub fn cmd_init(path: &PathBuf, options: InitOptions<'_>) -> Result<()> {
         anyhow::bail!("Path is not a directory: {}", path.display());
     }
 
-    let model = resolve_model(options.cli_model);
-    let pool_factor = resolve_pool_factor(options.pool_factor, options.no_pool);
-
     let config = Config::load().unwrap_or_default();
+    let model = resolve_model(&config, options.cli_model);
+    let pool_factor = resolve_pool_factor(&config, options.pool_factor, options.no_pool);
+
     let quantized = !config.use_fp32();
     let (parallel_sessions, batch_size) =
         resolve_index_runtime_overrides(&config, options.batch_size);

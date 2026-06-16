@@ -430,6 +430,10 @@ pub struct Cli {
     #[arg(short = 'y', long = "yes")]
     pub auto_confirm: bool,
 
+    /// Skip the automatic index update and search the existing index as-is
+    #[arg(long = "no-update")]
+    pub no_update: bool,
+
     /// When to colorize output and syntax highlighting: auto, always, or never.
     /// `never` emits plain text with no ANSI escape sequences (useful for agents/pipes).
     #[arg(
@@ -549,6 +553,10 @@ pub enum Commands {
         /// Use strict batch-size batching instead of fixed dynamic GPU batching
         #[arg(long = "static-batch")]
         static_batch: bool,
+
+        /// Skip the automatic index update and search the existing index as-is
+        #[arg(long = "no-update")]
+        no_update: bool,
     },
 
     /// Show index status for a project
