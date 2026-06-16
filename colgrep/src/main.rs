@@ -17,7 +17,6 @@ use colgrep::{
 };
 
 use cli::{Cli, Commands};
-use commands::search::{resolve_pool_factor, resolve_top_k};
 use commands::{
     cmd_clear, cmd_config, cmd_init, cmd_reset_stats, cmd_search, cmd_session_hook, cmd_set_model,
     cmd_stats, cmd_status, cmd_task_hook, cmd_update, InitOptions,
@@ -131,6 +130,7 @@ fn main() -> Result<()> {
             pool_factor,
             auto_confirm,
             static_batch,
+            no_update,
         }) => {
             // If only -e pattern is given without a query, use the pattern as the query too
             let original_query = query.clone();
@@ -202,8 +202,8 @@ fn main() -> Result<()> {
                 cmd_search(
                     &final_query,
                     &final_paths,
-                    resolve_top_k(top_k, default_k),
-                    top_k.is_some(),
+                    top_k,
+                    default_k,
                     model.as_deref(),
                     json,
                     &include_patterns,
@@ -220,9 +220,11 @@ fn main() -> Result<()> {
                     code_only,
                     no_fts,
                     alpha,
-                    resolve_pool_factor(pool_factor, no_pool),
+                    pool_factor,
+                    no_pool,
                     auto_confirm,
                     static_batch,
+                    no_update,
                 )
             } else {
                 // No query or text_pattern provided - show help
@@ -375,8 +377,8 @@ fn main() -> Result<()> {
                 cmd_search(
                     &final_query,
                     &final_paths,
-                    resolve_top_k(cli.top_k, default_k),
-                    cli.top_k.is_some(),
+                    cli.top_k,
+                    default_k,
                     cli.model.as_deref(),
                     cli.json,
                     &cli.include_patterns,
@@ -393,9 +395,11 @@ fn main() -> Result<()> {
                     cli.code_only,
                     cli.no_fts,
                     cli.alpha,
-                    resolve_pool_factor(cli.pool_factor, cli.no_pool),
+                    cli.pool_factor,
+                    cli.no_pool,
                     cli.auto_confirm,
                     false,
+                    cli.no_update,
                 )
             } else {
                 // No query provided - show help

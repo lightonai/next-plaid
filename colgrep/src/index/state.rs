@@ -8,11 +8,21 @@ use xxhash_rust::xxh3::xxh3_64;
 
 use super::paths::get_state_path;
 
+/// Version of the on-disk index format (chunk layout, embedding pipeline,
+/// metadata schema). Bump ONLY for incompatible changes: a mismatch discards
+/// the index and re-embeds the entire project on the next run. Routine CLI
+/// releases must NOT bump this.
+pub const INDEX_FORMAT_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IndexState {
-    /// CLI version that created/updated this index
+    /// CLI version that created/updated this index (diagnostic only)
     #[serde(default)]
     pub cli_version: String,
+    /// Index format version this index was written with. Indexes from before
+    /// this field existed deserialize as 0 and rebuild once.
+    #[serde(default)]
+    pub index_format_version: u32,
     pub files: HashMap<PathBuf, FileInfo>,
     /// Files that failed to parse (e.g. invalid UTF-8) — skipped on future runs
     #[serde(default)]
@@ -28,7 +38,28 @@ pub struct IndexState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
     pub content_hash: u64,
+    /// File mtime in **nanoseconds** since the Unix epoch. Nanosecond precision
+    /// (not seconds) so that an edit landing in the same wall-clock second as the
+    /// last index update is still detected by the stat-only fast path.
     pub mtime: u64,
+    /// File size in bytes, compared alongside `mtime` as a cheap second guard.
+    /// Legacy states written before this field deserialize as 0, which forces a
+    /// one-time content hash and then self-heals once the state is re-saved.
+    #[serde(default)]
+    pub size: u64,
+}
+
+impl FileInfo {
+    /// Build a `FileInfo` for `path` with an already-computed content hash,
+    /// stamping the current mtime (nanoseconds) and size from a single stat.
+    pub fn probe(path: &Path, content_hash: u64) -> Result<Self> {
+        let (mtime, size) = file_stat(path)?;
+        Ok(Self {
+            content_hash,
+            mtime,
+            size,
+        })
+    }
 }
 
 impl IndexState {
@@ -52,9 +83,10 @@ impl IndexState {
     pub fn save(&self, index_dir: &Path) -> Result<()> {
         fs::create_dir_all(index_dir)?;
 
-        // Update CLI version before saving
+        // Stamp the writing binary's CLI version and index format before saving
         let mut state = self.clone();
         state.cli_version = env!("CARGO_PKG_VERSION").to_string();
+        state.index_format_version = INDEX_FORMAT_VERSION;
 
         let state_path = get_state_path(index_dir);
         let content = serde_json::to_string_pretty(&state)?;
@@ -88,14 +120,21 @@ pub fn hash_file(path: &Path) -> Result<u64> {
     Ok(xxh3_64(&content))
 }
 
-/// Get file modification time as unix timestamp
-pub fn get_mtime(path: &Path) -> Result<u64> {
+/// Stat a file once, returning `(mtime_nanos, size_bytes)`.
+/// mtime is nanoseconds since the Unix epoch (sub-second precision so same-second
+/// edits are detectable); size is the cheap second guard against mtime collisions.
+pub fn file_stat(path: &Path) -> Result<(u64, u64)> {
     let metadata = fs::metadata(path)?;
     let mtime = metadata
         .modified()?
         .duration_since(SystemTime::UNIX_EPOCH)?
-        .as_secs();
-    Ok(mtime)
+        .as_nanos() as u64;
+    Ok((mtime, metadata.len()))
+}
+
+/// Get file modification time in nanoseconds since the Unix epoch.
+pub fn get_mtime(path: &Path) -> Result<u64> {
+    Ok(file_stat(path)?.0)
 }
 
 #[cfg(test)]
@@ -116,6 +155,7 @@ mod tests {
         let info = FileInfo {
             content_hash: 12345678901234567890,
             mtime: 1700000000,
+            size: 0,
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -135,10 +175,12 @@ mod tests {
             FileInfo {
                 content_hash: 123456,
                 mtime: 1700000000,
+                size: 0,
             },
         );
         let state = IndexState {
             cli_version: "1.0.0".to_string(),
+            index_format_version: INDEX_FORMAT_VERSION,
             files,
             ignored_files: HashSet::new(),
             search_count: 0,
@@ -175,6 +217,7 @@ mod tests {
             FileInfo {
                 content_hash: 999999,
                 mtime: 1700000000,
+                size: 0,
             },
         );
 
@@ -274,6 +317,25 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// A state.json written before index_format_version existed must load as
+    /// version 0 (forcing a one-time rebuild), and save() must stamp the
+    /// current format so the rebuild happens exactly once.
+    #[test]
+    fn test_legacy_state_without_format_version_loads_as_zero() {
+        let json = r#"{"cli_version":"1.5.4","files":{},"search_count":3}"#;
+        let state: IndexState = serde_json::from_str(json).unwrap();
+        assert_eq!(state.index_format_version, 0);
+
+        let temp_dir = TempDir::new().unwrap();
+        state.save(temp_dir.path()).unwrap();
+        assert_eq!(
+            IndexState::load(temp_dir.path())
+                .unwrap()
+                .index_format_version,
+            INDEX_FORMAT_VERSION
+        );
+    }
+
     #[test]
     fn test_search_count_increment_and_reset() {
         let temp_dir = TempDir::new().unwrap();
@@ -323,6 +385,7 @@ mod tests {
             FileInfo {
                 content_hash: 1,
                 mtime: 1700000000,
+                size: 0,
             },
         );
         init.save(&index_dir).unwrap();
@@ -349,6 +412,7 @@ mod tests {
                             FileInfo {
                                 content_hash: (t * iterations + i) as u64,
                                 mtime: 1700000000,
+                                size: 0,
                             },
                         );
                         state.save(&dir).unwrap();

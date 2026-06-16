@@ -360,60 +360,31 @@ fn merge_query_with_pattern(query: &str, sanitized_pattern: &str) -> String {
 }
 
 /// Resolve the model to use: CLI arg > saved config > default
-pub fn resolve_model(cli_model: Option<&str>) -> String {
+pub fn resolve_model(config: &Config, cli_model: Option<&str>) -> String {
     if let Some(model) = cli_model {
         return model.to_string();
     }
 
-    // Try to load from config
-    if let Ok(config) = Config::load() {
-        if let Some(model) = config.get_default_model() {
-            return model.to_string();
-        }
+    if let Some(model) = config.get_default_model() {
+        return model.to_string();
     }
 
-    // Fall back to default
     DEFAULT_MODEL.to_string()
 }
 
 /// Resolve top_k: CLI arg > saved config > default
-pub fn resolve_top_k(cli_k: Option<usize>, default: usize) -> usize {
-    if let Some(k) = cli_k {
-        return k;
-    }
-
-    // Try to load from config
-    if let Ok(config) = Config::load() {
-        if let Some(k) = config.get_default_k() {
-            return k;
-        }
-    }
-
-    default
+pub fn resolve_top_k(config: &Config, cli_k: Option<usize>, default: usize) -> usize {
+    cli_k.or_else(|| config.get_default_k()).unwrap_or(default)
 }
 
 /// Resolve context_lines (n): CLI arg > saved config > default
-pub fn resolve_context_lines(cli_n: Option<usize>, default: usize) -> usize {
-    if let Some(n) = cli_n {
-        return n;
-    }
-
-    // Try to load from config
-    if let Ok(config) = Config::load() {
-        if let Some(n) = config.get_default_n() {
-            return n;
-        }
-    }
-
-    default
+pub fn resolve_context_lines(config: &Config, cli_n: Option<usize>, default: usize) -> usize {
+    cli_n.or_else(|| config.get_default_n()).unwrap_or(default)
 }
 
 /// Resolve relative_paths: saved config > default (true = relative paths)
-pub fn resolve_relative_paths() -> bool {
-    if let Ok(config) = Config::load() {
-        return config.use_relative_paths();
-    }
-    true
+pub fn resolve_relative_paths(config: &Config) -> bool {
+    config.use_relative_paths()
 }
 
 /// Format a path for display, using relative or absolute based on config.
@@ -483,11 +454,8 @@ fn normalize_windows_path(path: &Path) -> PathBuf {
 }
 
 /// Resolve verbose: saved config > default (false)
-pub fn resolve_verbose() -> bool {
-    if let Ok(config) = Config::load() {
-        return config.is_verbose();
-    }
-    false
+pub fn resolve_verbose(config: &Config) -> bool {
+    config.is_verbose()
 }
 
 /// Deterministic ordering for search results: highest score first, then a
@@ -514,7 +482,11 @@ fn cmp_results_deterministic(
 }
 
 /// Resolve pool_factor: --no-pool > --pool-factor > config > default (2)
-pub fn resolve_pool_factor(cli_pool_factor: Option<usize>, no_pool: bool) -> Option<usize> {
+pub fn resolve_pool_factor(
+    config: &Config,
+    cli_pool_factor: Option<usize>,
+    no_pool: bool,
+) -> Option<usize> {
     if no_pool {
         return Some(1); // Disable pooling
     }
@@ -523,21 +495,15 @@ pub fn resolve_pool_factor(cli_pool_factor: Option<usize>, no_pool: bool) -> Opt
         return Some(factor.max(1)); // Minimum is 1
     }
 
-    // Try to load from config
-    if let Ok(config) = Config::load() {
-        return Some(config.get_pool_factor());
-    }
-
-    // Default pool factor
-    Some(colgrep::DEFAULT_POOL_FACTOR)
+    Some(config.get_pool_factor())
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_search(
     query: &str,
     paths: &[PathBuf],
-    top_k: usize,
-    top_k_explicit: bool,
+    cli_top_k: Option<usize>,
+    default_k: usize,
     cli_model: Option<&str>,
     json: bool,
     include_patterns: &[String],
@@ -554,21 +520,30 @@ pub fn cmd_search(
     code_only: bool,
     no_fts: bool,
     alpha: Option<f32>,
-    pool_factor: Option<usize>,
+    cli_pool_factor: Option<usize>,
+    no_pool: bool,
     auto_confirm: bool,
     static_batch: bool,
+    no_update: bool,
 ) -> Result<()> {
+    // Load the user config once for the whole command; every per-path search
+    // and resolver below reads from this snapshot instead of re-parsing the
+    // config file.
+    let config = Config::load().unwrap_or_default();
+
+    let top_k = resolve_top_k(&config, cli_top_k, default_k);
+    let pool_factor = resolve_pool_factor(&config, cli_pool_factor, no_pool);
     // Resolve context_lines: CLI > config > default (20)
-    let context_lines = resolve_context_lines(cli_context_lines, 20);
+    let context_lines = resolve_context_lines(&config, cli_context_lines, 20);
     // Resolve relative paths: config > default (false = absolute)
-    let use_relative = resolve_relative_paths();
+    let use_relative = resolve_relative_paths(&config);
 
     // When -e is used and the user didn't explicitly pass -k, return *all*
     // matching lines (parity with grep, which has no implicit cap). We keep
     // a finite ceiling so the upstream `top_k * 4` / `top_k * 20` multipliers
     // can't overflow; `usize::MAX / 1024` is still ~1.8e16, effectively
     // unbounded for any real index.
-    let regex_unbounded = text_pattern.is_some() && !top_k_explicit;
+    let regex_unbounded = text_pattern.is_some() && cli_top_k.is_none();
     let effective_top_k = if regex_unbounded {
         usize::MAX / 1024
     } else {
@@ -581,6 +556,7 @@ pub fn cmd_search(
 
     for path in paths {
         match search_single_path(
+            &config,
             query,
             path,
             effective_top_k,
@@ -601,6 +577,7 @@ pub fn cmd_search(
             pool_factor,
             auto_confirm,
             static_batch,
+            no_update,
         ) {
             Ok(results) => all_results.extend(results),
             Err(e) => {
@@ -672,7 +649,7 @@ pub fn cmd_search(
         let verbose = if show_content || cli_context_lines.is_some_and(|n| n > 0) {
             true // Force verbose when user explicitly requests content display
         } else {
-            resolve_verbose()
+            resolve_verbose(&config)
         };
 
         // Maximum characters of matching line content to show in compact mode
@@ -1032,6 +1009,7 @@ fn find_existing_parent_and_list(path: &Path) -> String {
 /// Search a single path and return results with absolute file paths
 #[allow(clippy::too_many_arguments)]
 fn search_single_path(
+    config: &Config,
     query: &str,
     path: &PathBuf,
     top_k: usize,
@@ -1052,6 +1030,7 @@ fn search_single_path(
     pool_factor: Option<usize>,
     auto_confirm: bool,
     static_batch: bool,
+    no_update: bool,
 ) -> Result<Vec<colgrep::SearchResult>> {
     let path = match std::fs::canonicalize(path) {
         Ok(p) => p,
@@ -1078,10 +1057,7 @@ fn search_single_path(
     let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
 
     // Resolve model: CLI > config > default
-    let model = resolve_model(cli_model);
-
-    // Load config for settings
-    let config = Config::load().unwrap_or_default();
+    let model = resolve_model(config, cli_model);
 
     // Resolve quantized setting from config (default: false = use FP32)
     let quantized = !config.use_fp32();
@@ -1089,16 +1065,16 @@ fn search_single_path(
     let parallel_sessions = config.configured_parallel_sessions();
     let batch_size = config.configured_batch_size();
 
-    // Check if index already exists for this model (suppress model output if so)
-    let has_existing_index =
-        index_exists(&search_path, &model) || find_parent_index(&search_path, &model)?.is_some();
-
-    // Ensure model is downloaded (quiet if we already have an index)
-    let model_path = ensure_model(Some(&model), has_existing_index)?;
-
-    // Check for parent index (scoped to current model) unless the resolved path
-    // is outside the current directory (external project)
-    let parent_info = {
+    // An index for this exact (path, model) pair takes precedence over any
+    // ancestor project's index, so the parent scan — a read_dir plus a
+    // project.json parse for every indexed project on the machine — runs only
+    // when there is no local index, and at most once per search. The parent
+    // scan is also skipped when the resolved path is outside the current
+    // directory (external project).
+    let local_index_exists = index_exists(&search_path, &model);
+    let parent_info = if local_index_exists {
+        None
+    } else {
         let current_dir = std::env::current_dir().ok();
         let is_external_project = is_external_project_path(&search_path, current_dir.as_deref());
 
@@ -1108,6 +1084,10 @@ fn search_single_path(
             find_parent_index(&search_path, &model)?
         }
     };
+
+    // Ensure model is downloaded (quiet if we already have an index)
+    let has_existing_index = local_index_exists || parent_info.is_some();
+    let model_path = ensure_model(Some(&model), has_existing_index)?;
 
     // Determine effective project root and subdirectory filter
     let (effective_root, subdir_filter): (PathBuf, Option<PathBuf>) = match &parent_info {
@@ -1143,8 +1123,10 @@ fn search_single_path(
 
     // Auto-index: try incremental update without blocking on the lock.
     // If another process is indexing, skip the update and search the existing index.
+    // --no-update skips this entirely: agents in hot search loops can opt out of
+    // paying the change-detection scan and any re-encoding before results return.
     let mut index_locked = false;
-    {
+    if !no_update {
         let mut builder = IndexBuilder::with_options(
             &effective_root,
             &model,
@@ -1231,6 +1213,12 @@ fn search_single_path(
     let index_dir = get_index_dir_for_project(&effective_root, &model)?;
     let vector_index_path = get_vector_index_path(&index_dir);
     if !vector_index_path.join("metadata.json").exists() {
+        if no_update {
+            anyhow::bail!(
+                "No index found and --no-update was passed. Run once without --no-update \
+                 (or `colgrep init`) to build the index first."
+            );
+        }
         if index_locked {
             // Index is being created for the first time by another process — nothing to search yet
             anyhow::bail!("colgrep index is currently being built, rely on grep for now.");
@@ -1306,6 +1294,12 @@ fn search_single_path(
             } =>
         {
             // Index is corrupted or empty (no concurrent updater) - clear and rebuild
+            if no_update {
+                return Err(e).with_context(|| {
+                    "Index appears corrupted and --no-update prevents rebuilding it. \
+                     Rerun without --no-update to repair the index."
+                });
+            }
             if !json && !files_only {
                 eprintln!("⚠️  Index corrupted, rebuilding...");
             }
@@ -1500,7 +1494,6 @@ fn search_single_path(
     let search_top_k = if code_only { top_k * 4 } else { top_k * 3 };
 
     // Resolve hybrid search: --semantic-only CLI flag overrides, then config, default is enabled
-    let config = colgrep::Config::load().unwrap_or_default();
     let hybrid_disabled = if no_fts {
         true
     } else {
@@ -1674,35 +1667,32 @@ mod tests {
     #[test]
     fn test_resolve_top_k_cli_provided() {
         // CLI value should take precedence
-        assert_eq!(resolve_top_k(Some(30), 15), 30);
-        assert_eq!(resolve_top_k(Some(1), 20), 1);
-        assert_eq!(resolve_top_k(Some(100), 15), 100);
+        let config = Config::default();
+        assert_eq!(resolve_top_k(&config, Some(30), 15), 30);
+        assert_eq!(resolve_top_k(&config, Some(1), 20), 1);
+        assert_eq!(resolve_top_k(&config, Some(100), 15), 100);
     }
 
     #[test]
     fn test_resolve_top_k_fallback_to_default() {
-        // When CLI not provided and no config, should use default
-        // Note: This test may be affected by actual config file
-        let result = resolve_top_k(None, 15);
-        // Should be either 25 (default) or whatever is in config
-        assert!(result > 0);
+        // When CLI not provided and config has no value, use the default
+        assert_eq!(resolve_top_k(&Config::default(), None, 15), 15);
     }
 
     // Test resolve_context_lines function
     #[test]
     fn test_resolve_context_lines_cli_provided() {
         // CLI value should take precedence
-        assert_eq!(resolve_context_lines(Some(10), 20), 10);
-        assert_eq!(resolve_context_lines(Some(0), 20), 0);
-        assert_eq!(resolve_context_lines(Some(30), 20), 30);
+        let config = Config::default();
+        assert_eq!(resolve_context_lines(&config, Some(10), 20), 10);
+        assert_eq!(resolve_context_lines(&config, Some(0), 20), 0);
+        assert_eq!(resolve_context_lines(&config, Some(30), 20), 30);
     }
 
     #[test]
     fn test_resolve_context_lines_fallback_to_default() {
-        // When CLI not provided and no config, should use default
-        let result = resolve_context_lines(None, 20);
-        // Should be either 20 (default) or whatever is in config
-        assert!(result <= 100); // sanity check
+        // When CLI not provided and config has no value, use the default
+        assert_eq!(resolve_context_lines(&Config::default(), None, 20), 20);
     }
 
     fn mk_result(file: &str, line: usize, end_line: usize, score: f32) -> colgrep::SearchResult {

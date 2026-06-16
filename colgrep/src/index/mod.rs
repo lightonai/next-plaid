@@ -32,7 +32,7 @@ use paths::{
     acquire_index_lock, get_index_dir_for_project, get_vector_index_path, try_acquire_index_lock,
     ProjectMetadata,
 };
-use state::{get_mtime, hash_file, FileInfo, IndexState};
+use state::{file_stat, hash_file, FileInfo, IndexState, INDEX_FORMAT_VERSION};
 
 /// Maximum file size to index (512 KB)
 /// Files larger than this are skipped to avoid:
@@ -126,8 +126,8 @@ fn delete_files_from_index(index_path: &str, files: &[PathBuf]) -> Result<usize>
 ///   whole. See issue #115.
 /// - `metadata.json` present and a filtering DB present (rules out absent/stale-format stores
 ///   that `index()` would discard anyway).
-/// - State loads, is non-empty, matches the current CLI version, and isn't dirty.
-fn seed_source_state(src_dir: &Path, current_version: &str) -> Option<IndexState> {
+/// - State loads, is non-empty, has a compatible index format, and isn't dirty.
+fn seed_source_state(src_dir: &Path) -> Option<IndexState> {
     if src_dir.join(BUILDING_MARKER).exists() {
         return None;
     }
@@ -139,7 +139,13 @@ fn seed_source_state(src_dir: &Path, current_version: &str) -> Option<IndexState
     }
 
     match IndexState::load(src_dir) {
-        Ok(s) if !s.files.is_empty() && s.cli_version == current_version && !s.dirty => Some(s),
+        Ok(s)
+            if !s.files.is_empty()
+                && s.index_format_version == INDEX_FORMAT_VERSION
+                && !s.dirty =>
+        {
+            Some(s)
+        }
         _ => None,
     }
 }
@@ -184,16 +190,21 @@ const CODING_QUEUE_CAPACITY: usize = 2;
 const DEFAULT_INDEX_ACCEL_PARALLEL_SESSIONS: usize = 1;
 
 /// Pick the default number of ONNX sessions for indexing based on the chosen execution
-/// provider, when the user has not set `settings --parallel`.
+/// provider and the size of the encoding workload, when the user has not set
+/// `settings --parallel`.
 ///
-/// - **CPU**: scale with available cores. The bounded pipeline queues cap how far encoding
-///   can run ahead of indexing, so more sessions improve throughput without the unbounded
-///   memory growth that motivated the queue bounds — this is the fast default.
+/// - **CPU**: scale with available cores, but cap by the workload via
+///   [`IndexBuilder::capped_default_sessions`] — spinning up more sessions than there are
+///   ~`DEFAULT_ENCODE_BATCH_SIZE`-unit chunks just wastes per-session graph build time. The
+///   bounded pipeline queues keep memory flat regardless of session count.
 /// - **Accelerators** (CoreML/CUDA/DirectML/MIGraphX): keep a single session by default,
 ///   since each one duplicates the model in device memory. Users can raise it explicitly.
-fn default_index_parallel_sessions(execution_provider: ExecutionProvider) -> usize {
+fn default_index_parallel_sessions(
+    execution_provider: ExecutionProvider,
+    num_units: usize,
+) -> usize {
     match execution_provider {
-        ExecutionProvider::Cpu => crate::config::get_default_cpu_parallel_sessions(),
+        ExecutionProvider::Cpu => IndexBuilder::capped_default_sessions(num_units),
         _ => DEFAULT_INDEX_ACCEL_PARALLEL_SESSIONS,
     }
 }
@@ -253,6 +264,12 @@ fn indexing_execution_provider_for_acceleration_mode(mode: AccelerationMode) -> 
     }
 }
 
+/// Maximum documents accumulated on the update path before flushing to the
+/// PLAID index. Each flush rewrites the full IVF and invalidates the merged
+/// mmap files (O(index size) regardless of batch size), so bigger batches mean
+/// fewer full-index rewrites; the cap bounds the embeddings held in memory.
+const UPDATE_FLUSH_DOC_LIMIT: usize = 8192;
+
 struct ParsedFileResult {
     path: PathBuf,
     units: Vec<CodeUnit>,
@@ -275,6 +292,11 @@ pub struct UpdatePlan {
     pub changed: Vec<PathBuf>,
     pub deleted: Vec<PathBuf>,
     pub unchanged: usize,
+    /// Files whose content is unchanged (hash matches) but whose mtime/size on
+    /// disk drifted from what state recorded — e.g. after `git checkout` or
+    /// `touch`. They need no re-embedding, only a refreshed `FileInfo` persisted
+    /// so the stat-only fast path applies next run instead of re-hashing forever.
+    pub touched: Vec<(PathBuf, FileInfo)>,
 }
 
 // ============================================================================
@@ -613,20 +635,67 @@ fn run_index_stage(
         return Ok(());
     }
 
-    while let Ok(chunk) = receiver.recv() {
-        let _guard = CriticalSectionGuard::new();
-        let (_, doc_ids) =
-            MmapIndex::update_or_create(&chunk.embeddings, &index_path, &config, &update_config)?;
+    // Update path: accumulate pipeline chunks and flush in large batches.
+    // Every MmapIndex::update_or_create call rewrites the full IVF and deletes
+    // the merged mmap files no matter how few documents it adds, so its cost is
+    // O(index size) per call. Flushing once per UPDATE_FLUSH_DOC_LIMIT documents
+    // instead of once per pipeline chunk means a typical incremental update pays
+    // that cost exactly once.
+    let mut pending_units: Vec<Arc<CodeUnit>> = Vec::new();
+    let mut pending_embeddings: Vec<ndarray::Array2<f32>> = Vec::new();
 
-        sender
-            .send(IndexedChunkForMetadata {
-                units: chunk.units,
-                doc_ids,
-            })
-            .context("Failed to send indexed chunk to metadata stage")?;
+    while let Ok(chunk) = receiver.recv() {
+        pending_units.extend(chunk.units);
+        pending_embeddings.extend(chunk.embeddings);
+
+        if pending_embeddings.len() >= UPDATE_FLUSH_DOC_LIMIT {
+            flush_update_batch(
+                &mut pending_units,
+                &mut pending_embeddings,
+                &sender,
+                &index_path,
+                &config,
+                &update_config,
+            )?;
+        }
     }
 
+    flush_update_batch(
+        &mut pending_units,
+        &mut pending_embeddings,
+        &sender,
+        &index_path,
+        &config,
+        &update_config,
+    )?;
+
     Ok(())
+}
+
+/// Write one accumulated batch to the PLAID index and hand the assigned doc IDs
+/// to the metadata stage. No-op when the batch is empty.
+fn flush_update_batch(
+    units: &mut Vec<Arc<CodeUnit>>,
+    embeddings: &mut Vec<ndarray::Array2<f32>>,
+    sender: &mpsc::SyncSender<IndexedChunkForMetadata>,
+    index_path: &str,
+    config: &IndexConfig,
+    update_config: &UpdateConfig,
+) -> Result<()> {
+    if embeddings.is_empty() {
+        return Ok(());
+    }
+
+    let _guard = CriticalSectionGuard::new();
+    let (_, doc_ids) = MmapIndex::update_or_create(embeddings, index_path, config, update_config)?;
+    embeddings.clear();
+
+    sender
+        .send(IndexedChunkForMetadata {
+            units: std::mem::take(units),
+            doc_ids,
+        })
+        .context("Failed to send indexed chunk to metadata stage")
 }
 
 /// Number of candidates exactly re-ranked with MaxSim after the cheap
@@ -855,14 +924,11 @@ fn parse_files_parallel(
                     Ok(source) => {
                         let units = extract_units(path, &source, lang);
                         match hash_file(&full_path) {
-                            Ok(content_hash) => match get_mtime(&full_path) {
-                                Ok(mtime) => ParsedFileResult {
+                            Ok(content_hash) => match FileInfo::probe(&full_path, content_hash) {
+                                Ok(file_info) => ParsedFileResult {
                                     path: path.clone(),
                                     units,
-                                    file_info: Some(FileInfo {
-                                        content_hash,
-                                        mtime,
-                                    }),
+                                    file_info: Some(file_info),
                                     skip_reason: None,
                                 },
                                 Err(e) => ParsedFileResult {
@@ -1002,6 +1068,17 @@ impl IndexBuilder {
         self.dynamic_batch = dynamic_batch;
     }
 
+    /// Default session count for an encoding workload of `num_units` units.
+    /// Each ONNX session pays a full graph parse/optimize/allocate on build, so
+    /// spinning up the machine-wide default (up to 16) to encode a handful of
+    /// changed units costs far more in session builds than it saves in
+    /// parallelism. One session per DEFAULT_ENCODE_BATCH_SIZE units amortizes
+    /// the build cost; explicit user configuration bypasses this cap.
+    fn capped_default_sessions(num_units: usize) -> usize {
+        let max_useful_sessions = num_units.div_ceil(DEFAULT_ENCODE_BATCH_SIZE).max(1);
+        crate::config::get_default_cpu_parallel_sessions().min(max_useful_sessions)
+    }
+
     /// Ensure the model is created for encoding.
     /// The model is lazily created on first use to avoid overhead when just scanning files
     /// or when checking for index updates that have no changes.
@@ -1025,7 +1102,7 @@ impl IndexBuilder {
 
                         (
                             self.parallel_sessions.unwrap_or_else(|| {
-                                default_index_parallel_sessions(ExecutionProvider::Cpu)
+                                default_index_parallel_sessions(ExecutionProvider::Cpu, num_units)
                             }),
                             ExecutionProvider::Cpu,
                         )
@@ -1076,7 +1153,10 @@ impl IndexBuilder {
                         } else {
                             (
                                 self.parallel_sessions.unwrap_or_else(|| {
-                                    default_index_parallel_sessions(ExecutionProvider::Cpu)
+                                    default_index_parallel_sessions(
+                                        ExecutionProvider::Cpu,
+                                        num_units,
+                                    )
                                 }),
                                 ExecutionProvider::Cpu,
                             )
@@ -1091,14 +1171,13 @@ impl IndexBuilder {
                 feature = "coreml"
             )))]
             let (num_sessions, execution_provider) = {
-                let _ = num_units;
-
                 crate::onnx_runtime::ensure_onnx_runtime()
                     .context("Failed to initialize ONNX Runtime")?;
 
                 (
-                    self.parallel_sessions
-                        .unwrap_or_else(|| default_index_parallel_sessions(ExecutionProvider::Cpu)),
+                    self.parallel_sessions.unwrap_or_else(|| {
+                        default_index_parallel_sessions(ExecutionProvider::Cpu, num_units)
+                    }),
                     ExecutionProvider::Cpu,
                 )
             };
@@ -1106,8 +1185,6 @@ impl IndexBuilder {
             #[cfg(any(feature = "directml", feature = "migraphx", feature = "coreml"))]
             #[cfg(not(feature = "cuda"))]
             let (num_sessions, execution_provider) = {
-                let _ = num_units;
-
                 let execution_provider = indexing_execution_provider_for_acceleration_mode(
                     env_acceleration_mode_lossy(),
                 );
@@ -1116,8 +1193,9 @@ impl IndexBuilder {
                     .context("Failed to initialize ONNX Runtime")?;
 
                 (
-                    self.parallel_sessions
-                        .unwrap_or_else(|| default_index_parallel_sessions(execution_provider)),
+                    self.parallel_sessions.unwrap_or_else(|| {
+                        default_index_parallel_sessions(execution_provider, num_units)
+                    }),
                     execution_provider,
                 )
             };
@@ -1178,9 +1256,11 @@ impl IndexBuilder {
         self.model = None;
         apply_acceleration_mode(AccelerationMode::ForceCpu);
 
+        // CPU fallback rebuild: the original unit count isn't threaded here, so use the
+        // uncapped (cores-based) CPU default — `usize::MAX` disables the workload cap.
         let num_sessions = self
             .parallel_sessions
-            .unwrap_or_else(|| default_index_parallel_sessions(ExecutionProvider::Cpu));
+            .unwrap_or_else(|| default_index_parallel_sessions(ExecutionProvider::Cpu, usize::MAX));
         let batch = crate::config::DEFAULT_BATCH_SIZE_CPU;
 
         let model = crate::stderr::with_suppressed_stderr(|| {
@@ -1337,14 +1417,10 @@ impl IndexBuilder {
 
             // Only add files that still exist on disk
             if full_path.exists() {
-                if let (Ok(hash), Ok(mtime)) = (hash_file(&full_path), get_mtime(&full_path)) {
-                    state.files.insert(
-                        file_path,
-                        FileInfo {
-                            content_hash: hash,
-                            mtime,
-                        },
-                    );
+                if let Ok(hash) = hash_file(&full_path) {
+                    if let Ok(file_info) = FileInfo::probe(&full_path, hash) {
+                        state.files.insert(file_path, file_info);
+                    }
                 }
             }
             // Files that don't exist will be detected as deleted in incremental_update
@@ -1463,7 +1539,7 @@ impl IndexBuilder {
     /// - Creates index if none exists
     /// - Updates incrementally if files changed
     /// - Full rebuild if `force = true`
-    /// - Full rebuild if CLI version changed (clears outdated index)
+    /// - Full rebuild if the on-disk index format is incompatible
     pub fn index(&mut self, languages: Option<&[Language]>, force: bool) -> Result<UpdateStats> {
         let _lock = acquire_index_lock(&self.index_dir)?;
         self.run_indexing(languages, force)
@@ -1472,7 +1548,7 @@ impl IndexBuilder {
     /// Shared indexing dispatch, run while the index lock is held by the caller.
     ///
     /// Routing:
-    /// - forced or CLI-version change → atomic `full_rebuild` (protects a working index);
+    /// - forced or index-format change → atomic `full_rebuild` (protects a working index);
     /// - a fresh build, or resuming an interrupted resumable build → `build_resumable`
     ///   (checkpoints per batch so interruptions keep their progress);
     /// - corrupted filtering DB → atomic `full_rebuild`;
@@ -1493,14 +1569,21 @@ impl IndexBuilder {
         let filtering_exists = filtering::exists(index_path);
         let building = self.index_dir.join(BUILDING_MARKER).exists();
 
-        // Check if CLI version changed - if so, clear and rebuild the index
-        let current_version = env!("CARGO_PKG_VERSION");
-        let version_mismatch =
-            index_exists && !state.cli_version.is_empty() && state.cli_version != current_version;
+        // Rebuild only when the on-disk index format is incompatible with this
+        // binary. Gating on the CLI version instead meant every routine release
+        // discarded every index and re-embedded the entire project.
+        //
+        // A missing/empty state.json also deserializes to format version 0, but
+        // that case must stay on the cheap reconstruct-from-filtering-DB path
+        // below rather than a full re-embed — hence the non-empty-files guard
+        // (a genuine legacy-format state always has tracked files).
+        let format_mismatch = index_exists
+            && !state.files.is_empty()
+            && state.index_format_version != INDEX_FORMAT_VERSION;
 
-        // Forced or CLI-version change: clean atomic rebuild. Drop any in-progress
+        // Forced or index-format change: clean atomic rebuild. Drop any in-progress
         // resumable-build marker so we don't try to resume an index we're discarding.
-        if force || version_mismatch {
+        if force || format_mismatch {
             let _ = std::fs::remove_file(self.index_dir.join(BUILDING_MARKER));
             return self.full_rebuild(languages);
         }
@@ -1829,14 +1912,13 @@ impl IndexBuilder {
     /// Copy a usable sibling worktree's index into this project's index directory.
     /// Returns `Ok(true)` if an index was seeded, `Ok(false)` if no suitable sibling exists.
     fn try_seed_from_sibling_worktree(&self) -> Result<bool> {
-        let current_version = env!("CARGO_PKG_VERSION");
         let candidates = worktree::seed_candidates(&self.project_root, &self.model_id)?;
 
         for candidate in candidates {
             let src_dir = &candidate.index_dir;
-            // Validate the sibling holds a complete, current-version, non-dirty index that
+            // Validate the sibling holds a complete, format-compatible, non-dirty index that
             // isn't mid-build. Skip otherwise so we never seed from a half-built or stale store.
-            let Some(src_state) = seed_source_state(src_dir, current_version) else {
+            let Some(src_state) = seed_source_state(src_dir) else {
                 continue;
             };
             let src_vector = get_vector_index_path(src_dir);
@@ -1855,7 +1937,7 @@ impl IndexBuilder {
             std::fs::rename(&tmp, &dest_vector)
                 .context("Failed to move seeded index into place")?;
 
-            // Persist state (rewriting cli_version to current — guaranteed equal here) and a
+            // Persist state (save() restamps the version/format fields) and a
             // fresh project.json pointing at THIS worktree, not the source.
             src_state.save(&self.index_dir)?;
             ProjectMetadata::new(&self.project_root, &self.model_id).save(&self.index_dir)?;
@@ -2282,9 +2364,18 @@ impl IndexBuilder {
             }
         }
 
-        // 0. Clean up orphaned entries (files in index but not on disk)
-        // This handles directory deletion/rename and any inconsistencies
-        let orphaned_deleted = self.cleanup_orphaned_entries(index_path)?;
+        // 0. Clean up orphaned entries (files in index but not on disk).
+        // This handles directory deletion/rename and any inconsistencies, but it
+        // queries every distinct file in the metadata DB and stats each one — too
+        // expensive to run on every search. Deletions in the plan already cover the
+        // common case; the periodic trigger is a safety net for true desyncs.
+        let should_cleanup = !plan.deleted.is_empty()
+            || (old_state.search_count > 0 && old_state.search_count.is_multiple_of(50));
+        let orphaned_deleted = if should_cleanup {
+            self.cleanup_orphaned_entries(index_path)?
+        } else {
+            0
+        };
 
         // Nothing to do
         if plan.added.is_empty()
@@ -2292,12 +2383,17 @@ impl IndexBuilder {
             && plan.deleted.is_empty()
             && orphaned_deleted == 0
         {
-            // If the previous run left the index dirty, the repair above already brought the
-            // store back in sync — so clear the flag now. Returning without persisting would
-            // leave the index permanently dirty, forcing a (costly) repair on every future
-            // run even though nothing is wrong. See issue #115.
-            if old_state.dirty {
+            // Nothing to re-embed. Still persist if either (a) some files' stat
+            // drifted without a content change (refresh them so we don't re-hash
+            // every run), or (b) the previous run left the index dirty — the
+            // repair above already resynced the store, so clear the flag now.
+            // Returning without persisting would force a re-hash or a costly
+            // repair on every future run even though nothing is wrong (#115).
+            if !plan.touched.is_empty() || old_state.dirty {
                 let mut state = old_state.clone();
+                for (path, info) in &plan.touched {
+                    state.files.insert(path.clone(), info.clone());
+                }
                 state.dirty = false;
                 state.save(&self.index_dir)?;
             }
@@ -2311,6 +2407,10 @@ impl IndexBuilder {
         }
 
         let mut state = old_state.clone();
+        // Refresh stat-drifted-but-unchanged files so the fast path applies next run.
+        for (path, info) in &plan.touched {
+            state.files.insert(path.clone(), info.clone());
+        }
 
         if !plan.deleted.is_empty() || !plan.changed.is_empty() || !plan.added.is_empty() {
             state.dirty = true;
@@ -2761,6 +2861,22 @@ impl IndexBuilder {
                 continue;
             }
             let full_path = self.project_root.join(path);
+
+            // Fast path: if mtime AND size are both unchanged, skip expensive
+            // content hashing. Without this gate every search reads and hashes
+            // every file in the repo before returning results. mtime is compared
+            // at nanosecond precision and paired with size so a same-second edit
+            // can't slip through.
+            let current_stat = file_stat(&full_path).ok();
+            if let (Some(info), Some((current_mtime, current_size))) =
+                (state.files.get(path), current_stat)
+            {
+                if info.mtime == current_mtime && info.size == current_size {
+                    plan.unchanged += 1;
+                    continue;
+                }
+            }
+
             let hash = match hash_file(&full_path) {
                 Ok(h) => h,
                 Err(e) => {
@@ -2770,7 +2886,24 @@ impl IndexBuilder {
             };
 
             match state.files.get(path) {
-                Some(info) if info.content_hash == hash => plan.unchanged += 1,
+                Some(info) if info.content_hash == hash => {
+                    // Content is identical but the stat drifted (e.g. `touch`,
+                    // branch switch). Record the refreshed FileInfo so it gets
+                    // persisted and the stat-only fast path applies next run.
+                    if let Some((current_mtime, current_size)) = current_stat {
+                        if info.mtime != current_mtime || info.size != current_size {
+                            plan.touched.push((
+                                path.clone(),
+                                FileInfo {
+                                    content_hash: hash,
+                                    mtime: current_mtime,
+                                    size: current_size,
+                                },
+                            ));
+                        }
+                    }
+                    plan.unchanged += 1;
+                }
                 Some(_) => plan.changed.push(path.clone()),
                 None => plan.added.push(path.clone()),
             }
@@ -4236,6 +4369,161 @@ fn prompt_large_index_confirmation(num_units: usize) -> bool {
 mod tests {
     use super::*;
 
+    /// The mtime fast path in `compute_update_plan` must skip content hashing
+    /// for files whose stored mtime is unchanged. The stored hash is wrong on
+    /// purpose: if the plan still reports the file as unchanged, hashing was
+    /// skipped; once the mtime moves, the hash mismatch must be detected.
+    /// Regression test — this gate was added in d0423d9 (4x query speedup on
+    /// large repos) and silently lost in the d76cb4a rewrite.
+    #[test]
+    fn test_update_plan_skips_hashing_when_mtime_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("lib.py");
+        std::fs::write(&file_path, "def f():\n    return 1\n").unwrap();
+
+        let builder = test_builder(temp.path(), &temp.path().join("index"));
+
+        let mut state = IndexState::default();
+        // Bogus hash on purpose: a matching mtime+size must skip the hash entirely.
+        state.files.insert(
+            PathBuf::from("lib.py"),
+            FileInfo::probe(&file_path, 0xDEAD_BEEF).unwrap(),
+        );
+
+        let plan = builder.compute_update_plan(&state, None).unwrap();
+        assert_eq!(
+            plan.unchanged, 1,
+            "matching mtime+size must skip the content-hash comparison"
+        );
+        assert!(plan.changed.is_empty());
+
+        // Move the mtime forward: the fast path no longer applies, so the
+        // stale stored hash must now be detected as a change.
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&file_path)
+            .unwrap();
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(120))
+            .unwrap();
+        drop(file);
+
+        let plan = builder.compute_update_plan(&state, None).unwrap();
+        assert_eq!(plan.changed, vec![PathBuf::from("lib.py")]);
+        assert_eq!(plan.unchanged, 0);
+    }
+
+    /// When a file's mtime drifts but its content is unchanged (e.g. `touch`,
+    /// `git checkout`), the plan must classify it as unchanged AND record a
+    /// `touched` refresh so the stat-only fast path applies next run instead of
+    /// re-hashing the file on every subsequent search.
+    #[test]
+    fn test_update_plan_refreshes_touched_files_with_unchanged_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("lib.py");
+        std::fs::write(&file_path, "def f():\n    return 1\n").unwrap();
+
+        let builder = test_builder(temp.path(), &temp.path().join("index"));
+
+        // Stored state has the *correct* content hash and size, but a stale mtime.
+        let real = FileInfo::probe(&file_path, hash_file(&file_path).unwrap()).unwrap();
+        let mut state = IndexState::default();
+        state.files.insert(
+            PathBuf::from("lib.py"),
+            FileInfo {
+                mtime: real.mtime.saturating_sub(1),
+                ..real.clone()
+            },
+        );
+
+        let plan = builder.compute_update_plan(&state, None).unwrap();
+        assert_eq!(plan.unchanged, 1);
+        assert!(plan.changed.is_empty());
+        assert_eq!(
+            plan.touched.len(),
+            1,
+            "stale mtime must be queued for refresh"
+        );
+        assert_eq!(plan.touched[0].0, PathBuf::from("lib.py"));
+        assert_eq!(plan.touched[0].1.mtime, real.mtime);
+        assert_eq!(plan.touched[0].1.size, real.size);
+    }
+
+    /// Measures what the mtime fast path saves on the per-search update plan:
+    /// the same synthetic tree planned once with matching stored mtimes
+    /// (stat-only fast path) and once with mismatched mtimes but identical
+    /// content (forces a read + xxh3 of every byte — what every search paid
+    /// without the fast path). Hashing runs with a warm page cache, so the
+    /// printed ratio understates the cold-cache real world.
+    ///
+    ///   cargo test -p colgrep --release measure_update_plan -- --ignored --nocapture
+    #[test]
+    #[ignore = "timing measurement; run manually in release mode"]
+    fn measure_update_plan_mtime_fast_path() {
+        const FILES: usize = 5_000;
+        const FILE_BYTES: usize = 200 * 1024;
+
+        let temp = tempfile::tempdir().unwrap();
+        let line = "x = 1  # padding so the hasher does representative work\n";
+        let blob = line.repeat(FILE_BYTES / line.len());
+
+        let mut matching_mtimes = IndexState::default();
+        let mut mismatched_mtimes = IndexState::default();
+        for i in 0..FILES {
+            let rel = PathBuf::from(format!("mod_{i:04}.py"));
+            let full = temp.path().join(&rel);
+            std::fs::write(&full, &blob).unwrap();
+            let content_hash = hash_file(&full).unwrap();
+            let (mtime, size) = file_stat(&full).unwrap();
+            matching_mtimes.files.insert(
+                rel.clone(),
+                FileInfo {
+                    content_hash,
+                    mtime,
+                    size,
+                },
+            );
+            mismatched_mtimes.files.insert(
+                rel,
+                FileInfo {
+                    content_hash,
+                    mtime: mtime + 1,
+                    size,
+                },
+            );
+        }
+
+        let builder = test_builder(temp.path(), &temp.path().join("index"));
+
+        let started = std::time::Instant::now();
+        let plan = builder
+            .compute_update_plan(&mismatched_mtimes, None)
+            .unwrap();
+        let hashed_every_file = started.elapsed();
+        assert_eq!(plan.unchanged, FILES);
+
+        let started = std::time::Instant::now();
+        let plan = builder.compute_update_plan(&matching_mtimes, None).unwrap();
+        let stat_only = started.elapsed();
+        assert_eq!(plan.unchanged, FILES);
+
+        // The walk scales with file count and is paid either way; the
+        // read+hash component the fast path removes scales with repo bytes.
+        let removed = hashed_every_file.saturating_sub(stat_only);
+        println!(
+            "update plan, {} files x {} KiB ({} MiB total):\n  \
+             full hashing (pre-fix per-search cost): {:?}\n  \
+             mtime fast path:                        {:?}  ({:.1}x faster)\n  \
+             read+hash component removed per search: {:?} (scales with repo bytes)",
+            FILES,
+            FILE_BYTES / 1024,
+            FILES * FILE_BYTES / (1024 * 1024),
+            hashed_every_file,
+            stat_only,
+            hashed_every_file.as_secs_f64() / stat_only.as_secs_f64().max(f64::EPSILON),
+            removed,
+        );
+    }
+
     #[test]
     fn test_force_cpu_execution_provider_is_cpu() {
         assert_eq!(
@@ -4256,22 +4544,36 @@ mod tests {
 
     #[test]
     fn test_accelerator_indexing_parallel_default_is_memory_bounded() {
-        // Accelerator providers keep one session by default: each is a full model copy in
-        // device memory.
+        // Accelerator providers keep one session by default regardless of workload size:
+        // each is a full model copy in device memory.
         assert_eq!(DEFAULT_INDEX_ACCEL_PARALLEL_SESSIONS, 1);
         assert_eq!(
-            default_index_parallel_sessions(ExecutionProvider::CoreML),
+            default_index_parallel_sessions(ExecutionProvider::CoreML, 1),
+            1
+        );
+        assert_eq!(
+            default_index_parallel_sessions(ExecutionProvider::CoreML, 1_000_000),
             1
         );
     }
 
     #[test]
-    fn test_cpu_indexing_parallel_default_scales_with_cores() {
-        // CPU indexing defaults to the cores-based session count for speed; the bounded
-        // pipeline queues keep memory in check regardless of session count.
+    fn test_cpu_indexing_parallel_default_scales_with_cores_and_workload() {
+        // A large workload uses the full cores-based default (the bounded pipeline queues
+        // keep memory in check regardless of session count)...
         assert_eq!(
-            default_index_parallel_sessions(ExecutionProvider::Cpu),
+            default_index_parallel_sessions(ExecutionProvider::Cpu, usize::MAX),
             crate::config::get_default_cpu_parallel_sessions()
+        );
+        // ...while a tiny workload is capped so we don't pay per-session graph builds that
+        // can never be used: one session per ~DEFAULT_ENCODE_BATCH_SIZE units, min 1.
+        assert_eq!(
+            default_index_parallel_sessions(ExecutionProvider::Cpu, 1),
+            1
+        );
+        assert!(
+            default_index_parallel_sessions(ExecutionProvider::Cpu, DEFAULT_ENCODE_BATCH_SIZE + 1)
+                <= crate::config::get_default_cpu_parallel_sessions()
         );
     }
 
@@ -5058,31 +5360,71 @@ mod tests {
             FileInfo {
                 content_hash: 1,
                 mtime: 1,
+                size: 0,
             },
         );
-        state.save(src_dir).unwrap(); // save() stamps cli_version to the current version
-        let version = env!("CARGO_PKG_VERSION");
+        state.save(src_dir).unwrap(); // save() stamps the current format version
 
         // Complete index, no marker → usable seed source.
-        assert!(seed_source_state(src_dir, version).is_some());
+        assert!(seed_source_state(src_dir).is_some());
 
         // Interrupted/in-progress build → rejected.
         std::fs::write(src_dir.join(BUILDING_MARKER), "").unwrap();
         assert!(
-            seed_source_state(src_dir, version).is_none(),
+            seed_source_state(src_dir).is_none(),
             "issue #115: an in-progress (.building) sibling index must not be used as a seed"
         );
         std::fs::remove_file(src_dir.join(BUILDING_MARKER)).unwrap();
 
         // Sanity: the other rejection reasons still hold.
-        assert!(
-            seed_source_state(src_dir, "0.0.0-other").is_none(),
-            "version mismatch"
-        );
+        // Incompatible index format (save() always stamps the current one, so
+        // patch the persisted JSON directly).
+        let state_path = paths::get_state_path(src_dir);
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+        raw["index_format_version"] = serde_json::json!(INDEX_FORMAT_VERSION + 1);
+        std::fs::write(&state_path, serde_json::to_string(&raw).unwrap()).unwrap();
+        assert!(seed_source_state(src_dir).is_none(), "format mismatch");
+
         let mut dirty = IndexState::load(src_dir).unwrap();
         dirty.dirty = true;
-        // Re-save with dirty set (save() preserves the flag, only rewrites cli_version).
+        // Re-save with dirty set (save() preserves the flag, restamps version/format).
         dirty.save(src_dir).unwrap();
-        assert!(seed_source_state(src_dir, version).is_none(), "dirty index");
+        assert!(seed_source_state(src_dir).is_none(), "dirty index");
+    }
+
+    /// A missing state.json must not be mistaken for an incompatible index format.
+    /// A default-constructed state deserializes with `index_format_version == 0`,
+    /// which differs from `INDEX_FORMAT_VERSION`; gating the rebuild on that alone
+    /// would send a healthy index through a full re-embed instead of the cheap
+    /// reconstruct-from-filtering-DB path.
+    #[test]
+    fn test_missing_state_reconstructs_instead_of_full_rebuild() {
+        let proj = tempfile::tempdir().unwrap();
+        let idx = tempfile::tempdir().unwrap();
+
+        // A real (model-free) vector index + filtering DB referencing one project
+        // file, but no state.json (deleted, or written by a pre-versioning build).
+        std::fs::write(proj.path().join("a.rs"), "fn a() {}\n").unwrap();
+        let vector = get_vector_index_path(idx.path());
+        std::fs::create_dir_all(&vector).unwrap();
+        build_fixture_index(vector.to_str().unwrap(), &["a.rs"], 2);
+
+        let mut builder = test_builder(proj.path(), idx.path());
+        // A full rebuild would need the builder's model (nonexistent) and fail;
+        // the reconstruct path sees the on-disk file as unchanged.
+        let stats = builder.run_indexing(None, false).unwrap();
+
+        assert_eq!(
+            stats.unchanged, 1,
+            "file must be recognized, not re-embedded"
+        );
+        let state = IndexState::load(idx.path()).unwrap();
+        assert_eq!(
+            state.files.len(),
+            1,
+            "state must be reconstructed from the DB"
+        );
+        assert_eq!(state.index_format_version, INDEX_FORMAT_VERSION);
     }
 }
