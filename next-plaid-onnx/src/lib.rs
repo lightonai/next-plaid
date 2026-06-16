@@ -403,12 +403,21 @@ fn configure_cuda(builder: SessionBuilder) -> Result<SessionBuilder> {
         return Ok(builder);
     }
 
+    // When the GPU is forced we must guarantee the session actually runs on CUDA.
+    // ORT registers execution providers best-effort by default: a CUDA EP that
+    // fails to initialize is silently dropped and the session quietly runs on the
+    // CPU. `error_on_failure()` turns that silent fallback into a hard error so
+    // `--force-gpu` cannot end up on the CPU.
+    let force_gpu = is_force_gpu();
+
     // Wrap CUDA initialization in catch_cuda_panic to handle panics from stub/invalid libraries
     // without printing the default panic message to stderr
     let cuda_result = catch_cuda_panic(std::panic::AssertUnwindSafe(|| {
-        builder
-            .clone()
-            .with_execution_providers([configured_cuda_execution_provider().build()])
+        let mut cuda_ep = configured_cuda_execution_provider().build();
+        if force_gpu {
+            cuda_ep = cuda_ep.error_on_failure();
+        }
+        builder.clone().with_execution_providers([cuda_ep])
     }));
 
     match cuda_result {
@@ -418,6 +427,12 @@ fn configure_cuda(builder: SessionBuilder) -> Result<SessionBuilder> {
             )
         }),
         Err(_) => {
+            if force_gpu {
+                anyhow::bail!(
+                    "FORCE_GPU is set but the CUDA execution provider could not be initialized \
+                     (invalid/stub CUDA library, or missing cuDNN?). Refusing to fall back to CPU."
+                );
+            }
             eprintln!("[next-plaid-onnx] CUDA init panicked (invalid/stub library?), falling back to CPU");
             Ok(builder)
         }

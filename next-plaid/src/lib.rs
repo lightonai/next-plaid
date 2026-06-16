@@ -13,7 +13,7 @@ extern crate blas_src;
 extern crate openblas_src;
 
 pub mod codec;
-#[cfg(feature = "cuda")]
+#[cfg(feature = "_cuda")]
 pub mod cuda;
 pub mod delete;
 pub mod embeddings;
@@ -61,7 +61,7 @@ pub fn default_start_from_scratch() -> usize {
     })
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(feature = "_cuda")]
 pub use cuda::{clear_cuda_broken, is_cuda_broken, mark_cuda_broken, CudaContext};
 
 /// Check if GPU-only mode is forced via environment variable.

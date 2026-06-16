@@ -9,23 +9,23 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Global flag indicating whether cuDNN is available (only relevant when cuda feature is enabled)
-#[cfg(all(feature = "cuda", target_os = "linux"))]
+#[cfg(all(feature = "_cuda", target_os = "linux"))]
 static CUDNN_AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// Check if cuDNN is available at runtime.
 /// This should be called AFTER ensure_onnx_runtime() to get accurate results.
-#[cfg(all(feature = "cuda", target_os = "linux"))]
+#[cfg(all(feature = "_cuda", target_os = "linux"))]
 pub fn is_cudnn_available() -> bool {
     *CUDNN_AVAILABLE.get().unwrap_or(&false)
 }
 
 /// On Windows, ONNX Runtime handles cuDNN loading itself.
-#[cfg(all(feature = "cuda", not(target_os = "linux")))]
+#[cfg(all(feature = "_cuda", not(target_os = "linux")))]
 pub fn is_cudnn_available() -> bool {
     true
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(feature = "_cuda"))]
 pub fn is_cudnn_available() -> bool {
     false // Not applicable - CUDA feature not enabled
 }
@@ -42,9 +42,9 @@ const ORT_LIB_NAME: &str = "libonnxruntime.so";
 const ORT_LIB_NAME: &str = "onnxruntime.dll";
 
 /// Subdirectory name for caching (gpu vs cpu)
-#[cfg(any(feature = "cuda", feature = "directml"))]
+#[cfg(any(feature = "_cuda", feature = "directml"))]
 const ORT_CACHE_SUBDIR: &str = "gpu";
-#[cfg(not(any(feature = "cuda", feature = "directml")))]
+#[cfg(not(any(feature = "_cuda", feature = "directml")))]
 const ORT_CACHE_SUBDIR: &str = "cpu";
 
 /// Ensure ONNX Runtime is available.
@@ -62,7 +62,7 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
     // For CUDA builds on Linux, check if we need to re-exec with cuDNN in LD_LIBRARY_PATH
     // This is only needed on Linux because it caches LD_LIBRARY_PATH at process startup
     // Skip CUDA setup if COLGREP_FORCE_CPU is set (CPU-only mode)
-    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    #[cfg(all(target_os = "linux", feature = "_cuda"))]
     if crate::acceleration::env_acceleration_mode_lossy()
         != crate::acceleration::AccelerationMode::ForceCpu
     {
@@ -142,7 +142,7 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
     }
 
     // 2. Search common locations (skip for CUDA - we want our managed GPU version)
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(not(feature = "_cuda"))]
     if let Some(path) = find_onnx_runtime() {
         pin_runtime_library(&path);
         return Ok(path);
@@ -162,7 +162,7 @@ fn pin_runtime_library(path: &Path) {
         prepend_ld_library_path(parent);
     }
 
-    #[cfg(all(target_os = "linux", feature = "cuda"))]
+    #[cfg(all(target_os = "linux", feature = "_cuda"))]
     {
         // Check for cuDNN availability (result is stored in CUDNN_AVAILABLE)
         let _ = check_cudnn_available();
@@ -170,7 +170,7 @@ fn pin_runtime_library(path: &Path) {
 }
 
 /// Find the cuDNN library directory (without setting any global state)
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(all(target_os = "linux", feature = "_cuda"))]
 fn find_cudnn_directory() -> Option<PathBuf> {
     let search_dirs = get_cudnn_search_dirs();
 
@@ -217,7 +217,7 @@ fn prepend_ld_library_path(dir: &Path) {
 }
 
 /// Get all directories to search for cuDNN library (Linux only)
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(all(target_os = "linux", feature = "_cuda"))]
 fn get_cudnn_search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
@@ -304,7 +304,7 @@ fn get_cudnn_search_dirs() -> Vec<PathBuf> {
 /// Also stores the result in CUDNN_AVAILABLE for later queries.
 /// Only used on Linux where we need to manually set up LD_LIBRARY_PATH.
 /// On Windows, ONNX Runtime handles cuDNN detection automatically.
-#[cfg(all(target_os = "linux", feature = "cuda"))]
+#[cfg(all(target_os = "linux", feature = "_cuda"))]
 fn check_cudnn_available() -> bool {
     // Library names to search for (in order of preference)
     let cudnn_lib_names = [
@@ -369,7 +369,7 @@ fn is_valid_ort_dylib(path: &Path) -> bool {
 }
 
 /// Search for ONNX Runtime in common locations
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(feature = "_cuda"))]
 fn find_onnx_runtime() -> Option<PathBuf> {
     let search_paths = get_search_paths();
     let mut rejected: Vec<PathBuf> = Vec::new();
@@ -447,7 +447,7 @@ fn find_onnx_runtime() -> Option<PathBuf> {
 }
 
 /// Get list of paths to search for ONNX Runtime
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(feature = "_cuda"))]
 fn get_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
@@ -539,22 +539,22 @@ fn download_onnx_runtime() -> Result<PathBuf> {
     let lib_path = cache_dir.join(ORT_LIB_NAME);
 
     // Already cached - check if all required files exist
-    #[cfg(all(feature = "cuda", target_os = "linux"))]
+    #[cfg(all(feature = "_cuda", target_os = "linux"))]
     let already_cached = lib_path.exists()
         && cache_dir
             .join("libonnxruntime_providers_shared.so")
             .exists()
         && cache_dir.join("libonnxruntime_providers_cuda.so").exists();
 
-    #[cfg(all(feature = "cuda", target_os = "windows"))]
+    #[cfg(all(feature = "_cuda", target_os = "windows"))]
     let already_cached = lib_path.exists()
         && cache_dir.join("onnxruntime_providers_shared.dll").exists()
         && cache_dir.join("onnxruntime_providers_cuda.dll").exists();
 
-    #[cfg(all(feature = "directml", not(feature = "cuda")))]
+    #[cfg(all(feature = "directml", not(feature = "_cuda")))]
     let already_cached = lib_path.exists();
 
-    #[cfg(not(any(feature = "cuda", feature = "directml")))]
+    #[cfg(not(any(feature = "_cuda", feature = "directml")))]
     let already_cached = lib_path.exists();
 
     if already_cached {
@@ -565,11 +565,11 @@ fn download_onnx_runtime() -> Result<PathBuf> {
 
     let (url, files_to_extract) = get_download_info()?;
 
-    #[cfg(feature = "cuda")]
+    #[cfg(feature = "_cuda")]
     eprintln!("⚙️  Runtime: ONNX {} (GPU/CUDA)", ORT_VERSION);
-    #[cfg(all(feature = "directml", not(feature = "cuda")))]
+    #[cfg(all(feature = "directml", not(feature = "_cuda")))]
     eprintln!("⚙️  Runtime: ONNX {} (GPU/DirectML)", ORT_VERSION);
-    #[cfg(not(any(feature = "cuda", feature = "directml")))]
+    #[cfg(not(any(feature = "_cuda", feature = "directml")))]
     eprintln!("⚙️  Runtime: ONNX {} (CPU)", ORT_VERSION);
 
     // Download archive
@@ -596,7 +596,7 @@ fn get_download_info() -> Result<(String, Vec<FileToExtract>)> {
         target_os = "windows",
         target_arch = "x86_64",
         feature = "directml",
-        not(feature = "cuda")
+        not(feature = "_cuda")
     ))]
     return Ok((
         format!(
@@ -614,7 +614,7 @@ fn get_download_info() -> Result<(String, Vec<FileToExtract>)> {
         target_os = "windows",
         target_arch = "x86_64",
         feature = "directml",
-        not(feature = "cuda")
+        not(feature = "_cuda")
     )))]
     {
         let base = format!(
@@ -648,7 +648,7 @@ fn get_download_info() -> Result<(String, Vec<FileToExtract>)> {
         );
 
         // Linux x86_64 - supports both CPU and GPU
-        #[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "cuda"))]
+        #[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "_cuda"))]
         let (archive, files) = {
             let archive_name = format!("onnxruntime-linux-x64-gpu-{}", ORT_VERSION);
             (
@@ -670,7 +670,7 @@ fn get_download_info() -> Result<(String, Vec<FileToExtract>)> {
             )
         };
 
-        #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "cuda")))]
+        #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "_cuda")))]
         let (archive, files) = (
             format!("onnxruntime-linux-x64-{}.tgz", ORT_VERSION),
             vec![(
@@ -696,7 +696,7 @@ fn get_download_info() -> Result<(String, Vec<FileToExtract>)> {
         );
 
         // Windows - supports both CPU and GPU
-        #[cfg(all(target_os = "windows", target_arch = "x86_64", feature = "cuda"))]
+        #[cfg(all(target_os = "windows", target_arch = "x86_64", feature = "_cuda"))]
         let (archive, files) = {
             let archive_name = format!("onnxruntime-win-x64-gpu-{}", ORT_VERSION);
             (
@@ -721,7 +721,7 @@ fn get_download_info() -> Result<(String, Vec<FileToExtract>)> {
         #[cfg(all(
             target_os = "windows",
             target_arch = "x86_64",
-            not(any(feature = "cuda", feature = "directml"))
+            not(any(feature = "_cuda", feature = "directml"))
         ))]
         let (archive, files) = (
             format!("onnxruntime-win-x64-{}.zip", ORT_VERSION),

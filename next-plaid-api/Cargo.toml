@@ -60,7 +60,11 @@ accelerate = ["next-plaid/accelerate"]
 mkl = ["next-plaid/mkl"]
 metal_gpu = ["next-plaid/metal_gpu"]
 model = ["dep:next-plaid-onnx"]
+# CUDA acceleration — pick the major matching the host, don't enable both.
+#   * `cuda`    -> CUDA 11.8 / 12.x  (default, unchanged behaviour)
+#   * `cuda-13` -> CUDA 13.x
 cuda = ["model", "next-plaid-onnx/cuda", "next-plaid/cuda"]
+cuda-13 = ["model", "next-plaid-onnx/cuda", "next-plaid/cuda-13"]
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json"] }

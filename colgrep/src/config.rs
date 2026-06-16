@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "cuda")]
+#[cfg(feature = "_cuda")]
 use crate::acceleration::{env_acceleration_mode_lossy, AccelerationMode};
 use crate::index::paths::get_colgrep_data_dir;
 
@@ -29,14 +29,14 @@ pub const DEFAULT_BATCH_SIZE_GPU: usize = 64;
 
 /// Default batch size - use GPU default when CUDA is enabled AND available, CPU otherwise
 /// Note: At compile time we set the GPU default, but at runtime we check cuDNN availability
-#[cfg(feature = "cuda")]
+#[cfg(feature = "_cuda")]
 pub const DEFAULT_BATCH_SIZE: usize = DEFAULT_BATCH_SIZE_GPU;
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(feature = "_cuda"))]
 pub const DEFAULT_BATCH_SIZE: usize = DEFAULT_BATCH_SIZE_CPU;
 
 /// Get the effective default batch size at runtime.
 /// When CUDA feature is enabled but cuDNN is not available, returns CPU default.
-#[cfg(feature = "cuda")]
+#[cfg(feature = "_cuda")]
 pub fn get_default_batch_size() -> usize {
     match env_acceleration_mode_lossy() {
         AccelerationMode::ForceCpu => DEFAULT_BATCH_SIZE_CPU,
@@ -51,7 +51,7 @@ pub fn get_default_batch_size() -> usize {
     }
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(feature = "_cuda"))]
 pub fn get_default_batch_size() -> usize {
     DEFAULT_BATCH_SIZE_CPU
 }
@@ -65,7 +65,7 @@ pub fn get_default_cpu_parallel_sessions() -> usize {
 
 /// Get the effective default parallel sessions at runtime.
 /// When CUDA feature is enabled but cuDNN is not available, returns CPU default.
-#[cfg(feature = "cuda")]
+#[cfg(feature = "_cuda")]
 pub fn get_default_parallel_sessions() -> usize {
     match env_acceleration_mode_lossy() {
         AccelerationMode::ForceCpu => get_default_cpu_parallel_sessions(),
@@ -80,7 +80,7 @@ pub fn get_default_parallel_sessions() -> usize {
     }
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(feature = "_cuda"))]
 pub fn get_default_parallel_sessions() -> usize {
     get_default_cpu_parallel_sessions()
 }
@@ -250,11 +250,11 @@ impl Config {
     /// Check if FP32 (non-quantized) model should be used
     /// Defaults to true when cuda feature is enabled (better CUDA performance with FP32)
     pub fn use_fp32(&self) -> bool {
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "_cuda")]
         {
             self.fp32.unwrap_or(true)
         }
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(feature = "_cuda"))]
         {
             self.fp32.unwrap_or(false)
         }
@@ -653,7 +653,7 @@ mod tests {
         assert_eq!(MAX_PARALLEL_SESSIONS_CPU, 16);
 
         let sessions = get_default_parallel_sessions();
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "_cuda")]
         let expected = match env_acceleration_mode_lossy() {
             AccelerationMode::ForceCpu => std::thread::available_parallelism()
                 .map(|p| p.get())
@@ -671,7 +671,7 @@ mod tests {
                 }
             }
         };
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(feature = "_cuda"))]
         let expected = std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(16)

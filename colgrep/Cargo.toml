@@ -110,8 +110,17 @@ tempfile = "3"
 
 [features]
 default = []
-# Model inference acceleration (ONNX Runtime execution providers)
-cuda = ["next-plaid-onnx/cuda", "next-plaid/cuda"]
+# Model inference acceleration (ONNX Runtime execution providers).
+# cudarc (the k-means/codec path) binds one CUDA major at compile time, so pick
+# the one matching the host and DO NOT enable both `cuda` and `cuda-13`:
+#   * `cuda`    -> CUDA 11.8 / 12.x  (default, unchanged behaviour)
+#   * `cuda-13` -> CUDA 13.x
+# The ONNX encode path (next-plaid-onnx/cuda) is version-agnostic at build time
+# (ORT is loaded dynamically), so both variants share it.
+cuda = ["_cuda", "next-plaid-onnx/cuda", "next-plaid/cuda"]
+cuda-13 = ["_cuda", "next-plaid-onnx/cuda", "next-plaid/cuda-13"]
+# Internal: gates colgrep's CUDA code; reached via `cuda` or `cuda-13`.
+_cuda = []
 coreml = ["next-plaid-onnx/coreml"]
 tensorrt = ["next-plaid-onnx/tensorrt"]
 directml = ["next-plaid-onnx/directml"]

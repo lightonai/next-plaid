@@ -30,7 +30,7 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ndarray-npy = "0.9.1"
-fastkmeans-rs = "1.0.6"
+fastkmeans-rs = "1.0.7"
 memmap2 = "0.9"
 fs2 = "0.4"
 half = "2.4"
@@ -40,8 +40,10 @@ regex = "1.11"
 # `fancy-regex` powers the SQLite REGEXP UDF so chunk filtering supports
 # lookaround and backreferences in addition to the standard regex syntax.
 fancy-regex = "0.13"
+# The CUDA major-version binding (`cuda-11080` / `cuda-13000`) is selected by
+# the `cuda` / `cuda-13` features below, not pinned here — cudarc binds a single
+# CUDA major at compile time.
 cudarc = { version = "0.19", default-features = false, features = [
-    "cuda-11080",
     "cublas",
     "dynamic-loading",
     "nvrtc",
@@ -73,4 +75,12 @@ mkl = [
     "fastkmeans-rs/mkl",
 ]
 metal_gpu = ["fastkmeans-rs/metal_gpu"]
-cuda = ["fastkmeans-rs/cuda", "dep:cudarc"]
+# CUDA acceleration. cudarc binds one CUDA major at compile time, so pick the
+# one matching the target host and DO NOT enable both:
+#   * `cuda`    -> CUDA 11.8 / 12.x  (default, unchanged behaviour)
+#   * `cuda-13` -> CUDA 13.x
+cuda = ["_cuda", "fastkmeans-rs/cuda", "cudarc/cuda-11080"]
+cuda-13 = ["_cuda", "fastkmeans-rs/cuda-13", "cudarc/cuda-13000"]
+# Internal: pulls in cudarc + gates the CUDA code. Always go through `cuda` or
+# `cuda-13` (which also select the cudarc version); don't enable this directly.
+_cuda = ["dep:cudarc"]

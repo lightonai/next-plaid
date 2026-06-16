@@ -21,7 +21,7 @@ use next_plaid_onnx::{pool_document_embeddings, Colbert, ExecutionProvider};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "cuda")]
+#[cfg(feature = "_cuda")]
 use crate::acceleration::apply_acceleration_mode;
 use crate::acceleration::{env_acceleration_mode_lossy, AccelerationMode};
 use crate::embed::build_embedding_text;
@@ -192,7 +192,7 @@ const DEFAULT_ENCODE_BATCH_SIZE: usize = 64;
 
 /// Threshold for forcing CPU encoding even when CUDA is available.
 /// For small batches (< this many units), CPU is faster due to GPU initialization overhead.
-#[cfg(feature = "cuda")]
+#[cfg(feature = "_cuda")]
 const SMALL_BATCH_CPU_THRESHOLD: usize = 300;
 /// Bounded channel capacity between the pool and index stages.
 /// Kept small (4 chunks) to limit memory: each chunk holds full embeddings
@@ -245,7 +245,7 @@ fn default_index_parallel_sessions(
 const METADATA_QUEUE_CAPACITY: usize = 8;
 
 fn compiled_accelerated_execution_provider() -> Option<ExecutionProvider> {
-    if cfg!(feature = "cuda") {
+    if cfg!(feature = "_cuda") {
         Some(ExecutionProvider::Cuda)
     } else if cfg!(feature = "tensorrt") {
         Some(ExecutionProvider::TensorRT)
@@ -273,7 +273,7 @@ fn execution_provider_for_acceleration_mode(mode: AccelerationMode) -> Execution
 }
 
 #[cfg(all(
-    not(feature = "cuda"),
+    not(feature = "_cuda"),
     any(feature = "coreml", feature = "directml", feature = "migraphx")
 ))]
 fn indexing_execution_provider_for_acceleration_mode(mode: AccelerationMode) -> ExecutionProvider {
@@ -1119,10 +1119,10 @@ impl IndexBuilder {
     ///   available, as GPU initialization overhead outweighs the benefits for small workloads.
     fn ensure_model_created(&mut self, num_units: usize) -> Result<()> {
         if self.model.is_none() {
-            #[cfg(feature = "cuda")]
+            #[cfg(feature = "_cuda")]
             let acceleration_mode = env_acceleration_mode_lossy();
 
-            #[cfg(feature = "cuda")]
+            #[cfg(feature = "_cuda")]
             let (num_sessions, execution_provider) = {
                 match acceleration_mode {
                     AccelerationMode::ForceCpu => {
@@ -1195,7 +1195,7 @@ impl IndexBuilder {
                 }
             };
             #[cfg(not(any(
-                feature = "cuda",
+                feature = "_cuda",
                 feature = "directml",
                 feature = "migraphx",
                 feature = "coreml"
@@ -1213,7 +1213,7 @@ impl IndexBuilder {
             };
 
             #[cfg(any(feature = "directml", feature = "migraphx", feature = "coreml"))]
-            #[cfg(not(feature = "cuda"))]
+            #[cfg(not(feature = "_cuda"))]
             let (num_sessions, execution_provider) = {
                 let execution_provider = indexing_execution_provider_for_acceleration_mode(
                     env_acceleration_mode_lossy(),
@@ -1269,7 +1269,7 @@ impl IndexBuilder {
     }
 
     /// Check if the current model is using GPU execution.
-    #[cfg(feature = "cuda")]
+    #[cfg(feature = "_cuda")]
     fn is_using_gpu(&self) -> bool {
         self.model
             .as_ref()
@@ -1281,7 +1281,7 @@ impl IndexBuilder {
     /// Uses `dynamic_batch(false)` because CPU encoding processes fixed-size batches
     /// sequentially — the token-budget bucketing of dynamic batch only helps GPU
     /// where plan reuse across similar shapes reduces kernel launch overhead.
-    #[cfg(feature = "cuda")]
+    #[cfg(feature = "_cuda")]
     fn rebuild_model_for_cpu(&mut self) -> Result<()> {
         self.model = None;
         apply_acceleration_mode(AccelerationMode::ForceCpu);
@@ -1343,7 +1343,7 @@ impl IndexBuilder {
             },
         );
 
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "_cuda")]
         if let Err(gpu_err) = result {
             if self.is_using_gpu() {
                 let accel = env_acceleration_mode_lossy();
@@ -2317,7 +2317,7 @@ impl IndexBuilder {
             // Ensure model is created before encoding (lazy initialization)
             self.ensure_model_created(all_units.len())?;
 
-            #[cfg(feature = "cuda")]
+            #[cfg(feature = "_cuda")]
             if !crate::onnx_runtime::is_cudnn_available()
                 && std::env::var("_COLGREP_CUDNN_NOTICE").is_err()
             {
@@ -3553,7 +3553,7 @@ impl Searcher {
         let acceleration_mode = env_acceleration_mode_lossy();
         let execution_provider = execution_provider_for_acceleration_mode(acceleration_mode);
 
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "_cuda")]
         match acceleration_mode {
             AccelerationMode::ForceGpu => apply_acceleration_mode(AccelerationMode::ForceGpu),
             AccelerationMode::ForceCpu | AccelerationMode::Auto => {
@@ -3563,7 +3563,7 @@ impl Searcher {
 
         crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")?;
 
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "_cuda")]
         if matches!(acceleration_mode, AccelerationMode::ForceGpu) {
             if !crate::onnx_runtime::is_cudnn_available() {
                 anyhow::bail!("FORCE_GPU is set, but cuDNN was not initialized");
@@ -3619,7 +3619,7 @@ impl Searcher {
         let acceleration_mode = env_acceleration_mode_lossy();
         let execution_provider = execution_provider_for_acceleration_mode(acceleration_mode);
 
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "_cuda")]
         match acceleration_mode {
             AccelerationMode::ForceGpu => apply_acceleration_mode(AccelerationMode::ForceGpu),
             AccelerationMode::ForceCpu | AccelerationMode::Auto => {
@@ -3629,7 +3629,7 @@ impl Searcher {
 
         crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")?;
 
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "_cuda")]
         if matches!(acceleration_mode, AccelerationMode::ForceGpu) {
             if !crate::onnx_runtime::is_cudnn_available() {
                 anyhow::bail!("FORCE_GPU is set, but cuDNN was not initialized");
@@ -4608,7 +4608,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(feature = "coreml", not(feature = "cuda")))]
+    #[cfg(all(feature = "coreml", not(feature = "_cuda")))]
     fn test_auto_indexing_provider_avoids_coreml() {
         assert_eq!(
             indexing_execution_provider_for_acceleration_mode(AccelerationMode::Auto),

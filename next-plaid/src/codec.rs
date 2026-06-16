@@ -259,7 +259,7 @@ impl ResidualCodec {
     /// Centroid indices of shape `[N]`
     pub fn compress_into_codes(&self, embeddings: &Array2<f32>) -> Array1<usize> {
         // Try CUDA acceleration if available
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "_cuda")]
         {
             let force_gpu = crate::is_force_gpu();
             if let Some(ctx) = crate::cuda::get_global_context() {

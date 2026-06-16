@@ -296,7 +296,7 @@ pub fn encode_index_chunk(
     let doclens: Vec<i64> = embeddings.iter().map(|d| d.nrows() as i64).collect();
     let total_tokens: usize = doclens.iter().sum::<i64>() as usize;
 
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(not(feature = "_cuda"))]
     let _ = force_cpu;
 
     let mut batch_embeddings = Array2::<f32>::zeros((total_tokens, embedding_dim));
@@ -310,7 +310,7 @@ pub fn encode_index_chunk(
     }
 
     let (batch_codes, batch_residuals) = {
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "_cuda")]
         {
             let force_gpu = crate::is_force_gpu();
             if !force_cpu {
@@ -345,7 +345,7 @@ pub fn encode_index_chunk(
                 compress_and_residuals_cpu(&batch_embeddings, codec)
             }
         }
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(feature = "_cuda"))]
         {
             compress_and_residuals_cpu(&batch_embeddings, codec)
         }
@@ -738,7 +738,7 @@ pub fn create_index_files(
         // BATCH: Compress embeddings and compute residuals
         // Try CUDA fused operation first, fall back to CPU (skip CUDA if force_cpu is set)
         let (batch_codes, batch_residuals) = {
-            #[cfg(feature = "cuda")]
+            #[cfg(feature = "_cuda")]
             {
                 let force_gpu = crate::is_force_gpu();
                 if !config.force_cpu {
@@ -770,7 +770,7 @@ pub fn create_index_files(
                     compress_and_residuals_cpu(&batch_embeddings, &codec)
                 }
             }
-            #[cfg(not(feature = "cuda"))]
+            #[cfg(not(feature = "_cuda"))]
             {
                 compress_and_residuals_cpu(&batch_embeddings, &codec)
             }
@@ -935,7 +935,7 @@ pub fn create_index_with_kmeans_files(
 
     // Pre-initialize CUDA if available (first init can take 10-20s due to driver initialization)
     // Skip if force_cpu is set to avoid unnecessary initialization overhead
-    #[cfg(feature = "cuda")]
+    #[cfg(feature = "_cuda")]
     if !config.force_cpu {
         if crate::is_force_gpu() {
             crate::cuda::get_global_context()
