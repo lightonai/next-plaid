@@ -199,8 +199,11 @@ EXAMPLES:
     # Switch to INT8 quantized model (faster inference)
     colgrep settings --int8
 
-    # Switch back to full-precision (FP32) model (default)
+    # Force the full-precision (FP32) model (model.onnx)
     colgrep settings --fp32
+
+    # Reset precision to the build default (FP32 on CUDA, INT8 otherwise)
+    colgrep settings --default-precision
 
     # Set embedding pool factor (smaller index, faster search)
     colgrep settings --pool-factor 2
@@ -252,7 +255,7 @@ NOTES:
     • Use 0 to reset a value to its default
     • These values override the CLI defaults when not explicitly specified
     • Default output is compact (filepath:lines). Use -v or --verbose for full content
-    • FP32 (full-precision) is the default
+    • Precision defaults to FP32 on CUDA builds and INT8 otherwise; --fp32/--int8 force a choice
     • Pool factor 2 (default) reduces index size by ~50%. Use 1 to disable pooling
     • Parallel sessions default to CPU count. Batch-size 1 (default) maximizes throughput
     • Parser recursion depth defaults to 1024. Increase only if needed for deep ASTs
@@ -640,13 +643,17 @@ pub enum Commands {
         #[arg(long = "n")]
         default_n: Option<usize>,
 
-        /// Use full-precision (FP32) model (default)
+        /// Force full-precision (FP32) model (model.onnx)
         #[arg(long, conflicts_with = "int8")]
         fp32: bool,
 
         /// Use INT8 quantized model (faster inference)
         #[arg(long, conflicts_with = "fp32")]
         int8: bool,
+
+        /// Reset model precision to the build default (FP32 on CUDA, INT8 otherwise)
+        #[arg(long = "default-precision", conflicts_with_all = ["fp32", "int8"])]
+        default_precision: bool,
 
         /// Set default pool factor for embedding compression (use 0 to reset to default 2)
         /// Higher values = faster search, fewer embeddings. Use 1 to disable pooling.

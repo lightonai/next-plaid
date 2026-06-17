@@ -241,8 +241,11 @@ colgrep settings --n 10
 # Use INT8 quantized model (faster inference)
 colgrep settings --int8
 
-# Use FP32 full precision (more accurate)
+# Force FP32 full precision (more accurate)
 colgrep settings --fp32
+
+# Reset precision to the build default (FP32 on CUDA, INT8 otherwise)
+colgrep settings --default-precision
 
 # Set embedding pool factor (2 = 50% smaller index, 1 = full precision)
 colgrep settings --pool-factor 2

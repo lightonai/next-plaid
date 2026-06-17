@@ -99,6 +99,7 @@ pub fn cmd_config(
     default_n: Option<usize>,
     fp32: bool,
     int8: bool,
+    default_precision: bool,
     pool_factor: Option<usize>,
     parallel_sessions: Option<usize>,
     batch_size: Option<usize>,
@@ -131,6 +132,7 @@ pub fn cmd_config(
         && default_n.is_none()
         && !fp32
         && !int8
+        && !default_precision
         && pool_factor.is_none()
         && parallel_sessions.is_none()
         && batch_size.is_none()
@@ -154,10 +156,11 @@ pub fn cmd_config(
         }
 
         // Precision
-        if config.use_fp32() {
-            println!("  precision:   fp32 (default)");
+        let precision = if config.use_fp32() { "fp32" } else { "int8" };
+        if config.fp32.is_some() {
+            println!("  precision:   {}", precision);
         } else {
-            println!("  precision:   int8");
+            println!("  precision:   {} (build default)", precision);
         }
 
         // Pool factor
@@ -291,14 +294,20 @@ pub fn cmd_config(
         changed = true;
     }
 
-    // Set fp32 or int8
+    // Set fp32 or int8 (or reset to the build default)
     if fp32 {
-        config.clear_fp32();
-        println!("✅ Set model precision to FP32 (full-precision, default)");
+        // Persist an explicit override. Clearing would not force FP32 on non-CUDA
+        // builds, where a missing value resolves to INT8 (issue #130).
+        config.set_fp32(true);
+        println!("✅ Set model precision to FP32 (full-precision)");
         changed = true;
     } else if int8 {
         config.set_fp32(false);
         println!("✅ Set model precision to INT8 (quantized)");
+        changed = true;
+    } else if default_precision {
+        config.clear_fp32();
+        println!("✅ Reset model precision to build default (FP32 on CUDA, INT8 otherwise)");
         changed = true;
     }
 

@@ -867,4 +867,37 @@ mod tests {
         let deserialized: Config = serde_json::from_str(&json).unwrap();
         assert!(deserialized.use_relative_paths());
     }
+
+    #[test]
+    fn test_set_fp32_forces_fp32_regression_130() {
+        // Regression for #130: `settings --fp32` must persist a value that makes
+        // use_fp32() resolve to true on every build. Clearing the field instead
+        // resolves to INT8 on non-CUDA builds, which is the bug.
+        let mut config = Config::default();
+
+        config.set_fp32(true);
+        assert_eq!(config.fp32, Some(true));
+        assert!(
+            config.use_fp32(),
+            "set_fp32(true) must force FP32 regardless of build features"
+        );
+
+        config.set_fp32(false);
+        assert_eq!(config.fp32, Some(false));
+        assert!(!config.use_fp32());
+
+        // `--default-precision` clears the override, reverting to the build default.
+        config.clear_fp32();
+        assert_eq!(config.fp32, None);
+    }
+
+    #[test]
+    fn test_fp32_override_survives_serialization() {
+        let mut config = Config::default();
+        config.set_fp32(true);
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.fp32, Some(true));
+        assert!(restored.use_fp32());
+    }
 }
