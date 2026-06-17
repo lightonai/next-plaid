@@ -86,6 +86,18 @@ fn delete_from_index_counted(ids: &[i64], index_path: &str) -> Result<usize> {
 /// surviving documents, so interleaving reads and deletes would invalidate the IDs that haven't
 /// been deleted yet. Returns the number of documents removed.
 fn delete_files_from_index(index_path: &str, files: &[PathBuf]) -> Result<usize> {
+    delete_files_from_index_inner(index_path, files, true)
+}
+
+fn delete_files_from_index_no_fts_rebuild(index_path: &str, files: &[PathBuf]) -> Result<usize> {
+    delete_files_from_index_inner(index_path, files, false)
+}
+
+fn delete_files_from_index_inner(
+    index_path: &str,
+    files: &[PathBuf],
+    rebuild_fts: bool,
+) -> Result<usize> {
     if files.is_empty() {
         return Ok(0);
     }
@@ -136,10 +148,14 @@ fn delete_files_from_index(index_path: &str, files: &[PathBuf]) -> Result<usize>
     };
 
     filtering::delete(index_path, &ids)?;
+
+    if !rebuild_fts {
+        return Ok(ids.len());
+    }
+
     if is_suffix_delete {
         next_plaid::text_search::delete(index_path, &valid)?;
     } else {
-        // Survivor IDs shifted; FTS5 rowids no longer match METADATA.
         next_plaid::text_search::rebuild(index_path)?;
     }
     Ok(ids.len())
@@ -717,7 +733,13 @@ fn flush_update_batch(
     }
 
     let _guard = CriticalSectionGuard::new();
-    let (_, doc_ids) = MmapIndex::update_or_create(embeddings, index_path, config, update_config)?;
+    let index_exists = Path::new(index_path).join("metadata.json").exists();
+    let doc_ids = if index_exists {
+        MmapIndex::update_append(embeddings, index_path, update_config)?
+    } else {
+        let (_, ids) = MmapIndex::update_or_create(embeddings, index_path, config, update_config)?;
+        ids
+    };
     embeddings.clear();
 
     sender
@@ -1909,7 +1931,9 @@ impl IndexBuilder {
         // Deferred from earlier to minimize the window where data is missing
         // from the index (for concurrent readers and interrupt safety). Batched
         // into a single index rewrite — see delete_files_from_index / issue #116.
-        delete_files_from_index(index_path, &files_changed)?;
+        // Skip FTS5 rebuild: we're about to re-add these files immediately via
+        // the encoding pipeline, which rebuilds their FTS5 entries.
+        delete_files_from_index_no_fts_rebuild(index_path, &files_changed)?;
 
         let sorted_units = prepare_units_for_encoding(&new_units, index_chunk_size);
         let was_interrupted = self.run_encoding_pipeline(
@@ -2288,7 +2312,8 @@ impl IndexBuilder {
         }
         // Idempotent resume: clear any partial docs a prior interrupted run wrote for these
         // files, in a single batched index rewrite (issue #116).
-        delete_files_from_index(index_path, batch_files)?;
+        // Skip FTS5 rebuild: we're about to re-add these files immediately.
+        delete_files_from_index_no_fts_rebuild(index_path, batch_files)?;
         self.ensure_model_created(batch_units.len())?;
         let pool_factor = self.resolve_pool_factor(batch_units.len());
         let sorted_units = prepare_units_for_encoding(batch_units, index_chunk_size);
@@ -2501,7 +2526,14 @@ impl IndexBuilder {
 
         // 1. Delete chunks for deleted files (safe — not re-adding these). Batched into a
         //    single index rewrite — see delete_files_from_index / issue #116.
-        delete_files_from_index(index_path, &plan.deleted)?;
+        //    Skip FTS5 rebuild here when changed files will trigger encoding: the
+        //    final rebuild after encoding covers both deletions and re-adds in one pass.
+        let has_changes_to_encode = !plan.added.is_empty() || !plan.changed.is_empty();
+        if has_changes_to_encode {
+            delete_files_from_index_no_fts_rebuild(index_path, &plan.deleted)?;
+        } else {
+            delete_files_from_index(index_path, &plan.deleted)?;
+        }
 
         // Remove deleted files from state
         for path in &plan.deleted {
@@ -2576,12 +2608,13 @@ impl IndexBuilder {
 
         // Delete stale index entries for skipped files that were previously indexed
         // (e.g., files that became unreadable due to invalid UTF-8). Batched into one rewrite.
+        // Skip FTS rebuild: covered by the final rebuild after encoding.
         let stale_skipped: Vec<PathBuf> = skipped_files
             .iter()
             .filter(|p| plan.changed.contains(p))
             .cloned()
             .collect();
-        let _ = delete_files_from_index(index_path, &stale_skipped);
+        let _ = delete_files_from_index_no_fts_rebuild(index_path, &stale_skipped);
 
         // 3. Add new units to index
         let mut was_interrupted = false;
@@ -2624,7 +2657,9 @@ impl IndexBuilder {
             // Deferred from earlier to minimize the window where data is missing
             // from the index (for concurrent readers and interrupt safety). Batched
             // into a single index rewrite — see delete_files_from_index / issue #116.
-            delete_files_from_index(index_path, &plan.changed)?;
+            // Skip FTS5 rebuild: the encoding pipeline re-adds FTS entries for the
+            // new versions; we do a single rebuild after encoding completes.
+            delete_files_from_index_no_fts_rebuild(index_path, &plan.changed)?;
 
             let sorted_units = prepare_units_for_encoding(&new_units, index_chunk_size);
             let pipeline_interrupted = self.run_encoding_pipeline(

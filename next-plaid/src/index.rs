@@ -1664,6 +1664,37 @@ impl MmapIndex {
         }
     }
 
+    /// Append embeddings to an existing index without loading the full MmapIndex.
+    ///
+    /// This is significantly faster than `update_or_create` for incremental updates
+    /// because it skips merged-file generation (628MB+ on large indices). Use this
+    /// when you only need the assigned doc IDs and won't search immediately after.
+    pub fn update_append(
+        embeddings: &[Array2<f32>],
+        index_path: &str,
+        update_config: &crate::update::UpdateConfig,
+    ) -> Result<Vec<i64>> {
+        use crate::codec::ResidualCodec;
+        use crate::update::update_index;
+
+        let index_dir = std::path::Path::new(index_path);
+        let metadata = Metadata::load_from_path(index_dir)?;
+        let codec = ResidualCodec::load_from_dir(index_dir)?;
+        let start_doc_id = metadata.num_documents as i64;
+        let num_new_docs = embeddings.len();
+
+        update_index(
+            embeddings,
+            index_path,
+            &codec,
+            Some(update_config.batch_size),
+            false,
+            update_config.force_cpu,
+        )?;
+
+        Ok((start_doc_id..start_doc_id + num_new_docs as i64).collect())
+    }
+
     /// Update an existing index or create a new one, with metadata and automatic
     /// FTS5 full-text indexing.
     ///

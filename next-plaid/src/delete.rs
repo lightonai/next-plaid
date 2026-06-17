@@ -6,7 +6,7 @@
 //! - IVF full rebuild after deletion
 //! - Metadata synchronization
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
@@ -184,62 +184,51 @@ fn delete_from_index_impl(doc_ids: &[i64], index_path: &str, clean_buffer: bool)
         current_doc_offset += doclens.len() as i64;
     }
 
-    // Rebuild IVF from all remaining codes
-    // First, collect all codes from all chunks
-    let mut all_codes: Vec<i64> = Vec::with_capacity(total_embeddings);
+    // Patch IVF in-place: remove deleted doc IDs and renumber survivors.
+    // This is O(IVF_size) instead of O(total_embeddings) since we avoid re-reading
+    // all chunk codes files.
+    {
+        let ivf_path = index_dir.join("ivf.npy");
+        let ivf_lengths_path = index_dir.join("ivf_lengths.npy");
 
-    for chunk_idx in 0..num_chunks {
-        let codes_path = index_dir.join(format!("{}.codes.npy", chunk_idx));
-        let chunk_codes: Array1<i64> =
-            Array1::read_npy(File::open(&codes_path).map_err(|e| {
-                Error::Delete(format!("Failed to read codes for IVF rebuild: {}", e))
-            })?)?;
-        all_codes.extend(chunk_codes.iter());
-    }
+        let old_ivf: Array1<i64> = Array1::read_npy(
+            File::open(&ivf_path)
+                .map_err(|e| Error::Delete(format!("Failed to open IVF: {}", e)))?,
+        )?;
+        let old_ivf_lengths: Array1<i32> = Array1::read_npy(
+            File::open(&ivf_lengths_path)
+                .map_err(|e| Error::Delete(format!("Failed to open IVF lengths: {}", e)))?,
+        )?;
 
-    // Build IVF: map centroid -> list of document IDs
-    // We need to re-read doclens to map embeddings back to documents
-    let mut code_to_docs: BTreeMap<usize, Vec<i64>> = BTreeMap::new();
-    let mut emb_idx = 0;
-    let mut doc_id: i64 = 0;
+        // Build a sorted list of deleted IDs for binary search renumbering.
+        let mut sorted_deleted: Vec<i64> = ids_to_delete.iter().copied().collect();
+        sorted_deleted.sort_unstable();
 
-    for chunk_idx in 0..num_chunks {
-        let doclens_path = index_dir.join(format!("doclens.{}.json", chunk_idx));
-        let doclens: Vec<i64> =
-            serde_json::from_reader(BufReader::new(File::open(&doclens_path)?))?;
+        let mut new_ivf_data: Vec<i64> = Vec::with_capacity(old_ivf.len());
+        let mut new_ivf_lengths: Vec<i32> = Vec::with_capacity(num_partitions);
 
-        for &len in &doclens {
-            for _ in 0..len {
-                if emb_idx < all_codes.len() {
-                    let code = all_codes[emb_idx] as usize;
-                    code_to_docs.entry(code).or_default().push(doc_id);
+        let mut offset: usize = 0;
+        for &len in old_ivf_lengths.iter() {
+            let end = offset + len as usize;
+            let mut centroid_len: i32 = 0;
+            for &doc_id in old_ivf.as_slice().unwrap()[offset..end].iter() {
+                if ids_to_delete.contains(&doc_id) {
+                    continue;
                 }
-                emb_idx += 1;
+                // Renumber: subtract the count of deleted IDs below this one.
+                let shift = sorted_deleted.partition_point(|&d| d < doc_id) as i64;
+                new_ivf_data.push(doc_id - shift);
+                centroid_len += 1;
             }
-            doc_id += 1;
+            new_ivf_lengths.push(centroid_len);
+            offset = end;
         }
+
+        let new_ivf = Array1::from_vec(new_ivf_data);
+        let new_lengths = Array1::from_vec(new_ivf_lengths);
+        new_ivf.write_npy(File::create(&ivf_path)?)?;
+        new_lengths.write_npy(File::create(&ivf_lengths_path)?)?;
     }
-
-    // Build optimized IVF (deduplicated, sorted)
-    let mut ivf_data: Vec<i64> = Vec::new();
-    let mut ivf_lengths: Vec<i32> = vec![0; num_partitions];
-
-    for (centroid_id, ivf_len) in ivf_lengths.iter_mut().enumerate() {
-        if let Some(docs) = code_to_docs.get(&centroid_id) {
-            let mut unique_docs: Vec<i64> = docs.clone();
-            unique_docs.sort_unstable();
-            unique_docs.dedup();
-            *ivf_len = unique_docs.len() as i32;
-            ivf_data.extend(unique_docs);
-        }
-    }
-
-    // Save IVF
-    let ivf = Array1::from_vec(ivf_data);
-    let ivf_lengths = Array1::from_vec(ivf_lengths);
-
-    ivf.write_npy(File::create(index_dir.join("ivf.npy"))?)?;
-    ivf_lengths.write_npy(File::create(index_dir.join("ivf_lengths.npy"))?)?;
 
     // Update global metadata
     let final_avg_doclen = if final_num_documents > 0 {
