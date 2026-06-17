@@ -2886,11 +2886,17 @@ impl IndexBuilder {
             // every file in the repo before returning results. mtime is compared
             // at nanosecond precision and paired with size so a same-second edit
             // can't slip through.
+            //
+            // size == 0 means the field was absent when the state was written
+            // (serde default). Fall back to mtime-only in that case. A real
+            // zero-byte file (e.g. a semaphore) has no content to index so a
+            // false-positive skip is harmless.
             let current_stat = file_stat(&full_path).ok();
             if let (Some(info), Some((current_mtime, current_size))) =
                 (state.files.get(path), current_stat)
             {
-                if info.mtime == current_mtime && info.size == current_size {
+                let size_matches = info.size == 0 || info.size == current_size;
+                if info.mtime == current_mtime && size_matches {
                     plan.unchanged += 1;
                     continue;
                 }
