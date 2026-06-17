@@ -100,6 +100,8 @@ pub fn cmd_config(
     fp32: bool,
     int8: bool,
     default_precision: bool,
+    coreml_cache_dir: Option<String>,
+    clear_coreml_cache_dir: bool,
     pool_factor: Option<usize>,
     parallel_sessions: Option<usize>,
     batch_size: Option<usize>,
@@ -133,6 +135,8 @@ pub fn cmd_config(
         && !fp32
         && !int8
         && !default_precision
+        && coreml_cache_dir.is_none()
+        && !clear_coreml_cache_dir
         && pool_factor.is_none()
         && parallel_sessions.is_none()
         && batch_size.is_none()
@@ -161,6 +165,12 @@ pub fn cmd_config(
             println!("  precision:   {}", precision);
         } else {
             println!("  precision:   {} (build default)", precision);
+        }
+
+        // CoreML model cache directory (issue #129)
+        match config.coreml_cache_dir() {
+            Some(dir) => println!("  coreml-cache: {}", dir),
+            None => println!("  coreml-cache: (default: ~/Library/Caches/next-plaid/coreml)"),
         }
 
         // Pool factor
@@ -308,6 +318,20 @@ pub fn cmd_config(
     } else if default_precision {
         config.clear_fp32();
         println!("✅ Reset model precision to build default (FP32 on CUDA, INT8 otherwise)");
+        changed = true;
+    }
+
+    // Set or clear the CoreML model cache directory (issue #129)
+    if let Some(dir) = coreml_cache_dir {
+        config.set_coreml_cache_dir(&dir);
+        println!("✅ Set CoreML model cache directory to: {}", dir);
+        println!("   CoreML will compile and cache models here.");
+        changed = true;
+    } else if clear_coreml_cache_dir {
+        config.clear_coreml_cache_dir();
+        println!(
+            "✅ Cleared CoreML model cache directory (using default ~/Library/Caches/next-plaid/coreml)"
+        );
         changed = true;
     }
 

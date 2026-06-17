@@ -655,6 +655,16 @@ pub enum Commands {
         #[arg(long = "default-precision", conflicts_with_all = ["fp32", "int8"])]
         default_precision: bool,
 
+        /// Override the CoreML model cache directory (persists across runs).
+        /// CoreML already caches compiled models by default under
+        /// ~/Library/Caches/next-plaid/coreml; use this to choose another location (issue #129).
+        #[arg(long = "coreml-cache-dir", value_name = "PATH")]
+        coreml_cache_dir: Option<String>,
+
+        /// Clear the CoreML cache-dir override (revert to the default cache location)
+        #[arg(long = "clear-coreml-cache-dir", conflicts_with = "coreml_cache_dir")]
+        clear_coreml_cache_dir: bool,
+
         /// Set default pool factor for embedding compression (use 0 to reset to default 2)
         /// Higher values = faster search, fewer embeddings. Use 1 to disable pooling.
         #[arg(long = "pool-factor", value_name = "FACTOR")]

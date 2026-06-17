@@ -14,6 +14,7 @@ use colgrep::{
     acceleration::{apply_acceleration_mode, env_acceleration_mode, AccelerationMode},
     install_claude_code, install_codex, install_hermes, install_opencode, setup_signal_handler,
     uninstall_all, uninstall_claude_code, uninstall_codex, uninstall_hermes, uninstall_opencode,
+    Config,
 };
 
 use cli::{Cli, Commands};
@@ -21,6 +22,29 @@ use commands::{
     cmd_clear, cmd_config, cmd_init, cmd_reset_stats, cmd_search, cmd_session_hook, cmd_set_model,
     cmd_stats, cmd_status, cmd_task_hook, cmd_update, InitOptions,
 };
+
+/// Apply the persisted CoreML model cache directory (issue #129).
+///
+/// When configured via `colgrep settings --coreml-cache-dir`, export it as
+/// `NEXT_PLAID_COREML_CACHE_DIR` so the ONNX layer points CoreML at a stable,
+/// writable directory instead of `$TMPDIR` (which is rootless-restricted on some
+/// macOS setups). An explicit environment variable always wins; when neither is
+/// set, default behavior is unchanged.
+///
+/// Runs once at startup before any ONNX session is built and before worker threads
+/// spawn, so the `set_var` here is safe.
+fn apply_coreml_cache_dir() {
+    if std::env::var_os("NEXT_PLAID_COREML_CACHE_DIR").is_some() {
+        return; // explicit environment override wins
+    }
+    if let Ok(config) = Config::load() {
+        if let Some(dir) = config.coreml_cache_dir() {
+            if !dir.trim().is_empty() {
+                std::env::set_var("NEXT_PLAID_COREML_CACHE_DIR", dir);
+            }
+        }
+    }
+}
 
 fn main() -> Result<()> {
     // Set up Ctrl+C handler for graceful interruption during indexing
@@ -44,6 +68,7 @@ fn main() -> Result<()> {
         env_mode
     };
     apply_acceleration_mode(acceleration_mode);
+    apply_coreml_cache_dir();
 
     // Handle global flags before subcommands
     if cli.install_claude_code {
@@ -266,6 +291,8 @@ fn main() -> Result<()> {
             fp32,
             int8,
             default_precision,
+            coreml_cache_dir,
+            clear_coreml_cache_dir,
             pool_factor,
             parallel_sessions,
             batch_size,
@@ -289,6 +316,8 @@ fn main() -> Result<()> {
             fp32,
             int8,
             default_precision,
+            coreml_cache_dir,
+            clear_coreml_cache_dir,
             pool_factor,
             parallel_sessions,
             batch_size,

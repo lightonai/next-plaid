@@ -367,7 +367,7 @@ fn configure_auto_provider(builder: SessionBuilder) -> Result<SessionBuilder> {
     if !force_cpu {
         if let Ok(b) = builder
             .clone()
-            .with_execution_providers([CoreMLExecutionProvider::default().build()])
+            .with_execution_providers([coreml_execution_provider()])
         {
             return Ok(b);
         }
@@ -456,10 +456,63 @@ fn configure_tensorrt(_builder: SessionBuilder) -> Result<SessionBuilder> {
     anyhow::bail!("TensorRT support not compiled. Enable the 'tensorrt' feature.")
 }
 
+/// Read an explicit CoreML model cache directory from `NEXT_PLAID_COREML_CACHE_DIR`.
+///
+/// Returns the trimmed value only when set and non-empty. This is how an explicit
+/// user choice (e.g. `colgrep settings --coreml-cache-dir`) reaches CoreML.
+#[cfg(feature = "coreml")]
+fn coreml_cache_dir_from_env() -> Option<String> {
+    std::env::var("NEXT_PLAID_COREML_CACHE_DIR")
+        .ok()
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+}
+
+/// Default per-user CoreML model cache directory: `~/Library/Caches/next-plaid/coreml`
+/// (honoring `XDG_CACHE_HOME`). Used when no explicit dir is configured, so the
+/// compiled model persists across runs and never compiles under `$TMPDIR` (#129).
+/// Created on demand; returns `None` if it cannot be created.
+#[cfg(feature = "coreml")]
+fn default_coreml_cache_dir() -> Option<String> {
+    use std::path::PathBuf;
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Caches")))?;
+    let dir = base.join("next-plaid").join("coreml");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.to_string_lossy().into_owned())
+}
+
+/// Build the CoreML execution provider with a persistent model cache directory.
+///
+/// CoreML compiles the ONNX model into a CoreML bundle at session creation. With
+/// no cache dir, ONNX Runtime compiles into the ephemeral process temp dir
+/// (`$TMPDIR`), so the model is **recompiled on every invocation**, and on macOS
+/// setups where that dir (under `/var/folders/.../T`) is rootless-restricted the
+/// compile fails outright (issue #129).
+///
+/// We instead point CoreML at a stable cache dir so the compiled model persists
+/// across runs (much faster repeated loads) and never touches `$TMPDIR`.
+/// Precedence: `NEXT_PLAID_COREML_CACHE_DIR` (e.g. `colgrep settings
+/// --coreml-cache-dir`) → per-user default (`~/Library/Caches/next-plaid/coreml`).
+/// If neither can be created, fall back to ORT's default (`$TMPDIR`).
+#[cfg(feature = "coreml")]
+fn coreml_execution_provider() -> ort::execution_providers::ExecutionProviderDispatch {
+    let cache_dir = coreml_cache_dir_from_env()
+        .filter(|d| std::fs::create_dir_all(d).is_ok())
+        .or_else(default_coreml_cache_dir);
+    match cache_dir {
+        Some(dir) => CoreMLExecutionProvider::default()
+            .with_model_cache_dir(dir)
+            .build(),
+        None => CoreMLExecutionProvider::default().build(),
+    }
+}
+
 #[cfg(feature = "coreml")]
 fn configure_coreml(builder: SessionBuilder) -> Result<SessionBuilder> {
     builder
-        .with_execution_providers([CoreMLExecutionProvider::default().build()])
+        .with_execution_providers([coreml_execution_provider()])
         .map_err(|e| anyhow::anyhow!("Failed to configure CoreML execution provider: {e:?}"))
 }
 

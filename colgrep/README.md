@@ -247,6 +247,12 @@ colgrep settings --fp32
 # Reset precision to the build default (FP32 on CUDA, INT8 otherwise)
 colgrep settings --default-precision
 
+# macOS/CoreML: compiled models are cached by default under
+# ~/Library/Caches/next-plaid/coreml (persists across runs = faster startup, and
+# avoids the restricted-$TMPDIR failure). Override the location if you want:
+colgrep settings --coreml-cache-dir ~/Library/Caches/colgrep/coreml
+# (revert to the default location with: colgrep settings --clear-coreml-cache-dir)
+
 # Set embedding pool factor (2 = 50% smaller index, 1 = full precision)
 colgrep settings --pool-factor 2
 

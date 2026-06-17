@@ -124,6 +124,13 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fp32: Option<bool>,
 
+    /// Stable directory for CoreML's compiled-model cache (issue #129). When set,
+    /// CoreML writes its compiled model bundle here instead of `$TMPDIR`, which on
+    /// some macOS setups is rootless-restricted and breaks model loading. Unset by
+    /// default, preserving the standard temp-dir behavior.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coreml_cache_dir: Option<String>,
+
     /// Pool factor for embedding compression (default: 2)
     /// Higher values = fewer embeddings = faster search but less precision
     /// Set to 1 to disable pooling
@@ -268,6 +275,21 @@ impl Config {
     /// Clear the FP32 setting (revert to default INT8)
     pub fn clear_fp32(&mut self) {
         self.fp32 = None;
+    }
+
+    /// Get the configured CoreML model cache directory, if any (issue #129).
+    pub fn coreml_cache_dir(&self) -> Option<&str> {
+        self.coreml_cache_dir.as_deref()
+    }
+
+    /// Set a stable CoreML model cache directory (issue #129).
+    pub fn set_coreml_cache_dir(&mut self, dir: impl Into<String>) {
+        self.coreml_cache_dir = Some(dir.into());
+    }
+
+    /// Clear the CoreML model cache directory (revert to default `$TMPDIR`).
+    pub fn clear_coreml_cache_dir(&mut self) {
+        self.coreml_cache_dir = None;
     }
 
     /// Get the pool factor for embedding compression
@@ -899,5 +921,41 @@ mod tests {
         let restored: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.fp32, Some(true));
         assert!(restored.use_fp32());
+    }
+
+    #[test]
+    fn test_coreml_cache_dir_default_none() {
+        // Default: unset → uses the default per-user cache dir (issue #129).
+        let config = Config::default();
+        assert!(config.coreml_cache_dir().is_none());
+    }
+
+    #[test]
+    fn test_coreml_cache_dir_set_clear() {
+        let mut config = Config::default();
+        config.set_coreml_cache_dir("/private/tmp/colgrep-coreml");
+        assert_eq!(
+            config.coreml_cache_dir(),
+            Some("/private/tmp/colgrep-coreml")
+        );
+        config.clear_coreml_cache_dir();
+        assert!(config.coreml_cache_dir().is_none());
+    }
+
+    #[test]
+    fn test_coreml_cache_dir_serialization() {
+        // Persists across runs; absent from JSON when unset (no behavior change).
+        let mut config = Config::default();
+        assert!(!serde_json::to_string(&config)
+            .unwrap()
+            .contains("coreml_cache_dir"));
+
+        config.set_coreml_cache_dir("/private/tmp/colgrep-coreml");
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            restored.coreml_cache_dir(),
+            Some("/private/tmp/colgrep-coreml")
+        );
     }
 }
