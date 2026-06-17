@@ -1592,7 +1592,7 @@ impl IndexBuilder {
         // instead of rebuilding from scratch. No-op for non-worktree projects.
         self.maybe_seed_from_worktree(force);
 
-        let state = IndexState::load(&self.index_dir)?;
+        let mut state = IndexState::load(&self.index_dir)?;
         let index_dir = get_vector_index_path(&self.index_dir);
         let index_path = index_dir.to_str().unwrap();
         let index_exists = index_dir.join("metadata.json").exists();
@@ -1611,9 +1611,48 @@ impl IndexBuilder {
             && !state.files.is_empty()
             && state.index_format_version != INDEX_FORMAT_VERSION;
 
-        // Forced or index-format change: clean atomic rebuild. Drop any in-progress
-        // resumable-build marker so we don't try to resume an index we're discarding.
-        if force || format_mismatch {
+        // Forced: clean atomic rebuild. Drop any in-progress resumable-build
+        // marker so we don't try to resume an index we're discarding.
+        if force {
+            let _ = std::fs::remove_file(self.index_dir.join(BUILDING_MARKER));
+            return self.full_rebuild(languages);
+        }
+
+        // Format version 0 → 1 did not change the on-disk index layout, only
+        // added version tracking and the FileInfo.size field (which defaults to
+        // 0 via serde). Migrate in place rather than discarding the entire index.
+        if format_mismatch && state.index_format_version == 0 {
+            state.index_format_version = INDEX_FORMAT_VERSION;
+            // Stat every still-present entry to fill in missing sizes and upgrade
+            // legacy second-precision mtimes, restoring the stat-only fast path
+            // without re-embedding. Entries whose file is gone are deliberately
+            // LEFT in the state: the incremental update below will see them
+            // missing from disk, mark them deleted, and remove them from every
+            // store (vector index + metadata + FTS5) via delete_files_from_index.
+            // Dropping them here would instead orphan their index rows — the
+            // deleted content would stay searchable until a later periodic cleanup.
+            for (path, info) in state.files.iter_mut() {
+                let full = self.project_root.join(path);
+                let Ok((mtime, size)) = file_stat(&full) else {
+                    continue; // gone on disk → handled as a deletion by the update
+                };
+                if info.size == 0 {
+                    info.size = size;
+                }
+                // Legacy states store mtime in seconds; current code uses
+                // nanoseconds. Upgrade precision when the file hasn't been
+                // modified (same second), otherwise leave the value stale so the
+                // hash pass below catches the real change.
+                if info.mtime < 10_000_000_000_000 {
+                    if info.mtime == mtime / 1_000_000_000 {
+                        info.mtime = mtime;
+                    }
+                } else if info.mtime == 0 {
+                    info.mtime = mtime;
+                }
+            }
+            state.save(&self.index_dir)?;
+        } else if format_mismatch {
             let _ = std::fs::remove_file(self.index_dir.join(BUILDING_MARKER));
             return self.full_rebuild(languages);
         }
@@ -1948,7 +1987,7 @@ impl IndexBuilder {
             let src_dir = &candidate.index_dir;
             // Validate the sibling holds a complete, format-compatible, non-dirty index that
             // isn't mid-build. Skip otherwise so we never seed from a half-built or stale store.
-            let Some(src_state) = seed_source_state(src_dir) else {
+            let Some(mut src_state) = seed_source_state(src_dir) else {
                 continue;
             };
             let src_vector = get_vector_index_path(src_dir);
@@ -1966,6 +2005,19 @@ impl IndexBuilder {
             }
             std::fs::rename(&tmp, &dest_vector)
                 .context("Failed to move seeded index into place")?;
+
+            // Refresh stats to match this worktree's files. The content hashes
+            // from the source are still valid (same git content), but mtimes
+            // differ because git checkout stamps files with the current time.
+            // Without this, the mtime fast path would miss on every file and
+            // trigger a full content-hash pass on the first search.
+            for (path, info) in src_state.files.iter_mut() {
+                let full = self.project_root.join(path);
+                if let Ok((mtime, size)) = file_stat(&full) {
+                    info.mtime = mtime;
+                    info.size = size;
+                }
+            }
 
             // Persist state (save() restamps the version/format fields) and a
             // fresh project.json pointing at THIS worktree, not the source.
@@ -2678,31 +2730,20 @@ fn is_file_too_large(path: &Path) -> bool {
 /// The check is done by canonicalizing both paths and verifying
 /// the resolved path starts with the project root.
 fn is_within_project_root(project_root: &Path, relative_path: &Path) -> bool {
-    // Check for obvious path traversal patterns first (fast path)
     let path_str = relative_path.to_string_lossy();
-    if path_str.contains("..") {
-        // Could be a traversal attempt - do full canonicalization check
-        let full_path = project_root.join(relative_path);
-        match full_path.canonicalize() {
-            Ok(canonical) => {
-                // Canonicalize project root as well for accurate comparison
-                match project_root.canonicalize() {
-                    Ok(canonical_root) => canonical.starts_with(&canonical_root),
-                    Err(_) => false,
-                }
-            }
-            Err(_) => false, // If canonicalization fails, reject the path
-        }
-    } else {
-        // No ".." in path, but still verify the path doesn't escape via symlinks
-        let full_path = project_root.join(relative_path);
-        if !full_path.exists() {
-            return true; // Non-existent paths will be skipped later anyway
-        }
-        match (full_path.canonicalize(), project_root.canonicalize()) {
-            (Ok(canonical), Ok(canonical_root)) => canonical.starts_with(&canonical_root),
-            _ => false,
-        }
+    if !path_str.contains("..") {
+        // The walker uses follow_links(false), so without ".." in the relative
+        // path there is no way for the entry to escape the project root.
+        return true;
+    }
+    // Path contains ".." - do full canonicalization check
+    let full_path = project_root.join(relative_path);
+    match full_path.canonicalize() {
+        Ok(canonical) => match project_root.canonicalize() {
+            Ok(canonical_root) => canonical.starts_with(&canonical_root),
+            Err(_) => false,
+        },
+        Err(_) => false,
     }
 }
 
@@ -2892,11 +2933,20 @@ impl IndexBuilder {
             }
             let full_path = self.project_root.join(path);
 
-            // Fast path: if mtime AND size are both unchanged, skip expensive
-            // content hashing. Without this gate every search reads and hashes
-            // every file in the repo before returning results. mtime is compared
-            // at nanosecond precision and paired with size so a same-second edit
-            // can't slip through.
+            // Fast path: skip expensive content hashing only when BOTH the
+            // nanosecond mtime and the size are unchanged. Without this gate
+            // every search reads and hashes every file in the repo before
+            // returning results. The size is a required second signal: pairing
+            // it with the mtime closes the same-second-edit blind spot (an edit
+            // that lands in the same wall-clock instant but changes the file).
+            //
+            // We do NOT skip on a matching mtime alone when the recorded size is
+            // unknown (0, from a legacy state written before the field existed):
+            // that would reopen the blind spot. Such entries fall through and are
+            // hashed once — correct, and cheap — after which the update persists a
+            // real size (see UpdatePlan.touched) and the format migration backfills
+            // sizes for the whole index in a single stat pass. A genuine zero-byte
+            // file matches strictly (0 == 0) and is skipped as expected.
             let current_stat = file_stat(&full_path).ok();
             if let (Some(info), Some((current_mtime, current_size))) =
                 (state.files.get(path), current_stat)
@@ -5439,6 +5489,197 @@ mod tests {
         for f in ["a.rs", "b.rs", "c.rs", "d.rs"] {
             assert_eq!(fts_hits(index_path, &fixture_token(f)), dpf, "survivor {f}");
         }
+    }
+
+    /// Core invariant: the index stays in sync with what is on disk. Files removed
+    /// from disk must be (a) detected by the update plan and (b) purged from *every*
+    /// store so keyword search can no longer retrieve them, while survivors remain
+    /// retrievable; and a file whose content changes on disk must be detected as
+    /// changed (the index never silently serves stale results).
+    #[test]
+    fn test_index_stays_synced_with_disk() {
+        let _serial = DELETE_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+
+        let proj = tempfile::tempdir().unwrap();
+        let index = tempfile::tempdir().unwrap();
+        let index_path = index.path().to_str().unwrap();
+        let files = ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"];
+
+        // Real files on disk, a matching index (vector + metadata + FTS5), and a
+        // state that tracks them with correct hash/mtime/size.
+        let mut state = IndexState::default();
+        for f in files {
+            let p = proj.path().join(f);
+            std::fs::write(&p, format!("fn {}() {{}}\n", f.replace('.', "_"))).unwrap();
+            state.files.insert(
+                PathBuf::from(f),
+                FileInfo::probe(&p, hash_file(&p).unwrap()).unwrap(),
+            );
+        }
+        build_fixture_index(index_path, &files, 1);
+        let builder = test_builder(proj.path(), &index.path().join("unused"));
+
+        // In sync to start: nothing added/changed/deleted, everything searchable.
+        let plan = builder.compute_update_plan(&state, None).unwrap();
+        assert_eq!(plan.unchanged, files.len());
+        assert!(plan.added.is_empty() && plan.changed.is_empty() && plan.deleted.is_empty());
+        for f in files {
+            assert_eq!(fts_hits(index_path, &fixture_token(f)), 1, "pre {f}");
+        }
+
+        // Remove two files from disk.
+        std::fs::remove_file(proj.path().join("a.rs")).unwrap();
+        std::fs::remove_file(proj.path().join("c.rs")).unwrap();
+
+        // (a) the plan detects exactly those deletions; survivors stay unchanged.
+        let plan = builder.compute_update_plan(&state, None).unwrap();
+        let mut deleted = plan.deleted.clone();
+        deleted.sort();
+        assert_eq!(
+            deleted,
+            vec![PathBuf::from("a.rs"), PathBuf::from("c.rs")],
+            "disk deletions must be detected"
+        );
+        assert!(plan.changed.is_empty());
+        assert_eq!(plan.unchanged, 3);
+
+        // (b) applying the deletions purges every store -> not retrievable; survivors kept.
+        assert_eq!(
+            delete_files_from_index(index_path, &plan.deleted).unwrap(),
+            2
+        );
+        assert_eq!(
+            fts_hits(index_path, &fixture_token("a.rs")),
+            0,
+            "deleted a still searchable"
+        );
+        assert_eq!(
+            fts_hits(index_path, &fixture_token("c.rs")),
+            0,
+            "deleted c still searchable"
+        );
+        for f in ["b.rs", "d.rs", "e.rs"] {
+            assert_eq!(
+                fts_hits(index_path, &fixture_token(f)),
+                1,
+                "survivor {f} lost"
+            );
+        }
+        let mut remaining = filtering::get_distinct_strings(index_path, "file").unwrap();
+        remaining.sort();
+        assert_eq!(
+            remaining,
+            vec!["b.rs".to_string(), "d.rs".to_string(), "e.rs".to_string()]
+        );
+        assert_eq!(
+            MmapIndex::load(index_path).unwrap().metadata.num_documents,
+            3,
+            "vector index doc count must match surviving files"
+        );
+
+        // (c) a content change on disk is detected as changed (never served stale).
+        std::fs::write(
+            proj.path().join("b.rs"),
+            "fn b_rs_changed() { let _ = 42; }\n",
+        )
+        .unwrap();
+        let plan = builder.compute_update_plan(&state, None).unwrap();
+        assert!(
+            plan.changed.contains(&PathBuf::from("b.rs")),
+            "modified file must be detected as changed"
+        );
+    }
+
+    /// Format-version 0 → 1 migration must (a) migrate **in place without re-embedding**
+    /// and (b) leave the index in sync with disk. Point (a) is enforced structurally:
+    /// `test_builder` has no model, so a full rebuild would fail trying to embed — the
+    /// run succeeding proves the legacy index was reused, not rebuilt. Point (b): a file
+    /// that disappeared while on the old version ends up untracked and unsearchable. The
+    /// migration deliberately leaves stat-missing entries in the state so the normal
+    /// incremental-delete path removes them from every store (deterministic), rather than
+    /// purging them from state and leaning on periodic orphan cleanup.
+    #[test]
+    fn test_format_migration_in_place_cleans_deleted_without_rebuild() {
+        let _serial = DELETE_TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+
+        let proj = tempfile::tempdir().unwrap();
+        let idx = tempfile::tempdir().unwrap();
+        let vector = get_vector_index_path(idx.path());
+        let vector_str = vector.to_str().unwrap();
+
+        // a/b/c exist on disk; "gone.rs" exists only in the index + legacy state.
+        let present = ["a.rs", "b.rs", "c.rs"];
+        for f in present {
+            std::fs::write(
+                proj.path().join(f),
+                format!("fn {}() {{}}\n", f.replace('.', "_")),
+            )
+            .unwrap();
+        }
+        build_fixture_index(vector_str, &["a.rs", "b.rs", "c.rs", "gone.rs"], 1);
+
+        // Legacy state: format version 0, size 0 (field absent), second-precision mtime.
+        let mut state = IndexState::default();
+        assert_eq!(state.index_format_version, 0);
+        for f in present {
+            let (mt_ns, _) = file_stat(&proj.path().join(f)).unwrap();
+            state.files.insert(
+                PathBuf::from(f),
+                FileInfo {
+                    content_hash: hash_file(&proj.path().join(f)).unwrap(),
+                    mtime: mt_ns / 1_000_000_000, // legacy seconds
+                    size: 0,                      // legacy: field absent
+                },
+            );
+        }
+        state.files.insert(
+            PathBuf::from("gone.rs"),
+            FileInfo {
+                content_hash: 1,
+                mtime: 1,
+                size: 0,
+            },
+        );
+        state.save(idx.path()).unwrap();
+        assert_eq!(
+            fts_hits(vector_str, &fixture_token("gone.rs")),
+            1,
+            "precondition"
+        );
+
+        // Run the real entry point: migrates (0→1) in place, then syncs deletions.
+        let mut builder = test_builder(proj.path(), idx.path());
+        builder.index(None, false).unwrap();
+
+        let migrated = IndexState::load(idx.path()).unwrap();
+        assert_eq!(
+            migrated.index_format_version, INDEX_FORMAT_VERSION,
+            "format must be migrated"
+        );
+        // Survivors kept (not re-embedded — still present in every store).
+        for f in present {
+            assert!(
+                migrated.files.contains_key(&PathBuf::from(f)),
+                "{f} dropped"
+            );
+            assert_eq!(
+                fts_hits(vector_str, &fixture_token(f)),
+                1,
+                "survivor {f} lost"
+            );
+        }
+        // The disappeared file is fully gone — untracked AND unsearchable, not orphaned.
+        assert!(!migrated.files.contains_key(&PathBuf::from("gone.rs")));
+        assert_eq!(
+            fts_hits(vector_str, &fixture_token("gone.rs")),
+            0,
+            "file deleted before upgrade is still searchable after migration (orphaned)"
+        );
+        assert_eq!(
+            MmapIndex::load(vector_str).unwrap().metadata.num_documents,
+            3,
+            "index must hold exactly the 3 surviving docs"
+        );
     }
 
     /// Issue #115 (bug 1): an index left dirty by an interrupted run must be cleaned once the
