@@ -49,6 +49,19 @@ const SQLITE_PARAM_LIMIT: usize = 900;
 /// Primary key column name (matches fast-plaid).
 pub(crate) const SUBSET_COLUMN: &str = "_subset_";
 
+/// Index over `_subset_` used by the fast-delete (v1) layout.
+const SUBSET_INDEX_NAME: &str = "idx_metadata_subset";
+
+/// `PRAGMA user_version` value marking the fast-delete metadata layout, in which
+/// `_subset_` is a regular indexed column rather than the `INTEGER PRIMARY KEY`
+/// (rowid). Re-sequencing on delete then updates only a small integer + its index
+/// instead of relocating each (potentially multi-KB) row in the table b-tree.
+///
+/// The `SELECT *` projection is unchanged versus the legacy (v0) layout — the
+/// demoted `_subset_` still appears, and the implicit rowid is hidden — so older
+/// binaries (e.g. a deployed next-plaid-api) read a v1 index without modification.
+const METADATA_SCHEMA_V1: i64 = 1;
+
 /// Validate that a column name is a safe SQL identifier.
 ///
 /// Column names must start with a letter or underscore, followed by
@@ -686,15 +699,142 @@ fn validate_fixed_columns(columns: &[(&str, &str)]) -> Result<()> {
     Ok(())
 }
 
+/// Read the metadata schema version from `PRAGMA user_version` (0 = legacy).
+fn metadata_schema_version(conn: &Connection) -> i64 {
+    conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap_or(0)
+}
+
+/// Create the (non-unique) index over `_subset_` used by the v1 layout.
+///
+/// Non-unique on purpose: the dense-0..N-1 uniqueness of `_subset_` is guaranteed
+/// by construction (the caller's doc IDs and the delete re-sequencing math), and a
+/// UNIQUE index could spuriously reject a transient state mid-`UPDATE` during the
+/// range-shift re-sequencing. The index exists purely to make `WHERE _subset_ = ?`
+/// / `IN (...)` and `MAX(_subset_)` cheap now that `_subset_` is not the rowid.
+fn create_subset_index(conn: &Connection) -> Result<()> {
+    conn.execute(
+        &format!(
+            "CREATE INDEX IF NOT EXISTS \"{}\" ON METADATA (\"{}\")",
+            SUBSET_INDEX_NAME, SUBSET_COLUMN
+        ),
+        [],
+    )?;
+    Ok(())
+}
+
+/// Ensure the metadata DB uses the v1 fast-delete layout, migrating a legacy v0
+/// index in place if needed.
+///
+/// A v0 index stores `_subset_` as the `INTEGER PRIMARY KEY` (rowid), so the
+/// delete re-sequencing relocates every shifted row — rewriting overflow pages for
+/// large TEXT columns. The migration rebuilds the table with `_subset_` demoted to
+/// a regular indexed column. This is a one-time table copy (pure row shuffling, no
+/// re-encoding) run lazily on the first delete; afterwards the layout is permanent
+/// and `PRAGMA user_version` gates the check to O(1).
+///
+/// Forward compatibility is preserved: the rebuilt table exposes exactly the same
+/// columns under `SELECT *`, so an older binary reads it unchanged.
+fn ensure_fast_subset_schema(conn: &Connection) -> Result<()> {
+    if metadata_schema_version(conn) >= METADATA_SCHEMA_V1 {
+        return Ok(());
+    }
+
+    let has_table: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='METADATA'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if has_table == 0 {
+        // Nothing to migrate; create() stamps the version for fresh indexes.
+        return Ok(());
+    }
+
+    // Inspect the live schema: is `_subset_` still the rowid PK (legacy)?
+    let mut cols: Vec<(String, String)> = Vec::new(); // (name, declared_type)
+    let mut subset_is_pk = false;
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(METADATA)")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?, // name
+                row.get::<_, String>(2)?, // type
+                row.get::<_, i64>(5)?,    // pk
+            ))
+        })?;
+        for r in rows {
+            let (name, ty, pk) = r?;
+            if name == SUBSET_COLUMN && pk > 0 {
+                subset_is_pk = true;
+            }
+            cols.push((name, ty));
+        }
+    }
+
+    if !subset_is_pk {
+        // Already non-PK; just ensure the index + stamp the version.
+        create_subset_index(conn)?;
+        conn.execute_batch(&format!("PRAGMA user_version={}", METADATA_SCHEMA_V1))?;
+        return Ok(());
+    }
+
+    // Rebuild with `_subset_` as a plain column, preserving column order/types.
+    let col_defs: Vec<String> = cols
+        .iter()
+        .map(|(name, ty)| {
+            if name == SUBSET_COLUMN {
+                format!("\"{}\" INTEGER NOT NULL", SUBSET_COLUMN)
+            } else {
+                let ty = if ty.trim().is_empty() {
+                    "TEXT"
+                } else {
+                    ty.as_str()
+                };
+                format!("\"{}\" {}", name, ty)
+            }
+        })
+        .collect();
+    let all_cols = cols
+        .iter()
+        .map(|(name, _)| format!("\"{}\"", name))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    conn.execute_batch("BEGIN")?;
+    conn.execute("ALTER TABLE METADATA RENAME TO _METADATA_V0", [])?;
+    conn.execute(
+        &format!("CREATE TABLE METADATA ({})", col_defs.join(", ")),
+        [],
+    )?;
+    conn.execute(
+        &format!(
+            "INSERT INTO METADATA ({0}) SELECT {0} FROM _METADATA_V0",
+            all_cols
+        ),
+        [],
+    )?;
+    create_subset_index(conn)?;
+    conn.execute("DROP TABLE _METADATA_V0", [])?;
+    conn.execute_batch(&format!("PRAGMA user_version={}", METADATA_SCHEMA_V1))?;
+    conn.execute_batch("COMMIT")?;
+    Ok(())
+}
+
 fn create_fixed_metadata_table(conn: &Connection, columns: &[(&str, &str)]) -> Result<()> {
     // The caller has already committed to a stable schema, so we can skip the
     // generic "discover columns as we go" logic and create the table directly.
-    let mut col_defs = vec![format!("\"{}\" INTEGER PRIMARY KEY", SUBSET_COLUMN)];
+    // `_subset_` is a regular column (v1 layout) so delete re-sequencing never
+    // relocates fat rows; a separate index keeps lookups fast.
+    let mut col_defs = vec![format!("\"{}\" INTEGER NOT NULL", SUBSET_COLUMN)];
     for (name, sql_type) in columns {
         col_defs.push(format!("\"{}\" {}", name, sql_type));
     }
     let create_sql = format!("CREATE TABLE METADATA ({})", col_defs.join(", "));
     conn.execute(&create_sql, [])?;
+    create_subset_index(conn)?;
+    conn.execute_batch(&format!("PRAGMA user_version={}", METADATA_SCHEMA_V1))?;
     Ok(())
 }
 
@@ -908,8 +1048,9 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
     // Create connection
     let mut conn = open_db_write(&db_path)?;
 
-    // Build CREATE TABLE statement
-    let mut col_defs = vec![format!("\"{}\" INTEGER PRIMARY KEY", SUBSET_COLUMN)];
+    // Build CREATE TABLE statement. `_subset_` is a regular column (v1 layout),
+    // not the rowid, so delete re-sequencing never relocates fat rows.
+    let mut col_defs = vec![format!("\"{}\" INTEGER NOT NULL", SUBSET_COLUMN)];
     for col in &columns {
         let sql_type = column_types.get(col).copied().unwrap_or("TEXT");
         col_defs.push(format!("\"{}\" {}", col, sql_type));
@@ -918,6 +1059,13 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
     let txn = conn.transaction()?;
     let create_sql = format!("CREATE TABLE METADATA ({})", col_defs.join(", "));
     txn.execute(&create_sql, [])?;
+    txn.execute(
+        &format!(
+            "CREATE INDEX IF NOT EXISTS \"{}\" ON METADATA (\"{}\")",
+            SUBSET_INDEX_NAME, SUBSET_COLUMN
+        ),
+        [],
+    )?;
 
     // Prepare INSERT statement
     let placeholders: Vec<&str> = std::iter::repeat_n("?", columns.len() + 1).collect();
@@ -953,6 +1101,9 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         }
     }
     txn.commit()?;
+
+    // Stamp the fast-delete layout so future deletes skip the migration check.
+    conn.execute_batch(&format!("PRAGMA user_version={}", METADATA_SCHEMA_V1))?;
 
     Ok(metadata.len())
 }
@@ -1137,8 +1288,29 @@ pub fn delete(index_path: &str, subset: &[i64]) -> Result<usize> {
 
     let conn = open_db_write(&db_path)?;
 
+    // Migrate a legacy (v0) index to the fast-delete layout on the first delete, so
+    // the re-sequencing below updates a plain indexed column instead of relocating
+    // each fat row. No-op once the index is v1.
+    ensure_fast_subset_schema(&conn)?;
+
     // Start transaction
     conn.execute("BEGIN", [])?;
+
+    // `_subset_` is contiguous 0..N-1 before this call, so MAX+1 is the pre-delete
+    // row count. Read via the `_subset_` index (O(log n)) rather than a COUNT(*)
+    // full scan. Used to discard stray out-of-range/non-existent delete ids whose
+    // shift counts would otherwise corrupt every survivor's id.
+    let original_count: i64 = conn
+        .query_row(
+            &format!(
+                "SELECT COALESCE(MAX(\"{}\"), -1) FROM METADATA",
+                SUBSET_COLUMN
+            ),
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(-1)
+        + 1;
 
     // Delete specified rows
     let (in_clause, in_params, temp_table) = crate::text_search::build_in_clause(&conn, subset)?;
@@ -1154,22 +1326,13 @@ pub fn delete(index_path: &str, subset: &[i64]) -> Result<usize> {
 
     // Re-sequence _subset_ IDs to be contiguous 0-based.
     // Instead of copying the entire table (expensive for large tables with TEXT/BLOB
-    // columns), use range-based UPDATEs that only touch the integer primary key.
-    // Process gaps in ascending order so decremented values never collide.
+    // columns), use range-based UPDATEs. Because `_subset_` is now a regular column
+    // (not the rowid), each UPDATE rewrites only the small integer value and its
+    // index entry — the fat row stays put. Process gaps in ascending order so
+    // decremented values never collide.
     let mut sorted_ids: Vec<i64> = subset.to_vec();
     sorted_ids.sort_unstable();
     sorted_ids.dedup();
-    // Keep ONLY the ids that were actually present and removed. The range-shift
-    // math below assumes `sorted_ids` is exactly the set of deleted `_subset_`
-    // values: a stray out-of-range or non-existent id would inflate the shift
-    // counts and corrupt every survivor's id. `_subset_` is contiguous 0..N-1
-    // before this call, so the pre-delete row count is (survivors + deleted).
-    let original_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM METADATA", [], |row| {
-            row.get::<_, i64>(0)
-        })
-        .unwrap_or(0)
-        + deleted as i64;
     sorted_ids.retain(|&id| id >= 0 && id < original_count);
 
     let max_id: i64 = conn
@@ -2566,5 +2729,143 @@ mod tests {
         });
 
         assert_eq!(count(&path).unwrap(), 80);
+    }
+
+    // ---- fast-delete (v1) layout: schema, re-sequencing, migration ----
+
+    fn meta_db(path: &str) -> Connection {
+        Connection::open(std::path::Path::new(path).join(METADATA_DB_NAME)).unwrap()
+    }
+
+    fn user_version_of(path: &str) -> i64 {
+        meta_db(path)
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn subset_is_pk(path: &str) -> bool {
+        let c = meta_db(path);
+        let mut stmt = c.prepare("PRAGMA table_info(METADATA)").unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+            })
+            .unwrap();
+        for r in rows {
+            let (name, pk) = r.unwrap();
+            if name == SUBSET_COLUMN && pk > 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn select_star_columns(path: &str) -> Vec<String> {
+        let rows = get(path, None, &[], None).unwrap();
+        rows[0].as_object().unwrap().keys().cloned().collect()
+    }
+
+    #[test]
+    fn test_create_uses_v1_layout() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+        let meta: Vec<serde_json::Value> = (0..5)
+            .map(|i| json!({"file": format!("f{i}.rs"), "code": format!("c{i}")}))
+            .collect();
+        create(path, &meta, &(0..5).collect::<Vec<i64>>()).unwrap();
+
+        assert_eq!(user_version_of(path), 1);
+        assert!(!subset_is_pk(path), "v1: _subset_ must not be the PK/rowid");
+
+        // Forward-compat guarantee: SELECT * exposes exactly _subset_ + user
+        // columns and leaks no internal column, so older binaries read it unchanged.
+        let cols = select_star_columns(path);
+        assert!(cols.iter().any(|c| c == SUBSET_COLUMN));
+        assert!(cols.iter().any(|c| c == "file") && cols.iter().any(|c| c == "code"));
+        assert!(!cols
+            .iter()
+            .any(|c| c == "rowid" || c.starts_with("_METADATA")));
+    }
+
+    #[test]
+    fn test_delete_resequences_dense() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+        let meta: Vec<serde_json::Value> = (0..10)
+            .map(|i| json!({"file": format!("f{i}.rs")}))
+            .collect();
+        create(path, &meta, &(0..10).collect::<Vec<i64>>()).unwrap();
+
+        assert_eq!(delete(path, &[2, 5, 7]).unwrap(), 3);
+
+        let rows = get(path, None, &[], None).unwrap();
+        assert_eq!(rows.len(), 7);
+        let expected = [
+            "f0.rs", "f1.rs", "f3.rs", "f4.rs", "f6.rs", "f8.rs", "f9.rs",
+        ];
+        for (i, row) in rows.iter().enumerate() {
+            assert_eq!(
+                row[SUBSET_COLUMN].as_i64().unwrap(),
+                i as i64,
+                "dense 0-based"
+            );
+            assert_eq!(
+                row["file"].as_str().unwrap(),
+                expected[i],
+                "survivor order preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn test_legacy_v0_index_migrates_on_delete() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+
+        // Hand-build a legacy v0 index: `_subset_` is the INTEGER PRIMARY KEY and
+        // user_version is 0 — exactly what a deployed next-plaid-api produced.
+        {
+            let c = meta_db(path);
+            c.execute_batch("PRAGMA user_version=0;").unwrap();
+            c.execute(
+                &format!(
+                    "CREATE TABLE METADATA (\"{}\" INTEGER PRIMARY KEY, file TEXT, code TEXT)",
+                    SUBSET_COLUMN
+                ),
+                [],
+            )
+            .unwrap();
+            for i in 0..10i64 {
+                c.execute(
+                    "INSERT INTO METADATA VALUES (?, ?, ?)",
+                    rusqlite::params![i, format!("f{i}.rs"), format!("c{i}")],
+                )
+                .unwrap();
+            }
+        }
+        assert!(subset_is_pk(path), "precondition: legacy v0 layout");
+        assert_eq!(user_version_of(path), 0);
+
+        // First delete migrates in place, then re-sequences.
+        assert_eq!(delete(path, &[3]).unwrap(), 1);
+
+        assert_eq!(user_version_of(path), 1, "migrated to v1");
+        assert!(!subset_is_pk(path), "_subset_ demoted from PK");
+
+        // Forward-compat: identical columns under SELECT *, nothing leaked.
+        let cols = select_star_columns(path);
+        assert!(!cols
+            .iter()
+            .any(|c| c == "rowid" || c.starts_with("_METADATA")));
+        assert!(cols.iter().any(|c| c == "file") && cols.iter().any(|c| c == "code"));
+
+        // Data intact, dense, survivor order preserved (f3 removed → f4 now at id 3).
+        let rows = get(path, None, &[], None).unwrap();
+        assert_eq!(rows.len(), 9);
+        for (i, row) in rows.iter().enumerate() {
+            assert_eq!(row[SUBSET_COLUMN].as_i64().unwrap(), i as i64);
+        }
+        assert_eq!(rows[3]["file"].as_str().unwrap(), "f4.rs");
+        assert_eq!(rows[3]["code"].as_str().unwrap(), "c4");
     }
 }
