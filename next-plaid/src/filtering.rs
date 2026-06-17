@@ -1159,7 +1159,19 @@ pub fn delete(index_path: &str, subset: &[i64]) -> Result<usize> {
     let mut sorted_ids: Vec<i64> = subset.to_vec();
     sorted_ids.sort_unstable();
     sorted_ids.dedup();
-    // Only keep IDs that were actually in range (deleted rows).
+    // Keep ONLY the ids that were actually present and removed. The range-shift
+    // math below assumes `sorted_ids` is exactly the set of deleted `_subset_`
+    // values: a stray out-of-range or non-existent id would inflate the shift
+    // counts and corrupt every survivor's id. `_subset_` is contiguous 0..N-1
+    // before this call, so the pre-delete row count is (survivors + deleted).
+    let original_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM METADATA", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap_or(0)
+        + deleted as i64;
+    sorted_ids.retain(|&id| id >= 0 && id < original_count);
+
     let max_id: i64 = conn
         .query_row(
             &format!(
@@ -1171,7 +1183,7 @@ pub fn delete(index_path: &str, subset: &[i64]) -> Result<usize> {
         )
         .unwrap_or(-1);
 
-    if max_id >= 0 && deleted > 0 {
+    if max_id >= 0 && !sorted_ids.is_empty() {
         // For each gap left by deleted rows, shift all subsequent rows down.
         // Merge into contiguous ranges: if IDs 5,6,7 were deleted, rows >= 8
         // shift down by 3. We process from lowest gap upward.
@@ -2005,6 +2017,54 @@ mod tests {
         assert_eq!(results[0]["name"], "Alice");
         assert_eq!(results[1]["_subset_"], 1);
         assert_eq!(results[1]["name"], "Diana");
+    }
+
+    /// Re-sequencing must be robust to ids that are not actually present: negative
+    /// or out-of-range ids passed in `subset` must be ignored, not folded into the
+    /// shift math. Without clamping, a negative id shifts row 0 to -1 (collision) and
+    /// an in-the-middle phantom over-shifts survivors — corrupting `_subset_` and thus
+    /// the metadata/FTS/IVF alignment. (Regression guard for the range-UPDATE path.)
+    #[test]
+    fn test_delete_resequence_ignores_out_of_range_and_negative_ids() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+
+        let metadata = vec![
+            json!({"name": "Alice"}),   // 0
+            json!({"name": "Bob"}),     // 1
+            json!({"name": "Charlie"}), // 2
+            json!({"name": "Diana"}),   // 3
+            json!({"name": "Eve"}),     // 4
+            json!({"name": "Frank"}),   // 5
+        ];
+        let doc_ids: Vec<i64> = (0..6).collect();
+        create(path, &metadata, &doc_ids).unwrap();
+
+        // Delete Bob(1) and Diana(3); -5 and 999 are not present and must be ignored.
+        let deleted = delete(path, &[1, 3, -5, 999]).unwrap();
+        assert_eq!(deleted, 2, "only the two present ids are removed");
+        assert_eq!(count(path).unwrap(), 4);
+
+        // Survivors keep order and renumber contiguously 0..3 with no collisions.
+        let rows = get(path, None, &[], None).unwrap();
+        let got: Vec<(i64, String)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r["_subset_"].as_i64().unwrap(),
+                    r["name"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (0, "Alice".into()),
+                (1, "Charlie".into()),
+                (2, "Eve".into()),
+                (3, "Frank".into()),
+            ]
+        );
     }
 
     #[test]

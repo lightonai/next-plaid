@@ -1666,9 +1666,12 @@ impl MmapIndex {
 
     /// Append embeddings to an existing index without loading the full MmapIndex.
     ///
-    /// This is significantly faster than `update_or_create` for incremental updates
-    /// because it skips merged-file generation (628MB+ on large indices). Use this
-    /// when you only need the assigned doc IDs and won't search immediately after.
+    /// Faster than `update_or_create` for incremental updates because it does not
+    /// eagerly regenerate the merged code/residual files (628MB+ on large indices).
+    /// NOTE: this *defers* that cost rather than removing it — `update_index` clears
+    /// the merged files, and the next search/load lazily regenerates them. So an
+    /// `index`-only run (no search after) is fast, but the first search following an
+    /// update still pays the merge. Returns the doc IDs assigned to `embeddings`.
     pub fn update_append(
         embeddings: &[Array2<f32>],
         index_path: &str,

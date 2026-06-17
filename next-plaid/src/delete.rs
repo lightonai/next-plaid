@@ -187,6 +187,12 @@ fn delete_from_index_impl(doc_ids: &[i64], index_path: &str, clean_buffer: bool)
     // Patch IVF in-place: remove deleted doc IDs and renumber survivors.
     // This is O(IVF_size) instead of O(total_embeddings) since we avoid re-reading
     // all chunk codes files.
+    //
+    // Relies on the on-disk IVF layout written by `create` (index.rs): each centroid
+    // bucket holds its document IDs sorted and DEDUPED (one entry per doc, not per
+    // embedding). We only drop deleted ids and renumber survivors, so that invariant
+    // is preserved — no re-dedup needed. A deployed index built by any prior version
+    // (incl. via next-plaid-api) uses this same layout, so the patch is format-safe.
     {
         let ivf_path = index_dir.join("ivf.npy");
         let ivf_lengths_path = index_dir.join("ivf_lengths.npy");
@@ -463,6 +469,29 @@ mod tests {
                 num_docs
             );
         }
+
+        // The in-place patch must preserve create's per-centroid dedup invariant
+        // (one entry per surviving doc per centroid) and keep ivf_lengths consistent
+        // with the ivf buffer. Walk each centroid bucket and assert no duplicates.
+        let ivf = index_after.ivf.as_slice().unwrap();
+        let mut off = 0usize;
+        for &len in index_after.ivf_lengths.iter() {
+            let bucket = &ivf[off..off + len as usize];
+            let mut uniq = bucket.to_vec();
+            uniq.sort_unstable();
+            uniq.dedup();
+            assert_eq!(
+                uniq.len(),
+                bucket.len(),
+                "IVF centroid bucket has duplicate doc IDs after in-place patch"
+            );
+            off += len as usize;
+        }
+        assert_eq!(
+            off,
+            ivf.len(),
+            "ivf_lengths must sum to the ivf buffer length"
+        );
 
         // Verify we can search the index
         let query = embeddings[0].clone(); // Use first (non-deleted) doc as query

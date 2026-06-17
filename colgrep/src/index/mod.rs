@@ -2526,8 +2526,13 @@ impl IndexBuilder {
 
         // 1. Delete chunks for deleted files (safe — not re-adding these). Batched into a
         //    single index rewrite — see delete_files_from_index / issue #116.
-        //    Skip FTS5 rebuild here when changed files will trigger encoding: the
-        //    final rebuild after encoding covers both deletions and re-adds in one pass.
+        //    When there are also changed/added files to encode, skip the (O(total))
+        //    FTS5 realigning rebuild here. NOTE: there is no separate "final rebuild"
+        //    afterwards — the encoding pass only inserts FTS rows for the re-added
+        //    files. Keyword search stays correct because it re-verifies each FTS hit
+        //    against the matched document's current content (a stale survivor rowid
+        //    no longer matches its query, so it is dropped). Stale FTS rows for
+        //    shifted survivors are realigned by the next delete-only update's rebuild.
         let has_changes_to_encode = !plan.added.is_empty() || !plan.changed.is_empty();
         if has_changes_to_encode {
             delete_files_from_index_no_fts_rebuild(index_path, &plan.deleted)?;
