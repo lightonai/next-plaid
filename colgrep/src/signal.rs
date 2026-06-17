@@ -85,11 +85,20 @@ impl Drop for CriticalSectionGuard {
 /// Returns an error if the handler cannot be set.
 pub fn setup_signal_handler() -> Result<(), ctrlc::Error> {
     ctrlc::set_handler(move || {
-        // Set the flag on first interrupt
-        if !INTERRUPTED.swap(true, Ordering::SeqCst)
-            && CRITICAL_SECTION_DEPTH.load(Ordering::Relaxed) > 0
-        {
-            eprintln!("\n⚠️  Interrupt received, finishing current write operation...");
+        // Acknowledge the first interrupt immediately so the user gets feedback.
+        // Indexing stops at the next safe checkpoint; finished batches are persisted
+        // and the build resumes on the next run. (Previously this message only
+        // printed inside a critical section, so a Ctrl+C during the long encoding
+        // phase looked like it did nothing.)
+        if !INTERRUPTED.swap(true, Ordering::SeqCst) {
+            if CRITICAL_SECTION_DEPTH.load(Ordering::Relaxed) > 0 {
+                eprintln!("\n⚠️  Interrupt received — finishing the current write, then stopping…");
+            } else {
+                eprintln!(
+                    "\n⚠️  Interrupt received — stopping at the next checkpoint. \
+                     Finished batches are kept; rerun to resume."
+                );
+            }
         }
     })
 }

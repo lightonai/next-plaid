@@ -1261,9 +1261,25 @@ impl Colbert {
         &self,
         prepared_batches: Vec<PreparedDocumentBatch>,
     ) -> Result<Vec<Array2<f32>>> {
+        self.encode_prepared_document_batches_cancellable(prepared_batches, None)
+    }
+
+    /// Like [`encode_prepared_document_batches`], but checks `cancel` before each
+    /// batch's forward pass. If `cancel()` returns true, encoding stops promptly
+    /// (within ~one in-flight `session.run`) and returns `Err`. Callers that drive
+    /// interruptible work (e.g. colgrep indexing) pass a flag check here to get
+    /// near-immediate Ctrl+C response instead of finishing the whole chunk.
+    ///
+    /// [`encode_prepared_document_batches`]: Self::encode_prepared_document_batches
+    pub fn encode_prepared_document_batches_cancellable(
+        &self,
+        prepared_batches: Vec<PreparedDocumentBatch>,
+        cancel: Option<&(dyn Fn() -> bool + Sync)>,
+    ) -> Result<Vec<Array2<f32>>> {
         if prepared_batches.is_empty() {
             return Ok(Vec::new());
         }
+        let cancelled = || cancel.map(|c| c()).unwrap_or(false);
 
         // Collect the original-input position for every document across all
         // batches in the order they appear here. When `tokenize_documents_in_batches`
@@ -1284,10 +1300,14 @@ impl Colbert {
         let encoded: Vec<Array2<f32>> = if self.sessions.len() <= 1 || prepared_batches.len() == 1 {
             let mut all_embeddings = Vec::new();
             for prepared_batch in prepared_batches {
+                if cancelled() {
+                    anyhow::bail!("encoding cancelled");
+                }
                 all_embeddings.extend(self.encode_prepared_documents(prepared_batch)?);
             }
             all_embeddings
         } else {
+            let cancel_ref = cancel;
             let results: Vec<Result<Vec<Array2<f32>>>> = std::thread::scope(|scope| {
                 let mut handles = Vec::with_capacity(prepared_batches.len());
 
@@ -1298,6 +1318,12 @@ impl Colbert {
                     let skiplist_ids = &self.skiplist_ids;
 
                     handles.push(scope.spawn(move || {
+                        // Skip not-yet-started batches once cancelled; already-running
+                        // forward passes finish (one `session.run`), so the whole call
+                        // returns within ~one batch of a Ctrl+C.
+                        if cancel_ref.map(|c| c()).unwrap_or(false) {
+                            anyhow::bail!("encoding cancelled");
+                        }
                         let mut session = session_mutex.lock().unwrap();
                         encode_prepared_batch_with_session(
                             &mut session,

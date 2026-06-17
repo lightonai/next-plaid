@@ -492,7 +492,25 @@ fn run_encode_stage(
     model: Colbert,
 ) -> Result<()> {
     while let Ok(chunk) = receiver.recv() {
-        let raw_embeddings = model.encode_prepared_document_batches(chunk.prepared_batches)?;
+        // Stop pulling new work promptly on Ctrl+C instead of draining the whole
+        // in-flight queue (encoding is the slow stage).
+        if is_interrupted_outside_critical() {
+            break;
+        }
+
+        // Cancel mid-chunk too: the encoder checks this between batches, so a Ctrl+C
+        // lands within ~one model forward pass rather than after the whole chunk. The
+        // partial chunk is dropped uncommitted — `state.json` is only saved per
+        // completed checkpoint batch and `build_resumable` trims any partial write on
+        // the next run — so this stays safe and resumable, just near-immediate.
+        let cancel = || is_interrupted_outside_critical();
+        let raw_embeddings = match model
+            .encode_prepared_document_batches_cancellable(chunk.prepared_batches, Some(&cancel))
+        {
+            Ok(raw) => raw,
+            Err(_) if is_interrupted() => break,
+            Err(e) => return Err(e),
+        };
 
         sender
             .send(RawEncodedChunk {
@@ -806,7 +824,6 @@ fn run_metadata_stage(
     pb: Option<ProgressBar>,
 ) -> Result<()> {
     let mut filtering_exists = filtering::exists(&index_path);
-    let mut completed_units = 0u64;
 
     while let Ok(chunk) = receiver.recv() {
         let metadata: Vec<serde_json::Value> = chunk
@@ -839,9 +856,12 @@ fn run_metadata_stage(
         }
 
         filtering_exists = true;
-        completed_units += chunk.units.len() as u64;
+        // Advance the shared progress bar cumulatively. This stage runs once per
+        // checkpoint batch, so an absolute `set_position` from a per-batch counter
+        // would reset the bar to 0 every ~BUILD_CHECKPOINT_UNITS; `inc` accumulates
+        // across batches up to the whole-build total.
         if let Some(pb) = pb.as_ref() {
-            pb.set_position(completed_units);
+            pb.inc(chunk.units.len() as u64);
         }
     }
 
