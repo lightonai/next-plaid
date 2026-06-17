@@ -1592,7 +1592,7 @@ impl IndexBuilder {
         // instead of rebuilding from scratch. No-op for non-worktree projects.
         self.maybe_seed_from_worktree(force);
 
-        let state = IndexState::load(&self.index_dir)?;
+        let mut state = IndexState::load(&self.index_dir)?;
         let index_dir = get_vector_index_path(&self.index_dir);
         let index_path = index_dir.to_str().unwrap();
         let index_exists = index_dir.join("metadata.json").exists();
@@ -1611,9 +1611,20 @@ impl IndexBuilder {
             && !state.files.is_empty()
             && state.index_format_version != INDEX_FORMAT_VERSION;
 
-        // Forced or index-format change: clean atomic rebuild. Drop any in-progress
-        // resumable-build marker so we don't try to resume an index we're discarding.
-        if force || format_mismatch {
+        // Forced: clean atomic rebuild. Drop any in-progress resumable-build
+        // marker so we don't try to resume an index we're discarding.
+        if force {
+            let _ = std::fs::remove_file(self.index_dir.join(BUILDING_MARKER));
+            return self.full_rebuild(languages);
+        }
+
+        // Format version 0 → 1 did not change the on-disk index layout, only
+        // added version tracking and the FileInfo.size field (which defaults to
+        // 0 via serde). Migrate in place rather than discarding the entire index.
+        if format_mismatch && state.index_format_version == 0 {
+            state.index_format_version = INDEX_FORMAT_VERSION;
+            state.save(&self.index_dir)?;
+        } else if format_mismatch {
             let _ = std::fs::remove_file(self.index_dir.join(BUILDING_MARKER));
             return self.full_rebuild(languages);
         }
