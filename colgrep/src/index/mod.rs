@@ -1623,6 +1623,33 @@ impl IndexBuilder {
         // 0 via serde). Migrate in place rather than discarding the entire index.
         if format_mismatch && state.index_format_version == 0 {
             state.index_format_version = INDEX_FORMAT_VERSION;
+            // Stat every entry to fill in missing sizes and purge stale entries.
+            let mut gone = Vec::new();
+            for (path, info) in state.files.iter_mut() {
+                let full = self.project_root.join(path);
+                match file_stat(&full) {
+                    Ok((mtime, size)) => {
+                        if info.size == 0 {
+                            info.size = size;
+                        }
+                        // Legacy states store mtime in seconds; current code
+                        // uses nanoseconds. Upgrade precision when the file
+                        // hasn't been modified (same second), otherwise leave
+                        // stale so the hash pass catches the real change.
+                        if info.mtime < 10_000_000_000_000 {
+                            if info.mtime == mtime / 1_000_000_000 {
+                                info.mtime = mtime;
+                            }
+                        } else if info.mtime == 0 {
+                            info.mtime = mtime;
+                        }
+                    }
+                    Err(_) => gone.push(path.clone()),
+                }
+            }
+            for path in &gone {
+                state.files.remove(path);
+            }
             state.save(&self.index_dir)?;
         } else if format_mismatch {
             let _ = std::fs::remove_file(self.index_dir.join(BUILDING_MARKER));
@@ -1959,7 +1986,7 @@ impl IndexBuilder {
             let src_dir = &candidate.index_dir;
             // Validate the sibling holds a complete, format-compatible, non-dirty index that
             // isn't mid-build. Skip otherwise so we never seed from a half-built or stale store.
-            let Some(src_state) = seed_source_state(src_dir) else {
+            let Some(mut src_state) = seed_source_state(src_dir) else {
                 continue;
             };
             let src_vector = get_vector_index_path(src_dir);
@@ -1977,6 +2004,19 @@ impl IndexBuilder {
             }
             std::fs::rename(&tmp, &dest_vector)
                 .context("Failed to move seeded index into place")?;
+
+            // Refresh stats to match this worktree's files. The content hashes
+            // from the source are still valid (same git content), but mtimes
+            // differ because git checkout stamps files with the current time.
+            // Without this, the mtime fast path would miss on every file and
+            // trigger a full content-hash pass on the first search.
+            for (path, info) in src_state.files.iter_mut() {
+                let full = self.project_root.join(path);
+                if let Ok((mtime, size)) = file_stat(&full) {
+                    info.mtime = mtime;
+                    info.size = size;
+                }
+            }
 
             // Persist state (save() restamps the version/format fields) and a
             // fresh project.json pointing at THIS worktree, not the source.
