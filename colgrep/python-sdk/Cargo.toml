@@ -1,6 +1,6 @@
 [package]
 name = "colgrep-parser"
-version = "1.5.6"
+version = "1.5.7"
 edition = "2021"
 description = "Python bindings for colgrep code parser"
 license = "Apache-2.0"

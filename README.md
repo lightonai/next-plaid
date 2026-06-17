@@ -182,18 +182,18 @@ A local-first multi-vector database with a REST API. It's what powers ColGREP un
 
 ```bash
 # CPU
-docker pull ghcr.io/lightonai/next-plaid:cpu-1.5.6
+docker pull ghcr.io/lightonai/next-plaid:cpu-1.5.7
 docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cpu-1.5.6 \
+  ghcr.io/lightonai/next-plaid:cpu-1.5.7 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/answerai-colbert-small-v1-onnx --int8
 ```
 
 ```bash
 # GPU
-docker pull ghcr.io/lightonai/next-plaid:cuda-1.5.6
+docker pull ghcr.io/lightonai/next-plaid:cuda-1.5.7
 docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cuda-1.5.6 \
+  ghcr.io/lightonai/next-plaid:cuda-1.5.7 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/GTE-ModernColBERT-v1 --cuda
 ```
