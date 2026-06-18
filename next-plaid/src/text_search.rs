@@ -32,7 +32,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{Error, Result};
-use crate::filtering::{get_db_path, SUBSET_COLUMN};
+use crate::filtering::{
+    get_db_path, is_split_schema, CONTENT_ID_COLUMN, CONTENT_TABLE, SUBSET_COLUMN,
+};
 use crate::search::QueryResult;
 
 /// FTS5 virtual table name.
@@ -599,18 +601,8 @@ pub fn update_rows(index_path: &str, doc_ids: &[i64]) -> Result<()> {
         return Ok(());
     }
 
-    // Get METADATA column names (to rebuild text from current row)
-    let mut columns: Vec<String> = Vec::new();
-    {
-        let mut stmt = conn.prepare("PRAGMA table_info(METADATA)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        for row in rows {
-            let col = row?;
-            if col != SUBSET_COLUMN {
-                columns.push(col);
-            }
-        }
-    }
+    // Get all user-visible column names and build the per-row SELECT.
+    let (columns, meta_select_sql) = fts_update_row_select(&conn)?;
 
     // Prepare statements
     let read_old_sql = format!(
@@ -629,21 +621,6 @@ pub fn update_rows(index_path: &str, doc_ids: &[i64]) -> Result<()> {
         "INSERT INTO \"{}\"(rowid, \"{}\") VALUES (?, ?)",
         FTS_TABLE, FTS_CONTENT_COLUMN
     );
-
-    let col_refs: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c)).collect();
-    let meta_select_sql = if columns.is_empty() {
-        format!(
-            "SELECT \"{}\" FROM METADATA WHERE \"{}\" = ?",
-            SUBSET_COLUMN, SUBSET_COLUMN
-        )
-    } else {
-        format!(
-            "SELECT \"{}\", {} FROM METADATA WHERE \"{}\" = ?",
-            SUBSET_COLUMN,
-            col_refs.join(", "),
-            SUBSET_COLUMN
-        )
-    };
 
     conn.execute_batch("BEGIN")
         .map_err(|e| Error::Filtering(format!("Failed to begin transaction: {}", e)))?;
@@ -704,6 +681,155 @@ pub fn update_rows(index_path: &str, doc_ids: &[i64]) -> Result<()> {
     Ok(())
 }
 
+/// Build the column list and SELECT statement for populating FTS from metadata.
+/// For v2 (split layout), JOINs METADATA and METADATA_CONTENT.
+/// Returns (user_visible_columns, select_sql) where select_sql has _subset_ as col 0.
+fn fts_rebuild_select(conn: &Connection) -> Result<(Vec<String>, String)> {
+    if is_split_schema(conn) {
+        let mut thin_cols: Vec<String> = Vec::new();
+        {
+            let mut stmt = conn.prepare("PRAGMA table_info(METADATA)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            for row in rows {
+                let col = row?;
+                if col != SUBSET_COLUMN && col != CONTENT_ID_COLUMN {
+                    thin_cols.push(col);
+                }
+            }
+        }
+        let mut fat_cols: Vec<String> = Vec::new();
+        {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", CONTENT_TABLE))?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            for row in rows {
+                let col = row?;
+                if col != CONTENT_ID_COLUMN {
+                    fat_cols.push(col);
+                }
+            }
+        }
+
+        let mut select_parts = vec![format!("M.\"{}\"", SUBSET_COLUMN)];
+        let mut columns = Vec::new();
+        for col in &thin_cols {
+            select_parts.push(format!("M.\"{}\"", col));
+            columns.push(col.clone());
+        }
+        for col in &fat_cols {
+            select_parts.push(format!("C.\"{}\"", col));
+            columns.push(col.clone());
+        }
+
+        let select_sql = format!(
+            "SELECT {} FROM METADATA M JOIN {} C ON M.\"{}\" = C.\"{}\" ORDER BY M.\"{}\"",
+            select_parts.join(", "),
+            CONTENT_TABLE,
+            CONTENT_ID_COLUMN,
+            CONTENT_ID_COLUMN,
+            SUBSET_COLUMN
+        );
+        Ok((columns, select_sql))
+    } else {
+        let mut columns: Vec<String> = Vec::new();
+        {
+            let mut stmt = conn.prepare("PRAGMA table_info(METADATA)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            for row in rows {
+                let col = row?;
+                if col != SUBSET_COLUMN {
+                    columns.push(col);
+                }
+            }
+        }
+        let col_refs: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c)).collect();
+        let select_sql = format!(
+            "SELECT \"{}\", {} FROM METADATA ORDER BY \"{}\"",
+            SUBSET_COLUMN,
+            col_refs.join(", "),
+            SUBSET_COLUMN
+        );
+        Ok((columns, select_sql))
+    }
+}
+
+/// Build the column list and per-row SELECT for update_rows.
+/// For v2, JOINs METADATA and METADATA_CONTENT with a WHERE on _subset_.
+/// Returns (user_visible_columns, select_sql_with_trailing_where_placeholder).
+fn fts_update_row_select(conn: &Connection) -> Result<(Vec<String>, String)> {
+    if is_split_schema(conn) {
+        let mut thin_cols: Vec<String> = Vec::new();
+        {
+            let mut stmt = conn.prepare("PRAGMA table_info(METADATA)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            for row in rows {
+                let col = row?;
+                if col != SUBSET_COLUMN && col != CONTENT_ID_COLUMN {
+                    thin_cols.push(col);
+                }
+            }
+        }
+        let mut fat_cols: Vec<String> = Vec::new();
+        {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", CONTENT_TABLE))?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            for row in rows {
+                let col = row?;
+                if col != CONTENT_ID_COLUMN {
+                    fat_cols.push(col);
+                }
+            }
+        }
+
+        let mut select_parts = vec![format!("M.\"{}\"", SUBSET_COLUMN)];
+        let mut columns = Vec::new();
+        for col in &thin_cols {
+            select_parts.push(format!("M.\"{}\"", col));
+            columns.push(col.clone());
+        }
+        for col in &fat_cols {
+            select_parts.push(format!("C.\"{}\"", col));
+            columns.push(col.clone());
+        }
+
+        let select_sql = format!(
+            "SELECT {} FROM METADATA M JOIN {} C ON M.\"{}\" = C.\"{}\" WHERE M.\"{}\" = ?",
+            select_parts.join(", "),
+            CONTENT_TABLE,
+            CONTENT_ID_COLUMN,
+            CONTENT_ID_COLUMN,
+            SUBSET_COLUMN
+        );
+        Ok((columns, select_sql))
+    } else {
+        let mut columns: Vec<String> = Vec::new();
+        {
+            let mut stmt = conn.prepare("PRAGMA table_info(METADATA)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            for row in rows {
+                let col = row?;
+                if col != SUBSET_COLUMN {
+                    columns.push(col);
+                }
+            }
+        }
+        let meta_select_sql = if columns.is_empty() {
+            format!(
+                "SELECT \"{}\" FROM METADATA WHERE \"{}\" = ?",
+                SUBSET_COLUMN, SUBSET_COLUMN
+            )
+        } else {
+            let col_refs: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c)).collect();
+            format!(
+                "SELECT \"{}\", {} FROM METADATA WHERE \"{}\" = ?",
+                SUBSET_COLUMN,
+                col_refs.join(", "),
+                SUBSET_COLUMN
+            )
+        };
+        Ok((columns, meta_select_sql))
+    }
+}
+
 /// Rebuild the FTS5 index and content table after `_subset_` IDs have been
 /// re-indexed (e.g. after a delete in the METADATA table).
 ///
@@ -749,18 +875,8 @@ pub fn rebuild(index_path: &str) -> Result<()> {
     // Recreate both tables (preserving the stored tokenizer)
     ensure_tables(&conn, &tokenizer)?;
 
-    // Get all column names except _subset_
-    let mut columns: Vec<String> = Vec::new();
-    {
-        let mut stmt = conn.prepare("PRAGMA table_info(METADATA)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        for row in rows {
-            let col = row?;
-            if col != SUBSET_COLUMN {
-                columns.push(col);
-            }
-        }
-    }
+    // Get all user-visible column names and build the SELECT for populating FTS.
+    let (columns, select_sql) = fts_rebuild_select(&conn)?;
 
     // Populate content table from METADATA
     if columns.is_empty() {
@@ -771,13 +887,6 @@ pub fn rebuild(index_path: &str) -> Result<()> {
         conn.execute(&sql, [])
             .map_err(|e| Error::Filtering(format!("Failed to populate content table: {}", e)))?;
     } else {
-        let col_refs: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c)).collect();
-        let select_sql = format!(
-            "SELECT \"{}\", {} FROM METADATA ORDER BY \"{}\"",
-            SUBSET_COLUMN,
-            col_refs.join(", "),
-            SUBSET_COLUMN
-        );
         let mut select_stmt = conn.prepare(&select_sql)?;
         let mut rows = select_stmt.query([])?;
 

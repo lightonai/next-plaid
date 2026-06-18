@@ -1634,7 +1634,7 @@ impl IndexBuilder {
         // instead of rebuilding from scratch. No-op for non-worktree projects.
         self.maybe_seed_from_worktree(force);
 
-        let mut state = IndexState::load(&self.index_dir)?;
+        let state = IndexState::load(&self.index_dir)?;
         let index_dir = get_vector_index_path(&self.index_dir);
         let index_path = index_dir.to_str().unwrap();
         let index_exists = index_dir.join("metadata.json").exists();
@@ -1660,41 +1660,10 @@ impl IndexBuilder {
             return self.full_rebuild(languages);
         }
 
-        // Format version 0 → 1 did not change the on-disk index layout, only
-        // added version tracking and the FileInfo.size field (which defaults to
-        // 0 via serde). Migrate in place rather than discarding the entire index.
-        if format_mismatch && state.index_format_version == 0 {
-            state.index_format_version = INDEX_FORMAT_VERSION;
-            // Stat every still-present entry to fill in missing sizes and upgrade
-            // legacy second-precision mtimes, restoring the stat-only fast path
-            // without re-embedding. Entries whose file is gone are deliberately
-            // LEFT in the state: the incremental update below will see them
-            // missing from disk, mark them deleted, and remove them from every
-            // store (vector index + metadata + FTS5) via delete_files_from_index.
-            // Dropping them here would instead orphan their index rows — the
-            // deleted content would stay searchable until a later periodic cleanup.
-            for (path, info) in state.files.iter_mut() {
-                let full = self.project_root.join(path);
-                let Ok((mtime, size)) = file_stat(&full) else {
-                    continue; // gone on disk → handled as a deletion by the update
-                };
-                if info.size == 0 {
-                    info.size = size;
-                }
-                // Legacy states store mtime in seconds; current code uses
-                // nanoseconds. Upgrade precision when the file hasn't been
-                // modified (same second), otherwise leave the value stale so the
-                // hash pass below catches the real change.
-                if info.mtime < 10_000_000_000_000 {
-                    if info.mtime == mtime / 1_000_000_000 {
-                        info.mtime = mtime;
-                    }
-                } else if info.mtime == 0 {
-                    info.mtime = mtime;
-                }
-            }
-            state.save(&self.index_dir)?;
-        } else if format_mismatch {
+        // Format version 0/1 to 2 changes the metadata DB schema (thin/fat table
+        // split), requiring a full rebuild. Drop any in-progress resumable-build
+        // marker so we don't try to resume an index we're discarding.
+        if format_mismatch {
             let _ = std::fs::remove_file(self.index_dir.join(BUILDING_MARKER));
             return self.full_rebuild(languages);
         }
