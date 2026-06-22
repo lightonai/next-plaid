@@ -62,6 +62,34 @@ const SUBSET_INDEX_NAME: &str = "idx_metadata_subset";
 /// binaries (e.g. a deployed next-plaid-api) read a v1 index without modification.
 const METADATA_SCHEMA_V1: i64 = 1;
 
+/// `PRAGMA user_version` value for the thin/fat split layout. METADATA holds only
+/// small filterable columns + `_content_id_` FK; METADATA_CONTENT holds the large
+/// TEXT columns (code, signature, etc). Re-sequencing on delete touches only the
+/// thin table, making it position-independent regardless of row count.
+pub(crate) const METADATA_SCHEMA_V2: i64 = 2;
+
+/// Content table name for the v2 split layout.
+pub(crate) const CONTENT_TABLE: &str = "METADATA_CONTENT";
+
+/// Column linking METADATA to METADATA_CONTENT in the v2 layout.
+pub(crate) const CONTENT_ID_COLUMN: &str = "_content_id_";
+
+/// Columns that belong in the thin METADATA table (v2).
+/// All other columns go into METADATA_CONTENT.
+const THIN_COLUMNS: &[&str] = &[
+    "file",
+    "name",
+    "qualified_name",
+    "line",
+    "end_line",
+    "language",
+    "unit_type",
+    "complexity",
+    "has_loops",
+    "has_branches",
+    "has_error_handling",
+];
+
 /// Validate that a column name is a safe SQL identifier.
 ///
 /// Column names must start with a letter or underscore, followed by
@@ -508,10 +536,26 @@ impl<'a> ConditionValidator<'a> {
 /// Get column names from the database schema.
 fn get_schema_columns(conn: &Connection) -> Result<HashSet<String>> {
     let mut columns = HashSet::new();
+    let split = is_split_schema(conn);
     let mut stmt = conn.prepare("PRAGMA table_info(METADATA)")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
     for row in rows {
-        columns.insert(row?);
+        let col = row?;
+        if split && col == CONTENT_ID_COLUMN {
+            continue;
+        }
+        columns.insert(col);
+    }
+    // For v2, also include columns from the content table.
+    if split {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", CONTENT_TABLE))?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for row in rows {
+            let col = row?;
+            if col != CONTENT_ID_COLUMN {
+                columns.insert(col);
+            }
+        }
     }
     Ok(columns)
 }
@@ -700,9 +744,19 @@ fn validate_fixed_columns(columns: &[(&str, &str)]) -> Result<()> {
 }
 
 /// Read the metadata schema version from `PRAGMA user_version` (0 = legacy).
-fn metadata_schema_version(conn: &Connection) -> i64 {
+pub(crate) fn metadata_schema_version(conn: &Connection) -> i64 {
     conn.query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap_or(0)
+}
+
+/// Check if the DB uses the v2 split layout.
+pub(crate) fn is_split_schema(conn: &Connection) -> bool {
+    metadata_schema_version(conn) >= METADATA_SCHEMA_V2
+}
+
+/// Determine if a column belongs to the thin (METADATA) or fat (METADATA_CONTENT) table.
+fn is_thin_column(col: &str) -> bool {
+    col == SUBSET_COLUMN || col == CONTENT_ID_COLUMN || THIN_COLUMNS.contains(&col)
 }
 
 /// Create the (non-unique) index over `_subset_` used by the v1 layout.
@@ -823,18 +877,36 @@ fn ensure_fast_subset_schema(conn: &Connection) -> Result<()> {
 }
 
 fn create_fixed_metadata_table(conn: &Connection, columns: &[(&str, &str)]) -> Result<()> {
-    // The caller has already committed to a stable schema, so we can skip the
-    // generic "discover columns as we go" logic and create the table directly.
-    // `_subset_` is a regular column (v1 layout) so delete re-sequencing never
-    // relocates fat rows; a separate index keeps lookups fast.
-    let mut col_defs = vec![format!("\"{}\" INTEGER NOT NULL", SUBSET_COLUMN)];
+    // v2 split layout: thin METADATA table for fast re-sequencing, fat
+    // METADATA_CONTENT table for large columns that never move.
+    let mut thin_col_defs = vec![
+        format!("\"{}\" INTEGER NOT NULL", SUBSET_COLUMN),
+        format!("\"{}\" INTEGER NOT NULL", CONTENT_ID_COLUMN),
+    ];
+    let mut fat_col_defs = vec![format!("\"{}\" INTEGER PRIMARY KEY", CONTENT_ID_COLUMN)];
+
     for (name, sql_type) in columns {
-        col_defs.push(format!("\"{}\" {}", name, sql_type));
+        if is_thin_column(name) {
+            thin_col_defs.push(format!("\"{}\" {}", name, sql_type));
+        } else {
+            fat_col_defs.push(format!("\"{}\" {}", name, sql_type));
+        }
     }
-    let create_sql = format!("CREATE TABLE METADATA ({})", col_defs.join(", "));
-    conn.execute(&create_sql, [])?;
+
+    conn.execute(
+        &format!("CREATE TABLE METADATA ({})", thin_col_defs.join(", ")),
+        [],
+    )?;
+    conn.execute(
+        &format!(
+            "CREATE TABLE {} ({})",
+            CONTENT_TABLE,
+            fat_col_defs.join(", ")
+        ),
+        [],
+    )?;
     create_subset_index(conn)?;
-    conn.execute_batch(&format!("PRAGMA user_version={}", METADATA_SCHEMA_V1))?;
+    conn.execute_batch(&format!("PRAGMA user_version={}", METADATA_SCHEMA_V2))?;
     Ok(())
 }
 
@@ -844,6 +916,9 @@ fn insert_fixed_metadata_rows(
     metadata: &[Value],
     doc_ids: &[i64],
 ) -> Result<usize> {
+    if is_split_schema(conn) {
+        return insert_fixed_metadata_rows_v2(conn, columns, metadata, doc_ids);
+    }
     let txn = conn.transaction()?;
     let mut column_names = vec![format!("\"{}\"", SUBSET_COLUMN)];
     column_names.extend(columns.iter().map(|(name, _)| format!("\"{}\"", name)));
@@ -861,13 +936,91 @@ fn insert_fixed_metadata_rows(
             })?;
             let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
             for (column_name, _) in columns {
-                // Reuse the generic JSON-to-SQL coercion so the fast path stores
-                // values exactly like the slower schema-discovery path.
                 let value = obj.get(*column_name).unwrap_or(&Value::Null);
                 values.push(json_to_sql(value));
             }
             let params: Vec<&dyn ToSql> = values.iter().map(|value| value.as_ref()).collect();
             stmt.execute(params_from_iter(params))?;
+        }
+    }
+    txn.commit()?;
+    Ok(metadata.len())
+}
+
+fn insert_fixed_metadata_rows_v2(
+    conn: &mut Connection,
+    columns: &[(&str, &str)],
+    metadata: &[Value],
+    doc_ids: &[i64],
+) -> Result<usize> {
+    let thin_cols: Vec<&(&str, &str)> = columns.iter().filter(|(n, _)| is_thin_column(n)).collect();
+    let fat_cols: Vec<&(&str, &str)> = columns.iter().filter(|(n, _)| !is_thin_column(n)).collect();
+
+    let next_content_id: i64 = conn
+        .query_row(
+            &format!(
+                "SELECT COALESCE(MAX(\"{}\"), -1) + 1 FROM {}",
+                CONTENT_ID_COLUMN, CONTENT_TABLE
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    let txn = conn.transaction()?;
+
+    // Prepare fat table INSERT
+    let mut fat_col_names = vec![format!("\"{}\"", CONTENT_ID_COLUMN)];
+    fat_col_names.extend(fat_cols.iter().map(|(name, _)| format!("\"{}\"", name)));
+    let fat_placeholders: Vec<&str> = std::iter::repeat_n("?", fat_cols.len() + 1).collect();
+    let fat_insert_sql = format!(
+        "INSERT INTO {} ({}) VALUES ({})",
+        CONTENT_TABLE,
+        fat_col_names.join(", "),
+        fat_placeholders.join(", ")
+    );
+
+    // Prepare thin table INSERT
+    let mut thin_col_names = vec![
+        format!("\"{}\"", SUBSET_COLUMN),
+        format!("\"{}\"", CONTENT_ID_COLUMN),
+    ];
+    thin_col_names.extend(thin_cols.iter().map(|(name, _)| format!("\"{}\"", name)));
+    let thin_placeholders: Vec<&str> = std::iter::repeat_n("?", thin_cols.len() + 2).collect();
+    let thin_insert_sql = format!(
+        "INSERT INTO METADATA ({}) VALUES ({})",
+        thin_col_names.join(", "),
+        thin_placeholders.join(", ")
+    );
+
+    {
+        let mut fat_stmt = txn.prepare_cached(&fat_insert_sql)?;
+        let mut thin_stmt = txn.prepare_cached(&thin_insert_sql)?;
+
+        for (i, item) in metadata.iter().enumerate() {
+            let obj = item.as_object().ok_or_else(|| {
+                Error::Filtering("Expected metadata rows to be JSON objects".into())
+            })?;
+            let content_id = next_content_id + i as i64;
+
+            // Insert into fat table
+            let mut fat_values: Vec<Box<dyn ToSql>> = vec![Box::new(content_id)];
+            for (column_name, _) in &fat_cols {
+                let value = obj.get(*column_name).unwrap_or(&Value::Null);
+                fat_values.push(json_to_sql(value));
+            }
+            let fat_params: Vec<&dyn ToSql> = fat_values.iter().map(|v| v.as_ref()).collect();
+            fat_stmt.execute(params_from_iter(fat_params))?;
+
+            // Insert into thin table
+            let mut thin_values: Vec<Box<dyn ToSql>> =
+                vec![Box::new(doc_ids[i]), Box::new(content_id)];
+            for (column_name, _) in &thin_cols {
+                let value = obj.get(*column_name).unwrap_or(&Value::Null);
+                thin_values.push(json_to_sql(value));
+            }
+            let thin_params: Vec<&dyn ToSql> = thin_values.iter().map(|v| v.as_ref()).collect();
+            thin_stmt.execute(params_from_iter(thin_params))?;
         }
     }
     txn.commit()?;
@@ -1027,7 +1180,6 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         if let Value::Object(obj) = item {
             for (key, value) in obj {
                 if !columns.contains(key) {
-                    // Validate column name
                     if !is_valid_column_name(key) {
                         return Err(Error::Filtering(format!(
                             "Invalid column name '{}'. Column names must start with a letter or \
@@ -1037,7 +1189,6 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
                     }
                     columns.push(key.clone());
                 }
-                // Infer type from first non-null value
                 if !value.is_null() && !column_types.contains_key(key) {
                     column_types.insert(key.clone(), infer_sql_type(value));
                 }
@@ -1048,17 +1199,38 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
     // Create connection
     let mut conn = open_db_write(&db_path)?;
 
-    // Build CREATE TABLE statement. `_subset_` is a regular column (v1 layout),
-    // not the rowid, so delete re-sequencing never relocates fat rows.
-    let mut col_defs = vec![format!("\"{}\" INTEGER NOT NULL", SUBSET_COLUMN)];
-    for col in &columns {
-        let sql_type = column_types.get(col).copied().unwrap_or("TEXT");
-        col_defs.push(format!("\"{}\" {}", col, sql_type));
+    // v2 split layout: thin METADATA + fat METADATA_CONTENT.
+    let thin_columns: Vec<&String> = columns.iter().filter(|c| is_thin_column(c)).collect();
+    let fat_columns: Vec<&String> = columns.iter().filter(|c| !is_thin_column(c)).collect();
+
+    let mut thin_col_defs = vec![
+        format!("\"{}\" INTEGER NOT NULL", SUBSET_COLUMN),
+        format!("\"{}\" INTEGER NOT NULL", CONTENT_ID_COLUMN),
+    ];
+    for col in &thin_columns {
+        let sql_type = column_types.get(col.as_str()).copied().unwrap_or("TEXT");
+        thin_col_defs.push(format!("\"{}\" {}", col, sql_type));
+    }
+
+    let mut fat_col_defs = vec![format!("\"{}\" INTEGER PRIMARY KEY", CONTENT_ID_COLUMN)];
+    for col in &fat_columns {
+        let sql_type = column_types.get(col.as_str()).copied().unwrap_or("TEXT");
+        fat_col_defs.push(format!("\"{}\" {}", col, sql_type));
     }
 
     let txn = conn.transaction()?;
-    let create_sql = format!("CREATE TABLE METADATA ({})", col_defs.join(", "));
-    txn.execute(&create_sql, [])?;
+    txn.execute(
+        &format!("CREATE TABLE METADATA ({})", thin_col_defs.join(", ")),
+        [],
+    )?;
+    txn.execute(
+        &format!(
+            "CREATE TABLE {} ({})",
+            CONTENT_TABLE,
+            fat_col_defs.join(", ")
+        ),
+        [],
+    )?;
     txn.execute(
         &format!(
             "CREATE INDEX IF NOT EXISTS \"{}\" ON METADATA (\"{}\")",
@@ -1067,43 +1239,70 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
         [],
     )?;
 
-    // Prepare INSERT statement
-    let placeholders: Vec<&str> = std::iter::repeat_n("?", columns.len() + 1).collect();
-    let insert_sql = if columns.is_empty() {
-        format!("INSERT INTO METADATA (\"{}\") VALUES (?)", SUBSET_COLUMN,)
-    } else {
-        let col_names: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c)).collect();
-        format!(
-            "INSERT INTO METADATA (\"{}\", {}) VALUES ({})",
-            SUBSET_COLUMN,
-            col_names.join(", "),
-            placeholders.join(", ")
-        )
-    };
+    // Prepare INSERT statements for both tables
+    let thin_col_names: Vec<String> = std::iter::once(format!("\"{}\"", SUBSET_COLUMN))
+        .chain(std::iter::once(format!("\"{}\"", CONTENT_ID_COLUMN)))
+        .chain(thin_columns.iter().map(|c| format!("\"{}\"", c)))
+        .collect();
+    let thin_placeholders: Vec<&str> = std::iter::repeat_n("?", thin_columns.len() + 2).collect();
+    let thin_insert_sql = format!(
+        "INSERT INTO METADATA ({}) VALUES ({})",
+        thin_col_names.join(", "),
+        thin_placeholders.join(", ")
+    );
+
+    let fat_col_names: Vec<String> = std::iter::once(format!("\"{}\"", CONTENT_ID_COLUMN))
+        .chain(fat_columns.iter().map(|c| format!("\"{}\"", c)))
+        .collect();
+    let fat_placeholders: Vec<&str> = std::iter::repeat_n("?", fat_columns.len() + 1).collect();
+    let fat_insert_sql = format!(
+        "INSERT INTO {} ({}) VALUES ({})",
+        CONTENT_TABLE,
+        fat_col_names.join(", "),
+        fat_placeholders.join(", ")
+    );
 
     {
-        let mut stmt = txn.prepare(&insert_sql)?;
+        let mut thin_stmt = txn.prepare(&thin_insert_sql)?;
+        let mut fat_stmt = txn.prepare(&fat_insert_sql)?;
         for (i, item) in metadata.iter().enumerate() {
-            let mut values: Vec<Box<dyn ToSql>> = vec![Box::new(doc_ids[i])];
+            let content_id = doc_ids[i];
+
+            // Insert into fat table
+            let mut fat_values: Vec<Box<dyn ToSql>> = vec![Box::new(content_id)];
             if let Value::Object(obj) = item {
-                for col in &columns {
-                    let value = obj.get(col).unwrap_or(&Value::Null);
-                    values.push(json_to_sql(value));
+                for col in &fat_columns {
+                    let value = obj.get(col.as_str()).unwrap_or(&Value::Null);
+                    fat_values.push(json_to_sql(value));
                 }
             } else {
-                // If not an object, insert nulls
-                for _ in &columns {
-                    values.push(Box::new(None::<String>));
+                for _ in &fat_columns {
+                    fat_values.push(Box::new(None::<String>));
                 }
             }
-            let params: Vec<&dyn ToSql> = values.iter().map(|v| v.as_ref()).collect();
-            stmt.execute(params_from_iter(params))?;
+            let fat_params: Vec<&dyn ToSql> = fat_values.iter().map(|v| v.as_ref()).collect();
+            fat_stmt.execute(params_from_iter(fat_params))?;
+
+            // Insert into thin table
+            let mut thin_values: Vec<Box<dyn ToSql>> =
+                vec![Box::new(doc_ids[i]), Box::new(content_id)];
+            if let Value::Object(obj) = item {
+                for col in &thin_columns {
+                    let value = obj.get(col.as_str()).unwrap_or(&Value::Null);
+                    thin_values.push(json_to_sql(value));
+                }
+            } else {
+                for _ in &thin_columns {
+                    thin_values.push(Box::new(None::<String>));
+                }
+            }
+            let thin_params: Vec<&dyn ToSql> = thin_values.iter().map(|v| v.as_ref()).collect();
+            thin_stmt.execute(params_from_iter(thin_params))?;
         }
     }
     txn.commit()?;
 
-    // Stamp the fast-delete layout so future deletes skip the migration check.
-    conn.execute_batch(&format!("PRAGMA user_version={}", METADATA_SCHEMA_V1))?;
+    conn.execute_batch(&format!("PRAGMA user_version={}", METADATA_SCHEMA_V2))?;
 
     Ok(metadata.len())
 }
@@ -1152,6 +1351,10 @@ pub fn update(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
     }
 
     let mut conn = open_db_write(&db_path)?;
+
+    if is_split_schema(&conn) {
+        return update_v2(&mut conn, metadata, doc_ids);
+    }
 
     // Get existing columns
     let mut existing_columns: Vec<String> = Vec::new();
@@ -1259,6 +1462,170 @@ pub fn update(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
     Ok(metadata.len())
 }
 
+fn update_v2(conn: &mut Connection, metadata: &[Value], doc_ids: &[i64]) -> Result<usize> {
+    // Gather existing columns from both tables (excluding internal columns).
+    let mut thin_existing: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(METADATA)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for row in rows {
+            let col = row?;
+            if col != SUBSET_COLUMN && col != CONTENT_ID_COLUMN {
+                thin_existing.push(col);
+            }
+        }
+    }
+    let mut fat_existing: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", CONTENT_TABLE))?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for row in rows {
+            let col = row?;
+            if col != CONTENT_ID_COLUMN {
+                fat_existing.push(col);
+            }
+        }
+    }
+
+    let mut all_existing: HashSet<&str> = HashSet::new();
+    for c in &thin_existing {
+        all_existing.insert(c.as_str());
+    }
+    for c in &fat_existing {
+        all_existing.insert(c.as_str());
+    }
+
+    // Discover new columns and ALTER TABLE as needed.
+    let mut column_types: HashMap<String, &'static str> = HashMap::new();
+    let mut new_thin: Vec<String> = Vec::new();
+    let mut new_fat: Vec<String> = Vec::new();
+
+    for item in metadata {
+        if let Value::Object(obj) = item {
+            for (key, value) in obj {
+                if !all_existing.contains(key.as_str())
+                    && !new_thin.contains(key)
+                    && !new_fat.contains(key)
+                {
+                    if !is_valid_column_name(key) {
+                        return Err(Error::Filtering(format!(
+                            "Invalid column name '{}'. Column names must start with a letter or \
+                             underscore, followed by letters, digits, or underscores.",
+                            key
+                        )));
+                    }
+                    if is_thin_column(key) {
+                        new_thin.push(key.clone());
+                    } else {
+                        new_fat.push(key.clone());
+                    }
+                }
+                if !value.is_null() && !column_types.contains_key(key) {
+                    column_types.insert(key.clone(), infer_sql_type(value));
+                }
+            }
+        }
+    }
+
+    let txn = conn.transaction()?;
+    for col in &new_thin {
+        let sql_type = column_types.get(col).copied().unwrap_or("TEXT");
+        txn.execute(
+            &format!("ALTER TABLE METADATA ADD COLUMN \"{}\" {}", col, sql_type),
+            [],
+        )?;
+    }
+    for col in &new_fat {
+        let sql_type = column_types.get(col).copied().unwrap_or("TEXT");
+        txn.execute(
+            &format!(
+                "ALTER TABLE {} ADD COLUMN \"{}\" {}",
+                CONTENT_TABLE, col, sql_type
+            ),
+            [],
+        )?;
+    }
+
+    let all_thin: Vec<String> = thin_existing.into_iter().chain(new_thin).collect();
+    let all_fat: Vec<String> = fat_existing.into_iter().chain(new_fat).collect();
+
+    // Next content ID
+    let next_content_id: i64 = txn
+        .query_row(
+            &format!(
+                "SELECT COALESCE(MAX(\"{}\"), -1) + 1 FROM {}",
+                CONTENT_ID_COLUMN, CONTENT_TABLE
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    // Prepare fat INSERT
+    let mut fat_col_names = vec![format!("\"{}\"", CONTENT_ID_COLUMN)];
+    fat_col_names.extend(all_fat.iter().map(|c| format!("\"{}\"", c)));
+    let fat_placeholders: Vec<&str> = std::iter::repeat_n("?", all_fat.len() + 1).collect();
+    let fat_insert_sql = format!(
+        "INSERT INTO {} ({}) VALUES ({})",
+        CONTENT_TABLE,
+        fat_col_names.join(", "),
+        fat_placeholders.join(", ")
+    );
+
+    // Prepare thin INSERT
+    let mut thin_col_names = vec![
+        format!("\"{}\"", SUBSET_COLUMN),
+        format!("\"{}\"", CONTENT_ID_COLUMN),
+    ];
+    thin_col_names.extend(all_thin.iter().map(|c| format!("\"{}\"", c)));
+    let thin_placeholders: Vec<&str> = std::iter::repeat_n("?", all_thin.len() + 2).collect();
+    let thin_insert_sql = format!(
+        "INSERT INTO METADATA ({}) VALUES ({})",
+        thin_col_names.join(", "),
+        thin_placeholders.join(", ")
+    );
+
+    {
+        let mut fat_stmt = txn.prepare(&fat_insert_sql)?;
+        let mut thin_stmt = txn.prepare(&thin_insert_sql)?;
+
+        for (i, item) in metadata.iter().enumerate() {
+            let content_id = next_content_id + i as i64;
+
+            let mut fat_values: Vec<Box<dyn ToSql>> = vec![Box::new(content_id)];
+            if let Value::Object(obj) = item {
+                for col in &all_fat {
+                    let value = obj.get(col).unwrap_or(&Value::Null);
+                    fat_values.push(json_to_sql(value));
+                }
+            } else {
+                for _ in &all_fat {
+                    fat_values.push(Box::new(None::<String>));
+                }
+            }
+            let fat_params: Vec<&dyn ToSql> = fat_values.iter().map(|v| v.as_ref()).collect();
+            fat_stmt.execute(params_from_iter(fat_params))?;
+
+            let mut thin_values: Vec<Box<dyn ToSql>> =
+                vec![Box::new(doc_ids[i]), Box::new(content_id)];
+            if let Value::Object(obj) = item {
+                for col in &all_thin {
+                    let value = obj.get(col).unwrap_or(&Value::Null);
+                    thin_values.push(json_to_sql(value));
+                }
+            } else {
+                for _ in &all_thin {
+                    thin_values.push(Box::new(None::<String>));
+                }
+            }
+            let thin_params: Vec<&dyn ToSql> = thin_values.iter().map(|v| v.as_ref()).collect();
+            thin_stmt.execute(params_from_iter(thin_params))?;
+        }
+    }
+    txn.commit()?;
+    Ok(metadata.len())
+}
+
 /// Delete rows by subset IDs and re-index the _subset_ column to be sequential.
 ///
 /// After deletion, remaining documents are re-indexed to maintain sequential
@@ -1287,6 +1654,10 @@ pub fn delete(index_path: &str, subset: &[i64]) -> Result<usize> {
     }
 
     let conn = open_db_write(&db_path)?;
+
+    if is_split_schema(&conn) {
+        return delete_v2(&conn, subset);
+    }
 
     // Migrate a legacy (v0) index to the fast-delete layout on the first delete, so
     // the re-sequencing below updates a plain indexed column instead of relocating
@@ -1328,7 +1699,7 @@ pub fn delete(index_path: &str, subset: &[i64]) -> Result<usize> {
     // Instead of copying the entire table (expensive for large tables with TEXT/BLOB
     // columns), use range-based UPDATEs. Because `_subset_` is now a regular column
     // (not the rowid), each UPDATE rewrites only the small integer value and its
-    // index entry — the fat row stays put. Process gaps in ascending order so
+    // index entry - the fat row stays put. Process gaps in ascending order so
     // decremented values never collide.
     let mut sorted_ids: Vec<i64> = subset.to_vec();
     sorted_ids.sort_unstable();
@@ -1393,6 +1764,95 @@ pub fn delete(index_path: &str, subset: &[i64]) -> Result<usize> {
     Ok(deleted)
 }
 
+fn delete_v2(conn: &Connection, subset: &[i64]) -> Result<usize> {
+    conn.execute("BEGIN", [])?;
+
+    let original_count: i64 = conn
+        .query_row(
+            &format!(
+                "SELECT COALESCE(MAX(\"{}\"), -1) FROM METADATA",
+                SUBSET_COLUMN
+            ),
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(-1)
+        + 1;
+
+    // Delete from thin table
+    let (in_clause, in_params, temp_table) = crate::text_search::build_in_clause(conn, subset)?;
+    let delete_sql = format!(
+        "DELETE FROM METADATA WHERE \"{}\" {}",
+        SUBSET_COLUMN, in_clause
+    );
+    let param_refs: Vec<&dyn ToSql> = in_params.iter().map(|v| v.as_ref()).collect();
+    let deleted = conn.execute(&delete_sql, params_from_iter(param_refs))?;
+    if let Some(ref name) = temp_table {
+        crate::text_search::drop_temp_table(conn, name);
+    }
+
+    // Delete orphaned content rows
+    conn.execute(
+        &format!(
+            "DELETE FROM {} WHERE \"{}\" NOT IN (SELECT \"{}\" FROM METADATA)",
+            CONTENT_TABLE, CONTENT_ID_COLUMN, CONTENT_ID_COLUMN
+        ),
+        [],
+    )?;
+
+    // Re-sequence _subset_ on the thin table (same algorithm as v1, but now
+    // the table is small so this is always fast).
+    let mut sorted_ids: Vec<i64> = subset.to_vec();
+    sorted_ids.sort_unstable();
+    sorted_ids.dedup();
+    sorted_ids.retain(|&id| id >= 0 && id < original_count);
+
+    let max_id: i64 = conn
+        .query_row(
+            &format!(
+                "SELECT COALESCE(MAX(\"{}\"), -1) FROM METADATA",
+                SUBSET_COLUMN
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(-1);
+
+    if max_id >= 0 && !sorted_ids.is_empty() {
+        let mut updates: Vec<(i64, i64, i64)> = Vec::new();
+        let mut i = 0;
+        while i < sorted_ids.len() {
+            let mut j = i + 1;
+            while j < sorted_ids.len() && sorted_ids[j] == sorted_ids[j - 1] + 1 {
+                j += 1;
+            }
+            let range_start = sorted_ids[j - 1] + 1;
+            let range_end = if j < sorted_ids.len() {
+                sorted_ids[j]
+            } else {
+                max_id + sorted_ids.len() as i64 + 1
+            };
+            if range_start < range_end {
+                updates.push((range_start, range_end, j as i64));
+            }
+            i = j;
+        }
+
+        for (from, to_excl, shift) in &updates {
+            conn.execute(
+                &format!(
+                    "UPDATE METADATA SET \"{}\" = \"{}\" - ?1 WHERE \"{}\" >= ?2 AND \"{}\" < ?3",
+                    SUBSET_COLUMN, SUBSET_COLUMN, SUBSET_COLUMN, SUBSET_COLUMN
+                ),
+                rusqlite::params![shift, from, to_excl],
+            )?;
+        }
+    }
+
+    conn.execute("COMMIT", [])?;
+    Ok(deleted)
+}
+
 /// Query the database and return matching _subset_ IDs.
 ///
 /// # Arguments
@@ -1435,10 +1895,17 @@ pub fn where_condition(
         let valid_columns = get_schema_columns(conn)?;
         validate_condition(condition, &valid_columns)?;
 
-        let query = format!(
-            "SELECT \"{}\" FROM METADATA WHERE {}",
-            SUBSET_COLUMN, condition
-        );
+        let query = if is_split_schema(conn) && condition_references_fat_column(condition, conn) {
+            format!(
+                "SELECT M.\"{}\" FROM METADATA M JOIN {} C ON M.\"{}\" = C.\"{}\" WHERE {}",
+                SUBSET_COLUMN, CONTENT_TABLE, CONTENT_ID_COLUMN, CONTENT_ID_COLUMN, condition
+            )
+        } else {
+            format!(
+                "SELECT \"{}\" FROM METADATA WHERE {}",
+                SUBSET_COLUMN, condition
+            )
+        };
 
         let params: Vec<Box<dyn ToSql>> = parameters.iter().map(json_to_sql).collect();
         let param_refs: Vec<&dyn ToSql> = params.iter().map(|v| v.as_ref()).collect();
@@ -1453,6 +1920,24 @@ pub fn where_condition(
 
         Ok(result)
     })
+}
+
+/// Check if a SQL condition references any fat (METADATA_CONTENT) column.
+fn condition_references_fat_column(condition: &str, conn: &Connection) -> bool {
+    let mut fat_columns: Vec<String> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info({})", CONTENT_TABLE)) {
+        if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(1)) {
+            for row in rows.flatten() {
+                if row != CONTENT_ID_COLUMN {
+                    fat_columns.push(row);
+                }
+            }
+        }
+    }
+    let cond_upper = condition.to_uppercase();
+    fat_columns
+        .iter()
+        .any(|col| cond_upper.contains(&col.to_uppercase()))
 }
 
 /// Query document IDs with REGEXP support enabled.
@@ -1546,10 +2031,17 @@ pub fn where_condition_regexp(
             },
         )?;
 
-        let query = format!(
-            "SELECT \"{}\" FROM METADATA WHERE {}",
-            SUBSET_COLUMN, condition
-        );
+        let query = if is_split_schema(conn) && condition_references_fat_column(condition, conn) {
+            format!(
+                "SELECT M.\"{}\" FROM METADATA M JOIN {} C ON M.\"{}\" = C.\"{}\" WHERE {}",
+                SUBSET_COLUMN, CONTENT_TABLE, CONTENT_ID_COLUMN, CONTENT_ID_COLUMN, condition
+            )
+        } else {
+            format!(
+                "SELECT \"{}\" FROM METADATA WHERE {}",
+                SUBSET_COLUMN, condition
+            )
+        };
 
         let params: Vec<Box<dyn ToSql>> = parameters.iter().map(json_to_sql).collect();
         let param_refs: Vec<&dyn ToSql> = params.iter().map(|v| v.as_ref()).collect();
@@ -1604,10 +2096,17 @@ pub fn get_distinct_strings(index_path: &str, column: &str) -> Result<Vec<String
             return Ok(Vec::new());
         }
 
-        let query = format!(
-            "SELECT DISTINCT \"{0}\" FROM METADATA WHERE \"{0}\" IS NOT NULL",
-            column
-        );
+        let query = if is_split_schema(conn) && !is_thin_column(column) {
+            format!(
+                "SELECT DISTINCT \"{0}\" FROM {1} WHERE \"{0}\" IS NOT NULL",
+                column, CONTENT_TABLE
+            )
+        } else {
+            format!(
+                "SELECT DISTINCT \"{0}\" FROM METADATA WHERE \"{0}\" IS NOT NULL",
+                column
+            )
+        };
         let mut stmt = conn.prepare(&query)?;
         let rows = stmt.query_map([], |row| row.get::<_, Option<String>>(0))?;
 
@@ -1663,6 +2162,10 @@ pub fn get(
         if let Some(cond) = condition {
             let valid_columns = get_schema_columns(conn)?;
             validate_condition(cond, &valid_columns)?;
+        }
+
+        if is_split_schema(conn) {
+            return get_v2(conn, condition, parameters, subset);
         }
 
         // Get column names
@@ -1744,6 +2247,128 @@ pub fn get(
 
         Ok(results)
     })
+}
+
+fn get_v2(
+    conn: &Connection,
+    condition: Option<&str>,
+    parameters: &[Value],
+    subset: Option<&[i64]>,
+) -> Result<Vec<Value>> {
+    // Build the column list for the JOIN query, excluding _content_id_.
+    let mut thin_cols: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(METADATA)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for row in rows {
+            let col = row?;
+            if col != CONTENT_ID_COLUMN {
+                thin_cols.push(col);
+            }
+        }
+    }
+    let mut fat_cols: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", CONTENT_TABLE))?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for row in rows {
+            let col = row?;
+            if col != CONTENT_ID_COLUMN {
+                fat_cols.push(col);
+            }
+        }
+    }
+
+    // Build SELECT columns: M.thin_col, ..., C.fat_col, ...
+    let mut select_parts: Vec<String> = Vec::new();
+    for col in &thin_cols {
+        select_parts.push(format!("M.\"{}\"", col));
+    }
+    for col in &fat_cols {
+        select_parts.push(format!("C.\"{}\"", col));
+    }
+    let select_clause = select_parts.join(", ");
+
+    let from_clause = format!(
+        "METADATA M JOIN {} C ON M.\"{}\" = C.\"{}\"",
+        CONTENT_TABLE, CONTENT_ID_COLUMN, CONTENT_ID_COLUMN
+    );
+
+    // Merged column names for result construction
+    let all_cols: Vec<&String> = thin_cols.iter().chain(fat_cols.iter()).collect();
+
+    if let Some(ids) = subset {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut results: Vec<Value> = Vec::new();
+        for chunk in ids.chunks(SQLITE_PARAM_LIMIT) {
+            let placeholders: Vec<&str> = std::iter::repeat_n("?", chunk.len()).collect();
+            let query = format!(
+                "SELECT {} FROM {} WHERE M.\"{}\" IN ({})",
+                select_clause,
+                from_clause,
+                SUBSET_COLUMN,
+                placeholders.join(", ")
+            );
+            let params: Vec<Box<dyn ToSql>> = chunk
+                .iter()
+                .map(|&id| Box::new(id) as Box<dyn ToSql>)
+                .collect();
+            let param_refs: Vec<&dyn ToSql> = params.iter().map(|v| v.as_ref()).collect();
+            let mut stmt = conn.prepare(&query)?;
+            let mut rows = stmt.query(params_from_iter(param_refs))?;
+
+            while let Some(row) = rows.next()? {
+                let mut obj = serde_json::Map::new();
+                for (i, col) in all_cols.iter().enumerate() {
+                    let value = row_to_json_value(row, i)?;
+                    obj.insert((*col).clone(), value);
+                }
+                results.push(Value::Object(obj));
+            }
+        }
+
+        let mut results_map: HashMap<i64, Value> = HashMap::new();
+        for result in results {
+            if let Some(id) = result.get(SUBSET_COLUMN).and_then(|v| v.as_i64()) {
+                results_map.insert(id, result);
+            }
+        }
+        return Ok(ids.iter().filter_map(|id| results_map.remove(id)).collect());
+    }
+
+    let (query, params): (String, Vec<Box<dyn ToSql>>) = if let Some(cond) = condition {
+        let query = format!(
+            "SELECT {} FROM {} WHERE {} ORDER BY M.\"{}\"",
+            select_clause, from_clause, cond, SUBSET_COLUMN
+        );
+        let params = parameters.iter().map(json_to_sql).collect();
+        (query, params)
+    } else {
+        let query = format!(
+            "SELECT {} FROM {} ORDER BY M.\"{}\"",
+            select_clause, from_clause, SUBSET_COLUMN
+        );
+        (query, Vec::new())
+    };
+
+    let param_refs: Vec<&dyn ToSql> = params.iter().map(|v| v.as_ref()).collect();
+    let mut stmt = conn.prepare(&query)?;
+    let mut rows = stmt.query(params_from_iter(param_refs))?;
+
+    let mut results: Vec<Value> = Vec::new();
+    while let Some(row) = rows.next()? {
+        let mut obj = serde_json::Map::new();
+        for (i, col) in all_cols.iter().enumerate() {
+            let value = row_to_json_value(row, i)?;
+            obj.insert((*col).clone(), value);
+        }
+        results.push(Value::Object(obj));
+    }
+
+    Ok(results)
 }
 
 /// Helper to convert a rusqlite row column to JSON value.
@@ -1884,14 +2509,20 @@ pub fn update_where(
         }
     }
 
-    // Keep the FTS mirror in sync with metadata updates by recording affected rows
-    // before executing the UPDATE. This stays on the generic path so any caller that
-    // updates searchable fields gets consistent search results.
+    // Find affected rows before the update (for FTS sync).
+    let affected_query =
+        if is_split_schema(&conn) && condition_references_fat_column(condition, &conn) {
+            format!(
+                "SELECT M.\"{}\" FROM METADATA M JOIN {} C ON M.\"{}\" = C.\"{}\" WHERE {}",
+                SUBSET_COLUMN, CONTENT_TABLE, CONTENT_ID_COLUMN, CONTENT_ID_COLUMN, condition
+            )
+        } else {
+            format!(
+                "SELECT \"{}\" FROM METADATA WHERE {}",
+                SUBSET_COLUMN, condition
+            )
+        };
     let affected_ids: Vec<i64> = {
-        let affected_query = format!(
-            "SELECT \"{}\" FROM METADATA WHERE {}",
-            SUBSET_COLUMN, condition
-        );
         let cond_params: Vec<Box<dyn ToSql>> = parameters.iter().map(json_to_sql).collect();
         let cond_param_refs: Vec<&dyn ToSql> = cond_params.iter().map(|v| v.as_ref()).collect();
 
@@ -1901,6 +2532,17 @@ pub fn update_where(
         })?;
         rows.filter_map(|row| row.ok()).collect()
     };
+
+    if is_split_schema(&conn) {
+        return update_where_v2(
+            &conn,
+            index_path,
+            updates_obj,
+            &affected_ids,
+            condition,
+            parameters,
+        );
+    }
 
     // Build SET clause
     let set_parts: Vec<String> = updates_obj
@@ -1925,6 +2567,112 @@ pub fn update_where(
     }
 
     Ok(updated)
+}
+
+fn update_where_v2(
+    conn: &Connection,
+    index_path: &str,
+    updates_obj: &serde_json::Map<String, Value>,
+    affected_ids: &[i64],
+    _condition: &str,
+    _parameters: &[Value],
+) -> Result<usize> {
+    if affected_ids.is_empty() {
+        return Ok(0);
+    }
+
+    // Split updates into thin and fat columns.
+    let thin_updates: Vec<(&String, &Value)> = updates_obj
+        .iter()
+        .filter(|(k, _)| is_thin_column(k))
+        .collect();
+    let fat_updates: Vec<(&String, &Value)> = updates_obj
+        .iter()
+        .filter(|(k, _)| !is_thin_column(k))
+        .collect();
+
+    conn.execute("BEGIN", [])?;
+
+    let mut total_updated = 0usize;
+
+    // Update thin table
+    if !thin_updates.is_empty() {
+        let set_parts: Vec<String> = thin_updates
+            .iter()
+            .map(|(col, _)| format!("\"{}\" = ?", col))
+            .collect();
+        let set_clause = set_parts.join(", ");
+
+        for chunk in affected_ids.chunks(SQLITE_PARAM_LIMIT) {
+            let placeholders: Vec<&str> = std::iter::repeat_n("?", chunk.len()).collect();
+            let query = format!(
+                "UPDATE METADATA SET {} WHERE \"{}\" IN ({})",
+                set_clause,
+                SUBSET_COLUMN,
+                placeholders.join(", ")
+            );
+            let mut params: Vec<Box<dyn ToSql>> =
+                thin_updates.iter().map(|(_, v)| json_to_sql(v)).collect();
+            params.extend(chunk.iter().map(|&id| Box::new(id) as Box<dyn ToSql>));
+            let param_refs: Vec<&dyn ToSql> = params.iter().map(|v| v.as_ref()).collect();
+            total_updated += conn.execute(&query, params_from_iter(param_refs))?;
+        }
+    }
+
+    // Update fat table
+    if !fat_updates.is_empty() {
+        let set_parts: Vec<String> = fat_updates
+            .iter()
+            .map(|(col, _)| format!("\"{}\" = ?", col))
+            .collect();
+        let set_clause = set_parts.join(", ");
+
+        // Get content IDs for affected rows
+        for chunk in affected_ids.chunks(SQLITE_PARAM_LIMIT) {
+            let placeholders: Vec<&str> = std::iter::repeat_n("?", chunk.len()).collect();
+            let content_ids_query = format!(
+                "SELECT \"{}\" FROM METADATA WHERE \"{}\" IN ({})",
+                CONTENT_ID_COLUMN,
+                SUBSET_COLUMN,
+                placeholders.join(", ")
+            );
+            let id_params: Vec<Box<dyn ToSql>> = chunk
+                .iter()
+                .map(|&id| Box::new(id) as Box<dyn ToSql>)
+                .collect();
+            let id_param_refs: Vec<&dyn ToSql> = id_params.iter().map(|v| v.as_ref()).collect();
+            let mut stmt = conn.prepare(&content_ids_query)?;
+            let content_ids: Vec<i64> = stmt
+                .query_map(params_from_iter(id_param_refs), |row| row.get::<_, i64>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            if !content_ids.is_empty() {
+                let c_placeholders: Vec<&str> =
+                    std::iter::repeat_n("?", content_ids.len()).collect();
+                let query = format!(
+                    "UPDATE {} SET {} WHERE \"{}\" IN ({})",
+                    CONTENT_TABLE,
+                    set_clause,
+                    CONTENT_ID_COLUMN,
+                    c_placeholders.join(", ")
+                );
+                let mut params: Vec<Box<dyn ToSql>> =
+                    fat_updates.iter().map(|(_, v)| json_to_sql(v)).collect();
+                params.extend(content_ids.iter().map(|&id| Box::new(id) as Box<dyn ToSql>));
+                let param_refs: Vec<&dyn ToSql> = params.iter().map(|v| v.as_ref()).collect();
+                total_updated += conn.execute(&query, params_from_iter(param_refs))?;
+            }
+        }
+    }
+
+    conn.execute("COMMIT", [])?;
+
+    if total_updated > 0 && !affected_ids.is_empty() {
+        crate::text_search::update_rows(index_path, affected_ids)?;
+    }
+
+    Ok(affected_ids.len())
 }
 
 /// Get the number of documents in the metadata database.
@@ -2766,7 +3514,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_uses_v1_layout() {
+    fn test_create_uses_v2_layout() {
         let dir = setup_test_dir();
         let path = dir.path().to_str().unwrap();
         let meta: Vec<serde_json::Value> = (0..5)
@@ -2774,17 +3522,28 @@ mod tests {
             .collect();
         create(path, &meta, &(0..5).collect::<Vec<i64>>()).unwrap();
 
-        assert_eq!(user_version_of(path), 1);
-        assert!(!subset_is_pk(path), "v1: _subset_ must not be the PK/rowid");
+        assert_eq!(user_version_of(path), 2);
+        assert!(!subset_is_pk(path), "v2: _subset_ must not be the PK/rowid");
 
-        // Forward-compat guarantee: SELECT * exposes exactly _subset_ + user
-        // columns and leaks no internal column, so older binaries read it unchanged.
+        // Forward-compat: get() exposes _subset_ + user columns, hides _content_id_.
         let cols = select_star_columns(path);
         assert!(cols.iter().any(|c| c == SUBSET_COLUMN));
         assert!(cols.iter().any(|c| c == "file") && cols.iter().any(|c| c == "code"));
-        assert!(!cols
-            .iter()
-            .any(|c| c == "rowid" || c.starts_with("_METADATA")));
+        assert!(!cols.iter().any(|c| c == CONTENT_ID_COLUMN));
+
+        // Verify both tables exist
+        let c = meta_db(path);
+        let has_content: i64 = c
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{}'",
+                    CONTENT_TABLE
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_content, 1);
     }
 
     #[test]
@@ -2867,5 +3626,207 @@ mod tests {
         }
         assert_eq!(rows[3]["file"].as_str().unwrap(), "f4.rs");
         assert_eq!(rows[3]["code"].as_str().unwrap(), "c4");
+    }
+
+    // ---- v2 split layout tests ----
+
+    #[test]
+    fn test_v2_delete_resequences_thin_only() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+        let meta: Vec<Value> = (0..10)
+            .map(|i| {
+                json!({
+                    "file": format!("f{i}.rs"),
+                    "code": format!("fn func_{i}() {{}}"),
+                })
+            })
+            .collect();
+        create(path, &meta, &(0..10).collect::<Vec<i64>>()).unwrap();
+        assert_eq!(user_version_of(path), 2);
+
+        // Verify content IDs before delete
+        let c = meta_db(path);
+        let content_count_before: i64 = c
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {}", CONTENT_TABLE),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(content_count_before, 10);
+
+        // Delete rows 2, 5, 7
+        assert_eq!(delete(path, &[2, 5, 7]).unwrap(), 3);
+
+        // Thin table re-sequenced
+        let rows = get(path, None, &[], None).unwrap();
+        assert_eq!(rows.len(), 7);
+        for (i, row) in rows.iter().enumerate() {
+            assert_eq!(row[SUBSET_COLUMN].as_i64().unwrap(), i as i64);
+        }
+        // Survivors in correct order
+        assert_eq!(rows[0]["file"].as_str().unwrap(), "f0.rs");
+        assert_eq!(rows[2]["file"].as_str().unwrap(), "f3.rs");
+
+        // Content table had orphans removed
+        let c = meta_db(path);
+        let content_count_after: i64 = c
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {}", CONTENT_TABLE),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(content_count_after, 7);
+
+        // Content IDs are stable (not re-sequenced) - the remaining content_ids
+        // should be a subset of 0..10, not necessarily 0..7.
+        let max_content_id: i64 = c
+            .query_row(
+                &format!(
+                    "SELECT MAX(\"{}\") FROM {}",
+                    CONTENT_ID_COLUMN, CONTENT_TABLE
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(max_content_id >= 7, "content IDs are stable, not compacted");
+    }
+
+    #[test]
+    fn test_v2_get_returns_all_columns() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+        let meta = vec![
+            json!({
+                "file": "src/main.rs",
+                "name": "main",
+                "line": 1,
+                "code": "fn main() { println!(\"hello\"); }",
+                "signature": "fn main()",
+            }),
+            json!({
+                "file": "src/lib.rs",
+                "name": "helper",
+                "line": 10,
+                "code": "fn helper() -> i32 { 42 }",
+                "signature": "fn helper() -> i32",
+            }),
+        ];
+        create(path, &meta, &[0, 1]).unwrap();
+
+        let rows = get(path, None, &[], None).unwrap();
+        assert_eq!(rows.len(), 2);
+
+        // Thin columns present
+        assert_eq!(rows[0]["file"], "src/main.rs");
+        assert_eq!(rows[0]["name"], "main");
+        assert_eq!(rows[0]["line"], 1);
+
+        // Fat columns present
+        assert_eq!(rows[0]["code"], "fn main() { println!(\"hello\"); }");
+        assert_eq!(rows[0]["signature"], "fn main()");
+
+        // _content_id_ hidden
+        assert!(rows[0].get(CONTENT_ID_COLUMN).is_none());
+
+        // _subset_ present
+        assert_eq!(rows[0][SUBSET_COLUMN], 0);
+        assert_eq!(rows[1][SUBSET_COLUMN], 1);
+    }
+
+    #[test]
+    fn test_v2_where_condition_on_thin_column() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+        let meta = vec![
+            json!({"file": "src/a.rs", "name": "foo", "code": "fn foo() {}"}),
+            json!({"file": "src/b.rs", "name": "bar", "code": "fn bar() {}"}),
+            json!({"file": "src/a.rs", "name": "baz", "code": "fn baz() {}"}),
+        ];
+        create(path, &meta, &[0, 1, 2]).unwrap();
+
+        let ids = where_condition(path, "file = ?", &[json!("src/a.rs")]).unwrap();
+        assert_eq!(ids, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_v2_where_condition_regexp_on_fat_column() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+        let meta = vec![
+            json!({"file": "a.rs", "code": "fn alpha() { let x = async_fn().await; }"}),
+            json!({"file": "b.rs", "code": "fn beta() { println!(\"hi\"); }"}),
+            json!({"file": "c.rs", "code": "fn gamma() { let y = tokio::spawn(async {}); }"}),
+        ];
+        create(path, &meta, &[0, 1, 2]).unwrap();
+
+        let ids = where_condition_regexp(path, "code REGEXP ?", &[json!("async")]).unwrap();
+        let mut ids_sorted = ids.clone();
+        ids_sorted.sort();
+        assert_eq!(ids_sorted, vec![0, 2]);
+    }
+
+    #[test]
+    fn test_v1_index_still_works() {
+        let dir = setup_test_dir();
+        let path = dir.path().to_str().unwrap();
+
+        // Hand-build a v1 index (no METADATA_CONTENT table).
+        {
+            let c = meta_db(path);
+            c.execute_batch(&format!("PRAGMA user_version={};", METADATA_SCHEMA_V1))
+                .unwrap();
+            c.execute(
+                &format!(
+                    "CREATE TABLE METADATA (\"{}\" INTEGER NOT NULL, file TEXT, code TEXT)",
+                    SUBSET_COLUMN
+                ),
+                [],
+            )
+            .unwrap();
+            c.execute(
+                &format!(
+                    "CREATE INDEX \"{}\" ON METADATA (\"{}\")",
+                    SUBSET_INDEX_NAME, SUBSET_COLUMN
+                ),
+                [],
+            )
+            .unwrap();
+            for i in 0..5i64 {
+                c.execute(
+                    "INSERT INTO METADATA VALUES (?, ?, ?)",
+                    rusqlite::params![i, format!("f{i}.rs"), format!("c{i}")],
+                )
+                .unwrap();
+            }
+        }
+
+        assert_eq!(user_version_of(path), 1);
+        assert_eq!(count(path).unwrap(), 5);
+
+        // get works
+        let rows = get(path, None, &[], None).unwrap();
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0]["file"], "f0.rs");
+        assert_eq!(rows[0]["code"], "c0");
+
+        // where_condition works
+        let ids = where_condition(path, "file = ?", &[json!("f2.rs")]).unwrap();
+        assert_eq!(ids, vec![2]);
+
+        // delete works (uses v1 path)
+        assert_eq!(delete(path, &[1]).unwrap(), 1);
+        assert_eq!(count(path).unwrap(), 4);
+        let rows = get(path, None, &[], None).unwrap();
+        assert_eq!(rows[1]["file"], "f2.rs");
+        assert_eq!(rows[1][SUBSET_COLUMN], 1);
+
+        // update works (v1 path)
+        let new_meta = vec![json!({"file": "f5.rs", "code": "c5"})];
+        update(path, &new_meta, &[4]).unwrap();
+        assert_eq!(count(path).unwrap(), 5);
     }
 }
