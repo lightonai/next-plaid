@@ -498,6 +498,31 @@ pub fn resolve_pool_factor(
     Some(config.get_pool_factor())
 }
 
+/// Subset-size threshold above which the exact-match re-rank pass reuses the
+/// already-computed global FTS5 results instead of refetching FTS5 *within* the
+/// subset. See [`should_reuse_global_fts5`] for the rationale.
+const MAX_LITERAL_RERANK_SUBSET: usize = 2048;
+
+/// For the exact-match re-rank pass on a plain (no `-e`) query, decide whether
+/// to reuse the already-computed global FTS5 results (filtered to the subset)
+/// instead of refetching FTS5 *within* the subset.
+///
+/// For a plain query, colgrep runs the primary hybrid search and then a second
+/// pass restricted to every unit whose `code` literally contains the query
+/// string, so literal hits get reranked even when the vector search buries
+/// them. That pass normally refetches FTS5 within the subset for best recall —
+/// reusing the global BM25 hits would otherwise filter down to a tiny
+/// intersection on a small subset. But a within-subset refetch over a huge
+/// literal-match subset (e.g. `test` matching tens of thousands of units)
+/// dominates wall-clock, and there the intersection is large enough that
+/// reusing the global hits is both cheap and recall-safe. So switch to reusing
+/// the global results once the subset exceeds [`MAX_LITERAL_RERANK_SUBSET`].
+/// The candidates are still reranked in every case — only the FTS5 source
+/// changes.
+fn should_reuse_global_fts5(subset_len: usize) -> bool {
+    subset_len > MAX_LITERAL_RERANK_SUBSET
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_search(
     query: &str,
@@ -1575,17 +1600,27 @@ fn search_single_path(
                         Some(&hybrid_subset),
                     )?
                 } else {
-                    // Pass `None` so FTS5 is refetched *within* the subset.
-                    // Reusing the global `fts5_results` here would carry
-                    // BM25 hits from outside the subset; they'd get filtered
-                    // down to a tiny intersection, hurting recall.
+                    // FTS5 source for the re-rank: refetch *within* the subset
+                    // (`None`) for best recall on small subsets, where reusing
+                    // the global BM25 hits would filter down to a tiny
+                    // intersection. On a huge literal-match subset the
+                    // within-subset refetch dominates wall-clock (e.g. `test`
+                    // matching tens of thousands of units), so reuse the
+                    // already-computed global results — the intersection is
+                    // large there, keeping recall safe. Candidates are reranked
+                    // either way.
+                    let fts5_for_rerank = if should_reuse_global_fts5(hybrid_subset.len()) {
+                        fts5_results.as_ref()
+                    } else {
+                        None
+                    };
                     searcher.search_hybrid_with_embedding(
                         &query_emb,
                         query,
                         search_top_k,
                         Some(&hybrid_subset),
                         hybrid_alpha,
-                        None,
+                        fts5_for_rerank,
                     )?
                 }
             } else {
@@ -1677,6 +1712,21 @@ mod tests {
     fn test_resolve_top_k_fallback_to_default() {
         // When CLI not provided and config has no value, use the default
         assert_eq!(resolve_top_k(&Config::default(), None, 15), 15);
+    }
+
+    #[test]
+    fn test_should_reuse_global_fts5_refetches_within_small_subset() {
+        // Small subsets refetch FTS5 within the subset for best recall.
+        assert!(!should_reuse_global_fts5(0));
+        assert!(!should_reuse_global_fts5(1));
+        assert!(!should_reuse_global_fts5(MAX_LITERAL_RERANK_SUBSET));
+    }
+
+    #[test]
+    fn test_should_reuse_global_fts5_reuses_on_huge_subset() {
+        // Huge literal-match subsets reuse the global FTS5 results to stay fast.
+        assert!(should_reuse_global_fts5(MAX_LITERAL_RERANK_SUBSET + 1));
+        assert!(should_reuse_global_fts5(100_000));
     }
 
     // Test resolve_context_lines function
