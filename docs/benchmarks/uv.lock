@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.9"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -2748,7 +2748,7 @@ provides-extras = ["dev", "fast-plaid", "eval"]
 
 [[package]]
 name = "next-plaid-client"
-version = "1.6.0"
+version = "1.6.1"
 source = { directory = "../../next-plaid-api/python-sdk" }
 dependencies = [
     { name = "httpx" },

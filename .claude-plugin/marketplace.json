@@ -10,7 +10,7 @@
     {
       "name": "colgrep",
       "source": ".",
-      "version": "1.6.0",
+      "version": "1.6.1",
       "description": "Semantic code search powered by ColBERT. Drop-in replacement for grep with natural language understanding.",
       "author": {
         "name": "LightOn AI"
