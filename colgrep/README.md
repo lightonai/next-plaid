@@ -737,3 +737,33 @@ Apache-2.0
 - [llm-tldr](https://github.com/parcadei/llm-tldr)
 - [mgrep](https://github.com/mixedbread-ai/mgrep)
 - [cgrep](https://github.com/awgn/cgrep)
+
+## CUDA 13 support
+
+> **TL;DR — CUDA 13 works, but you must build from source with `--features cuda-13`.**
+> The prebuilt `curl ... | sh` binary is compiled for **CUDA 11.8 / 12.x** (the right
+> default for most hosts). On a CUDA-13-only host it silently falls back to the CPU,
+> because cudarc / ONNX Runtime resolve the CUDA-12 SONAMEs. cudarc binds a single CUDA
+> major version at compile time, so CUDA 13 cannot ship in the same default binary.
+
+Build the CUDA-13 variant from source (do **not** also enable `cuda` — the two are
+mutually exclusive and won't compile together):
+
+```bash
+cargo install colgrep --features cuda-13
+# or, from a checkout:  cargo build --release -p colgrep --features cuda-13
+```
+
+Advice for running on a CUDA 13 host:
+
+- **cuDNN / CUDA 12 runtime libs.** colgrep auto-downloads the GPU ONNX Runtime, but its
+  encode path still needs **cuDNN 9 + CUDA 12** libraries on `LD_LIBRARY_PATH` (the
+  `nvidia-cudnn-cu12`, `nvidia-cublas-cu12`, `nvidia-cuda-runtime-cu12`, ... pip wheels work
+  well). These run fine on the backward-compatible CUDA 13 driver.
+- **Match NVRTC to the driver.** The k-means / codec kernels are JIT-compiled with NVRTC.
+  If your toolkit is newer than the driver (e.g. toolkit 13.1 with a 13.0 driver) you will
+  hit `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`; put a NVRTC redistributable matching the
+  **driver's** CUDA version first on `LD_LIBRARY_PATH`.
+- **Verify it's really on the GPU.** Run `colgrep init <repo> --force-gpu`. `--force-gpu`
+  hard-errors if the GPU path is unavailable, so a clean run means encoding and clustering
+  genuinely ran on the GPU (auto mode falls back to CPU silently).
