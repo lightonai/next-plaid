@@ -19,8 +19,11 @@ use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
 use cudarc::driver::{
     CudaContext as CudarcContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
 };
-use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
+use cudarc::nvrtc::{
+    compile_ptx_with_opts, result as nvrtc_result, sys as nvrtc_sys, CompileOptions, Ptx,
+};
 use ndarray::{Array1, ArrayView2};
+use std::ffi::{c_char, CStr, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -233,26 +236,97 @@ extern "C" __global__ void gather_subtract_kernel(
 }
 "#;
 
+/// Compile the kernels to a CUBIN (SASS) image for the device architecture and
+/// wrap it as a [`Ptx`] image so it can be handed to `load_module`.
+///
+/// Loading a CUBIN goes through `cuModuleLoadData` directly and skips the
+/// driver's PTX -> SASS JIT step, which sidesteps `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`
+/// on hosts whose driver is older than the NVRTC toolkit that built the kernels
+/// (e.g. a CUDA 13.1 toolkit running against a CUDA 13.0 driver). The CUBIN is
+/// tied to the exact device architecture passed in `options`
+/// (e.g. `--gpu-architecture=sm_90`); that is fine here because it is compiled at
+/// runtime for the detected device and is only reached as an automatic fallback
+/// when the driver rejects the JIT-compiled PTX.
+fn compile_kernels_cubin(src: &str, options: &[String]) -> Result<Ptx> {
+    let csrc = CString::new(src)
+        .map_err(|e| Error::Codec(format!("CUDA kernel source contains a NUL byte: {e}")))?;
+    let prog = nvrtc_result::create_program(&csrc, None)
+        .map_err(|e| Error::Codec(format!("Failed to create NVRTC program: {e:?}")))?;
+
+    // SAFETY: `prog` is a valid handle from `create_program`; it is destroyed on
+    // every exit path below.
+    if let Err(e) = unsafe { nvrtc_result::compile_program(prog, options) } {
+        let log = unsafe { nvrtc_result::get_program_log(prog) }
+            .map(|raw| {
+                unsafe { CStr::from_ptr(raw.as_ptr()) }
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_default();
+        unsafe {
+            let _ = nvrtc_result::destroy_program(prog);
+        }
+        return Err(Error::Codec(format!(
+            "Failed to compile CUDA kernels to CUBIN: {e:?}\n{log}"
+        )));
+    }
+
+    let cubin = unsafe {
+        let mut size: usize = 0;
+        nvrtc_sys::nvrtcGetCUBINSize(prog, &mut size as *mut usize)
+            .result()
+            .map_err(|e| Error::Codec(format!("nvrtcGetCUBINSize failed: {e:?}")))?;
+        let mut buf = vec![0 as c_char; size];
+        nvrtc_sys::nvrtcGetCUBIN(prog, buf.as_mut_ptr())
+            .result()
+            .map_err(|e| Error::Codec(format!("nvrtcGetCUBIN failed: {e:?}")))?;
+        buf.into_iter().map(|b| b as u8).collect::<Vec<u8>>()
+    };
+
+    unsafe {
+        let _ = nvrtc_result::destroy_program(prog);
+    }
+
+    Ok(Ptx::from_binary(cubin))
+}
+
 /// Compile and load CUDA kernels, returning the kernel functions.
 ///
 /// Targets the device's actual compute capability to avoid
 /// `CUDA_ERROR_UNSUPPORTED_PTX_VERSION` when the NVRTC compiler is newer
 /// than the installed driver.
 fn load_kernels(device: &Arc<CudarcContext>) -> Result<(CudaFunction, CudaFunction)> {
-    let opts = match device.compute_capability() {
-        Ok((major, minor)) => CompileOptions {
-            options: vec![format!("--gpu-architecture=sm_{}{}", major, minor)],
-            ..Default::default()
-        },
-        Err(_) => CompileOptions::default(),
+    // Architecture flag for the device, e.g. "--gpu-architecture=sm_90".
+    let arch_options: Vec<String> = match device.compute_capability() {
+        Ok((major, minor)) => vec![format!("--gpu-architecture=sm_{}{}", major, minor)],
+        Err(_) => Vec::new(),
     };
 
+    // Default path: JIT-compile PTX through the driver. If the driver rejects
+    // that PTX -- most commonly CUDA_ERROR_UNSUPPORTED_PTX_VERSION when the NVRTC
+    // toolkit is newer than the installed driver -- transparently fall back to a
+    // device-specific CUBIN, which is loaded directly and skips the PTX JIT. This
+    // keeps the GPU path working with no configuration; CPU fallback (handled by
+    // the caller) only happens if both routes fail.
+    let opts = CompileOptions {
+        options: arch_options.clone(),
+        ..Default::default()
+    };
     let ptx = compile_ptx_with_opts(CUDA_KERNELS, opts)
         .map_err(|e| Error::Codec(format!("Failed to compile CUDA kernels: {:?}", e)))?;
 
-    let module = device
-        .load_module(ptx)
-        .map_err(|e| Error::Codec(format!("Failed to load CUDA module: {:?}", e)))?;
+    let module = match device.load_module(ptx) {
+        Ok(module) => module,
+        Err(ptx_err) => {
+            let cubin = compile_kernels_cubin(CUDA_KERNELS, &arch_options)?;
+            device.load_module(cubin).map_err(|e| {
+                Error::Codec(format!(
+                    "Failed to load CUDA module as PTX ({:?}) and as CUBIN ({:?})",
+                    ptx_err, e
+                ))
+            })?
+        }
+    };
 
     let argmax_func = module
         .load_function("argmax_kernel")
