@@ -100,3 +100,81 @@ fn test_malformed_groovy_doesnt_panic() {
         "broken.groovy",
     );
 }
+
+// --- Stress / robustness (shared invariant harness in common.rs) ---
+
+#[test]
+fn stress_huge_file_500_functions() {
+    let mut source = String::new();
+    for i in 0..500 {
+        source.push_str(&format!(
+            "def step_{i}(input) {{\n    println \"running step {i}: ${{input}}\"\n}}\n\n"
+        ));
+    }
+    let units = assert_extractor_invariants(&source, Language::Groovy, "huge.groovy");
+    let names: std::collections::HashSet<&str> = units
+        .iter()
+        .filter(|u| matches!(u.unit_type, UnitType::Function))
+        .map(|u| u.name.as_str())
+        .collect();
+    assert_eq!(names.len(), 500, "expected 500 distinct functions");
+    assert!(names.contains("step_0") && names.contains("step_499"));
+}
+
+#[test]
+fn stress_string_trap() {
+    // class/function-looking text inside strings is data, not code.
+    let source = r#"def template = '''
+class FakeFromTripleQuote {
+    def fakeMethod() { }
+}
+'''
+
+def gstring = "def fake_from_gstring() { }"
+
+class RealHelper {
+    def realMethod() {
+        return template
+    }
+}
+"#;
+    let units = assert_extractor_invariants(source, Language::Groovy, "trap.groovy");
+    assert!(get_unit_by_name(&units, "RealHelper").is_some());
+    assert!(get_unit_by_name(&units, "realMethod").is_some());
+    assert!(
+        !units
+            .iter()
+            .any(|u| u.name.contains("Fake") || u.name.contains("fake_from")),
+        "string content must not become units: {:?}",
+        units.iter().map(|u| u.name.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn stress_jenkinsfile_deep_closures() {
+    // 60 nested closures (pathological pipeline DSL): no fake units, full
+    // coverage, no recursion blowup (guard is 1024).
+    let depth = 60;
+    let mut source = String::from("pipeline {\n");
+    for i in 0..depth {
+        source.push_str(&"  ".repeat(i + 1));
+        source.push_str(&format!("level{i} {{\n"));
+    }
+    source.push_str(&"  ".repeat(depth + 1));
+    source.push_str("sh 'true'\n");
+    for i in (0..=depth).rev() {
+        source.push_str(&"  ".repeat(i));
+        source.push_str("}\n");
+    }
+    let units = assert_extractor_invariants(&source, Language::Groovy, "Jenkinsfile");
+    assert!(!units.is_empty(), "content covered as raw code");
+}
+
+#[test]
+fn stress_unicode_identifiers() {
+    let source =
+        "class Café {\n    def préparer(qté) {\n        println \"☕ x ${qté}\"\n    }\n}\n";
+    let units = assert_extractor_invariants(source, Language::Groovy, "unicode.groovy");
+    assert!(get_unit_by_name(&units, "Café").is_some());
+    assert!(get_unit_by_name(&units, "préparer").is_some());
+}

@@ -74,3 +74,76 @@ fn test_malformed_powershell_doesnt_panic() {
         "broken.ps1",
     );
 }
+
+// --- Stress / robustness (shared invariant harness in common.rs) ---
+
+#[test]
+fn stress_huge_file_500_functions() {
+    let mut source = String::new();
+    for i in 0..500 {
+        source.push_str(&format!(
+            "function Invoke-Step{i} {{\n    Write-Host \"step {i}\"\n}}\n\n"
+        ));
+    }
+    let units = assert_extractor_invariants(&source, Language::Powershell, "huge.ps1");
+    let names: std::collections::HashSet<&str> = units
+        .iter()
+        .filter(|u| matches!(u.unit_type, UnitType::Function))
+        .map(|u| u.name.as_str())
+        .collect();
+    assert_eq!(names.len(), 500, "expected 500 distinct functions");
+    assert!(names.contains("Invoke-Step0") && names.contains("Invoke-Step499"));
+}
+
+#[test]
+fn stress_here_string_trap() {
+    // Function-looking text inside a here-string is data, not code.
+    let source = r#"function New-InstallScript {
+    $script = @"
+function Fake-FromHereString {
+    Write-Host "I am data"
+}
+"@
+    Set-Content -Path install.ps1 -Value $script
+}
+"#;
+    let units = assert_extractor_invariants(source, Language::Powershell, "trap.ps1");
+    assert!(get_unit_by_name(&units, "New-InstallScript").is_some());
+    assert!(
+        !units.iter().any(|u| u.name.contains("Fake")),
+        "here-string content must not become units: {:?}",
+        units.iter().map(|u| u.name.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn stress_nested_blocks_and_pipeline_chains() {
+    let source = r#"function Get-HeavyReport {
+    param([int]$Depth)
+    Get-Process |
+        Where-Object { $_.CPU -gt 100 } |
+        ForEach-Object {
+            if ($_.Responding) {
+                foreach ($m in $_.Modules) {
+                    try { $m.FileName } catch { Write-Warning $_ }
+                }
+            }
+        } |
+        Sort-Object CPU -Descending
+}
+"#;
+    let units = assert_extractor_invariants(source, Language::Powershell, "nested.ps1");
+    let f = get_unit_by_name(&units, "Get-HeavyReport").expect("function unit");
+    assert!(f.code.contains("Sort-Object"), "whole pipeline folded");
+}
+
+#[test]
+fn stress_unicode_function_names() {
+    let source = "function Déployer-Café {\n    Write-Host \"déployé ☕\"\n}\n";
+    let units = assert_extractor_invariants(source, Language::Powershell, "unicode.ps1");
+    assert!(
+        get_unit_by_name(&units, "Déployer-Café").is_some(),
+        "unicode function name captured: {:?}",
+        units.iter().map(|u| u.name.as_str()).collect::<Vec<_>>()
+    );
+}

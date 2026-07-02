@@ -84,3 +84,78 @@ fn test_malformed_cmake_doesnt_panic() {
         "broken.cmake",
     );
 }
+
+// --- Stress / robustness (shared invariant harness in common.rs) ---
+
+#[test]
+fn stress_huge_file_500_functions() {
+    let mut source = String::new();
+    for i in 0..500 {
+        source.push_str(&format!(
+            "function(helper_{i} arg)\n  message(STATUS \"helper {i}: ${{arg}}\")\nendfunction()\n\n"
+        ));
+    }
+    let units = assert_extractor_invariants(&source, Language::Cmake, "huge.cmake");
+    let names: std::collections::HashSet<&str> = units
+        .iter()
+        .filter(|u| matches!(u.unit_type, UnitType::Function))
+        .map(|u| u.name.as_str())
+        .collect();
+    assert_eq!(names.len(), 500, "expected 500 distinct functions");
+    assert!(names.contains("helper_0") && names.contains("helper_499"));
+}
+
+#[test]
+fn stress_bracket_comment_and_string_trap() {
+    // function-looking text in bracket comments and quoted args is not code.
+    let source = r#"#[[
+function(fake_in_bracket_comment)
+endfunction()
+]]
+set(DOC "function(fake_in_string x) endfunction()")
+
+function(real_helper target)
+  target_compile_definitions(${target} PRIVATE REAL=1)
+endfunction()
+"#;
+    let units = assert_extractor_invariants(source, Language::Cmake, "trap.cmake");
+    assert!(get_unit_by_name(&units, "real_helper").is_some());
+    assert!(
+        !units.iter().any(|u| u.name.contains("fake")),
+        "comment/string content must not become units: {:?}",
+        units.iter().map(|u| u.name.as_str()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn stress_nested_flow_control() {
+    // Deep if/foreach nesting inside a function stays one folded unit.
+    let mut body = String::new();
+    for i in 0..40 {
+        body.push_str(&"  ".repeat(i + 1));
+        body.push_str(&format!("if(FLAG_{i})\n"));
+    }
+    body.push_str(&"  ".repeat(41));
+    body.push_str("message(STATUS deep)\n");
+    for i in (0..40).rev() {
+        body.push_str(&"  ".repeat(i + 1));
+        body.push_str("endif()\n");
+    }
+    let source = format!("function(deep_config)\n{}endfunction()\n", body);
+    let units = assert_extractor_invariants(&source, Language::Cmake, "deep.cmake");
+    let f = get_unit_by_name(&units, "deep_config").expect("function unit");
+    assert!(f.code.contains("FLAG_39"), "all nesting folded inside");
+}
+
+#[test]
+fn stress_generator_expressions() {
+    let source = r#"function(link_optimized target)
+  target_link_libraries(${target} PRIVATE
+    $<$<CONFIG:Release>:optimized_lib>
+    $<$<AND:$<CXX_COMPILER_ID:GNU>,$<VERSION_GREATER:$<CXX_COMPILER_VERSION>,12>>:gnu_extras>)
+endfunction()
+"#;
+    let units = assert_extractor_invariants(source, Language::Cmake, "genexpr.cmake");
+    let f = get_unit_by_name(&units, "link_optimized").expect("function unit");
+    assert!(f.code.contains("CONFIG:Release"), "genexprs preserved");
+}
