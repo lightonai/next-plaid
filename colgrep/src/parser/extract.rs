@@ -21,7 +21,10 @@ pub fn extract_function(
 ) -> Option<CodeUnit> {
     let name = get_node_name(node, bytes, lang)?;
     let ast_start_line = node.start_position().row;
-    let end_line = node.end_position().row;
+    // tree-sitter can report an end row one past EOF for a construct left
+    // unterminated at end-of-file (e.g. a block missing its closing brace);
+    // clamp so a unit's end_line never points outside the file.
+    let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
 
     // Include preceding attributes/decorators in the line range
     let code_start = find_start_with_attributes(ast_start_line, lines, lang);
@@ -99,7 +102,10 @@ pub fn extract_class(
 ) -> Option<CodeUnit> {
     let name = get_node_name(node, bytes, lang)?;
     let ast_start_line = node.start_position().row;
-    let end_line = node.end_position().row;
+    // tree-sitter can report an end row one past EOF for a construct left
+    // unterminated at end-of-file (e.g. a block missing its closing brace);
+    // clamp so a unit's end_line never points outside the file.
+    let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
 
     // Include preceding attributes/decorators in the line range
     let code_start = find_start_with_attributes(ast_start_line, lines, lang);
@@ -285,7 +291,10 @@ pub fn extract_constant(
     file_imports: &[String],
 ) -> Option<CodeUnit> {
     let ast_start_line = node.start_position().row;
-    let end_line = node.end_position().row;
+    // tree-sitter can report an end row one past EOF for a construct left
+    // unterminated at end-of-file (e.g. a block missing its closing brace);
+    // clamp so a unit's end_line never points outside the file.
+    let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
 
     // Get constant name based on language
     let name = get_constant_name(node, bytes, lang)?;
@@ -553,7 +562,10 @@ fn extract_arrow_function_as_function(
     let arrow_node = find_arrow_function(node)?;
 
     let ast_start_line = node.start_position().row;
-    let end_line = node.end_position().row;
+    // tree-sitter can report an end row one past EOF for a construct left
+    // unterminated at end-of-file (e.g. a block missing its closing brace);
+    // clamp so a unit's end_line never points outside the file.
+    let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
     let code_start = find_start_with_attributes(ast_start_line, lines, lang);
 
     let mut unit = CodeUnit::new(
