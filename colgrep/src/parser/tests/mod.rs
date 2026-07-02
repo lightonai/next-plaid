@@ -25,6 +25,7 @@ mod test_scala;
 mod test_sql;
 mod test_svelte;
 mod test_swift;
+mod test_terraform;
 mod test_typescript;
 mod test_vue;
 mod test_zig;

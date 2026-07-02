@@ -571,7 +571,7 @@ ColGREP automatically detects and repairs index/metadata desync from interrupted
 
 ## Supported Languages
 
-### Code (25 languages, tree-sitter AST parsing)
+### Code (26 languages, tree-sitter AST parsing)
 
 | Language   | Extensions                            |
 | ---------- | ------------------------------------- |
@@ -600,6 +600,7 @@ ColGREP automatically detects and repairs index/metadata desync from interrupted
 | Vue        | `.vue`                                |
 | Svelte     | `.svelte`                             |
 | HTML       | `.html`, `.htm`                       |
+| Terraform  | `.tf`, `.tfvars`, `.hcl`              |
 
 ### Text & Config (11 formats, document-level extraction)
 

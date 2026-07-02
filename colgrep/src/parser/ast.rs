@@ -118,6 +118,13 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
             kind,
             "rule_set" | "media_statement" | "keyframes_statement" | "supports_statement"
         ),
+        // Terraform/HCL blocks. Each `resource` / `variable` / `module` /
+        // `data` / `provider` / `output` / `locals` / `terraform` block is one
+        // searchable unit; its attributes and any nested blocks are kept
+        // together (we don't recurse into the `body`, since HCL has no
+        // function nodes) so a query like "aws instance ami" surfaces the whole
+        // resource block, not an isolated `key = value` line.
+        Language::Terraform => kind == "block",
         // Text/config formats
         _ => false,
     }
@@ -210,6 +217,12 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
             };
             node.children(&mut node.walk()).find(|c| c.kind() == want)
         }
+        Language::Terraform => {
+            // An HCL `block` doesn't expose its body as a named field; the
+            // body is a child node of kind `body` (between `block_start` and
+            // `block_end`). Empty blocks (`terraform {}`) have no `body` child.
+            node.children(&mut node.walk()).find(|c| c.kind() == "body")
+        }
         // Lua and text/config formats
         _ => None,
     }
@@ -271,6 +284,9 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .or_else(|| node.child_by_field_name("pattern")),
         Language::Css => {
             return get_css_unit_name(node, bytes);
+        }
+        Language::Terraform => {
+            return get_hcl_unit_name(node, bytes);
         }
         // Text/config formats
         _ => None,
@@ -356,6 +372,44 @@ fn get_css_unit_name(node: Node, bytes: &[u8]) -> Option<String> {
         "charset_statement" => Some("@charset".to_string()),
         "namespace_statement" => Some("@namespace".to_string()),
         _ => None,
+    }
+}
+
+/// HCL `block` nodes have no `name` field — the identifying header is the
+/// block type followed by its labels. tree-sitter-hcl parses a block as
+/// `identifier (string_lit | identifier)* block_start body block_end`, so the
+/// name we index/display is the leading identifier plus every label token that
+/// precedes the opening brace. Examples:
+///   `resource "aws_instance" "web"`, `variable "region"`, `module "vpc"`,
+///   `provider "aws"`, `terraform` (no labels), `locals`.
+/// String labels keep their quotes (that's the raw `string_lit` text) so the
+/// name reads exactly as it appears in the source.
+fn get_hcl_unit_name(node: Node, bytes: &[u8]) -> Option<String> {
+    if node.kind() != "block" {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for child in node.children(&mut node.walk()) {
+        match child.kind() {
+            // The block type identifier and any identifier/string labels, in
+            // source order, up to the opening brace.
+            "identifier" | "string_lit" => {
+                if let Ok(text) = child.utf8_text(bytes) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        parts.push(trimmed.to_string());
+                    }
+                }
+            }
+            // Everything after `block_start` is the body / closing brace.
+            "block_start" => break,
+            _ => {}
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
     }
 }
 

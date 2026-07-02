@@ -33,6 +33,7 @@ pub enum Language {
     Svelte,
     Qml,
     Css,
+    Terraform,
     // Text/config formats (no tree-sitter, indexed as documents)
     Html,
     Markdown,
@@ -80,6 +81,7 @@ impl FromStr for Language {
             "vue" => Ok(Language::Vue),
             "svelte" => Ok(Language::Svelte),
             "css" => Ok(Language::Css),
+            "terraform" | "tf" | "hcl" => Ok(Language::Terraform),
             // Text/config formats
             "qml" => Ok(Language::Qml),
             "html" | "htm" => Ok(Language::Html),

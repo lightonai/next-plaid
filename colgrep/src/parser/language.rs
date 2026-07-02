@@ -45,6 +45,8 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "vue" => Some(Language::Vue),
         "svelte" => Some(Language::Svelte),
         "css" => Some(Language::Css),
+        // Terraform / HashiCorp Configuration Language
+        "tf" | "tfvars" | "hcl" => Some(Language::Terraform),
         // Text/documentation formats
         "qml" => Some(Language::Qml),
         "html" | "htm" => Some(Language::Html),
@@ -115,6 +117,8 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Html => tree_sitter_html::LANGUAGE.into(),
         // CSS uses tree-sitter-css
         Language::Css => tree_sitter_css::LANGUAGE.into(),
+        // Terraform / HCL uses tree-sitter-hcl
+        Language::Terraform => tree_sitter_hcl::LANGUAGE.into(),
         // Text/config formats don't use tree-sitter - this should never be called
         Language::Markdown
         | Language::Text
@@ -336,6 +340,26 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_language_terraform() {
+        assert_eq!(
+            detect_language(Path::new("main.tf")),
+            Some(Language::Terraform)
+        );
+        assert_eq!(
+            detect_language(Path::new("variables.tf")),
+            Some(Language::Terraform)
+        );
+        assert_eq!(
+            detect_language(Path::new("terraform.tfvars")),
+            Some(Language::Terraform)
+        );
+        assert_eq!(
+            detect_language(Path::new("modules/vpc/main.hcl")),
+            Some(Language::Terraform)
+        );
+    }
+
+    #[test]
     fn test_detect_language_unknown() {
         assert_eq!(detect_language(Path::new("file.xyz")), None);
         assert_eq!(detect_language(Path::new("noextension")), None);
@@ -371,5 +395,6 @@ mod tests {
         assert!(!is_text_format(Language::Svelte));
         assert!(!is_text_format(Language::Html));
         assert!(!is_text_format(Language::Css));
+        assert!(!is_text_format(Language::Terraform));
     }
 }
