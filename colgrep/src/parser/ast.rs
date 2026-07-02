@@ -32,6 +32,14 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         Language::Zig => kind == "FnProto" || kind == "fn_decl",
         Language::Julia => matches!(kind, "function_definition" | "short_function_definition"),
         Language::Sql => matches!(kind, "create_function_statement" | "create_procedure"),
+        // Both `function foo() {...}` and `foo() {...}` forms produce
+        // function_definition in tree-sitter-bash.
+        Language::Shell => kind == "function_definition",
+        Language::Powershell => kind == "function_statement",
+        // Starlark is a Python dialect: `def` in .bzl macro files.
+        Language::Starlark => kind == "function_definition",
+        Language::Cmake => matches!(kind, "function_def" | "macro_def"),
+        Language::Groovy => matches!(kind, "function_definition" | "method_declaration"),
         // Text/config formats - handled separately
         _ => false,
     }
@@ -125,6 +133,34 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
         // function nodes) so a query like "aws instance ami" surfaces the whole
         // resource block, not an isolated `key = value` line.
         Language::Terraform => kind == "block",
+        // Protobuf top-level declarations. Like Terraform blocks, each is one
+        // searchable unit; fields / enum values / rpcs stay folded inside.
+        Language::Proto => matches!(kind, "message" | "enum" | "service"),
+        // GraphQL type-system and executable definitions. The grammar nests
+        // them under definition > type_system_definition > type_definition,
+        // so we match the concrete leaf kinds the recursion reaches.
+        Language::Graphql => matches!(
+            kind,
+            "object_type_definition"
+                | "interface_type_definition"
+                | "enum_type_definition"
+                | "input_object_type_definition"
+                | "union_type_definition"
+                | "scalar_type_definition"
+                | "schema_definition"
+                | "directive_definition"
+                | "operation_definition"
+                | "fragment_definition"
+        ),
+        // Bazel/Buck targets: a call like `cc_library(name = "mylib", ...)`.
+        // Only calls carrying a `name = "..."` string kwarg get a unit name
+        // (see get_starlark_unit_name); anonymous calls fall through to
+        // recursion so nested calls (glob(...), select(...)) are not units.
+        Language::Starlark => kind == "call",
+        Language::Groovy => kind == "class_declaration",
+        // INI `[section]` with its settings, one unit per section.
+        Language::Ini => kind == "section",
+        Language::Powershell => kind == "class_statement",
         // Text/config formats
         _ => false,
     }
@@ -223,6 +259,17 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
             // `block_end`). Empty blocks (`terraform {}`) have no `body` child.
             node.children(&mut node.walk()).find(|c| c.kind() == "body")
         }
+        // Groovy classes expose a `body` field (class_body); recursing into it
+        // lets each method_declaration become its own searchable unit.
+        Language::Groovy => node.child_by_field_name("body"),
+        // Proto messages/services, GraphQL definitions, Starlark targets, INI
+        // sections, and PowerShell classes are indexed as single folded units
+        // (no per-member recursion), like Terraform blocks.
+        Language::Proto
+        | Language::Graphql
+        | Language::Starlark
+        | Language::Ini
+        | Language::Powershell => None,
         // Lua and text/config formats
         _ => None,
     }
@@ -273,7 +320,9 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
         | Language::R
         | Language::Zig
         | Language::Julia
-        | Language::Sql => node.child_by_field_name("name"),
+        | Language::Sql
+        | Language::Shell
+        | Language::Groovy => node.child_by_field_name("name"),
         Language::Elixir => {
             // For def/defp calls, get the function name from arguments
             node.child_by_field_name("target")
@@ -287,6 +336,42 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
         }
         Language::Terraform => {
             return get_hcl_unit_name(node, bytes);
+        }
+        Language::Proto => {
+            return get_proto_unit_name(node, bytes);
+        }
+        Language::Graphql => {
+            return get_graphql_unit_name(node, bytes);
+        }
+        Language::Starlark => {
+            // Targets (calls) get a custom name; `def` macros use the field.
+            if node.kind() == "call" {
+                return get_starlark_unit_name(node, bytes);
+            }
+            node.child_by_field_name("name")
+        }
+        Language::Cmake => {
+            return get_cmake_unit_name(node, bytes);
+        }
+        Language::Ini => {
+            // section_name spans "[database]"; keep the bracketed text as the
+            // unit name so it reads exactly as in the source.
+            return node
+                .children(&mut node.walk())
+                .find(|c| c.kind() == "section_name")
+                .and_then(|n| n.utf8_text(bytes).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+        }
+        Language::Powershell => {
+            // function_statement carries a function_name child; class_statement
+            // a simple_name child. Neither is exposed as a named field.
+            return node
+                .children(&mut node.walk())
+                .find(|c| matches!(c.kind(), "function_name" | "simple_name"))
+                .and_then(|n| n.utf8_text(bytes).ok())
+                .map(|s| s.to_string())
+                .filter(|s| !s.is_empty());
         }
         // Text/config formats
         _ => None,
@@ -413,6 +498,127 @@ fn get_hcl_unit_name(node: Node, bytes: &[u8]) -> Option<String> {
     }
 }
 
+/// Protobuf declarations carry their identifier in a dedicated child node
+/// (message_name / enum_name / service_name), not a `name` field. Keep the
+/// declaration keyword in the unit name (`message Invoice`, `service Billing`)
+/// so results read like the source and the keyword is searchable.
+fn get_proto_unit_name(node: Node, bytes: &[u8]) -> Option<String> {
+    let keyword = node.kind(); // "message" | "enum" | "service"
+    let name = node
+        .children(&mut node.walk())
+        .find(|c| matches!(c.kind(), "message_name" | "enum_name" | "service_name"))
+        .and_then(|n| n.utf8_text(bytes).ok())?
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(format!("{} {}", keyword, name))
+    }
+}
+
+/// GraphQL definitions carry a `name` child (or `fragment_name` for
+/// fragments); prefix it with the definition keyword (`type User`,
+/// `query GetUser`, `fragment UserFields`). A `schema { ... }` definition has
+/// no name and is named by its keyword alone.
+fn get_graphql_unit_name(node: Node, bytes: &[u8]) -> Option<String> {
+    let keyword = match node.kind() {
+        "object_type_definition" => "type",
+        "interface_type_definition" => "interface",
+        "enum_type_definition" => "enum",
+        "input_object_type_definition" => "input",
+        "union_type_definition" => "union",
+        "scalar_type_definition" => "scalar",
+        "directive_definition" => "directive",
+        "fragment_definition" => "fragment",
+        "schema_definition" => return Some("schema".to_string()),
+        // query / mutation / subscription — read the operation_type child.
+        "operation_definition" => {
+            return node
+                .children(&mut node.walk())
+                .find(|c| c.kind() == "operation_type")
+                .and_then(|t| t.utf8_text(bytes).ok())
+                .map(|kw| {
+                    match node
+                        .children(&mut node.walk())
+                        .find(|c| c.kind() == "name")
+                        .and_then(|n| n.utf8_text(bytes).ok())
+                    {
+                        Some(name) if !name.is_empty() => format!("{} {}", kw, name),
+                        _ => kw.to_string(),
+                    }
+                });
+        }
+        _ => return None,
+    };
+    let name = node
+        .children(&mut node.walk())
+        .find(|c| matches!(c.kind(), "name" | "fragment_name"))
+        .and_then(|n| n.utf8_text(bytes).ok())?
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(format!("{} {}", keyword, name))
+    }
+}
+
+/// Starlark/Bazel target: a call whose argument list carries a
+/// `name = "..."` string kwarg, e.g. `cc_library(name = "mylib", ...)` →
+/// `cc_library "mylib"`. Calls without such a kwarg (glob(), select(),
+/// load(), calls inside macros forwarding `name = name`) return None and are
+/// not indexed as units — the RawCode gap-fill covers them instead.
+fn get_starlark_unit_name(node: Node, bytes: &[u8]) -> Option<String> {
+    let rule = node
+        .child_by_field_name("function")
+        .and_then(|f| f.utf8_text(bytes).ok())?
+        .trim()
+        .to_string();
+    let args = node.child_by_field_name("arguments")?;
+    let target = args.children(&mut args.walk()).find_map(|c| {
+        if c.kind() != "keyword_argument" {
+            return None;
+        }
+        let key = c
+            .child_by_field_name("name")
+            .and_then(|k| k.utf8_text(bytes).ok())?;
+        if key != "name" {
+            return None;
+        }
+        let value = c.child_by_field_name("value")?;
+        if value.kind() != "string" {
+            return None;
+        }
+        value.utf8_text(bytes).ok().map(|s| s.to_string())
+    })?;
+    if rule.is_empty() || target.is_empty() {
+        None
+    } else {
+        Some(format!("{} {}", rule, target))
+    }
+}
+
+/// CMake function/macro definitions keep their name as the first argument of
+/// the opening command: `function(add_component name)` → `add_component`.
+fn get_cmake_unit_name(node: Node, bytes: &[u8]) -> Option<String> {
+    let command = node
+        .children(&mut node.walk())
+        .find(|c| matches!(c.kind(), "function_command" | "macro_command"))?;
+    let args = command
+        .children(&mut command.walk())
+        .find(|c| c.kind() == "argument_list")?;
+    let first = args
+        .children(&mut args.walk())
+        .find(|c| c.kind() == "argument")?;
+    let text = first.utf8_text(bytes).ok()?.trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
 /// Find the start line including preceding attributes/decorators/doc comments.
 /// This looks backwards from the node's start line to find consecutive attribute lines.
 pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: Language) -> usize {
@@ -448,6 +654,13 @@ pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: 
             }
             // Go: // doc comments (by convention, comments immediately preceding a declaration)
             Language::Go => line.starts_with("//"),
+            // Shell: # doc comments above a function, but never the shebang
+            Language::Shell => line.starts_with('#') && !line.starts_with("#!"),
+            // CMake / Starlark / Terraform: # doc comments above a unit.
+            // Retrieval-eval evidence: a CMake helper whose only mention of
+            // "catch2"/"ctest" sat in the comment above the function was
+            // unfindable until the comment was attached to the unit.
+            Language::Cmake | Language::Starlark | Language::Terraform => line.starts_with('#'),
             _ => false,
         };
 

@@ -34,6 +34,15 @@ pub enum Language {
     Qml,
     Css,
     Terraform,
+    Proto,
+    Graphql,
+    Starlark,
+    Cmake,
+    Groovy,
+    Ini,
+    // Shell and Powershell are parsed with tree-sitter (function-level chunks)
+    Shell,
+    Powershell,
     // Text/config formats (no tree-sitter, indexed as documents)
     Html,
     Markdown,
@@ -43,8 +52,6 @@ pub enum Language {
     Json,
     Dockerfile,
     Makefile,
-    Shell,
-    Powershell,
     AsciiDoc,
     Org,
 }
@@ -82,6 +89,12 @@ impl FromStr for Language {
             "svelte" => Ok(Language::Svelte),
             "css" => Ok(Language::Css),
             "terraform" | "tf" | "hcl" => Ok(Language::Terraform),
+            "proto" | "protobuf" => Ok(Language::Proto),
+            "graphql" | "gql" => Ok(Language::Graphql),
+            "starlark" | "bazel" | "bzl" => Ok(Language::Starlark),
+            "cmake" => Ok(Language::Cmake),
+            "groovy" | "gradle" => Ok(Language::Groovy),
+            "ini" => Ok(Language::Ini),
             // Text/config formats
             "qml" => Ok(Language::Qml),
             "html" | "htm" => Ok(Language::Html),

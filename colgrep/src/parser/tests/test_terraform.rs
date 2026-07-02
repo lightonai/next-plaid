@@ -164,66 +164,12 @@ fn test_invalid_hcl_doesnt_panic() {
 // ---------------------------------------------------------------------------
 // Stress / robustness tests
 //
-// These push adversarial inputs through the extractor to guard against panics,
+// These push adversarial inputs through the extractor (via the shared
+// assert_extractor_invariants harness in common.rs) to guard against panics,
 // out-of-bounds line ranges, and coverage holes. The invariants asserted here
 // (line bounds, non-empty block names, 100%-non-empty-line coverage) must hold
 // for *any* input, so they double as a lightweight fuzz harness.
 // ---------------------------------------------------------------------------
-
-/// Assert the extractor's universal invariants for a Terraform source, and
-/// return the extracted units for further per-test assertions.
-fn assert_terraform_invariants(source: &str, file: &str) -> Vec<crate::parser::CodeUnit> {
-    let units = parse(source, Language::Terraform, file);
-    let n_lines = source.lines().count();
-
-    for u in &units {
-        assert_eq!(u.language, Language::Terraform, "unit {:?}", u.name);
-        // Line ranges are 1-indexed and must sit inside the file.
-        assert!(u.line >= 1, "unit {:?} has line 0: {}", u.name, u.line);
-        assert!(
-            u.line <= u.end_line,
-            "unit {:?} start {} > end {}",
-            u.name,
-            u.line,
-            u.end_line
-        );
-        assert!(
-            u.end_line <= n_lines,
-            "unit {:?} end_line {} exceeds file length {}",
-            u.name,
-            u.end_line,
-            n_lines
-        );
-        // Every block (Class) unit must have a non-empty name.
-        if matches!(u.unit_type, crate::parser::UnitType::Class) {
-            assert!(!u.name.trim().is_empty(), "block unit with empty name");
-        }
-    }
-
-    // Coverage: fill_raw_code_gaps guarantees every *non-empty* line is covered
-    // by at least one unit. Verify no non-blank line falls through the cracks.
-    if n_lines > 0 {
-        let mut covered = vec![false; n_lines + 1];
-        for u in &units {
-            let end = u.end_line.min(n_lines);
-            if u.line <= n_lines {
-                covered[u.line..=end].fill(true);
-            }
-        }
-        for (i, line) in source.lines().enumerate() {
-            if !line.trim().is_empty() {
-                assert!(
-                    covered[i + 1],
-                    "non-empty line {} not covered by any unit: {:?}",
-                    i + 1,
-                    line
-                );
-            }
-        }
-    }
-
-    units
-}
 
 #[test]
 fn stress_huge_file_2000_blocks() {
@@ -235,7 +181,7 @@ fn stress_huge_file_2000_blocks() {
             "resource \"aws_s3_bucket\" \"bucket_{i}\" {{\n  bucket = \"b-{i}\"\n  acl    = \"private\"\n}}\n\n"
         ));
     }
-    let units = assert_terraform_invariants(&source, "huge.tf");
+    let units = assert_extractor_invariants(&source, Language::Terraform, "huge.tf");
     let block_names: std::collections::HashSet<&str> = units
         .iter()
         .filter(|u| matches!(u.unit_type, crate::parser::UnitType::Class))
@@ -269,7 +215,7 @@ fn stress_deep_nesting_no_overflow() {
     }
     source.push_str("}\n");
     // Just needs to not panic; invariants hold on whatever is returned.
-    let _ = assert_terraform_invariants(&source, "deep.tf");
+    let _ = assert_extractor_invariants(&source, Language::Terraform, "deep.tf");
 }
 
 #[test]
@@ -288,7 +234,7 @@ for i in {1..10}; do echo "line $i {nested}"; done
 SCRIPT
 }
 "#;
-    let units = assert_terraform_invariants(source, "heredocs.tf");
+    let units = assert_extractor_invariants(source, Language::Terraform, "heredocs.tf");
     assert!(
         !units.iter().any(|u| u.name.contains("not_real")),
         "heredoc content must not become a block unit: {:?}",
@@ -318,7 +264,7 @@ resource "aws_instance" "web" {
   tags          = { for k, v in var.tags : k => v if v != "" }
 }
 "#;
-    let units = assert_terraform_invariants(source, "exprs.tf");
+    let units = assert_extractor_invariants(source, Language::Terraform, "exprs.tf");
     assert!(get_unit_by_name(&units, r#"variable "names""#).is_some());
     let web = get_unit_by_name(&units, r#"resource "aws_instance" "web""#).expect("web");
     assert!(web.code.contains("t3.large"), "ternary preserved in code");
@@ -327,7 +273,7 @@ resource "aws_instance" "web" {
 #[test]
 fn stress_unicode_identifiers_and_values() {
     let source = "variable \"région\" {\n  description = \"Déploiement — région 🌍\"\n  default     = \"eu-ouest-1\"\n}\n\nresource \"aws_instance\" \"café_serveur\" {\n  nom = \"société-café-☕\"\n}\n";
-    let units = assert_terraform_invariants(source, "unicode.tf");
+    let units = assert_extractor_invariants(source, Language::Terraform, "unicode.tf");
     assert!(
         get_unit_by_name(&units, r#"variable "région""#).is_some(),
         "unicode label captured in name: {:?}",
@@ -341,7 +287,7 @@ fn stress_tfvars_pure_attributes_are_covered() {
     // A .tfvars file has no blocks — every line should still be covered as
     // RawCode, with no panic.
     let source = "region        = \"us-east-1\"\ninstance_type = \"t3.medium\"\ntags          = { Team = \"infra\" }\n";
-    let units = assert_terraform_invariants(source, "prod.tfvars");
+    let units = assert_extractor_invariants(source, Language::Terraform, "prod.tfvars");
     assert!(!units.is_empty(), "tfvars attributes should yield raw code");
     assert!(units
         .iter()
@@ -352,7 +298,7 @@ fn stress_tfvars_pure_attributes_are_covered() {
 fn stress_malformed_unclosed_block() {
     // Unterminated block with a dangling nested block — must not panic.
     let source = "resource \"aws_thing\" \"unclosed\" {\n  name = \"x\"\n  nested {\n    x = 1\n";
-    let _ = assert_terraform_invariants(source, "malformed.tf");
+    let _ = assert_extractor_invariants(source, Language::Terraform, "malformed.tf");
 }
 
 #[test]
@@ -365,7 +311,7 @@ data "aws_ami" "two" {}
 weird "a" "b" "c" "d" { note = "repeated labels" }
 identifier_label some_ident { key = "value" }
 "#;
-    let units = assert_terraform_invariants(source, "labels.tf");
+    let units = assert_extractor_invariants(source, Language::Terraform, "labels.tf");
     let names: Vec<&str> = units.iter().map(|u| u.name.as_str()).collect();
     for expected in [
         "terraform",

@@ -12,6 +12,12 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         match filename_lower.as_str() {
             "dockerfile" => return Some(Language::Dockerfile),
             "makefile" | "gnumakefile" => return Some(Language::Makefile),
+            "cmakelists.txt" => return Some(Language::Cmake),
+            "jenkinsfile" => return Some(Language::Groovy),
+            "build" | "build.bazel" | "workspace" | "workspace.bazel" | "module.bazel" => {
+                return Some(Language::Starlark)
+            }
+            "rakefile" | "gemfile" | "vagrantfile" => return Some(Language::Ruby),
             _ => {}
         }
     }
@@ -19,20 +25,20 @@ pub fn detect_language(path: &Path) -> Option<Language> {
     // Then check extension
     match path.extension()?.to_str()?.to_lowercase().as_str() {
         // Original languages
-        "py" => Some(Language::Python),
-        "ts" | "tsx" => Some(Language::TypeScript),
-        "js" | "jsx" | "mjs" => Some(Language::JavaScript),
+        "py" | "pyi" => Some(Language::Python),
+        "ts" | "tsx" | "mts" | "cts" => Some(Language::TypeScript),
+        "js" | "jsx" | "mjs" | "cjs" => Some(Language::JavaScript),
         "go" => Some(Language::Go),
         "rs" => Some(Language::Rust),
         "java" => Some(Language::Java),
         "c" | "h" => Some(Language::C),
         "cpp" | "cc" | "cxx" | "hpp" | "hxx" => Some(Language::Cpp),
-        "rb" => Some(Language::Ruby),
+        "rb" | "rake" | "gemspec" => Some(Language::Ruby),
         "cs" => Some(Language::CSharp),
         // Additional languages
         "kt" | "kts" => Some(Language::Kotlin),
         "swift" => Some(Language::Swift),
-        "scala" | "sc" => Some(Language::Scala),
+        "scala" | "sc" | "sbt" => Some(Language::Scala),
         "php" => Some(Language::Php),
         "lua" => Some(Language::Lua),
         "ex" | "exs" => Some(Language::Elixir),
@@ -47,6 +53,15 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "css" => Some(Language::Css),
         // Terraform / HashiCorp Configuration Language
         "tf" | "tfvars" | "hcl" => Some(Language::Terraform),
+        // API schema formats
+        "proto" => Some(Language::Proto),
+        "graphql" | "gql" => Some(Language::Graphql),
+        // Build systems
+        "bzl" | "star" => Some(Language::Starlark),
+        "cmake" => Some(Language::Cmake),
+        "groovy" | "gradle" | "gvy" => Some(Language::Groovy),
+        // INI-style configs (incl. systemd units)
+        "ini" | "cfg" | "properties" | "service" | "timer" | "socket" => Some(Language::Ini),
         // Text/documentation formats
         "qml" => Some(Language::Qml),
         "html" | "htm" => Some(Language::Html),
@@ -58,9 +73,10 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "yaml" | "yml" => Some(Language::Yaml),
         "toml" => Some(Language::Toml),
         "json" => Some(Language::Json),
+        "mk" => Some(Language::Makefile),
         // Shell scripts
         "sh" | "bash" | "zsh" => Some(Language::Shell),
-        "ps1" => Some(Language::Powershell),
+        "ps1" | "psm1" | "psd1" => Some(Language::Powershell),
         _ => None,
     }
 }
@@ -76,8 +92,6 @@ pub fn is_text_format(lang: Language) -> bool {
             | Language::Json
             | Language::Dockerfile
             | Language::Makefile
-            | Language::Shell
-            | Language::Powershell
             | Language::AsciiDoc
             | Language::Org
     )
@@ -119,6 +133,15 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Css => tree_sitter_css::LANGUAGE.into(),
         // Terraform / HCL uses tree-sitter-hcl
         Language::Terraform => tree_sitter_hcl::LANGUAGE.into(),
+        // Ops / build / API-schema formats
+        Language::Shell => tree_sitter_bash::LANGUAGE.into(),
+        Language::Powershell => tree_sitter_powershell::LANGUAGE.into(),
+        Language::Proto => tree_sitter_proto::LANGUAGE.into(),
+        Language::Graphql => tree_sitter_graphql::LANGUAGE.into(),
+        Language::Starlark => tree_sitter_starlark::LANGUAGE.into(),
+        Language::Cmake => tree_sitter_cmake::LANGUAGE.into(),
+        Language::Groovy => tree_sitter_groovy::LANGUAGE.into(),
+        Language::Ini => tree_sitter_ini::LANGUAGE.into(),
         // Text/config formats don't use tree-sitter - this should never be called
         Language::Markdown
         | Language::Text
@@ -127,8 +150,6 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         | Language::Json
         | Language::Dockerfile
         | Language::Makefile
-        | Language::Shell
-        | Language::Powershell
         | Language::AsciiDoc
         | Language::Org => unreachable!("Text/config formats don't use tree-sitter"),
     }
@@ -360,6 +381,106 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_language_ops_formats() {
+        assert_eq!(
+            detect_language(Path::new("api.proto")),
+            Some(Language::Proto)
+        );
+        assert_eq!(
+            detect_language(Path::new("schema.graphql")),
+            Some(Language::Graphql)
+        );
+        assert_eq!(
+            detect_language(Path::new("queries.gql")),
+            Some(Language::Graphql)
+        );
+        assert_eq!(
+            detect_language(Path::new("defs.bzl")),
+            Some(Language::Starlark)
+        );
+        assert_eq!(
+            detect_language(Path::new("BUILD")),
+            Some(Language::Starlark)
+        );
+        assert_eq!(
+            detect_language(Path::new("pkg/BUILD.bazel")),
+            Some(Language::Starlark)
+        );
+        assert_eq!(
+            detect_language(Path::new("MODULE.bazel")),
+            Some(Language::Starlark)
+        );
+        assert_eq!(
+            detect_language(Path::new("CMakeLists.txt")),
+            Some(Language::Cmake)
+        );
+        assert_eq!(
+            detect_language(Path::new("modules.cmake")),
+            Some(Language::Cmake)
+        );
+        assert_eq!(
+            detect_language(Path::new("Jenkinsfile")),
+            Some(Language::Groovy)
+        );
+        assert_eq!(
+            detect_language(Path::new("build.gradle")),
+            Some(Language::Groovy)
+        );
+        assert_eq!(detect_language(Path::new("app.ini")), Some(Language::Ini));
+        assert_eq!(detect_language(Path::new("setup.cfg")), Some(Language::Ini));
+        assert_eq!(
+            detect_language(Path::new("gradle.properties")),
+            Some(Language::Ini)
+        );
+        assert_eq!(
+            detect_language(Path::new("worker.service")),
+            Some(Language::Ini)
+        );
+        assert_eq!(
+            detect_language(Path::new("module.psm1")),
+            Some(Language::Powershell)
+        );
+    }
+
+    #[test]
+    fn test_detect_language_extension_aliases() {
+        assert_eq!(
+            detect_language(Path::new("stubs.pyi")),
+            Some(Language::Python)
+        );
+        assert_eq!(
+            detect_language(Path::new("mod.mts")),
+            Some(Language::TypeScript)
+        );
+        assert_eq!(
+            detect_language(Path::new("mod.cts")),
+            Some(Language::TypeScript)
+        );
+        assert_eq!(
+            detect_language(Path::new("legacy.cjs")),
+            Some(Language::JavaScript)
+        );
+        assert_eq!(
+            detect_language(Path::new("build.sbt")),
+            Some(Language::Scala)
+        );
+        assert_eq!(detect_language(Path::new("Rakefile")), Some(Language::Ruby));
+        assert_eq!(detect_language(Path::new("Gemfile")), Some(Language::Ruby));
+        assert_eq!(
+            detect_language(Path::new("Vagrantfile")),
+            Some(Language::Ruby)
+        );
+        assert_eq!(
+            detect_language(Path::new("deploy.rake")),
+            Some(Language::Ruby)
+        );
+        assert_eq!(
+            detect_language(Path::new("rules.mk")),
+            Some(Language::Makefile)
+        );
+    }
+
+    #[test]
     fn test_detect_language_unknown() {
         assert_eq!(detect_language(Path::new("file.xyz")), None);
         assert_eq!(detect_language(Path::new("noextension")), None);
@@ -374,8 +495,17 @@ mod tests {
         assert!(is_text_format(Language::Json));
         assert!(is_text_format(Language::Dockerfile));
         assert!(is_text_format(Language::Makefile));
-        assert!(is_text_format(Language::Shell));
-        assert!(is_text_format(Language::Powershell));
+
+        // Shell and Powershell are parsed with tree-sitter since the ops-formats
+        // work; they are code, not text.
+        assert!(!is_text_format(Language::Shell));
+        assert!(!is_text_format(Language::Powershell));
+        assert!(!is_text_format(Language::Proto));
+        assert!(!is_text_format(Language::Graphql));
+        assert!(!is_text_format(Language::Starlark));
+        assert!(!is_text_format(Language::Cmake));
+        assert!(!is_text_format(Language::Groovy));
+        assert!(!is_text_format(Language::Ini));
 
         assert!(!is_text_format(Language::Python));
         assert!(!is_text_format(Language::Rust));

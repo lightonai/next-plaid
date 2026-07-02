@@ -399,14 +399,15 @@ fn test_is_text_format_true() {
     assert!(is_text_format(Language::Json));
     assert!(is_text_format(Language::Dockerfile));
     assert!(is_text_format(Language::Makefile));
-    assert!(is_text_format(Language::Shell));
-    assert!(is_text_format(Language::Powershell));
     assert!(is_text_format(Language::AsciiDoc));
     assert!(is_text_format(Language::Org));
 }
 
 #[test]
 fn test_is_text_format_false() {
+    // Shell and Powershell moved to tree-sitter parsing with the ops formats.
+    assert!(!is_text_format(Language::Shell));
+    assert!(!is_text_format(Language::Powershell));
     assert!(!is_text_format(Language::Python));
     assert!(!is_text_format(Language::Rust));
     assert!(!is_text_format(Language::TypeScript));

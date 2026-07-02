@@ -571,38 +571,46 @@ ColGREP automatically detects and repairs index/metadata desync from interrupted
 
 ## Supported Languages
 
-### Code (26 languages, tree-sitter AST parsing)
+### Code (34 languages, tree-sitter AST parsing)
 
-| Language   | Extensions                            |
-| ---------- | ------------------------------------- |
-| Python     | `.py`                                 |
-| TypeScript | `.ts`, `.tsx`                         |
-| JavaScript | `.js`, `.jsx`, `.mjs`                 |
-| Go         | `.go`                                 |
-| Rust       | `.rs`                                 |
-| Java       | `.java`                               |
-| C          | `.c`, `.h`                            |
-| C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` |
-| C#         | `.cs`                                 |
-| Ruby       | `.rb`                                 |
-| Kotlin     | `.kt`, `.kts`                         |
-| Swift      | `.swift`                              |
-| Scala      | `.scala`, `.sc`                       |
-| PHP        | `.php`                                |
-| Lua        | `.lua`                                |
-| Elixir     | `.ex`, `.exs`                         |
-| Haskell    | `.hs`                                 |
-| OCaml      | `.ml`, `.mli`                         |
-| R          | `.r`, `.rmd`                          |
-| Zig        | `.zig`                                |
-| Julia      | `.jl`                                 |
-| SQL        | `.sql`                                |
-| Vue        | `.vue`                                |
-| Svelte     | `.svelte`                             |
-| HTML       | `.html`, `.htm`                       |
-| Terraform  | `.tf`, `.tfvars`, `.hcl`              |
+| Language         | Extensions                                              |
+| ---------------- | ------------------------------------------------------- |
+| Python           | `.py`, `.pyi`                                           |
+| TypeScript       | `.ts`, `.tsx`, `.mts`, `.cts`                           |
+| JavaScript       | `.js`, `.jsx`, `.mjs`, `.cjs`                           |
+| Go               | `.go`                                                   |
+| Rust             | `.rs`                                                   |
+| Java             | `.java`                                                 |
+| C                | `.c`, `.h`                                              |
+| C++              | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`                   |
+| C#               | `.cs`                                                   |
+| Ruby             | `.rb`, `.rake`, `.gemspec`, `Rakefile`, `Gemfile`, `Vagrantfile` |
+| Kotlin           | `.kt`, `.kts`                                           |
+| Swift            | `.swift`                                                |
+| Scala            | `.scala`, `.sc`, `.sbt`                                 |
+| PHP              | `.php`                                                  |
+| Lua              | `.lua`                                                  |
+| Elixir           | `.ex`, `.exs`                                           |
+| Haskell          | `.hs`                                                   |
+| OCaml            | `.ml`, `.mli`                                           |
+| R                | `.r`, `.rmd`                                            |
+| Zig              | `.zig`                                                  |
+| Julia            | `.jl`                                                   |
+| SQL              | `.sql`                                                  |
+| Vue              | `.vue`                                                  |
+| Svelte           | `.svelte`                                               |
+| HTML             | `.html`, `.htm`                                         |
+| Terraform / HCL  | `.tf`, `.tfvars`, `.hcl`                                |
+| Shell            | `.sh`, `.bash`, `.zsh`                                  |
+| PowerShell       | `.ps1`, `.psm1`, `.psd1`                                |
+| Protocol Buffers | `.proto`                                                |
+| GraphQL          | `.graphql`, `.gql`                                      |
+| Starlark / Bazel | `.bzl`, `.star`, `BUILD`, `WORKSPACE`, `MODULE.bazel`   |
+| CMake            | `.cmake`, `CMakeLists.txt`                              |
+| Groovy           | `.groovy`, `.gradle`, `Jenkinsfile`                     |
+| INI              | `.ini`, `.cfg`, `.properties`, `.service`, `.timer`, `.socket` |
 
-### Text & Config (11 formats, document-level extraction)
+### Text & Config (9 formats, document-level extraction)
 
 | Format     | Extensions             |
 | ---------- | ---------------------- |
@@ -614,9 +622,7 @@ ColGREP automatically detects and repairs index/metadata desync from interrupted
 | TOML       | `.toml`                |
 | JSON       | `.json`                |
 | Dockerfile | `Dockerfile`           |
-| Makefile   | `Makefile`             |
-| Shell      | `.sh`, `.bash`, `.zsh` |
-| PowerShell | `.ps1`                 |
+| Makefile   | `Makefile`, `.mk`      |
 
 ---
 
