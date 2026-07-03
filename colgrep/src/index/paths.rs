@@ -317,6 +317,29 @@ mod tests {
         assert_ne!(name1, name2);
     }
 
+    /// While one handle holds the index lock (e.g. a worktree mid-update), a
+    /// non-blocking attempt from another handle must report contention rather
+    /// than succeed. Worktree seeding relies on this to skip a busy sibling
+    /// instead of copying a store that is being rewritten under it.
+    #[test]
+    fn test_try_acquire_index_lock_reports_contention() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let held = try_acquire_index_lock(dir.path())
+            .unwrap()
+            .expect("uncontended lock must be acquired");
+        assert!(
+            try_acquire_index_lock(dir.path()).unwrap().is_none(),
+            "held lock must not be acquired a second time"
+        );
+
+        drop(held);
+        assert!(
+            try_acquire_index_lock(dir.path()).unwrap().is_some(),
+            "released lock must be acquirable again"
+        );
+    }
+
     #[test]
     fn test_different_models_different_hashes() {
         // Same project path, different models → different index directories.

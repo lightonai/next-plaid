@@ -2028,6 +2028,22 @@ impl IndexBuilder {
 
         for candidate in candidates {
             let src_dir = &candidate.index_dir;
+            // Never-indexed siblings have no index dir; skip before locking so the
+            // lock file doesn't create one as a side effect.
+            if !src_dir.exists() {
+                continue;
+            }
+            // Hold the SIBLING's lock across validation and copy, so a sibling
+            // update can't start mid-copy and leave us a torn seed (the
+            // `.building`/dirty checks below only see the state at read time).
+            // Non-blocking on purpose: a busy sibling is mid-update and would be
+            // rejected as dirty anyway, and never waiting on a foreign lock while
+            // holding our own rules out lock-order deadlocks (two fresh worktrees
+            // seeding from each other both skip instead of waiting). Lock errors
+            // (e.g. permissions) just skip the candidate — seeding is best-effort.
+            let Some(_sibling_lock) = try_acquire_index_lock(src_dir).ok().flatten() else {
+                continue;
+            };
             // Validate the sibling holds a complete, format-compatible, non-dirty index that
             // isn't mid-build. Skip otherwise so we never seed from a half-built or stale store.
             let Some(mut src_state) = seed_source_state(src_dir) else {
