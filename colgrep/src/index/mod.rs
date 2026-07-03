@@ -125,8 +125,11 @@ fn delete_files_from_index_inner(
     // Vector index (codes/residuals/IVF). Single batched rewrite (issue #116).
     delete_from_index_counted(&ids, index_path)?;
 
-    // Metadata and FTS5 must be deleted together and kept aligned. `filtering::delete`
-    // re-sequences the surviving `_subset_` IDs, so the FTS5 rows have to follow: a
+    // Metadata and FTS5 must be deleted together and kept aligned. On the current
+    // content-id keyed FTS layout the rowids are stable `_content_id_` values, so
+    // `filtering::delete` maintains the FTS itself and nothing more is needed here.
+    // On the legacy subset-keyed layout, `filtering::delete` re-sequences the
+    // surviving `_subset_` IDs, so the FTS5 rows have to follow: a
     // tail-only delete keeps every survivor's ID (drop just the deleted FTS rows,
     // O(deleted)); any other delete shifts survivor IDs and needs a full FTS5 rebuild.
     // This mirrors `next_plaid::MmapIndex::delete_with_options` — the standalone delete
@@ -153,9 +156,15 @@ fn delete_files_from_index_inner(
         return Ok(ids.len());
     }
 
-    if is_suffix_delete {
+    if next_plaid::text_search::is_content_id_keyed(index_path) {
+        // FTS rowids are stable _content_id_ values, unaffected by the
+        // _subset_ re-sequencing; filtering::delete removed the deleted docs'
+        // FTS rows inside its own transaction.
+    } else if is_suffix_delete {
         next_plaid::text_search::delete(index_path, &valid)?;
     } else {
+        // Legacy subset-keyed FTS. The rebuild also migrates it to the
+        // content-id keyed layout, so this branch runs at most once per index.
         next_plaid::text_search::rebuild(index_path)?;
     }
     Ok(ids.len())

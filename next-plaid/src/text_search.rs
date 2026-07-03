@@ -1,13 +1,24 @@
 //! FTS5-based full-text search over document metadata.
 //!
-//! This module manages a **content-synced** FTS5 virtual table (`METADATA_FTS`)
-//! backed by a content table (`METADATA_FTS_CONTENT`) inside the existing
-//! `metadata.db` SQLite database.
+//! This module manages an FTS5 virtual table (`METADATA_FTS`) inside the
+//! existing `metadata.db` SQLite database. Two layouts exist:
 //!
-//! Content-sync means FTS5 reads document text from the content table rather
-//! than storing its own copy. This enables:
-//! - Incremental deletes without full rebuild (O(deleted) not O(total))
-//! - Fast bulk rebuild via `INSERT INTO fts(fts) VALUES('rebuild')`
+//! **Content-id keyed (current, split-schema/v2 metadata only)** — a
+//! contentless FTS5 table (`content=''`, `contentless_delete=1`) whose rowids
+//! are the stable, monotonic `_content_id_` values from the METADATA thin
+//! table. Because content ids are never re-sequenced on delete (unlike
+//! `_subset_`), deleting documents is O(deleted) `DELETE FROM fts WHERE
+//! rowid = ?` — no full rebuild is ever needed after `filtering::delete`
+//! re-sequences `_subset_`. Searches JOIN the thin table to translate
+//! rowids back to `_subset_` ids. There is no separate text copy: the
+//! indexed text lives only in the FTS5 inverted index.
+//!
+//! **Subset keyed (legacy)** — a content-synced FTS5 table backed by a
+//! content table (`METADATA_FTS_CONTENT`), with rowid = `_subset_`. Because
+//! `_subset_` is re-sequenced after non-suffix deletes, those deletes force a
+//! full O(corpus) rebuild. Legacy indices are migrated to the content-id
+//! keyed layout the first time [`rebuild`] runs on them (which is exactly
+//! when the old layout would have paid a full rebuild anyway).
 //!
 //! # Usage
 //!
@@ -48,6 +59,18 @@ const FTS_CONTENT_COLUMN: &str = "_fts_content_";
 
 /// Config table that persists the tokenizer choice alongside the FTS index.
 const FTS_CONFIG_TABLE: &str = "_FTS_SETTINGS_";
+
+/// Config key recording how FTS rowids are keyed: `content_id` for the
+/// contentless layout keyed by stable `_content_id_` values; absent (or any
+/// other value) for the legacy `_subset_`-keyed layout.
+const FTS_KEY_SETTING: &str = "fts_key";
+
+/// Value of [`FTS_KEY_SETTING`] for the content-id keyed layout.
+const FTS_KEY_CONTENT_ID: &str = "content_id";
+
+/// Index on `METADATA(_content_id_)` so search-time JOINs from FTS rowids
+/// back to `_subset_` are point lookups instead of thin-table scans.
+const CONTENT_ID_INDEX: &str = "idx_metadata_content_id";
 
 /// FTS5 tokenizer configuration.
 ///
@@ -387,6 +410,210 @@ fn ensure_tables(conn: &Connection, tokenizer: &FtsTokenizer) -> Result<()> {
     Ok(())
 }
 
+/// Check whether a table (or virtual table) exists.
+fn table_exists(conn: &Connection, name: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?",
+        [name],
+        |row| row.get(0),
+    )
+    .unwrap_or(false)
+}
+
+/// Read a value from the FTS config table (None if the table or key is absent).
+fn read_fts_setting(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row(
+        &format!("SELECT value FROM \"{}\" WHERE key = ?", FTS_CONFIG_TABLE),
+        [key],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
+/// True when the existing FTS index uses the content-id keyed layout.
+fn fts_is_content_keyed(conn: &Connection) -> bool {
+    table_exists(conn, FTS_TABLE)
+        && read_fts_setting(conn, FTS_KEY_SETTING).as_deref() == Some(FTS_KEY_CONTENT_ID)
+}
+
+/// True when the index's FTS layout is keyed by stable `_content_id_` values.
+///
+/// In that layout `filtering::delete` removes the FTS rows itself (inside its
+/// transaction) and `_subset_` re-sequencing never invalidates FTS rowids, so
+/// callers must NOT follow a delete with [`delete`] or [`rebuild`].
+pub fn is_content_id_keyed(index_path: &str) -> bool {
+    let db_path = get_db_path(index_path);
+    if !db_path.exists() {
+        return false;
+    }
+    crate::filtering::with_db_read(&db_path, |conn| Ok(fts_is_content_keyed(conn))).unwrap_or(false)
+}
+
+/// Create the config table and the contentless, content-id keyed FTS5 table.
+///
+/// If the FTS5 table already exists with a **different** tokenizer, it is
+/// dropped and recreated so the new tokenizer takes effect (any legacy
+/// content table is dropped along with it).
+fn ensure_tables_content_keyed(conn: &Connection, tokenizer: &FtsTokenizer) -> Result<()> {
+    conn.execute(
+        &format!(
+            "CREATE TABLE IF NOT EXISTS \"{}\" (\
+                key TEXT PRIMARY KEY, \
+                value TEXT NOT NULL\
+            )",
+            FTS_CONFIG_TABLE
+        ),
+        [],
+    )
+    .map_err(|e| Error::Filtering(format!("Failed to create FTS config table: {}", e)))?;
+
+    let stored = read_fts_setting(conn, "tokenizer");
+    if let Some(ref stored_str) = stored {
+        if stored_str != tokenizer.as_config_str() {
+            conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", FTS_TABLE), [])
+                .map_err(|e| Error::Filtering(format!("Failed to drop FTS5 table: {}", e)))?;
+            conn.execute(
+                &format!("DROP TABLE IF EXISTS \"{}\"", FTS_CONTENT_TABLE),
+                [],
+            )
+            .map_err(|e| Error::Filtering(format!("Failed to drop content table: {}", e)))?;
+        }
+    }
+
+    // Contentless FTS5 table keyed by _content_id_. `contentless_delete=1`
+    // (SQLite >= 3.43) allows `DELETE FROM fts WHERE rowid = ?` without a
+    // content table, so no second copy of the corpus is stored.
+    conn.execute(
+        &format!(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS \"{}\" USING fts5(\
+                \"{}\", \
+                content='', \
+                contentless_delete=1, \
+                tokenize='{}'\
+            )",
+            FTS_TABLE,
+            FTS_CONTENT_COLUMN,
+            tokenizer.fts5_tokenize_value()
+        ),
+        [],
+    )
+    .map_err(|e| Error::Filtering(format!("Failed to create FTS5 table: {}", e)))?;
+
+    // Search JOINs METADATA on _content_id_ to translate FTS rowids back to
+    // _subset_ — that lookup must not scan the thin table.
+    conn.execute(
+        &format!(
+            "CREATE INDEX IF NOT EXISTS \"{}\" ON METADATA(\"{}\")",
+            CONTENT_ID_INDEX, CONTENT_ID_COLUMN
+        ),
+        [],
+    )
+    .map_err(|e| Error::Filtering(format!("Failed to create content-id index: {}", e)))?;
+
+    conn.execute(
+        &format!(
+            "INSERT OR REPLACE INTO \"{}\"(key, value) VALUES ('tokenizer', ?), (?, ?)",
+            FTS_CONFIG_TABLE
+        ),
+        rusqlite::params![
+            tokenizer.as_config_str(),
+            FTS_KEY_SETTING,
+            FTS_KEY_CONTENT_ID
+        ],
+    )
+    .map_err(|e| Error::Filtering(format!("Failed to save FTS config: {}", e)))?;
+
+    Ok(())
+}
+
+/// Insert FTS rows keyed by `_content_id_` for the given `_subset_` ids.
+///
+/// The METADATA rows for `doc_ids` must already exist (metadata is always
+/// written before the FTS index). The indexed text is the tokenizer-prepared
+/// form — with no content table there are no raw-text readers to serve, and
+/// storing the prepared form is what makes deletes exact.
+fn insert_rows_content_keyed(
+    conn: &Connection,
+    metadata: &[Value],
+    doc_ids: &[i64],
+    tokenizer: &FtsTokenizer,
+) -> Result<()> {
+    conn.execute_batch("BEGIN")
+        .map_err(|e| Error::Filtering(format!("Failed to begin transaction: {}", e)))?;
+
+    let result = (|| -> Result<()> {
+        let content_id_sql = format!(
+            "SELECT \"{}\" FROM METADATA WHERE \"{}\" = ?",
+            CONTENT_ID_COLUMN, SUBSET_COLUMN
+        );
+        // Re-indexing the same doc must not leave both the old and new terms
+        // behind, so clear the rowid first (no-op for fresh inserts).
+        let fts_delete_sql = format!("DELETE FROM \"{}\" WHERE rowid = ?", FTS_TABLE);
+        let fts_insert_sql = format!(
+            "INSERT INTO \"{}\"(rowid, \"{}\") VALUES (?, ?)",
+            FTS_TABLE, FTS_CONTENT_COLUMN
+        );
+
+        let mut content_id_stmt = conn
+            .prepare(&content_id_sql)
+            .map_err(|e| Error::Filtering(format!("Failed to prepare content-id lookup: {}", e)))?;
+        let mut fts_del_stmt = conn.prepare(&fts_delete_sql)?;
+        let mut fts_ins_stmt = conn.prepare(&fts_insert_sql)?;
+
+        for (item, &doc_id) in metadata.iter().zip(doc_ids.iter()) {
+            let content_id: i64 = content_id_stmt
+                .query_row([doc_id], |row| row.get(0))
+                .map_err(|e| {
+                    Error::Filtering(format!(
+                        "No METADATA row for _subset_ {} — create/update metadata before \
+                         indexing FTS ({})",
+                        doc_id, e
+                    ))
+                })?;
+            let text = metadata_to_text(item);
+            let indexed = prepare_document_text(&text, tokenizer);
+            fts_del_stmt.execute([content_id]).map_err(|e| {
+                Error::Filtering(format!("Failed to clear FTS5 row {}: {}", content_id, e))
+            })?;
+            fts_ins_stmt
+                .execute(rusqlite::params![content_id, indexed])
+                .map_err(|e| Error::Filtering(format!("Failed to insert FTS5 row: {}", e)))?;
+        }
+        Ok(())
+    })();
+
+    if result.is_ok() {
+        conn.execute_batch("COMMIT")
+            .map_err(|e| Error::Filtering(format!("Failed to commit transaction: {}", e)))?;
+    } else {
+        let _ = conn.execute_batch("ROLLBACK");
+    }
+    result
+}
+
+/// Remove FTS rows for content ids about to be orphaned by a metadata delete.
+///
+/// Called by `filtering::delete_v2` inside its transaction, after the thin
+/// METADATA rows are deleted but before the orphaned METADATA_CONTENT rows
+/// are removed. Only applies to the content-id keyed layout; a legacy
+/// subset-keyed FTS is left for the caller's delete/rebuild logic.
+pub(crate) fn delete_fts_rows_for_orphaned_content(conn: &Connection) -> Result<()> {
+    if !fts_is_content_keyed(conn) {
+        return Ok(());
+    }
+    conn.execute(
+        &format!(
+            "DELETE FROM \"{}\" WHERE rowid IN (\
+                SELECT \"{}\" FROM {} WHERE \"{}\" NOT IN (SELECT \"{}\" FROM METADATA)\
+            )",
+            FTS_TABLE, CONTENT_ID_COLUMN, CONTENT_TABLE, CONTENT_ID_COLUMN, CONTENT_ID_COLUMN
+        ),
+        [],
+    )
+    .map_err(|e| Error::Filtering(format!("Failed to delete FTS5 rows: {}", e)))?;
+    Ok(())
+}
+
 /// Insert rows into both the content table and FTS5 index.
 /// Wrapped in a transaction for performance (single fsync instead of one per row).
 ///
@@ -485,8 +712,16 @@ pub fn index(
     }
 
     let conn = crate::filtering::open_db_write(&db_path)?;
-    ensure_tables(&conn, tokenizer)?;
-    insert_rows(&conn, metadata, doc_ids, tokenizer)?;
+    // Content-id keyed layout for split-schema (v2) DBs, unless a legacy
+    // subset-keyed FTS already exists — those keep the legacy layout until
+    // rebuild() migrates them, so a single index never mixes keyings.
+    if is_split_schema(&conn) && !table_exists(&conn, FTS_CONTENT_TABLE) {
+        ensure_tables_content_keyed(&conn, tokenizer)?;
+        insert_rows_content_keyed(&conn, metadata, doc_ids, tokenizer)?;
+    } else {
+        ensure_tables(&conn, tokenizer)?;
+        insert_rows(&conn, metadata, doc_ids, tokenizer)?;
+    }
     Ok(())
 }
 
@@ -512,14 +747,31 @@ pub fn delete(index_path: &str, doc_ids: &[i64]) -> Result<()> {
 
     let conn = crate::filtering::open_db_write(&db_path)?;
 
+    if fts_is_content_keyed(&conn) {
+        // Content-id keyed: translate _subset_ → _content_id_ while the
+        // METADATA rows still exist, then delete by rowid (O(deleted)).
+        // If filtering::delete already ran it removed both the METADATA rows
+        // and the FTS rows, so the subquery matches nothing — a no-op.
+        let (in_clause, in_params, temp_table) = build_in_clause(&conn, doc_ids)?;
+        let sql = format!(
+            "DELETE FROM \"{}\" WHERE rowid IN (\
+                SELECT \"{}\" FROM METADATA WHERE \"{}\" {}\
+            )",
+            FTS_TABLE, CONTENT_ID_COLUMN, SUBSET_COLUMN, in_clause
+        );
+        let param_refs: Vec<&dyn ToSql> = in_params.iter().map(|v| v.as_ref()).collect();
+        let result = conn
+            .execute(&sql, params_from_iter(param_refs))
+            .map_err(|e| Error::Filtering(format!("Failed to delete FTS5 rows: {}", e)));
+        if let Some(ref name) = temp_table {
+            drop_temp_table(&conn, name);
+        }
+        result?;
+        return Ok(());
+    }
+
     // Check tables exist
-    let has_content: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?",
-            [FTS_CONTENT_TABLE],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
+    let has_content: bool = table_exists(&conn, FTS_CONTENT_TABLE);
 
     if !has_content {
         return Ok(());
@@ -588,14 +840,12 @@ pub fn update_rows(index_path: &str, doc_ids: &[i64]) -> Result<()> {
 
     let conn = crate::filtering::open_db_write(&db_path)?;
 
+    if fts_is_content_keyed(&conn) {
+        return update_rows_content_keyed(&conn, doc_ids);
+    }
+
     // Check FTS tables exist
-    let has_content: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?",
-            [FTS_CONTENT_TABLE],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
+    let has_content: bool = table_exists(&conn, FTS_CONTENT_TABLE);
 
     if !has_content {
         return Ok(());
@@ -679,6 +929,137 @@ pub fn update_rows(index_path: &str, doc_ids: &[i64]) -> Result<()> {
         .map_err(|e| Error::Filtering(format!("Failed to commit transaction: {}", e)))?;
 
     Ok(())
+}
+
+/// Read the tokenizer stored in the FTS config table (default for pre-config indices).
+fn stored_tokenizer(conn: &Connection) -> FtsTokenizer {
+    read_fts_setting(conn, "tokenizer")
+        .and_then(|s| FtsTokenizer::from_config_str(&s))
+        .unwrap_or_default()
+}
+
+/// Re-index rows in a content-id keyed FTS after their metadata changed.
+/// Deletes and re-inserts each row's FTS entry by its stable `_content_id_`.
+fn update_rows_content_keyed(conn: &Connection, doc_ids: &[i64]) -> Result<()> {
+    let tokenizer = stored_tokenizer(conn);
+    let (columns, select_sql) = fts_update_row_select_content_keyed(conn)?;
+
+    let fts_delete_sql = format!("DELETE FROM \"{}\" WHERE rowid = ?", FTS_TABLE);
+    let fts_insert_sql = format!(
+        "INSERT INTO \"{}\"(rowid, \"{}\") VALUES (?, ?)",
+        FTS_TABLE, FTS_CONTENT_COLUMN
+    );
+
+    conn.execute_batch("BEGIN")
+        .map_err(|e| Error::Filtering(format!("Failed to begin transaction: {}", e)))?;
+
+    let result = (|| -> Result<()> {
+        let mut meta_stmt = conn.prepare(&select_sql)?;
+        let mut fts_del_stmt = conn.prepare(&fts_delete_sql)?;
+        let mut fts_ins_stmt = conn.prepare(&fts_insert_sql)?;
+
+        for &doc_id in doc_ids {
+            let row: Option<(i64, String)> = meta_stmt
+                .query_row([doc_id], |row| {
+                    let content_id: i64 = row.get(0)?;
+                    let mut parts = Vec::new();
+                    for i in 0..columns.len() {
+                        if let Ok(s) = row.get::<_, String>(i + 1) {
+                            if !s.is_empty() {
+                                parts.push(s);
+                            }
+                        } else if let Ok(n) = row.get::<_, i64>(i + 1) {
+                            parts.push(n.to_string());
+                        } else if let Ok(f) = row.get::<_, f64>(i + 1) {
+                            parts.push(f.to_string());
+                        }
+                    }
+                    Ok((content_id, parts.join(" ")))
+                })
+                .ok();
+
+            if let Some((content_id, text)) = row {
+                let indexed = prepare_document_text(&text, &tokenizer);
+                fts_del_stmt.execute([content_id]).map_err(|e| {
+                    Error::Filtering(format!("Failed to clear FTS5 row {}: {}", content_id, e))
+                })?;
+                fts_ins_stmt
+                    .execute(rusqlite::params![content_id, indexed])
+                    .map_err(|e| Error::Filtering(format!("Failed to insert FTS5 row: {}", e)))?;
+            }
+        }
+        Ok(())
+    })();
+
+    if result.is_ok() {
+        conn.execute_batch("COMMIT")
+            .map_err(|e| Error::Filtering(format!("Failed to commit transaction: {}", e)))?;
+    } else {
+        let _ = conn.execute_batch("ROLLBACK");
+    }
+    result
+}
+
+/// Per-row SELECT for [`update_rows_content_keyed`]: column 0 is
+/// `_content_id_`, followed by every user-visible column (thin then fat),
+/// keyed by a `_subset_` placeholder.
+fn fts_update_row_select_content_keyed(conn: &Connection) -> Result<(Vec<String>, String)> {
+    fts_select_v2(conn, &format!("WHERE M.\"{}\" = ?", SUBSET_COLUMN))
+}
+
+/// Full-table SELECT for [`rebuild`] on the content-id keyed layout: column 0
+/// is `_content_id_`, followed by every user-visible column (thin then fat).
+fn fts_rebuild_select_content_keyed(conn: &Connection) -> Result<(Vec<String>, String)> {
+    fts_select_v2(conn, &format!("ORDER BY M.\"{}\"", CONTENT_ID_COLUMN))
+}
+
+/// Shared builder for content-id keyed FTS SELECTs over the split schema:
+/// `SELECT M._content_id_, <thin cols>, <fat cols> FROM METADATA M JOIN
+/// METADATA_CONTENT C ... <tail>`.
+fn fts_select_v2(conn: &Connection, tail: &str) -> Result<(Vec<String>, String)> {
+    let mut thin_cols: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(METADATA)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for row in rows {
+            let col = row?;
+            if col != SUBSET_COLUMN && col != CONTENT_ID_COLUMN {
+                thin_cols.push(col);
+            }
+        }
+    }
+    let mut fat_cols: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", CONTENT_TABLE))?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for row in rows {
+            let col = row?;
+            if col != CONTENT_ID_COLUMN {
+                fat_cols.push(col);
+            }
+        }
+    }
+
+    let mut select_parts = vec![format!("M.\"{}\"", CONTENT_ID_COLUMN)];
+    let mut columns = Vec::new();
+    for col in &thin_cols {
+        select_parts.push(format!("M.\"{}\"", col));
+        columns.push(col.clone());
+    }
+    for col in &fat_cols {
+        select_parts.push(format!("C.\"{}\"", col));
+        columns.push(col.clone());
+    }
+
+    let select_sql = format!(
+        "SELECT {} FROM METADATA M JOIN {} C ON M.\"{}\" = C.\"{}\" {}",
+        select_parts.join(", "),
+        CONTENT_TABLE,
+        CONTENT_ID_COLUMN,
+        CONTENT_ID_COLUMN,
+        tail
+    );
+    Ok((columns, select_sql))
 }
 
 /// Build the column list and SELECT statement for populating FTS from metadata.
@@ -846,18 +1227,16 @@ pub fn rebuild(index_path: &str) -> Result<()> {
 
     // Read stored tokenizer (default to Unicode61 for indices created before
     // the config table existed).
-    let tokenizer = conn
-        .query_row(
-            &format!(
-                "SELECT value FROM \"{}\" WHERE key = 'tokenizer'",
-                FTS_CONFIG_TABLE
-            ),
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .ok()
-        .and_then(|s| FtsTokenizer::from_config_str(&s))
-        .unwrap_or_default();
+    let tokenizer = stored_tokenizer(&conn);
+
+    // Split-schema DBs rebuild into the content-id keyed layout. This is also
+    // the migration path for v2 indices created with a legacy subset-keyed
+    // FTS: the first rebuild (which the legacy layout needed after any
+    // non-suffix delete anyway) upgrades them, and afterwards deletes never
+    // require a rebuild again.
+    if is_split_schema(&conn) {
+        return rebuild_content_keyed(&conn, &tokenizer);
+    }
 
     // Wrap the entire drop/recreate/rebuild in a transaction
     conn.execute_batch("BEGIN")
@@ -932,6 +1311,66 @@ pub fn rebuild(index_path: &str) -> Result<()> {
         .map_err(|e| Error::Filtering(format!("Failed to commit transaction: {}", e)))?;
 
     Ok(())
+}
+
+/// Rebuild a split-schema index's FTS into the content-id keyed layout.
+///
+/// Drops any existing FTS tables (including a legacy subset-keyed pair) and
+/// re-indexes every document keyed by its stable `_content_id_`. The indexed
+/// text is the tokenizer-prepared form, matching what inserts write.
+fn rebuild_content_keyed(conn: &Connection, tokenizer: &FtsTokenizer) -> Result<()> {
+    conn.execute_batch("BEGIN")
+        .map_err(|e| Error::Filtering(format!("Failed to begin transaction: {}", e)))?;
+
+    let result = (|| -> Result<()> {
+        conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", FTS_TABLE), [])
+            .map_err(|e| Error::Filtering(format!("Failed to drop FTS5 table: {}", e)))?;
+        conn.execute(
+            &format!("DROP TABLE IF EXISTS \"{}\"", FTS_CONTENT_TABLE),
+            [],
+        )
+        .map_err(|e| Error::Filtering(format!("Failed to drop content table: {}", e)))?;
+
+        ensure_tables_content_keyed(conn, tokenizer)?;
+
+        let (columns, select_sql) = fts_rebuild_select_content_keyed(conn)?;
+        let insert_sql = format!(
+            "INSERT INTO \"{}\"(rowid, \"{}\") VALUES (?, ?)",
+            FTS_TABLE, FTS_CONTENT_COLUMN
+        );
+        let mut select_stmt = conn.prepare(&select_sql)?;
+        let mut insert_stmt = conn.prepare(&insert_sql)?;
+
+        let mut rows = select_stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let content_id: i64 = row.get(0)?;
+            let mut parts = Vec::new();
+            for i in 0..columns.len() {
+                if let Ok(s) = row.get::<_, String>(i + 1) {
+                    if !s.is_empty() {
+                        parts.push(s);
+                    }
+                } else if let Ok(n) = row.get::<_, i64>(i + 1) {
+                    parts.push(n.to_string());
+                } else if let Ok(f) = row.get::<_, f64>(i + 1) {
+                    parts.push(f.to_string());
+                }
+            }
+            let indexed = prepare_document_text(&parts.join(" "), tokenizer);
+            insert_stmt
+                .execute(rusqlite::params![content_id, indexed])
+                .map_err(|e| Error::Filtering(format!("Failed to insert FTS5 row: {}", e)))?;
+        }
+        Ok(())
+    })();
+
+    if result.is_ok() {
+        conn.execute_batch("COMMIT")
+            .map_err(|e| Error::Filtering(format!("Failed to commit transaction: {}", e)))?;
+    } else {
+        let _ = conn.execute_batch("ROLLBACK");
+    }
+    result
 }
 
 /// Sanitize a user query string for FTS5 MATCH.
@@ -1255,11 +1694,21 @@ pub fn search(index_path: &str, query: &str, top_k: usize) -> Result<QueryResult
     with_fts_conn(index_path, |conn| {
         // FTS5 bm25() returns negative scores (lower = better match).
         // We negate so higher = more relevant.
-        let sql = format!(
-            "SELECT rowid, CAST(-bm25(\"{}\") AS REAL) AS score \
-             FROM \"{}\" WHERE \"{}\" MATCH ? ORDER BY score DESC LIMIT ?",
-            FTS_TABLE, FTS_TABLE, FTS_TABLE
-        );
+        let sql = if fts_is_content_keyed(conn) {
+            // Rowids are stable _content_id_ values; translate to _subset_.
+            format!(
+                "SELECT M.\"{}\", CAST(-bm25(\"{}\") AS REAL) AS score \
+                 FROM \"{}\" JOIN METADATA M ON M.\"{}\" = \"{}\".rowid \
+                 WHERE \"{}\" MATCH ? ORDER BY score DESC LIMIT ?",
+                SUBSET_COLUMN, FTS_TABLE, FTS_TABLE, CONTENT_ID_COLUMN, FTS_TABLE, FTS_TABLE
+            )
+        } else {
+            format!(
+                "SELECT rowid, CAST(-bm25(\"{}\") AS REAL) AS score \
+                 FROM \"{}\" WHERE \"{}\" MATCH ? ORDER BY score DESC LIMIT ?",
+                FTS_TABLE, FTS_TABLE, FTS_TABLE
+            )
+        };
 
         let mut stmt = conn
             .prepare(&sql)
@@ -1297,20 +1746,38 @@ pub fn search_filtered(
     }
 
     with_fts_conn(index_path, |conn| {
+        let content_keyed = fts_is_content_keyed(conn);
         let mut merged: Vec<(i64, f32)> = Vec::new();
         let top_k_i64 = top_k as i64;
 
         for chunk in subset.chunks(SQLITE_PARAM_LIMIT) {
             let placeholders: Vec<&str> = std::iter::repeat_n("?", chunk.len()).collect();
-            let sql = format!(
-                "SELECT rowid, CAST(-bm25(\"{}\") AS REAL) AS score \
-                 FROM \"{}\" WHERE \"{}\" MATCH ? AND rowid IN ({}) \
-                 ORDER BY score DESC LIMIT ?",
-                FTS_TABLE,
-                FTS_TABLE,
-                FTS_TABLE,
-                placeholders.join(", ")
-            );
+            let sql = if content_keyed {
+                format!(
+                    "SELECT M.\"{}\", CAST(-bm25(\"{}\") AS REAL) AS score \
+                     FROM \"{}\" JOIN METADATA M ON M.\"{}\" = \"{}\".rowid \
+                     WHERE \"{}\" MATCH ? AND M.\"{}\" IN ({}) \
+                     ORDER BY score DESC LIMIT ?",
+                    SUBSET_COLUMN,
+                    FTS_TABLE,
+                    FTS_TABLE,
+                    CONTENT_ID_COLUMN,
+                    FTS_TABLE,
+                    FTS_TABLE,
+                    SUBSET_COLUMN,
+                    placeholders.join(", ")
+                )
+            } else {
+                format!(
+                    "SELECT rowid, CAST(-bm25(\"{}\") AS REAL) AS score \
+                     FROM \"{}\" WHERE \"{}\" MATCH ? AND rowid IN ({}) \
+                     ORDER BY score DESC LIMIT ?",
+                    FTS_TABLE,
+                    FTS_TABLE,
+                    FTS_TABLE,
+                    placeholders.join(", ")
+                )
+            };
 
             let mut params: Vec<Box<dyn ToSql>> = Vec::with_capacity(chunk.len() + 2);
             params.push(Box::new(query.to_string()));

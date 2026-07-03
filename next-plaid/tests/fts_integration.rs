@@ -503,3 +503,174 @@ fn test_fts_exists_lifecycle() {
     text_search::index(path, &metadata, &ids, &FtsTokenizer::default()).unwrap();
     assert!(text_search::exists(path));
 }
+
+// =============================================================================
+// Content-id keyed layout (split-schema metadata)
+// =============================================================================
+
+#[test]
+fn test_new_index_is_content_id_keyed() {
+    let metadata = vec![json!({"title": "hello world"})];
+    let (_dir, path) = setup_default(&metadata);
+    assert!(text_search::is_content_id_keyed(&path));
+}
+
+#[test]
+fn test_middle_delete_needs_no_rebuild() {
+    let metadata = vec![
+        json!({"title": "first entry"}),
+        json!({"title": "second entry"}),
+        json!({"title": "third entry"}),
+        json!({"title": "fourth entry"}),
+    ];
+    let (_dir, path) = setup_default(&metadata);
+
+    // Non-suffix delete: filtering::delete re-sequences _subset_ but the FTS
+    // rowids are stable content ids, so search must be correct immediately —
+    // no text_search::rebuild.
+    filtering::delete(&path, &[1]).unwrap();
+
+    assert!(search_ids(&path, "second").is_empty());
+    assert_eq!(search_ids(&path, "first"), vec![0]);
+    // Survivors shifted down: third 2 -> 1, fourth 3 -> 2.
+    assert_eq!(search_ids(&path, "third"), vec![1]);
+    assert_eq!(search_ids(&path, "fourth"), vec![2]);
+
+    // Filtered search uses the re-sequenced _subset_ ids too.
+    assert_eq!(search_filtered_ids(&path, "entry", &[1, 2]), vec![1, 2]);
+    assert!(search_filtered_ids(&path, "third", &[0]).is_empty());
+}
+
+#[test]
+fn test_repeated_deletes_and_adds_stay_consistent() {
+    let metadata: Vec<Value> = (0..10)
+        .map(|i| json!({"title": format!("unique{i} common")}))
+        .collect();
+    let (_dir, path) = setup_default(&metadata);
+
+    // Delete from the front twice (worst case for re-sequencing).
+    filtering::delete(&path, &[0]).unwrap();
+    filtering::delete(&path, &[0]).unwrap();
+
+    assert!(search_ids(&path, "unique0").is_empty());
+    assert!(search_ids(&path, "unique1").is_empty());
+    assert_eq!(search_ids(&path, "unique2"), vec![0]);
+    assert_eq!(search_ids(&path, "unique9"), vec![7]);
+    assert_eq!(search_ids(&path, "common").len(), 8);
+
+    // Append after deletes: new docs get fresh content ids and correct subset ids.
+    let extra = vec![json!({"title": "appended common"})];
+    filtering::update(&path, &extra, &[8]).unwrap();
+    text_search::index(&path, &extra, &[8], &FtsTokenizer::default()).unwrap();
+
+    assert_eq!(search_ids(&path, "appended"), vec![8]);
+    assert_eq!(search_ids(&path, "common").len(), 9);
+}
+
+#[test]
+fn test_identifier_aware_subtokens_survive_delete() {
+    let metadata = vec![
+        json!({"code": "fn parseRequest() { handleInput() }"}),
+        json!({"code": "fn renderTemplate() {}"}),
+        json!({"code": "fn writeOutput() {}"}),
+    ];
+    let (_dir, path) = setup(&metadata, &FtsTokenizer::IdentifierAware);
+
+    // Sub-token matching works (camelCase split at index time).
+    assert_eq!(search_ids(&path, "parse"), vec![0]);
+
+    // Middle-of-corpus delete; previously this forced a rebuild that lost the
+    // identifier pre-tokenization. Now no rebuild happens and sub-token
+    // matching must keep working.
+    filtering::delete(&path, &[1]).unwrap();
+
+    assert_eq!(search_ids(&path, "parse"), vec![0]);
+    assert_eq!(search_ids(&path, "output"), vec![1]);
+    assert!(search_ids(&path, "render").is_empty());
+}
+
+#[test]
+fn test_text_search_delete_before_filtering_delete() {
+    let metadata = vec![
+        json!({"title": "alpha doc"}),
+        json!({"title": "beta doc"}),
+        json!({"title": "gamma doc"}),
+    ];
+    let (_dir, path) = setup_default(&metadata);
+
+    // Callers may remove FTS rows first (while the _subset_ mapping still
+    // exists), then delete metadata; the delete_v2 FTS hook must be a no-op
+    // for already-removed rows.
+    text_search::delete(&path, &[1]).unwrap();
+    assert!(search_ids(&path, "beta").is_empty());
+
+    filtering::delete(&path, &[1]).unwrap();
+    assert_eq!(search_ids(&path, "alpha"), vec![0]);
+    assert_eq!(search_ids(&path, "gamma"), vec![1]);
+}
+
+/// Build a legacy subset-keyed FTS layout by hand over a v2 metadata DB,
+/// mimicking an index created by the previous release.
+fn build_legacy_fts(path: &str, rows: &[(i64, &str)]) {
+    let db_path = std::path::Path::new(path).join("metadata.db");
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS \"_FTS_SETTINGS_\" (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         INSERT OR REPLACE INTO \"_FTS_SETTINGS_\"(key, value) VALUES ('tokenizer', 'unicode61');
+         CREATE TABLE \"METADATA_FTS_CONTENT\" (rowid INTEGER PRIMARY KEY, \"_fts_content_\" TEXT NOT NULL DEFAULT '');
+         CREATE VIRTUAL TABLE \"METADATA_FTS\" USING fts5(\"_fts_content_\", content='METADATA_FTS_CONTENT', content_rowid='rowid', tokenize='unicode61');",
+    )
+    .unwrap();
+    for (id, text) in rows {
+        conn.execute(
+            "INSERT INTO \"METADATA_FTS_CONTENT\"(rowid, \"_fts_content_\") VALUES (?, ?)",
+            rusqlite::params![id, text],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO \"METADATA_FTS\"(rowid, \"_fts_content_\") VALUES (?, ?)",
+            rusqlite::params![id, text],
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn test_legacy_index_migrates_on_rebuild() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap().to_string();
+    let metadata = vec![
+        json!({"title": "first entry"}),
+        json!({"title": "second entry"}),
+        json!({"title": "third entry"}),
+    ];
+    let doc_ids: Vec<i64> = vec![0, 1, 2];
+    filtering::create(&path, &metadata, &doc_ids).unwrap();
+    build_legacy_fts(
+        &path,
+        &[(0, "first entry"), (1, "second entry"), (2, "third entry")],
+    );
+
+    // Legacy layout: subset-keyed, searchable, not content-id keyed.
+    assert!(!text_search::is_content_id_keyed(&path));
+    assert_eq!(search_ids(&path, "second"), vec![1]);
+
+    // Appends on a legacy index stay legacy (no mixed keying).
+    let extra = vec![json!({"title": "fourth entry"})];
+    filtering::update(&path, &extra, &[3]).unwrap();
+    text_search::index(&path, &extra, &[3], &FtsTokenizer::default()).unwrap();
+    assert!(!text_search::is_content_id_keyed(&path));
+    assert_eq!(search_ids(&path, "fourth"), vec![3]);
+
+    // rebuild() migrates to the content-id keyed layout.
+    text_search::rebuild(&path).unwrap();
+    assert!(text_search::is_content_id_keyed(&path));
+    assert_eq!(search_ids(&path, "first"), vec![0]);
+    assert_eq!(search_ids(&path, "fourth"), vec![3]);
+
+    // Post-migration, non-suffix deletes need no rebuild.
+    filtering::delete(&path, &[1]).unwrap();
+    assert!(search_ids(&path, "second").is_empty());
+    assert_eq!(search_ids(&path, "third"), vec![1]);
+    assert_eq!(search_ids(&path, "fourth"), vec![2]);
+}

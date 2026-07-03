@@ -1791,6 +1791,14 @@ fn delete_v2(conn: &Connection, subset: &[i64]) -> Result<usize> {
         crate::text_search::drop_temp_table(conn, name);
     }
 
+    // A content-id keyed FTS is maintained here, inside the same transaction:
+    // its rowids are the stable _content_id_ values, so removing the rows for
+    // the content ids being orphaned is all the FTS upkeep a delete needs —
+    // the _subset_ re-sequencing below never invalidates FTS rowids, and no
+    // caller-side rebuild is required. (A legacy subset-keyed FTS is left
+    // untouched for the caller's delete/rebuild handling.)
+    crate::text_search::delete_fts_rows_for_orphaned_content(conn)?;
+
     // Delete orphaned content rows
     conn.execute(
         &format!(

@@ -1835,10 +1835,17 @@ impl MmapIndex {
                 let is_suffix_delete = valid.first().is_some_and(|&min| min >= suffix_start);
 
                 crate::filtering::delete(&path, doc_ids)?;
-                if is_suffix_delete {
+                if crate::text_search::is_content_id_keyed(&path) {
+                    // FTS rowids are stable _content_id_ values, unaffected by
+                    // the _subset_ re-sequencing; filtering::delete removed the
+                    // deleted docs' FTS rows inside its own transaction.
+                } else if is_suffix_delete {
                     crate::text_search::delete(&path, &valid)?;
                 } else {
-                    // Survivor IDs shifted; FTS5 rowids no longer match METADATA.
+                    // Survivor IDs shifted; FTS5 rowids no longer match
+                    // METADATA. For split-schema DBs this rebuild also
+                    // migrates the FTS to the content-id keyed layout, so it
+                    // runs at most once per legacy index.
                     crate::text_search::rebuild(&path)?;
                 }
             }
