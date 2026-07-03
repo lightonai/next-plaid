@@ -125,7 +125,7 @@ my_rule(
     srcs = [],
 )
 "#;
-    let units = assert_extractor_invariants(&source, Language::Starlark, "BUILD");
+    let units = assert_extractor_invariants(source, Language::Starlark, "BUILD");
     assert!(get_unit_by_name(&units, r#"genquery "real_query""#).is_some());
     assert!(
         !units
