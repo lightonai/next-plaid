@@ -196,6 +196,36 @@ fn seed_source_state(src_dir: &Path) -> Option<IndexState> {
     }
 }
 
+/// Rebase per-file records seeded from a sibling worktree onto this worktree's files.
+///
+/// The seeded records carry the SOURCE branch's content hashes — they describe what
+/// the copied embeddings were computed from, so they must be kept, and a record may
+/// only take this worktree's mtime/size when the local content actually matches that
+/// hash. Stamping mtime/size unconditionally would let `compute_update_plan`'s
+/// mtime+size fast path skip the hash check and serve the sibling branch's stale
+/// embeddings for files that differ between the branches. For files whose content
+/// differs (or can't be read), zero the stats so the fast path is guaranteed to miss
+/// and the first update re-hashes and re-embeds them (size 0 is the established
+/// "force a one-time content hash" sentinel, see `FileInfo::size`).
+fn rebase_seeded_file_stats(
+    project_root: &Path,
+    files: &mut std::collections::HashMap<PathBuf, FileInfo>,
+) {
+    for (path, info) in files.iter_mut() {
+        let full = project_root.join(path);
+        match (file_stat(&full), hash_file(&full)) {
+            (Ok((mtime, size)), Ok(hash)) if hash == info.content_hash => {
+                info.mtime = mtime;
+                info.size = size;
+            }
+            _ => {
+                info.mtime = 0;
+                info.size = 0;
+            }
+        }
+    }
+}
+
 /// Threshold for switching to higher pool factor (fewer embeddings per doc).
 /// When encoding more than this many units, use LARGE_BATCH_POOL_FACTOR.
 const LARGE_BATCH_THRESHOLD: usize = 10_000;
@@ -2019,18 +2049,7 @@ impl IndexBuilder {
             std::fs::rename(&tmp, &dest_vector)
                 .context("Failed to move seeded index into place")?;
 
-            // Refresh stats to match this worktree's files. The content hashes
-            // from the source are still valid (same git content), but mtimes
-            // differ because git checkout stamps files with the current time.
-            // Without this, the mtime fast path would miss on every file and
-            // trigger a full content-hash pass on the first search.
-            for (path, info) in src_state.files.iter_mut() {
-                let full = self.project_root.join(path);
-                if let Ok((mtime, size)) = file_stat(&full) {
-                    info.mtime = mtime;
-                    info.size = size;
-                }
-            }
+            rebase_seeded_file_stats(&self.project_root, &mut src_state.files);
 
             // Persist state (save() restamps the version/format fields) and a
             // fresh project.json pointing at THIS worktree, not the source.
@@ -5792,6 +5811,65 @@ mod tests {
         // Re-save with dirty set (save() preserves the flag, restamps version/format).
         dirty.save(src_dir).unwrap();
         assert!(seed_source_state(src_dir).is_none(), "dirty index");
+    }
+
+    /// Seeded records may only adopt this worktree's mtime/size when the local
+    /// content matches the sibling's hash. A file that differs between the
+    /// branches must be left with zeroed stats so the mtime+size fast path in
+    /// compute_update_plan misses and the hash check (→ re-embed) runs;
+    /// stamping stats unconditionally used to mark such files unchanged and
+    /// serve the sibling branch's stale embeddings for them.
+    #[test]
+    fn test_rebase_seeded_stats_keeps_differing_files_stale() {
+        let proj = tempfile::tempdir().unwrap();
+        std::fs::write(proj.path().join("same.rs"), "fn same() {}\n").unwrap();
+        std::fs::write(proj.path().join("differs.rs"), "fn local_version() {}\n").unwrap();
+
+        let mut files: HashMap<PathBuf, FileInfo> = HashMap::new();
+        // Sibling hash matches local content.
+        files.insert(
+            PathBuf::from("same.rs"),
+            FileInfo {
+                content_hash: hash_file(&proj.path().join("same.rs")).unwrap(),
+                mtime: 42,
+                size: 42,
+            },
+        );
+        // Sibling indexed different content for this path.
+        files.insert(
+            PathBuf::from("differs.rs"),
+            FileInfo {
+                content_hash: 0xDEAD_BEEF,
+                mtime: 42,
+                size: 42,
+            },
+        );
+        // Sibling-only file, absent in this worktree.
+        files.insert(
+            PathBuf::from("missing.rs"),
+            FileInfo {
+                content_hash: 7,
+                mtime: 42,
+                size: 42,
+            },
+        );
+
+        rebase_seeded_file_stats(proj.path(), &mut files);
+
+        let same = &files[&PathBuf::from("same.rs")];
+        let (mtime, size) = file_stat(&proj.path().join("same.rs")).unwrap();
+        assert_eq!((same.mtime, same.size), (mtime, size));
+
+        let differs = &files[&PathBuf::from("differs.rs")];
+        assert_eq!(
+            (differs.mtime, differs.size),
+            (0, 0),
+            "differing file must not satisfy the stat fast path"
+        );
+        assert_eq!(differs.content_hash, 0xDEAD_BEEF, "sibling hash preserved");
+
+        let missing = &files[&PathBuf::from("missing.rs")];
+        assert_eq!((missing.mtime, missing.size), (0, 0));
     }
 
     /// A missing state.json must not be mistaken for an incompatible index format.
