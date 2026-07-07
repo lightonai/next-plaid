@@ -410,16 +410,6 @@ fn display_path_with_cwd(path: &Path, cwd: Option<&Path>, use_relative: bool) ->
     normalized_path.display().to_string()
 }
 
-fn is_external_project_path(search_path: &Path, cwd: Option<&Path>) -> bool {
-    let Some(cwd) = cwd else {
-        return false;
-    };
-
-    let normalized_search_path = normalize_windows_path(search_path);
-    let normalized_cwd = normalize_windows_path(cwd);
-    !normalized_search_path.starts_with(&normalized_cwd)
-}
-
 fn normalize_windows_path(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {
@@ -1065,24 +1055,11 @@ fn search_single_path(
     let parallel_sessions = config.configured_parallel_sessions();
     let batch_size = config.configured_batch_size();
 
-    // An index for this exact (path, model) pair takes precedence over any
-    // ancestor project's index, so the parent scan — a read_dir plus a
-    // project.json parse for every indexed project on the machine — runs only
-    // when there is no local index, and at most once per search. The parent
-    // scan is also skipped when the resolved path is outside the current
-    // directory (external project).
     let local_index_exists = index_exists(&search_path, &model);
     let parent_info = if local_index_exists {
         None
     } else {
-        let current_dir = std::env::current_dir().ok();
-        let is_external_project = is_external_project_path(&search_path, current_dir.as_deref());
-
-        if is_external_project {
-            None
-        } else {
-            find_parent_index(&search_path, &model)?
-        }
+        find_parent_index(&search_path, &model)?
     };
 
     // Ensure model is downloaded (quiet if we already have an index)
@@ -1953,18 +1930,6 @@ mod tests {
 
         assert!(!display.starts_with(r"\\?\"));
         assert!(display.ends_with(r"src\main.rs"));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn test_is_external_project_path_ignores_windows_verbatim_prefixes() {
-        let temp_dir = tempdir().unwrap();
-        let canonical_root = std::fs::canonicalize(temp_dir.path()).unwrap();
-        // Both paths canonical so the only difference is the verbatim prefix
-        assert!(!is_external_project_path(
-            &canonical_root,
-            Some(&canonical_root)
-        ));
     }
 
     #[cfg(windows)]
