@@ -66,6 +66,7 @@ fn is_abstract_type_container(kind: &str, lang: Language) -> bool {
             "interface_declaration" | "trait_declaration" | "enum_declaration"
         ),
         Language::Cpp => kind == "enum_specifier",
+        Language::Dart => kind == "type_alias",
         _ => false,
     }
 }
@@ -240,6 +241,12 @@ fn extract_from_node(
             extract_function(node, path, lines, bytes, lang, parent_class, file_imports)
         {
             units.push(unit);
+            // Dart method signatures contain nested function signatures. Once
+            // the outer declaration is extracted, recursing would emit a
+            // duplicate unit for the same method.
+            if lang == Language::Dart {
+                return;
+            }
         }
     }
     // Check if this is a class definition

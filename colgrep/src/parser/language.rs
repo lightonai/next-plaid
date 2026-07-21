@@ -35,6 +35,7 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "cpp" | "cc" | "cxx" | "hpp" | "hxx" => Some(Language::Cpp),
         "rb" | "rake" | "gemspec" => Some(Language::Ruby),
         "cs" => Some(Language::CSharp),
+        "dart" => Some(Language::Dart),
         // Additional languages
         "kt" | "kts" => Some(Language::Kotlin),
         "swift" => Some(Language::Swift),
@@ -111,6 +112,7 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
         Language::Ruby => tree_sitter_ruby::LANGUAGE.into(),
         Language::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+        Language::Dart => tree_sitter_dart::LANGUAGE.into(),
         // Additional languages
         Language::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
         Language::Swift => tree_sitter_swift::LANGUAGE.into(),
@@ -211,6 +213,14 @@ mod tests {
     #[test]
     fn test_detect_language_go() {
         assert_eq!(detect_language(Path::new("main.go")), Some(Language::Go));
+    }
+
+    #[test]
+    fn test_detect_language_dart() {
+        assert_eq!(
+            detect_language(Path::new("lib/main.dart")),
+            Some(Language::Dart)
+        );
     }
 
     #[test]
@@ -508,6 +518,7 @@ mod tests {
         assert!(!is_text_format(Language::Ini));
 
         assert!(!is_text_format(Language::Python));
+        assert!(!is_text_format(Language::Dart));
         assert!(!is_text_format(Language::Rust));
         assert!(!is_text_format(Language::TypeScript));
         assert!(!is_text_format(Language::Go));

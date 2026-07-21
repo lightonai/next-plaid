@@ -571,7 +571,7 @@ ColGREP automatically detects and repairs index/metadata desync from interrupted
 
 ## Supported Languages
 
-### Code (34 languages, tree-sitter AST parsing)
+### Code (35 languages, tree-sitter AST parsing)
 
 | Language         | Extensions                                              |
 | ---------------- | ------------------------------------------------------- |
@@ -584,6 +584,7 @@ ColGREP automatically detects and repairs index/metadata desync from interrupted
 | C                | `.c`, `.h`                                              |
 | C++              | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`                   |
 | C#               | `.cs`                                                   |
+| Dart             | `.dart`                                                 |
 | Ruby             | `.rb`, `.rake`, `.gemspec`, `Rakefile`, `Gemfile`, `Vagrantfile` |
 | Kotlin           | `.kt`, `.kts`                                           |
 | Swift            | `.swift`                                                |

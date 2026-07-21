@@ -9,6 +9,29 @@ use super::types::{CodeUnit, Language, UnitType};
 use std::path::Path;
 use tree_sitter::Node;
 
+/// Dart's grammar represents a function declaration as a signature node
+/// followed by a sibling `function_body`. Other supported grammars usually
+/// wrap both pieces in one node, so normalize that shape here.
+fn dart_function_body(node: Node) -> Option<Node> {
+    if matches!(
+        node.kind(),
+        "function_signature" | "getter_signature" | "setter_signature" | "method_signature"
+    ) {
+        node.next_named_sibling()
+            .filter(|sibling| sibling.kind() == "function_body")
+    } else {
+        None
+    }
+}
+
+fn extend_unique(target: &mut Vec<String>, values: Vec<String>) {
+    for value in values {
+        if !target.contains(&value) {
+            target.push(value);
+        }
+    }
+}
+
 /// Extract a function or method from an AST node.
 pub fn extract_function(
     node: Node,
@@ -21,10 +44,17 @@ pub fn extract_function(
 ) -> Option<CodeUnit> {
     let name = get_node_name(node, bytes, lang)?;
     let ast_start_line = node.start_position().row;
+    let dart_body = (lang == Language::Dart)
+        .then(|| dart_function_body(node))
+        .flatten();
+    let content_node = dart_body.unwrap_or(node);
     // tree-sitter can report an end row one past EOF for a construct left
     // unterminated at end-of-file (e.g. a block missing its closing brace);
     // clamp so a unit's end_line never points outside the file.
-    let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
+    let end_line = content_node
+        .end_position()
+        .row
+        .min(lines.len().saturating_sub(1));
 
     // Include preceding attributes/decorators in the line range
     let code_start = find_start_with_attributes(ast_start_line, lines, lang);
@@ -54,10 +84,13 @@ pub fn extract_function(
 
     // Layer 2: Call Graph
     unit.calls = extract_function_calls(node, bytes, lang);
+    if let Some(body) = dart_body {
+        extend_unique(&mut unit.calls, extract_function_calls(body, bytes, lang));
+    }
 
     // Layer 3: Control Flow
     let (complexity, has_loops, has_branches, has_error_handling) =
-        extract_control_flow(node, lang);
+        extract_control_flow(content_node, lang);
     unit.complexity = complexity;
     unit.has_loops = has_loops;
     unit.has_branches = has_branches;
@@ -65,10 +98,16 @@ pub fn extract_function(
 
     // Layer 4: Data Flow
     unit.variables = extract_variables(node, bytes, lang);
+    if let Some(body) = dart_body {
+        extend_unique(&mut unit.variables, extract_variables(body, bytes, lang));
+    }
 
     // Layer 5: Dependencies
     // Get modules used via attribute access (e.g., `json` from `json.loads()`)
-    let used_modules = extract_used_modules(node, bytes, lang);
+    let mut used_modules = extract_used_modules(node, bytes, lang);
+    if let Some(body) = dart_body {
+        extend_unique(&mut used_modules, extract_used_modules(body, bytes, lang));
+    }
     // Filter to only modules that are actually imported (case-insensitive for Ruby, etc.)
     unit.imports = file_imports
         .iter()
@@ -173,6 +212,10 @@ fn extract_class_type_parameters(node: Node, bytes: &[u8], lang: Language) -> Ve
         Language::Rust => node.child_by_field_name("type_parameters"),
         Language::CSharp => node.child_by_field_name("type_parameters"),
         Language::Kotlin => node.child_by_field_name("type_parameters"),
+        Language::Dart => node.child_by_field_name("type_parameters").or_else(|| {
+            node.children(&mut node.walk())
+                .find(|child| child.kind() == "type_parameters")
+        }),
         Language::Swift => {
             // Swift uses generic_parameter_clause
             node.children(&mut node.walk())
@@ -212,6 +255,7 @@ fn extract_type_param_names(node: Node, bytes: &[u8], lang: Language, result: &m
         Language::Rust => kind == "type_identifier" || kind == "identifier",
         Language::CSharp => kind == "identifier",
         Language::Kotlin => kind == "type_identifier" || kind == "simple_identifier",
+        Language::Dart => kind == "type_identifier" || kind == "identifier",
         Language::Swift => kind == "type_identifier" || kind == "simple_identifier",
         Language::Scala => kind == "identifier" || kind == "type_identifier",
         _ => false,
@@ -415,6 +459,45 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
                 if child.kind() == "identifier" {
                     if let Ok(text) = child.utf8_text(bytes) {
                         return Some(text.to_string());
+                    }
+                }
+            }
+            None
+        }
+        Language::Dart => {
+            let mut stack = vec![(node, 0usize)];
+            let max_depth = super::max_recursion_depth();
+            while let Some((current, depth)) = stack.pop() {
+                if matches!(
+                    current.kind(),
+                    "initialized_identifier"
+                        | "initialized_variable_definition"
+                        | "static_final_declaration"
+                ) {
+                    if let Some(name) = current.child_by_field_name("name").or_else(|| {
+                        current
+                            .children(&mut current.walk())
+                            .find(|child| child.kind() == "identifier")
+                    }) {
+                        if let Ok(text) = name.utf8_text(bytes) {
+                            return Some(text.to_string());
+                        }
+                    }
+                }
+                if current.kind() == "identifier_list" {
+                    if let Some(name) = current
+                        .children(&mut current.walk())
+                        .find(|child| child.kind() == "identifier")
+                    {
+                        if let Ok(text) = name.utf8_text(bytes) {
+                            return Some(text.to_string());
+                        }
+                    }
+                }
+                if depth < max_depth {
+                    let children: Vec<_> = current.children(&mut current.walk()).collect();
+                    for child in children.into_iter().rev() {
+                        stack.push((child, depth + 1));
                     }
                 }
             }

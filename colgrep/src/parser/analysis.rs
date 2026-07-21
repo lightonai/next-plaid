@@ -222,8 +222,8 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
             }
             None
         }
-        Language::Swift => {
-            // Swift uses /// doc comments (like Rust)
+        Language::Swift | Language::Dart => {
+            // Swift and Dart use /// doc comments (like Rust)
             let mut doc_lines = Vec::new();
             let start_row = node.start_position().row;
             if start_row > 0 {
@@ -399,8 +399,72 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
     }
 }
 
+/// Extract Dart parameter names from normal, named, optional, field-formal,
+/// and function-typed parameters.
+fn extract_dart_parameters(node: Node, bytes: &[u8]) -> Vec<String> {
+    fn parameter_name<'a>(node: Node<'a>, max_depth: usize) -> Option<Node<'a>> {
+        let mut stack = vec![(node, 0usize)];
+        while let Some((current, depth)) = stack.pop() {
+            if let Some(name) = current.child_by_field_name("name") {
+                return Some(name);
+            }
+            // Dart types use `type_identifier`, while parameter variables use
+            // `identifier`. Taking the first identifier avoids accidentally
+            // selecting an identifier from a default value or nested callback.
+            if current.kind() == "identifier" {
+                return Some(current);
+            }
+            if depth < max_depth && current.kind() != "annotation" {
+                let children: Vec<_> = current.children(&mut current.walk()).collect();
+                for child in children.into_iter().rev() {
+                    stack.push((child, depth + 1));
+                }
+            }
+        }
+        None
+    }
+
+    let Some(params) =
+        find_first_by_kind(node, "formal_parameter_list", super::max_recursion_depth())
+    else {
+        return Vec::new();
+    };
+
+    let mut result = Vec::new();
+    let mut stack: Vec<_> = params.children(&mut params.walk()).collect();
+    stack.reverse();
+    while let Some(current) = stack.pop() {
+        if current.kind() == "formal_parameter" {
+            if let Some(name) = parameter_name(current, super::max_recursion_depth()) {
+                if let Ok(text) = name.utf8_text(bytes) {
+                    let text = text.trim();
+                    if !text.is_empty()
+                        && text != "this"
+                        && text != "super"
+                        && !result.iter().any(|existing| existing == text)
+                    {
+                        result.push(text.to_string());
+                    }
+                }
+            }
+            continue;
+        }
+
+        let children: Vec<_> = current.children(&mut current.walk()).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
+    }
+
+    result
+}
+
 /// Extract parameter names from a function node.
 pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    if lang == Language::Dart {
+        return extract_dart_parameters(node, bytes);
+    }
+
     let params_node = match lang {
         Language::Python | Language::Rust | Language::Go | Language::Java | Language::CSharp => {
             node.child_by_field_name("parameters")
@@ -578,14 +642,121 @@ pub fn extract_return_type(node: Node, bytes: &[u8], lang: Language) -> Option<S
         Language::Go => node.child_by_field_name("result"),
         Language::Java | Language::CSharp => node.child_by_field_name("type"),
         Language::Cpp | Language::C => node.child_by_field_name("type"),
+        Language::Dart => {
+            let signature = find_first_by_kinds(
+                node,
+                &[
+                    "function_signature",
+                    "getter_signature",
+                    "setter_signature",
+                    "operator_signature",
+                ],
+                super::max_recursion_depth(),
+            )?;
+            if signature.kind() == "setter_signature" {
+                return None;
+            }
+
+            let end_byte = if signature.kind() == "operator_signature" {
+                let source = signature.utf8_text(bytes).ok()?;
+                signature.start_byte() + source.find("operator")?
+            } else {
+                signature.child_by_field_name("name")?.start_byte()
+            };
+            let mut return_type = std::str::from_utf8(&bytes[signature.start_byte()..end_byte])
+                .ok()?
+                .trim();
+            if signature.kind() == "getter_signature" {
+                return_type = return_type
+                    .strip_suffix("get")
+                    .unwrap_or(return_type)
+                    .trim();
+            }
+            // Top-level setters parse as a function_signature whose `set`
+            // keyword is consumed as the type, since `set` is also a valid
+            // built-in identifier. Match class-level setters: no return type.
+            if return_type.is_empty() || return_type == "set" {
+                return None;
+            }
+            return Some(return_type.to_string());
+        }
         _ => None,
     };
 
     ret_node.and_then(|n| n.utf8_text(bytes).ok().map(|s| s.to_string()))
 }
 
+fn extract_dart_function_calls(node: Node, bytes: &[u8]) -> Vec<String> {
+    fn identifier_text(node: Node, bytes: &[u8]) -> Option<String> {
+        node.utf8_text(bytes)
+            .ok()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    }
+
+    fn callable_name(node: Node, bytes: &[u8]) -> Option<String> {
+        match node.kind() {
+            "identifier" | "type_identifier" => identifier_text(node, bytes),
+            "member_expression"
+            | "null_aware_member_expression"
+            | "cascade_member_expression"
+            | "cascade_null_aware_member_expression" => node
+                .child_by_field_name("property")
+                .and_then(|property| identifier_text(property, bytes)),
+            "call_expression" | "instantiation_expression" => node
+                .child_by_field_name("function")
+                .and_then(|function| callable_name(function, bytes)),
+            "cascade_call_expression" => node
+                .child_by_field_name("property")
+                .and_then(|property| identifier_text(property, bytes))
+                .or_else(|| {
+                    node.child_by_field_name("function")
+                        .and_then(|function| callable_name(function, bytes))
+                }),
+            "new_expression" | "const_object_expression" | "constructor_invocation" => node
+                .child_by_field_name("constructor")
+                .and_then(|constructor| identifier_text(constructor, bytes))
+                .or_else(|| {
+                    node.child_by_field_name("type")
+                        .and_then(|kind| identifier_text(kind, bytes))
+                }),
+            _ => None,
+        }
+    }
+
+    let mut calls = Vec::new();
+    walk_tree(node, |current| match current.kind() {
+        "call_expression" => {
+            if let Some(function) = current.child_by_field_name("function") {
+                if let Some(name) = callable_name(function, bytes) {
+                    calls.push(name);
+                }
+            }
+        }
+        "cascade_call_expression" => {
+            if let Some(name) = callable_name(current, bytes) {
+                calls.push(name);
+            }
+        }
+        "new_expression" | "const_object_expression" | "constructor_invocation" => {
+            if let Some(name) = callable_name(current, bytes) {
+                calls.push(name);
+            }
+        }
+        _ => {}
+    });
+    calls.sort();
+    calls.dedup();
+    calls
+}
+
 /// Extract function calls from a node.
 pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    if lang == Language::Dart {
+        return extract_dart_function_calls(node, bytes);
+    }
+
     let mut calls = Vec::new();
     let call_types: &[&str] = match lang {
         Language::Python => &["call"],
@@ -641,7 +812,7 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
 }
 
 /// Extract control flow information from a node.
-pub fn extract_control_flow(node: Node, _lang: Language) -> (usize, bool, bool, bool) {
+pub fn extract_control_flow(node: Node, lang: Language) -> (usize, bool, bool, bool) {
     let mut complexity = 1;
     let mut has_loops = false;
     let mut has_branches = false;
@@ -676,8 +847,10 @@ pub fn extract_control_flow(node: Node, _lang: Language) -> (usize, bool, bool, 
             | "try" => {
                 has_error_handling = true;
             }
-            // Rust-specific error handling patterns
-            "?" | "try_operator" => {
+            // Rust-specific error handling patterns. Other grammars emit a
+            // bare `?` token for unrelated syntax (Dart/Swift nullable types,
+            // TypeScript optional members), so gate on language.
+            "?" | "try_operator" if lang == Language::Rust => {
                 has_error_handling = true;
             }
             _ => {}
@@ -696,6 +869,12 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
             &["variable_declarator", "lexical_declaration"]
         }
         Language::Go => &["short_var_declaration", "var_declaration"],
+        Language::Dart => &[
+            "initialized_identifier",
+            "initialized_variable_definition",
+            "static_final_declaration",
+            "declared_identifier",
+        ],
         Language::Java | Language::CSharp => &["variable_declarator", "local_variable_declaration"],
         Language::C | Language::Cpp => &["declaration", "init_declarator"],
         Language::Ruby => &["assignment"],
@@ -759,8 +938,80 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
     vars
 }
 
+fn extract_dart_imports(node: Node, bytes: &[u8]) -> Vec<String> {
+    fn last_uri_component(uri: &str) -> Option<String> {
+        let trimmed = uri.trim_matches(|c: char| c == '\'' || c == '"');
+        let component = trimmed
+            .rsplit('/')
+            .next()
+            .unwrap_or(trimmed)
+            .rsplit(':')
+            .next()
+            .unwrap_or(trimmed)
+            .trim_end_matches(".dart");
+        (!component.is_empty()).then(|| component.to_string())
+    }
+
+    let mut imports = Vec::new();
+    walk_tree(node, |current| {
+        if current.kind() != "library_import" {
+            return;
+        }
+        let Some(specification) = find_first_by_kind(
+            current,
+            "import_specification",
+            super::max_recursion_depth(),
+        ) else {
+            return;
+        };
+
+        for child in specification.named_children(&mut specification.walk()) {
+            match child.kind() {
+                "identifier" => {
+                    if let Ok(alias) = child.utf8_text(bytes) {
+                        imports.push(alias.to_string());
+                    }
+                }
+                "combinator" => {
+                    // `hide` combinators exclude symbols from the import, so
+                    // only `show` combinators contribute imported names.
+                    if child.child(0).is_some_and(|kw| kw.kind() == "hide") {
+                        continue;
+                    }
+                    for identifier in child.named_children(&mut child.walk()) {
+                        if identifier.kind() == "identifier" {
+                            if let Ok(symbol) = identifier.utf8_text(bytes) {
+                                imports.push(symbol.to_string());
+                            }
+                        }
+                    }
+                }
+                "configurable_uri" | "uri" => {
+                    if let Some(literal) =
+                        find_first_by_kind(child, "string_literal", super::max_recursion_depth())
+                    {
+                        if let Ok(uri) = literal.utf8_text(bytes) {
+                            if let Some(component) = last_uri_component(uri) {
+                                imports.push(component);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    imports.sort();
+    imports.dedup();
+    imports
+}
+
 /// Extract import statements from a file.
 pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    if lang == Language::Dart {
+        return extract_dart_imports(node, bytes);
+    }
+
     let mut imports = Vec::new();
     let import_types: &[&str] = match lang {
         Language::Python => &["import_statement", "import_from_statement"],
@@ -1009,9 +1260,50 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
     imports
 }
 
+fn extract_dart_used_modules(node: Node, bytes: &[u8]) -> Vec<String> {
+    fn receiver_name(node: Node, bytes: &[u8]) -> Option<String> {
+        match node.kind() {
+            "identifier" | "type_identifier" => node
+                .utf8_text(bytes)
+                .ok()
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && *value != "this" && *value != "super")
+                .map(ToOwned::to_owned),
+            "member_expression" | "null_aware_member_expression" => node
+                .child_by_field_name("object")
+                .and_then(|object| receiver_name(object, bytes)),
+            "call_expression" | "instantiation_expression" => node
+                .child_by_field_name("function")
+                .and_then(|function| receiver_name(function, bytes)),
+            _ => None,
+        }
+    }
+
+    let mut modules = Vec::new();
+    walk_tree(node, |current| {
+        if matches!(
+            current.kind(),
+            "member_expression" | "null_aware_member_expression"
+        ) {
+            if let Some(object) = current.child_by_field_name("object") {
+                if let Some(module) = receiver_name(object, bytes) {
+                    modules.push(module);
+                }
+            }
+        }
+    });
+    modules.sort();
+    modules.dedup();
+    modules
+}
+
 /// Extract module/receiver names from attribute access patterns (e.g., `json` from `json.loads()`).
 /// These are identifiers that are used as the base of attribute access or method calls.
 pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    if lang == Language::Dart {
+        return extract_dart_used_modules(node, bytes);
+    }
+
     let mut modules = Vec::new();
     let attr_types: &[&str] = match lang {
         Language::Python => &["attribute"],
@@ -1243,6 +1535,13 @@ pub fn extract_parent_class(
                 }
             }
             None
+        }
+
+        // Dart: class Dog extends Animal -> superclass -> type_identifier
+        Language::Dart => {
+            let superclass = node.child_by_field_name("superclass")?;
+            find_first_by_kind(superclass, "type_identifier", max_depth)
+                .and_then(|n| n.utf8_text(bytes).ok().map(ToOwned::to_owned))
         }
 
         // Kotlin: class Dog : Animal() -> delegation_specifiers -> delegation_specifier -> constructor_invocation -> user_type -> identifier

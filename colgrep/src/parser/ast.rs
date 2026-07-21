@@ -19,6 +19,14 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         Language::C | Language::Cpp => kind == "function_definition",
         Language::Ruby => kind == "method" || kind == "singleton_method",
         Language::CSharp => kind == "method_declaration" || kind == "constructor_declaration",
+        Language::Dart => matches!(
+            kind,
+            "function_signature"
+                | "getter_signature"
+                | "setter_signature"
+                | "method_signature"
+                | "declaration"
+        ),
         // Additional languages
         Language::Kotlin => matches!(kind, "function_declaration" | "anonymous_function"),
         Language::Swift => matches!(kind, "function_declaration" | "init_declaration"),
@@ -77,6 +85,16 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
                 | "interface_declaration"
                 | "enum_declaration"
                 | "struct_declaration"
+        ),
+        Language::Dart => matches!(
+            kind,
+            "class_declaration"
+                | "class_definition"
+                | "mixin_declaration"
+                | "extension_declaration"
+                | "extension_type_declaration"
+                | "enum_declaration"
+                | "type_alias"
         ),
         // Additional languages
         Language::Kotlin => matches!(
@@ -176,6 +194,10 @@ pub fn is_constant_node(kind: &str, lang: Language) -> bool {
             matches!(kind, "lexical_declaration" | "variable_declaration")
         }
         Language::Go => matches!(kind, "const_declaration" | "var_declaration"),
+        Language::Dart => matches!(
+            kind,
+            "static_final_declaration_list" | "initialized_identifier_list" | "identifier_list"
+        ),
         Language::C | Language::Cpp => kind == "declaration",
         Language::Python => {
             // Python doesn't have const, but we capture module-level assignments
@@ -213,6 +235,14 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
             node.child_by_field_name("body")
         }
         Language::Java | Language::CSharp => node.child_by_field_name("body"),
+        Language::Dart => node.child_by_field_name("body").or_else(|| {
+            node.children(&mut node.walk()).find(|child| {
+                matches!(
+                    child.kind(),
+                    "class_body" | "mixin_body" | "extension_body" | "enum_body"
+                )
+            })
+        }),
         Language::Go => node.child_by_field_name("type"),
         Language::Cpp => {
             // Look for field_declaration_list in class_specifier
@@ -275,6 +305,112 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
     }
 }
 
+fn get_dart_node_name(node: Node, bytes: &[u8]) -> Option<String> {
+    fn text(node: Node, bytes: &[u8]) -> Option<String> {
+        node.utf8_text(bytes)
+            .ok()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    }
+
+    fn find_signature(node: Node, max_depth: usize) -> Option<Node> {
+        let signature_kinds = [
+            "function_signature",
+            "getter_signature",
+            "setter_signature",
+            "operator_signature",
+            "constructor_signature",
+            "constant_constructor_signature",
+            "factory_constructor_signature",
+            "redirecting_factory_constructor_signature",
+        ];
+        let mut stack = vec![(node, 0usize)];
+        while let Some((current, depth)) = stack.pop() {
+            if signature_kinds.contains(&current.kind()) {
+                return Some(current);
+            }
+            if depth < max_depth {
+                let children: Vec<_> = current.children(&mut current.walk()).collect();
+                for child in children.into_iter().rev() {
+                    stack.push((child, depth + 1));
+                }
+            }
+        }
+        None
+    }
+
+    match node.kind() {
+        "type_alias" => {
+            let has_equals = node
+                .children(&mut node.walk())
+                .any(|child| child.kind() == "=");
+            let names: Vec<_> = node
+                .children(&mut node.walk())
+                .filter(|child| child.kind() == "type_identifier")
+                .collect();
+            let name = if has_equals {
+                names.first()
+            } else {
+                names.last()
+            }?;
+            return text(*name, bytes);
+        }
+        "mixin_declaration" => {
+            let name = node
+                .children(&mut node.walk())
+                .find(|child| child.kind() == "identifier")?;
+            return text(name, bytes);
+        }
+        "extension_declaration" => {
+            if let Some(name) = node.child_by_field_name("name") {
+                return text(name, bytes);
+            }
+            let target = node.child_by_field_name("class")?;
+            return text(target, bytes).map(|target| format!("extension on {target}"));
+        }
+        "class_declaration"
+        | "class_definition"
+        | "extension_type_declaration"
+        | "enum_declaration" => {
+            if let Some(name) = node.child_by_field_name("name") {
+                return text(name, bytes);
+            }
+        }
+        _ => {}
+    }
+
+    let signature = find_signature(node, super::max_recursion_depth())?;
+    match signature.kind() {
+        "constructor_signature"
+        | "constant_constructor_signature"
+        | "factory_constructor_signature"
+        | "redirecting_factory_constructor_signature" => {
+            let source = text(signature, bytes)?;
+            let mut head = source.split('(').next().unwrap_or(&source).trim();
+            for prefix in ["external ", "const ", "factory "] {
+                if let Some(stripped) = head.strip_prefix(prefix) {
+                    head = stripped.trim();
+                }
+            }
+            (!head.is_empty()).then(|| head.to_string())
+        }
+        "operator_signature" => {
+            let source = text(signature, bytes)?;
+            let operator = source.find("operator")?;
+            let head = source[operator..]
+                .split('(')
+                .next()
+                .unwrap_or("operator")
+                .trim();
+            Some(head.to_string())
+        }
+        _ => signature
+            .child_by_field_name("name")
+            .and_then(|name| text(name, bytes)),
+    }
+}
+
 /// Get the name of a node (function, class, etc.).
 pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String> {
     let name_node = match lang {
@@ -287,6 +423,7 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
         Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => node
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("property")),
+        Language::Dart => return get_dart_node_name(node, bytes),
         Language::C | Language::Cpp => {
             // For classes/structs/unions/enums, look for name field or type_identifier
             if matches!(
@@ -646,6 +783,8 @@ pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: 
             Language::Python => line.starts_with('@'),
             // Java, Kotlin, Scala: @Annotation
             Language::Java | Language::Kotlin | Language::Scala => line.starts_with('@'),
+            // Dart: metadata annotations and /// documentation comments
+            Language::Dart => line.starts_with('@') || line.starts_with("///"),
             // C#: [Attribute]
             Language::CSharp => line.starts_with('[') && line.ends_with(']'),
             // TypeScript/JavaScript/Vue/Svelte: @decorator (when using decorators), or /** JSDoc */

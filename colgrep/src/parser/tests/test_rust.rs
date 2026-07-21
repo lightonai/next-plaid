@@ -400,3 +400,18 @@ fn read_config(path: &str) -> io::Result<String> {
 }"#;
     assert_eq!(text, expected);
 }
+
+#[test]
+fn test_try_operator_counts_as_error_handling() {
+    let source = r#"fn read_config(path: &str) -> std::io::Result<String> {
+    let file = std::fs::File::open(path)?;
+    std::io::read_to_string(file)
+}
+"#;
+    let units = parse(source, Language::Rust, "test.rs");
+    let func = get_unit_by_name(&units, "read_config").unwrap();
+    assert!(
+        func.has_error_handling,
+        "Rust `?` operator must still be detected as error handling"
+    );
+}

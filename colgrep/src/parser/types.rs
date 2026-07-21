@@ -16,6 +16,7 @@ pub enum Language {
     Cpp,
     Ruby,
     CSharp,
+    Dart,
     // Additional languages with tree-sitter
     Kotlin,
     Swift,
@@ -72,6 +73,7 @@ impl FromStr for Language {
             "cpp" | "c++" => Ok(Language::Cpp),
             "ruby" | "rb" => Ok(Language::Ruby),
             "csharp" | "c#" | "cs" => Ok(Language::CSharp),
+            "dart" => Ok(Language::Dart),
             // Additional languages
             "kotlin" | "kt" => Ok(Language::Kotlin),
             "swift" => Ok(Language::Swift),

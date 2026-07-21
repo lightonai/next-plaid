@@ -9,6 +9,7 @@ mod test_cmake;
 mod test_cpp;
 mod test_csharp;
 mod test_css;
+mod test_dart;
 mod test_elixir;
 mod test_go;
 mod test_graphql;
