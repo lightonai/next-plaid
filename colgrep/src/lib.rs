@@ -36,8 +36,9 @@ pub use parser::{
 
 // Install commands for AI coding tools
 pub use install::{
-    install_claude_code, install_codex, install_hermes, install_opencode, uninstall_all,
-    uninstall_claude_code, uninstall_codex, uninstall_hermes, uninstall_opencode,
+    install_claude_code, install_codex, install_hermes, install_kimi, install_opencode,
+    uninstall_all, uninstall_claude_code, uninstall_codex, uninstall_hermes, uninstall_kimi,
+    uninstall_opencode,
 };
 
 // Signal handling

@@ -7,7 +7,9 @@ use colored::Colorize;
 use std::fs;
 use std::path::PathBuf;
 
-use super::{uninstall_claude_code, uninstall_codex, uninstall_hermes, uninstall_opencode};
+use super::{
+    uninstall_claude_code, uninstall_codex, uninstall_hermes, uninstall_kimi, uninstall_opencode,
+};
 
 /// Get the colgrep data directory (contains indices and config)
 fn get_colgrep_data_dir() -> Result<PathBuf> {
@@ -33,10 +35,11 @@ fn get_hf_cache_dir() -> Result<PathBuf> {
 /// 2. Uninstalls from Codex (if installed)
 /// 3. Uninstalls from OpenCode (if installed)
 /// 4. Uninstalls from Hermes (if installed)
-/// 5. Removes all indexes
-/// 6. Removes config and data directory
-/// 7. Removes ONNX runtime cache
-/// 8. Shows instructions for removing the binary
+/// 5. Uninstalls from Kimi Code (if installed)
+/// 6. Removes all indexes
+/// 7. Removes config and data directory
+/// 8. Removes ONNX runtime cache
+/// 9. Shows instructions for removing the binary
 pub fn uninstall_all() -> Result<()> {
     println!();
     println!("{}", "Completely uninstalling colgrep...".yellow().bold());
@@ -107,6 +110,17 @@ fn uninstall_ai_tools() {
         Err(_) => {
             println!(
                 "  {} Hermes: not installed or already removed",
+                "-".dimmed()
+            );
+        }
+    }
+
+    // Kimi Code
+    match uninstall_kimi() {
+        Ok(()) => {}
+        Err(_) => {
+            println!(
+                "  {} Kimi Code: not installed or already removed",
                 "-".dimmed()
             );
         }

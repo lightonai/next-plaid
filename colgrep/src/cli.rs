@@ -409,6 +409,14 @@ pub struct Cli {
     #[arg(long = "uninstall-hermes")]
     pub uninstall_hermes: bool,
 
+    /// Install colgrep for Kimi Code
+    #[arg(long = "install-kimi")]
+    pub install_kimi: bool,
+
+    /// Uninstall colgrep from Kimi Code
+    #[arg(long = "uninstall-kimi")]
+    pub uninstall_kimi: bool,
+
     /// Completely uninstall colgrep: remove from all AI tools, clear all indexes, and remove all data
     #[arg(long = "uninstall")]
     pub uninstall: bool,

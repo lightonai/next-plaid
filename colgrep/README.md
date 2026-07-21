@@ -394,6 +394,7 @@ Config stored at `~/.config/colgrep/config.json`.
 | OpenCode    | `colgrep --install-opencode`    | `colgrep --uninstall-opencode`    |
 | Codex       | `colgrep --install-codex`       | `colgrep --uninstall-codex`       |
 | Hermes      | `colgrep --install-hermes`      | `colgrep --uninstall-hermes`      |
+| Kimi Code   | `colgrep --install-kimi`        | `colgrep --uninstall-kimi`        |
 
 > Restart your agent after installing.
 
@@ -406,6 +407,10 @@ The Claude Code integration installs session and task hooks that:
 - Propagate colgrep instructions to spawned sub-agents via task hooks
 
 This means Claude Code automatically uses `colgrep` as its primary search tool when the index is ready.
+
+### Kimi Code Integration
+
+The Kimi Code integration installs a [skill](https://www.kimi.com/code/docs/en/kimi-code-cli/customization/skills.html) at `~/.kimi-code/skills/colgrep/SKILL.md` (or `$KIMI_CODE_HOME/skills/colgrep/SKILL.md` when `KIMI_CODE_HOME` is set) that teaches the agent to use `colgrep` as its primary search tool. New sessions pick it up automatically.
 
 ### Complete Uninstall
 
