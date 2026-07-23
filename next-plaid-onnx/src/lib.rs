@@ -879,10 +879,32 @@ pub struct ColbertBuilder {
     threads_per_session: usize,
     batch_size: Option<usize>,
     execution_provider: ExecutionProvider,
+    cpu_fallback: bool,
     quantized: bool,
     dynamic_batch: bool,
     query_length: Option<usize>,
     document_length: Option<usize>,
+}
+
+fn create_session(
+    onnx_path: &Path,
+    threads_per_session: usize,
+    num_sessions: usize,
+    execution_provider: ExecutionProvider,
+) -> Result<Session> {
+    let builder = Session::builder()
+        .map_err(|e| anyhow::anyhow!("Failed to create ONNX session builder: {e:?}"))?
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|e| anyhow::anyhow!("Failed to set ONNX optimization level: {e:?}"))?
+        .with_intra_threads(threads_per_session)
+        .map_err(|e| anyhow::anyhow!("Failed to set ONNX intra-op threads: {e:?}"))?
+        .with_inter_threads(if num_sessions > 1 { 1 } else { 2 })
+        .map_err(|e| anyhow::anyhow!("Failed to set ONNX inter-op threads: {e:?}"))?
+        .with_memory_pattern(false)
+        .map_err(|e| anyhow::anyhow!("Failed to configure ONNX memory pattern: {e:?}"))?;
+    configure_execution_provider(builder, execution_provider)?
+        .commit_from_file(onnx_path)
+        .map_err(Into::into)
 }
 
 impl ColbertBuilder {
@@ -902,6 +924,7 @@ impl ColbertBuilder {
             threads_per_session: num_threads,
             batch_size: None,
             execution_provider: ExecutionProvider::Auto,
+            cpu_fallback: false,
             quantized: false,
             dynamic_batch: true,
             query_length: None,
@@ -943,6 +966,11 @@ impl ColbertBuilder {
     /// Set the hardware acceleration provider.
     pub fn with_execution_provider(mut self, provider: ExecutionProvider) -> Self {
         self.execution_provider = provider;
+        self
+    }
+
+    pub fn with_cpu_fallback(mut self, enabled: bool) -> Self {
+        self.cpu_fallback = enabled;
         self
     }
 
@@ -1016,29 +1044,33 @@ impl ColbertBuilder {
             self.threads_per_session
         };
 
+        let mut execution_provider = self.execution_provider;
         let mut sessions = Vec::with_capacity(self.num_sessions);
         for _i in 0..self.num_sessions {
-            let builder = Session::builder()
-                .map_err(|e| anyhow::anyhow!("Failed to create ONNX session builder: {e:?}"))?
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow::anyhow!("Failed to set ONNX optimization level: {e:?}"))?
-                .with_intra_threads(threads_per_session)
-                .map_err(|e| anyhow::anyhow!("Failed to set ONNX intra-op threads: {e:?}"))?
-                .with_inter_threads(if self.num_sessions > 1 { 1 } else { 2 })
-                .map_err(|e| anyhow::anyhow!("Failed to set ONNX inter-op threads: {e:?}"))?;
-            // Disable memory pattern optimization for all providers.
-            // On CPU this helps with variable-length sequences (~7% speedup).
-            // On GPU this prevents ORT from pre-allocating a large memory arena
-            // that can cause OOM on GPUs with limited free memory.
-            let builder = builder
-                .with_memory_pattern(false)
-                .map_err(|e| anyhow::anyhow!("Failed to configure ONNX memory pattern: {e:?}"))?;
-
-            let builder = configure_execution_provider(builder, self.execution_provider)?;
-
-            let session = builder
-                .commit_from_file(&onnx_path)
-                .context("Failed to load ONNX model")?;
+            let session = match create_session(
+                &onnx_path,
+                threads_per_session,
+                self.num_sessions,
+                execution_provider,
+            ) {
+                Ok(session) => session,
+                Err(accelerator_error)
+                    if self.cpu_fallback && execution_provider != ExecutionProvider::Cpu =>
+                {
+                    eprintln!(
+                        "[next-plaid-onnx] {execution_provider} session creation failed; falling back to CPU: {accelerator_error:#}"
+                    );
+                    execution_provider = ExecutionProvider::Cpu;
+                    create_session(
+                        &onnx_path,
+                        threads_per_session,
+                        self.num_sessions,
+                        execution_provider,
+                    )
+                    .context("Failed to load ONNX model on CPU after accelerator failure")?
+                }
+                Err(error) => return Err(error).context("Failed to load ONNX model"),
+            };
 
             sessions.push(Arc::new(Mutex::new(session)));
         }
@@ -1047,7 +1079,7 @@ impl ColbertBuilder {
         let batch_size = self.batch_size.unwrap_or(if self.num_sessions > 1 {
             2 // Small batches optimal for parallel sessions
         } else {
-            match self.execution_provider {
+            match execution_provider {
                 ExecutionProvider::Cpu => DEFAULT_CPU_BATCH_SIZE,
                 _ => DEFAULT_GPU_BATCH_SIZE,
             }
@@ -1059,7 +1091,7 @@ impl ColbertBuilder {
             config: Arc::new(config),
             skiplist_ids: Arc::new(skiplist_ids),
             next_session_idx: Arc::new(AtomicUsize::new(0)),
-            requested_execution_provider: self.execution_provider,
+            requested_execution_provider: execution_provider,
             batch_size,
             dynamic_batch: self.dynamic_batch,
         })
@@ -2406,6 +2438,7 @@ mod tests {
         assert!(!builder.quantized);
         assert!(builder.batch_size.is_none());
         assert_eq!(builder.execution_provider, ExecutionProvider::Auto);
+        assert!(!builder.cpu_fallback);
         assert!(builder.query_length.is_none());
         assert!(builder.document_length.is_none());
     }
@@ -2453,6 +2486,13 @@ mod tests {
             ColbertBuilder::new("test_model").with_execution_provider(ExecutionProvider::Cpu);
 
         assert_eq!(builder.execution_provider, ExecutionProvider::Cpu);
+    }
+
+    #[test]
+    fn test_builder_with_cpu_fallback() {
+        let builder = ColbertBuilder::new("test_model").with_cpu_fallback(true);
+
+        assert!(builder.cpu_fallback);
     }
 
     #[test]

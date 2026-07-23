@@ -1340,6 +1340,7 @@ impl IndexBuilder {
                     .with_batch_size(batch)
                     .with_dynamic_batch(self.dynamic_batch)
                     .with_execution_provider(execution_provider)
+                    .with_cpu_fallback(env_acceleration_mode_lossy() == AccelerationMode::Auto)
                     .build()
             })
             .context("Failed to load ColBERT model")?;
@@ -3786,6 +3787,7 @@ impl Searcher {
                 .with_quantized(quantized)
                 .with_threads(num_threads)
                 .with_execution_provider(execution_provider)
+                .with_cpu_fallback(acceleration_mode == AccelerationMode::Auto)
                 .build()
         })
         .context("Failed to load ColBERT model")?;
@@ -3852,6 +3854,7 @@ impl Searcher {
                 .with_quantized(quantized)
                 .with_threads(num_threads)
                 .with_execution_provider(execution_provider)
+                .with_cpu_fallback(acceleration_mode == AccelerationMode::Auto)
                 .build()
         })
         .context("Failed to load ColBERT model")?;
