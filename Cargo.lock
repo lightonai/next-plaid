@@ -2562,6 +2562,7 @@ name = "next-plaid-onnx"
 version = "1.6.4"
 dependencies = [
  "anyhow",
+ "fs2",
  "glob",
  "ndarray 0.16.1",
  "numpy",
