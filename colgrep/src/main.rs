@@ -10,11 +10,13 @@ use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use rayon::ThreadPoolBuilder;
 
+#[cfg(feature = "coreml")]
+use colgrep::Config;
 use colgrep::{
     acceleration::{apply_acceleration_mode, env_acceleration_mode, AccelerationMode},
     install_claude_code, install_codex, install_hermes, install_kimi, install_opencode,
     setup_signal_handler, uninstall_all, uninstall_claude_code, uninstall_codex, uninstall_hermes,
-    uninstall_kimi, uninstall_opencode, Config,
+    uninstall_kimi, uninstall_opencode,
 };
 
 use cli::{Cli, Commands};
@@ -26,13 +28,17 @@ use commands::{
 /// Apply the CoreML cache and compilation working directory before worker threads spawn.
 #[cfg(feature = "coreml")]
 fn apply_coreml_cache_dir() {
-    let configured = std::env::var_os("NEXT_PLAID_COREML_CACHE_DIR")
+    let configured = std::env::var("NEXT_PLAID_COREML_CACHE_DIR")
+        .ok()
+        .map(|dir| dir.trim().to_string())
+        .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
         .or_else(|| {
             Config::load()
                 .ok()?
                 .coreml_cache_dir()
-                .filter(|dir| !dir.trim().is_empty())
+                .map(|dir| dir.trim().to_string())
+                .filter(|dir| !dir.is_empty())
                 .map(PathBuf::from)
         });
     let default = std::env::var_os("XDG_CACHE_HOME")
