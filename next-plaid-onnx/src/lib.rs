@@ -1753,6 +1753,17 @@ struct FixedDynamicShape {
     planned_len: usize,
 }
 
+/// Upper bound on `docs * planned_len^2` in one batch.
+///
+/// Peak activation is dominated by attention, which is O(docs * heads * len^2) — a product
+/// the token budget does not bound: halving the planned length doubles the docs, so
+/// `docs * len` holds while `docs * len^2` doubles. With a model whose configured
+/// `document_length` is large (8192 is common even when the tokenizer truncates far
+/// shorter) a mid-sized bucket reaches thousands of documents and asks the CUDA allocator
+/// for tens of GiB for a single Add node, which no device can serve. At 12 heads and fp32
+/// this cap keeps one batch's attention near 1.5 GiB.
+const MAX_ATTENTION_ELEMENTS: usize = 32 * 1024 * 1024;
+
 fn build_fixed_dynamic_shapes(batch_size: usize, document_length: usize) -> Vec<FixedDynamicShape> {
     let max_len = document_length.max(1);
     let total_budget = batch_size.max(1).saturating_mul(max_len);
@@ -1761,7 +1772,12 @@ fn build_fixed_dynamic_shapes(batch_size: usize, document_length: usize) -> Vec<
     let min_planned_len = 128.min(planned_len.max(1));
 
     loop {
-        let docs = total_budget.checked_div(planned_len).unwrap_or(0).max(1);
+        let by_tokens = total_budget.checked_div(planned_len).unwrap_or(0).max(1);
+        let by_attention = MAX_ATTENTION_ELEMENTS
+            .checked_div(planned_len.saturating_mul(planned_len))
+            .unwrap_or(usize::MAX)
+            .max(1);
+        let docs = by_tokens.min(by_attention);
         if shapes
             .last()
             .map(|shape: &FixedDynamicShape| shape.planned_len != planned_len)
@@ -2652,5 +2668,41 @@ mod tests {
     fn test_default_batch_sizes() {
         assert_eq!(DEFAULT_CPU_BATCH_SIZE, 32);
         assert_eq!(DEFAULT_GPU_BATCH_SIZE, 64);
+    }
+
+    #[test]
+    fn dynamic_shapes_bound_attention_for_a_long_document_length() {
+        // A model declaring document_length 8192: the token budget alone put 2048 documents
+        // in the 256-token bucket, whose attention needs 25.7 GiB at 12 heads in fp32.
+        for shape in build_fixed_dynamic_shapes(64, 8192) {
+            let product = shape.docs * shape.planned_len * shape.planned_len;
+            assert!(
+                product <= MAX_ATTENTION_ELEMENTS.max(shape.planned_len * shape.planned_len),
+                "docs={} planned_len={} exceeds the attention bound",
+                shape.docs,
+                shape.planned_len,
+            );
+        }
+    }
+
+    #[test]
+    fn dynamic_shapes_keep_the_token_budget_when_attention_is_not_binding() {
+        // A short document_length is unaffected: docs still follow the token budget, so
+        // throughput on ordinary models does not regress.
+        let shapes = build_fixed_dynamic_shapes(64, 512);
+        let base = shapes
+            .iter()
+            .find(|shape| shape.planned_len == 512)
+            .expect("the base shape is the configured document length");
+        assert_eq!(base.docs, 64);
+    }
+
+    #[test]
+    fn dynamic_shapes_always_admit_at_least_one_document() {
+        // Even where one sequence alone exceeds the bound, a batch must hold a document,
+        // otherwise the encoder makes no progress at all.
+        for shape in build_fixed_dynamic_shapes(1, 32_768) {
+            assert!(shape.docs >= 1);
+        }
     }
 }

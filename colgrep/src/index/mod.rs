@@ -1372,7 +1372,15 @@ impl IndexBuilder {
     /// where plan reuse across similar shapes reduces kernel launch overhead.
     #[cfg(feature = "_cuda")]
     fn rebuild_model_for_cpu(&mut self) -> Result<()> {
-        self.model = None;
+        // Leak the GPU session rather than dropping it. This runs only after GPU encoding
+        // already failed, and a CUDA failure poisons the context: every later CUDA call
+        // returns the sticky error, including the frees in the session's destructor. Those
+        // run in C++ and throw, which aborts the whole process — the CPU fallback below
+        // never gets to run. A leaked session costs some memory in a process that is about
+        // to finish on CPU and exit; an abort costs the entire index build.
+        if let Some(poisoned) = self.model.take() {
+            std::mem::forget(poisoned);
+        }
         apply_acceleration_mode(AccelerationMode::ForceCpu);
 
         // CPU fallback rebuild: the original unit count isn't threaded here, so use the
@@ -1449,10 +1457,7 @@ impl IndexBuilder {
                     );
                 }
 
-                eprintln!(
-                    "\n⚠️  GPU encoding failed, falling back to CPU. \
-                     This is usually caused by insufficient GPU memory for the batch size.\n"
-                );
+                eprintln!("\n⚠️  GPU encoding failed, falling back to CPU.\n   Cause: {gpu_err}\n");
 
                 self.rebuild_model_for_cpu()?;
 
