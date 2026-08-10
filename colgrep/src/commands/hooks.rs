@@ -50,7 +50,7 @@ fn is_small_project(root: &Path) -> bool {
     count > 0
 }
 
-/// Claude Code session hook - outputs JSON reminder for semantic search
+/// Coding-agent session hook - outputs JSON reminder for semantic search
 pub fn cmd_session_hook() -> Result<()> {
     let cwd = std::env::current_dir()?;
 

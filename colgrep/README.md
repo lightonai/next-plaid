@@ -430,6 +430,7 @@ Config stored at `~/.config/colgrep/config.json`.
 | Codex       | `colgrep --install-codex`       | `colgrep --uninstall-codex`       |
 | Hermes      | `colgrep --install-hermes`      | `colgrep --uninstall-hermes`      |
 | Kimi Code   | `colgrep --install-kimi`        | `colgrep --uninstall-kimi`        |
+| Pi          | `colgrep --install-pi`          | `colgrep --uninstall-pi`          |
 
 > Restart your agent after installing.
 
@@ -446,6 +447,10 @@ This means Claude Code automatically uses `colgrep` as its primary search tool w
 ### Kimi Code Integration
 
 The Kimi Code integration installs a [skill](https://www.kimi.com/code/docs/en/kimi-code-cli/customization/skills.html) at `~/.kimi-code/skills/colgrep/SKILL.md` (or `$KIMI_CODE_HOME/skills/colgrep/SKILL.md` when `KIMI_CODE_HOME` is set) that teaches the agent to use `colgrep` as its primary search tool. New sessions pick it up automatically.
+
+### Pi Integration
+
+The Pi integration installs an extension at `~/.pi/agent/extensions/colgrep.ts` (or `$PI_CODING_AGENT_DIR/extensions/colgrep.ts` when `PI_CODING_AGENT_DIR` is set). It uses Pi's session and agent hooks to add colgrep instructions to the system prompt when an index is available or the project is small enough to index on first use. Restart Pi or run `/reload` after installing.
 
 ### Complete Uninstall
 

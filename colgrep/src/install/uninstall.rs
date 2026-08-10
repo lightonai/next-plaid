@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use super::{
     uninstall_claude_code, uninstall_codex, uninstall_hermes, uninstall_kimi, uninstall_opencode,
+    uninstall_pi,
 };
 
 /// Get the colgrep data directory (contains indices and config)
@@ -36,10 +37,11 @@ fn get_hf_cache_dir() -> Result<PathBuf> {
 /// 3. Uninstalls from OpenCode (if installed)
 /// 4. Uninstalls from Hermes (if installed)
 /// 5. Uninstalls from Kimi Code (if installed)
-/// 6. Removes all indexes
-/// 7. Removes config and data directory
-/// 8. Removes ONNX runtime cache
-/// 9. Shows instructions for removing the binary
+/// 6. Uninstalls from Pi (if installed)
+/// 7. Removes all indexes
+/// 8. Removes config and data directory
+/// 9. Removes ONNX runtime cache
+/// 10. Shows instructions for removing the binary
 pub fn uninstall_all() -> Result<()> {
     println!();
     println!("{}", "Completely uninstalling colgrep...".yellow().bold());
@@ -123,6 +125,14 @@ fn uninstall_ai_tools() {
                 "  {} Kimi Code: not installed or already removed",
                 "-".dimmed()
             );
+        }
+    }
+
+    // Pi
+    match uninstall_pi() {
+        Ok(()) => {}
+        Err(_) => {
+            println!("  {} Pi: not installed or already removed", "-".dimmed());
         }
     }
 

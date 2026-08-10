@@ -12,9 +12,9 @@ use rayon::ThreadPoolBuilder;
 
 use colgrep::{
     acceleration::{apply_acceleration_mode, env_acceleration_mode, AccelerationMode},
-    install_claude_code, install_codex, install_hermes, install_kimi, install_opencode,
+    install_claude_code, install_codex, install_hermes, install_kimi, install_opencode, install_pi,
     setup_signal_handler, uninstall_all, uninstall_claude_code, uninstall_codex, uninstall_hermes,
-    uninstall_kimi, uninstall_opencode, Config,
+    uninstall_kimi, uninstall_opencode, uninstall_pi, Config,
 };
 
 use cli::{Cli, Commands};
@@ -109,6 +109,14 @@ fn main() -> Result<()> {
 
     if cli.uninstall_kimi {
         return uninstall_kimi();
+    }
+
+    if cli.install_pi {
+        return install_pi();
+    }
+
+    if cli.uninstall_pi {
+        return uninstall_pi();
     }
 
     if cli.uninstall {

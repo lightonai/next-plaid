@@ -3,6 +3,7 @@ mod codex;
 mod hermes;
 mod kimi;
 mod opencode;
+mod pi;
 mod uninstall;
 
 pub use claude_code::{install_claude_code, uninstall_claude_code};
@@ -10,6 +11,7 @@ pub use codex::{install_codex, uninstall_codex};
 pub use hermes::{install_hermes, uninstall_hermes};
 pub use kimi::{install_kimi, uninstall_kimi};
 pub use opencode::{install_opencode, uninstall_opencode};
+pub use pi::{install_pi, uninstall_pi};
 pub use uninstall::uninstall_all;
 
 /// Shared skill instructions for all AI coding tools

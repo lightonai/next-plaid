@@ -82,8 +82,9 @@ Each (project, model) pair has its own index directory, so switching models neve
 | OpenCode    | `colgrep --install-opencode`    |
 | Codex       | `colgrep --install-codex`       |
 | Hermes      | `colgrep --install-hermes`      |
+| Pi          | `colgrep --install-pi`          |
 
-> Restart your agent after installing. Claude Code has full hooks support. OpenCode, Codex, and Hermes integrations are basic for now, PRs welcome.
+> Restart your agent after installing. Claude Code and Pi have hooks support. OpenCode, Codex, and Hermes integrations are basic for now, PRs welcome.
 
 ### How it works
 

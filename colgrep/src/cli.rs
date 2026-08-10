@@ -430,11 +430,19 @@ pub struct Cli {
     #[arg(long = "uninstall-kimi")]
     pub uninstall_kimi: bool,
 
+    /// Install colgrep for Pi
+    #[arg(long = "install-pi")]
+    pub install_pi: bool,
+
+    /// Uninstall colgrep from Pi
+    #[arg(long = "uninstall-pi")]
+    pub uninstall_pi: bool,
+
     /// Completely uninstall colgrep: remove from all AI tools, clear all indexes, and remove all data
     #[arg(long = "uninstall")]
     pub uninstall: bool,
 
-    /// Internal: Claude Code session hook (outputs JSON reminder)
+    /// Internal: coding-agent session hook (outputs JSON reminder)
     #[arg(long = "session-hook", hide = true)]
     pub session_hook: bool,
 
