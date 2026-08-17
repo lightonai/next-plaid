@@ -10,11 +10,13 @@ use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use rayon::ThreadPoolBuilder;
 
+#[cfg(feature = "coreml")]
+use colgrep::Config;
 use colgrep::{
     acceleration::{apply_acceleration_mode, env_acceleration_mode, AccelerationMode},
     install_claude_code, install_codex, install_hermes, install_kimi, install_opencode,
     setup_signal_handler, uninstall_all, uninstall_claude_code, uninstall_codex, uninstall_hermes,
-    uninstall_kimi, uninstall_opencode, Config,
+    uninstall_kimi, uninstall_opencode,
 };
 
 use cli::{Cli, Commands};
@@ -23,35 +25,42 @@ use commands::{
     cmd_stats, cmd_status, cmd_task_hook, cmd_update, InitOptions,
 };
 
-/// Apply the persisted CoreML model cache directory (issue #129).
-///
-/// When configured via `colgrep settings --coreml-cache-dir`, export it as
-/// `NEXT_PLAID_COREML_CACHE_DIR` so the ONNX layer points CoreML at a stable,
-/// writable directory instead of `$TMPDIR` (which is rootless-restricted on some
-/// macOS setups). An explicit environment variable always wins; when neither is
-/// set, default behavior is unchanged.
-///
-/// Runs once at startup before any ONNX session is built and before worker threads
-/// spawn, so the `set_var` here is safe.
+/// Apply the CoreML cache and compilation working directory before worker threads spawn.
+#[cfg(feature = "coreml")]
 fn apply_coreml_cache_dir() {
-    if std::env::var_os("NEXT_PLAID_COREML_CACHE_DIR").is_some() {
-        return; // explicit environment override wins
-    }
-    if let Ok(config) = Config::load() {
-        if let Some(dir) = config.coreml_cache_dir() {
-            if !dir.trim().is_empty() {
-                std::env::set_var("NEXT_PLAID_COREML_CACHE_DIR", dir);
-            }
-        }
+    let configured = std::env::var("NEXT_PLAID_COREML_CACHE_DIR")
+        .ok()
+        .map(|dir| dir.trim().to_string())
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            Config::load()
+                .ok()?
+                .coreml_cache_dir()
+                .map(|dir| dir.trim().to_string())
+                .filter(|dir| !dir.is_empty())
+                .map(PathBuf::from)
+        });
+    let default = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Caches")))
+        .map(|base| base.join("next-plaid").join("coreml"));
+    let cache_dir = configured
+        .filter(|dir| std::fs::create_dir_all(dir).is_ok())
+        .or_else(|| default.filter(|dir| std::fs::create_dir_all(dir).is_ok()));
+    if let Some(cache_dir) = cache_dir {
+        std::env::set_var("NEXT_PLAID_COREML_CACHE_DIR", &cache_dir);
+        std::env::set_var("TMPDIR", cache_dir);
     }
 }
+
+#[cfg(not(feature = "coreml"))]
+fn apply_coreml_cache_dir() {}
 
 fn main() -> Result<()> {
     // Set up Ctrl+C handler for graceful interruption during indexing
     // This is non-fatal if it fails (e.g., in environments without signal support)
     let _ = setup_signal_handler();
-
-    init_global_rayon_pool();
 
     let cli = Cli::parse();
 
@@ -69,6 +78,7 @@ fn main() -> Result<()> {
     };
     apply_acceleration_mode(acceleration_mode);
     apply_coreml_cache_dir();
+    init_global_rayon_pool();
 
     // Handle global flags before subcommands
     if cli.install_claude_code {

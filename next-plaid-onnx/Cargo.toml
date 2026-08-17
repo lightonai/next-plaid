@@ -21,12 +21,13 @@ crate-type = ["lib", "cdylib"]
 default = []                # CPU by default - works everywhere out of the box
 cuda = ["ort/cuda"]
 tensorrt = ["ort/tensorrt"]
-coreml = ["ort/coreml"]
+coreml = ["ort/coreml", "dep:fs2"]
 directml = ["ort/directml"]
 migraphx = ["ort/migraphx"]
 python = ["pyo3", "numpy"]
 
 [dependencies]
+fs2 = { version = "0.4", optional = true }
 # ort with download-binaries handles everything automatically:
 # - Downloads correct ONNX Runtime for your platform
 # - CPU works out of the box

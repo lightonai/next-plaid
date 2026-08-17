@@ -521,6 +521,35 @@ fn configure_coreml(_builder: SessionBuilder) -> Result<SessionBuilder> {
     anyhow::bail!("CoreML support not compiled. Enable the 'coreml' feature.")
 }
 
+/// Detect ORT's CoreML EP failing to move a freshly compiled model into the
+/// model cache because a concurrent process already populated that entry.
+/// Matched on ORT's own (non-localized) message prefix; the NSError reason
+/// appended after it may be localized.
+fn is_coreml_cache_populate_race(err: &anyhow::Error) -> bool {
+    format!("{err:#}").contains("copying compiled model to cache path")
+}
+
+/// Take an exclusive advisory lock on the CoreML model cache directory for the
+/// duration of session creation (dropping the returned file unlocks it).
+/// Returns `None` — and skips locking — for explicit CPU sessions or when no
+/// cache directory is resolvable; lock failures degrade to the unlocked
+/// behavior instead of blocking model loading.
+#[cfg(feature = "coreml")]
+fn acquire_coreml_compile_lock(provider: ExecutionProvider) -> Option<std::fs::File> {
+    use fs2::FileExt;
+    if matches!(provider, ExecutionProvider::Cpu) {
+        return None;
+    }
+    let dir = coreml_cache_dir_from_env().or_else(default_coreml_cache_dir)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(std::path::Path::new(&dir).join(".compile.lock"))
+        .ok()?;
+    file.lock_exclusive().ok()?;
+    Some(file)
+}
+
 #[cfg(feature = "directml")]
 fn configure_directml(builder: SessionBuilder) -> Result<SessionBuilder> {
     builder
@@ -1016,29 +1045,50 @@ impl ColbertBuilder {
             self.threads_per_session
         };
 
+        // Serialize CoreML model-cache population across processes. Concurrent
+        // cold starts sharing a ModelCacheDirectory otherwise race ORT's
+        // per-subgraph "compile then move into cache" step, and the losers fail
+        // with "an item with the same name already exists". The first process
+        // holds the lock while it compiles; the rest block, then load the cache
+        // warm. The lock is advisory, scoped to session creation, and released
+        // by the OS if the holder dies.
+        #[cfg(feature = "coreml")]
+        let _coreml_compile_lock = acquire_coreml_compile_lock(self.execution_provider);
+
         let mut sessions = Vec::with_capacity(self.num_sessions);
         for _i in 0..self.num_sessions {
-            let builder = Session::builder()
-                .map_err(|e| anyhow::anyhow!("Failed to create ONNX session builder: {e:?}"))?
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow::anyhow!("Failed to set ONNX optimization level: {e:?}"))?
-                .with_intra_threads(threads_per_session)
-                .map_err(|e| anyhow::anyhow!("Failed to set ONNX intra-op threads: {e:?}"))?
-                .with_inter_threads(if self.num_sessions > 1 { 1 } else { 2 })
-                .map_err(|e| anyhow::anyhow!("Failed to set ONNX inter-op threads: {e:?}"))?;
-            // Disable memory pattern optimization for all providers.
-            // On CPU this helps with variable-length sequences (~7% speedup).
-            // On GPU this prevents ORT from pre-allocating a large memory arena
-            // that can cause OOM on GPUs with limited free memory.
-            let builder = builder
-                .with_memory_pattern(false)
-                .map_err(|e| anyhow::anyhow!("Failed to configure ONNX memory pattern: {e:?}"))?;
+            let build = || -> Result<Session> {
+                let builder = Session::builder()
+                    .map_err(|e| anyhow::anyhow!("Failed to create ONNX session builder: {e:?}"))?
+                    .with_optimization_level(GraphOptimizationLevel::Level3)
+                    .map_err(|e| anyhow::anyhow!("Failed to set ONNX optimization level: {e:?}"))?
+                    .with_intra_threads(threads_per_session)
+                    .map_err(|e| anyhow::anyhow!("Failed to set ONNX intra-op threads: {e:?}"))?
+                    .with_inter_threads(if self.num_sessions > 1 { 1 } else { 2 })
+                    .map_err(|e| anyhow::anyhow!("Failed to set ONNX inter-op threads: {e:?}"))?;
+                // Disable memory pattern optimization for all providers.
+                // On CPU this helps with variable-length sequences (~7% speedup).
+                // On GPU this prevents ORT from pre-allocating a large memory arena
+                // that can cause OOM on GPUs with limited free memory.
+                let builder = builder.with_memory_pattern(false).map_err(|e| {
+                    anyhow::anyhow!("Failed to configure ONNX memory pattern: {e:?}")
+                })?;
 
-            let builder = configure_execution_provider(builder, self.execution_provider)?;
+                let builder = configure_execution_provider(builder, self.execution_provider)?;
 
-            let session = builder
-                .commit_from_file(&onnx_path)
-                .context("Failed to load ONNX model")?;
+                builder
+                    .commit_from_file(&onnx_path)
+                    .context("Failed to load ONNX model")
+            };
+
+            // Concurrent cold starts race to populate the shared CoreML model cache:
+            // each process compiles independently, then ORT moves its compiled bundle
+            // into the cache and the losers fail with "an item with the same name
+            // already exists". The winner's artifact is valid, so one retry loads it.
+            let session = match build() {
+                Err(err) if is_coreml_cache_populate_race(&err) => build()?,
+                other => other?,
+            };
 
             sessions.push(Arc::new(Mutex::new(session)));
         }
