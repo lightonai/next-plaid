@@ -1810,9 +1810,10 @@ fn attention_element_budget(free_vram_bytes: Option<u64>) -> usize {
         .saturating_mul(num)
         .checked_div(den.saturating_mul(OBSERVED_PEAK_BYTES_PER_ELEMENT))
         .unwrap_or(0);
-    usize::try_from(elements)
-        .unwrap_or(usize::MAX)
-        .clamp(MIN_MEASURED_ATTENTION_ELEMENTS, MAX_MEASURED_ATTENTION_ELEMENTS)
+    usize::try_from(elements).unwrap_or(usize::MAX).clamp(
+        MIN_MEASURED_ATTENTION_ELEMENTS,
+        MAX_MEASURED_ATTENTION_ELEMENTS,
+    )
 }
 
 /// Free VRAM of the device this process will encode on, measured once per process.
@@ -2681,7 +2682,8 @@ mod tests {
         let batch_size = 4;
         let document_length = 300;
         let budget = batch_size * document_length;
-        let shapes = build_fixed_dynamic_shapes(batch_size, document_length, MAX_ATTENTION_ELEMENTS);
+        let shapes =
+            build_fixed_dynamic_shapes(batch_size, document_length, MAX_ATTENTION_ELEMENTS);
 
         assert!(shapes
             .iter()
@@ -2848,7 +2850,10 @@ mod tests {
 
     #[test]
     fn attention_budget_never_falls_below_the_floor() {
-        assert_eq!(attention_element_budget(Some(0)), MIN_MEASURED_ATTENTION_ELEMENTS);
+        assert_eq!(
+            attention_element_budget(Some(0)),
+            MIN_MEASURED_ATTENTION_ELEMENTS
+        );
         assert_eq!(
             attention_element_budget(Some(512 * 1024 * 1024)),
             MIN_MEASURED_ATTENTION_ELEMENTS,
