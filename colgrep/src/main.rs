@@ -46,6 +46,25 @@ fn apply_coreml_cache_dir() {
     }
 }
 
+/// Whether a query positional given alongside `-e` is actually a misplaced PATH argument.
+///
+/// `colgrep -e pattern ./src` parses `./src` into the query slot, so a path-shaped query
+/// is moved back into the paths — but only when it could really be a path: it exists on
+/// disk, or it is a whitespace-free token shaped like a path (so a mistyped `./sr` still
+/// errors as a path instead of silently becoming a search). A natural-language query
+/// that merely mentions a path ("proxy auth on retries/redirects") stays a query.
+fn query_is_misplaced_path(query: &str) -> bool {
+    let path_shaped = query.starts_with('.')
+        || query.starts_with('/')
+        || query.starts_with('~')
+        || query.contains('/')
+        || query.contains('\\');
+    if !path_shaped {
+        return false;
+    }
+    std::path::Path::new(query).exists() || !query.chars().any(char::is_whitespace)
+}
+
 fn main() -> Result<()> {
     // Set up Ctrl+C handler for graceful interruption during indexing
     // This is non-fatal if it fails (e.g., in environments without signal support)
@@ -183,7 +202,7 @@ fn main() -> Result<()> {
                 // We want: query="pattern", paths=["./src"]
                 let (final_query, final_paths, final_text_pattern) = if text_pattern.is_some()
                     && original_query.is_some()
-                    && looks_like_path(&query)
+                    && query_is_misplaced_path(&query)
                 {
                     // The "query" is actually a path - use text_pattern as query
                     let text_pattern_str = text_pattern.clone().unwrap();
@@ -368,7 +387,7 @@ fn main() -> Result<()> {
                 // We want: query="pattern", paths=["./src"]
                 let (final_query, final_paths, final_text_pattern) = if cli.text_pattern.is_some()
                     && original_query.is_some()
-                    && looks_like_path(&query)
+                    && query_is_misplaced_path(&query)
                 {
                     // The "query" is actually a path - use text_pattern as query
                     let text_pattern = cli.text_pattern.clone().unwrap();
@@ -468,4 +487,37 @@ fn init_global_rayon_pool() {
         .num_threads(configured)
         .thread_name(|idx| format!("next-plaid-rayon-{idx}"))
         .build_global();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::query_is_misplaced_path;
+
+    #[test]
+    fn a_prose_query_mentioning_a_path_is_not_a_path() {
+        assert!(!query_is_misplaced_path("proxy auth on retries/redirects"));
+        assert!(!query_is_misplaced_path(
+            "update docs/readme for the new flag"
+        ));
+    }
+
+    #[test]
+    fn a_plain_query_without_path_shape_is_not_a_path() {
+        assert!(!query_is_misplaced_path("connection pooling"));
+    }
+
+    #[test]
+    fn an_existing_path_is_a_path_even_with_spaces() {
+        let dir = std::env::temp_dir().join("colgrep test dir with spaces");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(query_is_misplaced_path(dir.to_str().unwrap()));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_whitespace_free_path_shaped_token_stays_a_path_even_when_missing() {
+        // Preserves the "Path does not exist" error for a mistyped path argument.
+        assert!(query_is_misplaced_path("./no-such-dir"));
+        assert!(query_is_misplaced_path("src/missing.rs"));
+    }
 }

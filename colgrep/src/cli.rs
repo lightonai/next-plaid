@@ -300,7 +300,7 @@ pub struct Cli {
 
     // Default search arguments (when no subcommand is provided)
     /// Natural language query (runs search by default)
-    #[arg(value_name = "QUERY")]
+    #[arg(value_name = "QUERY", allow_hyphen_values = true)]
     pub query: Option<String>,
 
     /// Files or directories to search in (default: current directory)
@@ -483,6 +483,7 @@ pub enum Commands {
     #[command(after_help = SEARCH_HELP)]
     Search {
         /// Natural language query (optional if -e pattern is provided)
+        #[arg(value_name = "QUERY", allow_hyphen_values = true)]
         query: Option<String>,
 
         /// Files or directories to search in (default: current directory)
@@ -777,4 +778,61 @@ pub enum Commands {
         #[arg(long = "clear-force-include")]
         clear_force_include: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn a_query_starting_with_a_dash_parses_as_the_query() {
+        let cli = Cli::try_parse_from(["colgrep", "--glob flag option", "-k", "5"]).unwrap();
+        assert_eq!(cli.query.as_deref(), Some("--glob flag option"));
+        assert_eq!(cli.top_k, Some(5));
+    }
+
+    #[test]
+    fn a_dash_query_works_on_the_search_subcommand_too() {
+        let cli = Cli::try_parse_from(["colgrep", "search", "-k", "5", "--exclude flag"]).unwrap();
+        match cli.command {
+            Some(super::Commands::Search { query, top_k, .. }) => {
+                assert_eq!(query.as_deref(), Some("--exclude flag"));
+                assert_eq!(top_k, Some(5));
+            }
+            _ => panic!("expected the search subcommand"),
+        }
+    }
+
+    #[test]
+    fn known_flags_still_parse_as_flags() {
+        let cli = Cli::try_parse_from(["colgrep", "some query", "--json"]).unwrap();
+        assert_eq!(cli.query.as_deref(), Some("some query"));
+        assert!(cli.json);
+    }
+
+    #[test]
+    fn the_double_dash_separator_still_works() {
+        let cli = Cli::try_parse_from(["colgrep", "--", "-starts with dash"]).unwrap();
+        assert_eq!(cli.query.as_deref(), Some("-starts with dash"));
+    }
+
+    #[test]
+    fn query_with_e_pattern_and_flags_parses_each_into_its_slot() {
+        let cli = Cli::try_parse_from([
+            "colgrep",
+            "proxy auth on retries/redirects",
+            "-e",
+            "Client",
+            "-k",
+            "10",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.query.as_deref(),
+            Some("proxy auth on retries/redirects")
+        );
+        assert_eq!(cli.text_pattern.as_deref(), Some("Client"));
+        assert_eq!(cli.top_k, Some(10));
+    }
 }
