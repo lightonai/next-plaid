@@ -75,6 +75,7 @@ fn build_stored_index_config(req: &CreateIndexRequest) -> IndexConfigStored {
             .clone()
             .unwrap_or_else(|| "unicode61".to_string()),
         binary: req.config.binary.unwrap_or(false),
+        ternary: req.config.ternary.unwrap_or(false),
     }
 }
 
@@ -437,6 +438,7 @@ async fn process_batch(
             start_from_scratch: stored_config.start_from_scratch,
             fts_tokenizer: fts_tokenizer.clone(),
             binary: stored_config.binary,
+            ternary: stored_config.ternary,
             ..Default::default()
         };
         let update_config = build_update_config(&stored_config);
@@ -1787,6 +1789,7 @@ mod tests {
             max_documents: None,
             fts_tokenizer: "unicode61".to_string(),
             binary: false,
+            ternary: false,
         };
 
         let update_config = build_update_config(&stored_config);
@@ -1808,6 +1811,7 @@ mod tests {
                 max_documents: None,
                 fts_tokenizer: Some("unicode61".to_string()),
                 binary: None,
+                ternary: None,
             },
         };
 
@@ -1828,6 +1832,7 @@ mod tests {
                 max_documents: None,
                 fts_tokenizer: Some("unicode61".to_string()),
                 binary: None,
+                ternary: None,
             },
         };
 
@@ -1849,5 +1854,17 @@ mod tests {
 
         req.config.binary = Some(true);
         assert!(build_stored_index_config(&req).binary);
+    }
+
+    #[test]
+    fn build_stored_index_config_ternary_defaults_off_and_passes_through() {
+        let mut req = CreateIndexRequest {
+            name: "idx".to_string(),
+            config: IndexConfigRequest::default(),
+        };
+        assert!(!build_stored_index_config(&req).ternary);
+
+        req.config.ternary = Some(true);
+        assert!(build_stored_index_config(&req).ternary);
     }
 }

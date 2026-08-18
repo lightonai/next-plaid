@@ -181,6 +181,14 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binary: Option<bool>,
 
+    /// Store document embeddings with the ternary (base-3 dead-zone) residual
+    /// codec instead of scalar residual codes. Default: false. ~1.585 bits/dim,
+    /// a size/quality rung between 1-bit and 2-bit residuals (~19% smaller than
+    /// the 2-bit default). Mutually exclusive with `binary`. Changing this
+    /// setting re-embeds existing indexes on their next update.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ternary: Option<bool>,
+
     /// Extra directory/file patterns to ignore during indexing (on top of defaults)
     /// e.g., ["generated", "*.pb.go", "migrations"]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -303,14 +311,38 @@ impl Config {
         self.binary.unwrap_or(false)
     }
 
-    /// Set whether to store document embeddings as 1-bit signs
+    /// Set whether to store document embeddings as 1-bit signs.
+    /// Binary and ternary are mutually exclusive, so enabling one clears the other.
     pub fn set_binary(&mut self, binary: bool) {
         self.binary = Some(binary);
+        if binary {
+            self.ternary = None;
+        }
     }
 
     /// Clear the binary storage setting (revert to default residual codes)
     pub fn clear_binary(&mut self) {
         self.binary = None;
+    }
+
+    /// Check if document embeddings should use the ternary residual codec.
+    /// Defaults to false (scalar residual codes).
+    pub fn use_ternary(&self) -> bool {
+        self.ternary.unwrap_or(false)
+    }
+
+    /// Set whether to store document embeddings with the ternary residual codec.
+    /// Ternary and binary are mutually exclusive, so enabling one clears the other.
+    pub fn set_ternary(&mut self, ternary: bool) {
+        self.ternary = Some(ternary);
+        if ternary {
+            self.binary = None;
+        }
+    }
+
+    /// Clear the ternary storage setting (revert to default scalar residual codes)
+    pub fn clear_ternary(&mut self) {
+        self.ternary = None;
     }
 
     /// Get the configured CoreML model cache directory, if any (issue #129).
@@ -1035,6 +1067,55 @@ mod tests {
         let restored: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.binary, Some(true));
         assert!(restored.use_binary());
+    }
+
+    #[test]
+    fn test_ternary_defaults_off() {
+        let config = Config::default();
+        assert_eq!(config.ternary, None);
+        assert!(!config.use_ternary());
+        // Absent from JSON when unset (no behavior change for existing configs).
+        assert!(!serde_json::to_string(&config).unwrap().contains("ternary"));
+    }
+
+    #[test]
+    fn test_ternary_set_clear() {
+        let mut config = Config::default();
+        config.set_ternary(true);
+        assert_eq!(config.ternary, Some(true));
+        assert!(config.use_ternary());
+
+        config.set_ternary(false);
+        assert!(!config.use_ternary());
+
+        config.clear_ternary();
+        assert_eq!(config.ternary, None);
+        assert!(!config.use_ternary());
+    }
+
+    #[test]
+    fn test_binary_and_ternary_are_mutually_exclusive() {
+        // Enabling one storage scheme must clear the other so an invalid
+        // (binary && ternary) config can never be persisted.
+        let mut config = Config::default();
+        config.set_binary(true);
+        config.set_ternary(true);
+        assert!(config.use_ternary());
+        assert!(!config.use_binary(), "set_ternary must clear binary");
+
+        config.set_binary(true);
+        assert!(config.use_binary());
+        assert!(!config.use_ternary(), "set_binary must clear ternary");
+    }
+
+    #[test]
+    fn test_ternary_survives_serialization() {
+        let mut config = Config::default();
+        config.set_ternary(true);
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.ternary, Some(true));
+        assert!(restored.use_ternary());
     }
 
     #[test]

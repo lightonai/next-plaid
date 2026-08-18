@@ -738,12 +738,22 @@ pub enum Commands {
         /// Store document embeddings as 1-bit signs (binary quantization):
         /// ~4x smaller indexes and faster search, small ranking-quality cost.
         /// Existing indexes are re-embedded on their next update.
-        #[arg(long = "binary", conflicts_with = "no_binary")]
+        #[arg(long = "binary", conflicts_with_all = ["no_binary", "ternary"])]
         binary: bool,
 
         /// Store document embeddings as residual codes (this is the default)
         #[arg(long = "no-binary", conflicts_with = "binary")]
         no_binary: bool,
+
+        /// Store document embeddings with the ternary residual codec (~1.585
+        /// bits/dim, ~19% smaller than the 2-bit default). Mutually exclusive
+        /// with --binary. Existing indexes are re-embedded on their next update.
+        #[arg(long = "ternary", conflicts_with_all = ["no_ternary", "binary"])]
+        ternary: bool,
+
+        /// Store document embeddings as scalar residual codes (this is the default)
+        #[arg(long = "no-ternary", conflicts_with = "ternary")]
+        no_ternary: bool,
 
         /// Add patterns to ignore during indexing (on top of defaults)
         /// Can be repeated. Examples: --ignore generated --ignore "*.pb.go"

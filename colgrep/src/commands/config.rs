@@ -119,6 +119,8 @@ pub fn cmd_config(
     alpha: Option<f32>,
     binary: bool,
     no_binary: bool,
+    ternary: bool,
+    no_ternary: bool,
     add_ignore: Vec<String>,
     remove_ignore: Vec<String>,
     add_force_include: Vec<String>,
@@ -156,6 +158,8 @@ pub fn cmd_config(
         && alpha.is_none()
         && !binary
         && !no_binary
+        && !ternary
+        && !no_ternary
         && !has_ignore_changes
     {
         println!("Current configuration:");
@@ -247,6 +251,13 @@ pub fn cmd_config(
             println!("  binary:      true (1-bit embeddings)");
         } else {
             println!("  binary:      false (default)");
+        }
+
+        // ternary residual codec
+        if config.use_ternary() {
+            println!("  ternary:     true (base-3 residual, ~1.585 bit)");
+        } else {
+            println!("  ternary:     false (default)");
         }
 
         // max recursion depth
@@ -471,6 +482,20 @@ pub fn cmd_config(
         config.clear_binary();
         println!("✅ Disabled binary embedding storage (residual codes are now default)");
         println!("   Existing binary indexes will be re-embedded on their next update.");
+        changed = true;
+    }
+
+    // Set ternary residual codec or no_ternary. set_ternary(true) also clears
+    // the mutually-exclusive binary flag (clap already rejects --binary --ternary).
+    if ternary {
+        config.set_ternary(true);
+        println!("✅ Enabled ternary residual codec (~1.585 bit/dim, ~19% smaller than 2-bit)");
+        println!("   Existing indexes will be re-embedded on their next update.");
+        changed = true;
+    } else if no_ternary {
+        config.clear_ternary();
+        println!("✅ Disabled ternary residual codec (scalar residual codes are now default)");
+        println!("   Existing ternary indexes will be re-embedded on their next update.");
         changed = true;
     }
 

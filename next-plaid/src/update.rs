@@ -843,7 +843,9 @@ pub fn update_index(
     let mut new_doclens_accumulated: Vec<i64> = Vec::new();
     let mut all_residual_norms: Vec<f32> = Vec::new();
 
-    let packed_dim = embedding_dim * nbits / 8;
+    // Byte width of one packed residual token: scalar `nbits` or base-3 ternary,
+    // per the loaded codec (which quantize_residuals below also honors).
+    let packed_dim = codec.packed_residual_dim(embedding_dim);
 
     for i in 0..n_new_chunks {
         let global_chunk_idx = start_chunk_idx + i;
@@ -1128,8 +1130,9 @@ pub fn update_index(
         embedding_dim,
         next_plaid_compatible: true,
         // update_index rejects binary indexes on entry, so this is always a
-        // residual index.
+        // residual index; ternary is a residual codec and is preserved.
         binary: false,
+        ternary: metadata.ternary,
     };
 
     emit_update_progress("metadata_write", "writing index metadata");

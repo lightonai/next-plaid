@@ -1113,6 +1113,10 @@ pub struct IndexBuilder {
     /// codes (persisted `colgrep settings --binary`). Binary indexes cannot
     /// take incremental appends, so file changes trigger a full re-embed.
     binary: bool,
+    /// Store document embeddings with the ternary (base-3) residual codec
+    /// (persisted `colgrep settings --ternary`). A residual codec, so it takes
+    /// incremental appends; changing the scheme triggers a full re-embed.
+    ternary: bool,
 }
 
 impl IndexBuilder {
@@ -1150,6 +1154,9 @@ impl IndexBuilder {
         // separate indexes and switching models doesn't corrupt the existing one.
         let index_dir = get_index_dir_for_project(project_root, model_id)?;
 
+        // Read the persisted embedding-storage scheme once (mutually exclusive).
+        let stored_cfg = crate::config::Config::load().unwrap_or_default();
+
         Ok(Self {
             model: None, // Lazily created when needed
             model_path: model_path.to_path_buf(),
@@ -1164,9 +1171,8 @@ impl IndexBuilder {
             dynamic_batch: true,
             auto_confirm: false, // Prompt by default for large indexes
             model_id: model_id.to_string(),
-            binary: crate::config::Config::load()
-                .unwrap_or_default()
-                .use_binary(),
+            binary: stored_cfg.use_binary(),
+            ternary: stored_cfg.use_ternary(),
         })
     }
 
@@ -1421,6 +1427,7 @@ impl IndexBuilder {
         let config = IndexConfig {
             force_cpu,
             binary: self.binary,
+            ternary: self.ternary,
             ..Default::default()
         };
         let update_config = UpdateConfig {
@@ -1465,6 +1472,7 @@ impl IndexBuilder {
                 let config = IndexConfig {
                     force_cpu,
                     binary: self.binary,
+                    ternary: self.ternary,
                     ..Default::default()
                 };
                 let update_config = UpdateConfig {
@@ -1722,21 +1730,27 @@ impl IndexBuilder {
             return self.full_rebuild(languages);
         }
 
-        // The persisted `binary` setting changed since this index was built
-        // (1-bit sign store vs residual codes are incompatible on-disk formats):
-        // discard and re-embed. Checked before the resumable-build branch so an
-        // interrupted build under the old setting is also discarded.
+        // The persisted embedding-storage scheme changed since this index was
+        // built (binary 1-bit signs, ternary base-3 residuals, and scalar
+        // residual codes are all incompatible on-disk formats): discard and
+        // re-embed. Checked before the resumable-build branch so an interrupted
+        // build under the old setting is also discarded.
         if index_exists {
             if let Ok(index_metadata) = Metadata::load_from_path(&index_dir) {
-                if index_metadata.binary != self.binary {
+                let scheme = |binary: bool, ternary: bool| {
+                    if binary {
+                        "binary"
+                    } else if ternary {
+                        "ternary"
+                    } else {
+                        "residual"
+                    }
+                };
+                if index_metadata.binary != self.binary || index_metadata.ternary != self.ternary {
                     eprintln!(
                         "🔁 Embedding storage setting changed ({} → {}), re-embedding index...",
-                        if index_metadata.binary {
-                            "binary"
-                        } else {
-                            "residual"
-                        },
-                        if self.binary { "binary" } else { "residual" },
+                        scheme(index_metadata.binary, index_metadata.ternary),
+                        scheme(self.binary, self.ternary),
                     );
                     let _ = std::fs::remove_file(self.index_dir.join(BUILDING_MARKER));
                     return self.full_rebuild(languages);
@@ -5612,6 +5626,7 @@ mod tests {
             auto_confirm: true,
             model_id: "test-model".to_string(),
             binary: false,
+            ternary: false,
         }
     }
 
