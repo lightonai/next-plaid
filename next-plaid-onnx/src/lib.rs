@@ -1206,8 +1206,18 @@ impl Colbert {
             .collect();
         items.sort_by_key(|(prepared_len, _, _)| *prepared_len);
 
-        let shapes =
-            build_fixed_dynamic_shapes(self.batch_size.max(1), self.config.document_length);
+        let max_attention = if self.requested_execution_provider == ExecutionProvider::Cpu
+            || !is_cuda_available()
+        {
+            MAX_ATTENTION_ELEMENTS
+        } else {
+            attention_element_budget(measured_free_vram_bytes())
+        };
+        let shapes = build_fixed_dynamic_shapes(
+            self.batch_size.max(1),
+            self.config.document_length,
+            max_attention,
+        );
         let mut buckets: Vec<Vec<(usize, TokenizedDocument)>> =
             (0..shapes.len()).map(|_| Vec::new()).collect();
 
@@ -1753,7 +1763,8 @@ struct FixedDynamicShape {
     planned_len: usize,
 }
 
-/// Upper bound on `docs * planned_len^2` in one batch.
+/// Default upper bound on `docs * planned_len^2` in one batch, used when free VRAM
+/// cannot be measured.
 ///
 /// Peak activation is dominated by attention, which is O(docs * heads * len^2) — a product
 /// the token budget does not bound: halving the planned length doubles the docs, so
@@ -1764,7 +1775,112 @@ struct FixedDynamicShape {
 /// this cap keeps one batch's attention near 1.5 GiB.
 const MAX_ATTENTION_ELEMENTS: usize = 32 * 1024 * 1024;
 
-fn build_fixed_dynamic_shapes(batch_size: usize, document_length: usize) -> Vec<FixedDynamicShape> {
+/// Floor for the measured budget: still admits one ~1,448-token document (2M ≈ 1448²)
+/// per batch, and `build_fixed_dynamic_shapes` guarantees one document regardless.
+const MIN_MEASURED_ATTENTION_ELEMENTS: usize = 2 * 1024 * 1024;
+
+/// Ceiling for the measured budget: 2× the validated default. The H100 run that
+/// validated `MAX_ATTENTION_ELEMENTS` already held the GPU at 100% utilisation, so a
+/// larger budget buys allocation risk, not throughput.
+const MAX_MEASURED_ATTENTION_ELEMENTS: usize = 64 * 1024 * 1024;
+
+/// Peak process VRAM observed per attention element on the run that validated
+/// `MAX_ATTENTION_ELEMENTS`: 27.4 GiB at 32M elements ≈ 880 bytes per element.
+/// Peak memory tracks batch volume (attention, hidden states and arena slack all scale
+/// with it), so this one measured ratio converts a VRAM budget into an element budget.
+const OBSERVED_PEAK_BYTES_PER_ELEMENT: u64 = 880;
+
+/// Spend at most this fraction of the measured free VRAM: numerator over denominator.
+const TARGET_FREE_VRAM_FRACTION: (u64, u64) = (3, 5);
+
+/// The attention-element budget for one batch, sized from measured free VRAM.
+///
+/// `None` (VRAM unknown: CPU-only build, non-NVIDIA GPU, MIG partition, wedged driver)
+/// keeps the validated static default. A measurement scales the budget so the expected
+/// peak stays at 60% of what is actually free — an 80 GiB card gets the 64M ceiling, an
+/// 8 GiB laptop GPU gets ~6M instead of a default that was validated on a datacenter
+/// card. Wrong in either direction is survivable: too small only shrinks batches, too
+/// large ends in the CPU fallback with the real error printed.
+fn attention_element_budget(free_vram_bytes: Option<u64>) -> usize {
+    let Some(free) = free_vram_bytes else {
+        return MAX_ATTENTION_ELEMENTS;
+    };
+    let (num, den) = TARGET_FREE_VRAM_FRACTION;
+    let elements = free
+        .saturating_mul(num)
+        .checked_div(den.saturating_mul(OBSERVED_PEAK_BYTES_PER_ELEMENT))
+        .unwrap_or(0);
+    usize::try_from(elements)
+        .unwrap_or(usize::MAX)
+        .clamp(MIN_MEASURED_ATTENTION_ELEMENTS, MAX_MEASURED_ATTENTION_ELEMENTS)
+}
+
+/// Free VRAM of the device this process will encode on, measured once per process.
+///
+/// `NEXT_PLAID_FREE_VRAM_MB` overrides the measurement (`0` disables the dynamic budget
+/// entirely). Otherwise ask `nvidia-smi` for the first device named in
+/// `CUDA_VISIBLE_DEVICES` (an index or a `GPU-…` UUID — the same token the CUDA runtime
+/// resolves to logical device 0), defaulting to device 0. Any failure — no NVIDIA
+/// driver, a MIG token `--query-gpu` cannot serve, a hung `nvidia-smi` — yields `None`
+/// and the static default. One subprocess per process against builds that run for
+/// minutes; the result is cached.
+fn measured_free_vram_bytes() -> Option<u64> {
+    static FREE_VRAM: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *FREE_VRAM.get_or_init(|| {
+        if let Ok(v) = std::env::var("NEXT_PLAID_FREE_VRAM_MB") {
+            let mib: u64 = v.trim().parse().ok()?;
+            return (mib > 0).then(|| mib.saturating_mul(1024 * 1024));
+        }
+        let device = std::env::var("CUDA_VISIBLE_DEVICES")
+            .ok()
+            .and_then(|v| v.split(',').next().map(|t| t.trim().to_string()))
+            .filter(|t| !t.is_empty() && t != "-1")
+            .unwrap_or_else(|| "0".to_string());
+        query_nvidia_smi_free_mib(&device).map(|mib| mib.saturating_mul(1024 * 1024))
+    })
+}
+
+/// Run `nvidia-smi --query-gpu=memory.free` for one device, killed after 3 seconds.
+///
+/// A wedged driver can hang `nvidia-smi` indefinitely; an index build must not inherit
+/// that hang just to size its batches.
+fn query_nvidia_smi_free_mib(device: &str) -> Option<u64> {
+    let mut child = std::process::Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=memory.free",
+            "--format=csv,noheader,nounits",
+            "-i",
+            device,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) => return None,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut out = String::new();
+    std::io::Read::read_to_string(child.stdout.as_mut()?, &mut out).ok()?;
+    out.lines().next()?.trim().parse().ok()
+}
+
+fn build_fixed_dynamic_shapes(
+    batch_size: usize,
+    document_length: usize,
+    max_attention_elements: usize,
+) -> Vec<FixedDynamicShape> {
     let max_len = document_length.max(1);
     let total_budget = batch_size.max(1).saturating_mul(max_len);
     let mut shapes = Vec::new();
@@ -1773,7 +1889,7 @@ fn build_fixed_dynamic_shapes(batch_size: usize, document_length: usize) -> Vec<
 
     loop {
         let by_tokens = total_budget.checked_div(planned_len).unwrap_or(0).max(1);
-        let by_attention = MAX_ATTENTION_ELEMENTS
+        let by_attention = max_attention_elements
             .checked_div(planned_len.saturating_mul(planned_len))
             .unwrap_or(usize::MAX)
             .max(1);
@@ -2553,7 +2669,7 @@ mod tests {
 
     #[test]
     fn test_fixed_dynamic_shapes_do_not_exceed_document_length() {
-        let shapes = build_fixed_dynamic_shapes(1, 300);
+        let shapes = build_fixed_dynamic_shapes(1, 300, MAX_ATTENTION_ELEMENTS);
 
         assert!(!shapes.is_empty());
         assert!(shapes.iter().all(|shape| shape.planned_len <= 300));
@@ -2565,7 +2681,7 @@ mod tests {
         let batch_size = 4;
         let document_length = 300;
         let budget = batch_size * document_length;
-        let shapes = build_fixed_dynamic_shapes(batch_size, document_length);
+        let shapes = build_fixed_dynamic_shapes(batch_size, document_length, MAX_ATTENTION_ELEMENTS);
 
         assert!(shapes
             .iter()
@@ -2674,7 +2790,7 @@ mod tests {
     fn dynamic_shapes_bound_attention_for_a_long_document_length() {
         // A model declaring document_length 8192: the token budget alone put 2048 documents
         // in the 256-token bucket, whose attention needs 25.7 GiB at 12 heads in fp32.
-        for shape in build_fixed_dynamic_shapes(64, 8192) {
+        for shape in build_fixed_dynamic_shapes(64, 8192, MAX_ATTENTION_ELEMENTS) {
             let product = shape.docs * shape.planned_len * shape.planned_len;
             assert!(
                 product <= MAX_ATTENTION_ELEMENTS.max(shape.planned_len * shape.planned_len),
@@ -2689,7 +2805,7 @@ mod tests {
     fn dynamic_shapes_keep_the_token_budget_when_attention_is_not_binding() {
         // A short document_length is unaffected: docs still follow the token budget, so
         // throughput on ordinary models does not regress.
-        let shapes = build_fixed_dynamic_shapes(64, 512);
+        let shapes = build_fixed_dynamic_shapes(64, 512, MAX_ATTENTION_ELEMENTS);
         let base = shapes
             .iter()
             .find(|shape| shape.planned_len == 512)
@@ -2701,8 +2817,52 @@ mod tests {
     fn dynamic_shapes_always_admit_at_least_one_document() {
         // Even where one sequence alone exceeds the bound, a batch must hold a document,
         // otherwise the encoder makes no progress at all.
-        for shape in build_fixed_dynamic_shapes(1, 32_768) {
+        for shape in build_fixed_dynamic_shapes(1, 32_768, MAX_ATTENTION_ELEMENTS) {
             assert!(shape.docs >= 1);
+        }
+    }
+
+    #[test]
+    fn attention_budget_defaults_when_vram_is_unknown() {
+        assert_eq!(attention_element_budget(None), MAX_ATTENTION_ELEMENTS);
+    }
+
+    #[test]
+    fn attention_budget_shrinks_for_a_small_gpu() {
+        // 8 GiB free: the validated default was measured at 27.4 GiB peak, so a laptop
+        // GPU must get a smaller budget than the datacenter default.
+        let budget = attention_element_budget(Some(8 * 1024 * 1024 * 1024));
+        assert!(budget < MAX_ATTENTION_ELEMENTS, "got {budget}");
+        assert!(budget >= MIN_MEASURED_ATTENTION_ELEMENTS);
+    }
+
+    #[test]
+    fn attention_budget_grows_for_a_large_gpu_up_to_the_ceiling() {
+        let budget = attention_element_budget(Some(80 * 1024 * 1024 * 1024));
+        assert!(budget > MAX_ATTENTION_ELEMENTS, "got {budget}");
+        assert_eq!(
+            attention_element_budget(Some(1024 * 1024 * 1024 * 1024)),
+            MAX_MEASURED_ATTENTION_ELEMENTS,
+        );
+    }
+
+    #[test]
+    fn attention_budget_never_falls_below_the_floor() {
+        assert_eq!(attention_element_budget(Some(0)), MIN_MEASURED_ATTENTION_ELEMENTS);
+        assert_eq!(
+            attention_element_budget(Some(512 * 1024 * 1024)),
+            MIN_MEASURED_ATTENTION_ELEMENTS,
+        );
+    }
+
+    #[test]
+    fn attention_budget_is_monotone_in_free_vram() {
+        let gib = 1024u64 * 1024 * 1024;
+        let mut last = 0;
+        for free in [2, 4, 8, 16, 24, 48, 80] {
+            let budget = attention_element_budget(Some(free * gib));
+            assert!(budget >= last, "budget regressed at {free} GiB");
+            last = budget;
         }
     }
 }
