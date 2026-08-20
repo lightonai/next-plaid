@@ -219,10 +219,13 @@ colgrep --json "auth" | jq '.[] | .unit.file'
 | `colgrep clear`          | Clear index for current project        |
 | `colgrep clear --all`    | Clear all indexes                      |
 | `colgrep set-model <ID>` | Change the default ColBERT model       |
+| `colgrep serve --stdio`  | Reuse a loaded index over local stdio  |
 | `colgrep settings`       | View or modify configuration           |
 | `colgrep settings --ignore` | Add extra ignore patterns (persistent) |
 | `colgrep settings --force-include` | Force-include normally ignored paths |
 | `colgrep --stats`        | Show search statistics for all indexes |
+
+`colgrep serve --stdio [PATH]` keeps one existing index and model session loaded for repeated local NDJSON requests. It holds the index lock until shutdown and never listens on a network socket. See [the protocol reference](../docs/stdio-server.md).
 
 ---
 

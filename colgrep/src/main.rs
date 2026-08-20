@@ -19,8 +19,8 @@ use colgrep::{
 
 use cli::{Cli, Commands};
 use commands::{
-    cmd_clear, cmd_config, cmd_init, cmd_reset_stats, cmd_search, cmd_session_hook, cmd_set_model,
-    cmd_stats, cmd_status, cmd_task_hook, cmd_update, InitOptions,
+    cmd_clear, cmd_config, cmd_init, cmd_reset_stats, cmd_search, cmd_serve, cmd_session_hook,
+    cmd_set_model, cmd_stats, cmd_status, cmd_task_hook, cmd_update, InitOptions,
 };
 
 /// Apply the persisted CoreML model cache directory (issue #129).
@@ -309,6 +309,7 @@ fn main() -> Result<()> {
             },
         ),
         Some(Commands::Update) => cmd_update(),
+        Some(Commands::Serve { path, model, .. }) => cmd_serve(&path, model.as_deref()),
         Some(Commands::Status { path }) => cmd_status(&path),
         Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
         Some(Commands::SetModel { model }) => cmd_set_model(&model),

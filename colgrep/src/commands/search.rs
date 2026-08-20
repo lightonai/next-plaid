@@ -6,8 +6,8 @@ use colored::Colorize;
 
 use colgrep::{
     acquire_index_lock, bre_to_ere, ensure_model, escape_literal_braces, find_parent_index,
-    get_index_dir_for_project, get_vector_index_path, index_exists, is_text_format,
-    path_contains_ignored_dir, Config, IndexBuilder, IndexState, Searcher, DEFAULT_MODEL,
+    get_index_dir_for_project, index_exists, is_text_format, path_contains_ignored_dir, Config,
+    IndexBuilder, IndexState, Searcher, DEFAULT_MODEL,
 };
 
 use crate::display::{
@@ -488,6 +488,89 @@ pub fn resolve_pool_factor(
     Some(config.get_pool_factor())
 }
 
+/// A loaded search context for the persistent stdio server.
+pub(crate) struct SearchEngine {
+    pub(crate) config: Config,
+    pub(crate) searcher: Searcher,
+    pub(crate) project_root: PathBuf,
+    pub(crate) model: String,
+    _index_lock: std::fs::File,
+}
+
+impl SearchEngine {
+    pub(crate) fn load_existing(project_path: &Path, cli_model: Option<&str>) -> Result<Self> {
+        let project_root = std::fs::canonicalize(project_path)
+            .with_context(|| format!("Path does not exist: {}", project_path.display()))?;
+        if !project_root.is_dir() {
+            anyhow::bail!("Serve path is not a directory: {}", project_root.display());
+        }
+
+        let config = Config::load()?;
+        let model = resolve_model(&config, cli_model);
+        if !index_exists(&project_root, &model) {
+            anyhow::bail!("No existing index found; run `colgrep init` first");
+        }
+
+        let index_dir = get_index_dir_for_project(&project_root, &model)?;
+        let index_lock = acquire_index_lock(&index_dir)?;
+        if index_dir.join(".building").exists() {
+            anyhow::bail!("Index is still being built");
+        }
+        if IndexState::load(&index_dir)?.dirty {
+            anyhow::bail!("Index is dirty; finish indexing before serving");
+        }
+        let model_path = ensure_model(Some(&model), true)?;
+        let quantized = colgrep::resolve_quantized(&model_path, !config.use_fp32());
+        let searcher =
+            Searcher::load_with_quantized(&project_root, &model, &model_path, quantized)?;
+
+        Ok(Self {
+            config,
+            searcher,
+            project_root,
+            model,
+            _index_lock: index_lock,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn search(
+        &self,
+        query: &str,
+        top_k: usize,
+        semantic_only: bool,
+        code_only: bool,
+        include_patterns: &[String],
+        exclude_patterns: &[String],
+        subdir_filter: Option<&Path>,
+    ) -> Result<Vec<colgrep::SearchResult>> {
+        let options = SearchOptions {
+            config: &self.config,
+            query,
+            project_root: &self.project_root,
+            requested_path: None,
+            top_k,
+            json: true,
+            include_patterns,
+            files_only: false,
+            text_pattern: None,
+            extended_regexp: false,
+            fixed_strings: false,
+            word_regexp: false,
+            case_sensitive: false,
+            exclude_patterns,
+            exclude_dirs: &[],
+            code_only,
+            no_fts: semantic_only,
+            alpha: None,
+            subdir_filter,
+            specific_file: None,
+        };
+        let loaded = search_loaded(&self.searcher, &options)?;
+        Ok(finalize_results(loaded.results, top_k, code_only))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_search(
     query: &str,
@@ -596,23 +679,7 @@ pub fn cmd_search(
         }
     }
 
-    // Sort all results by score and take top_k.
-    // Tie-break on (file, line, end_line) so the ordering is fully
-    // deterministic: tied scores must not depend on HashMap iteration order
-    // (randomized per process), otherwise two identical invocations — e.g.
-    // with and without `--json` — could return a different candidate order.
-    all_results.sort_by(cmp_results_deterministic);
-
-    // Filter out text/config files if --code-only is enabled
-    let filtered_results: Vec<_> = if code_only {
-        all_results
-            .into_iter()
-            .filter(|r| !is_text_format(r.unit.language))
-            .collect()
-    } else {
-        all_results
-    };
-    let results: Vec<_> = filtered_results.into_iter().take(effective_top_k).collect();
+    let results = finalize_results(all_results, effective_top_k, code_only);
 
     // When -e is used without -F, automatically enable regex mode (ERE)
     let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
@@ -996,7 +1063,417 @@ fn find_existing_parent_and_list(path: &Path) -> String {
     }
 }
 
-/// Search a single path and return results with absolute file paths
+/// Options for filtering and ranking against an already-loaded index.
+pub(crate) struct SearchOptions<'a> {
+    pub config: &'a Config,
+    pub query: &'a str,
+    pub project_root: &'a Path,
+    pub requested_path: Option<&'a Path>,
+    pub top_k: usize,
+    pub json: bool,
+    pub include_patterns: &'a [String],
+    pub files_only: bool,
+    pub text_pattern: Option<&'a str>,
+    pub extended_regexp: bool,
+    pub fixed_strings: bool,
+    pub word_regexp: bool,
+    pub case_sensitive: bool,
+    pub exclude_patterns: &'a [String],
+    pub exclude_dirs: &'a [String],
+    pub code_only: bool,
+    pub no_fts: bool,
+    pub alpha: Option<f32>,
+    pub subdir_filter: Option<&'a Path>,
+    pub specific_file: Option<&'a Path>,
+}
+
+pub(crate) struct LoadedSearchResults {
+    pub results: Vec<colgrep::SearchResult>,
+    pub searched: bool,
+}
+
+/// Apply the deterministic final result policy shared by CLI and server.
+pub(crate) fn finalize_results(
+    mut results: Vec<colgrep::SearchResult>,
+    top_k: usize,
+    code_only: bool,
+) -> Vec<colgrep::SearchResult> {
+    results.sort_by(cmp_results_deterministic);
+    if code_only {
+        results.retain(|result| !is_text_format(result.unit.language));
+    }
+    results.truncate(top_k);
+    results
+}
+
+/// Run filtering and ranking against a loaded searcher without changing any
+/// index state. Lifecycle operations belong to the caller.
+pub(crate) fn search_loaded(
+    searcher: &Searcher,
+    options: &SearchOptions<'_>,
+) -> Result<LoadedSearchResults> {
+    let config = options.config;
+    let query = options.query;
+    let top_k = options.top_k;
+    let json = options.json;
+    let files_only = options.files_only;
+    let include_patterns = options.include_patterns;
+    let text_pattern = options.text_pattern;
+    let extended_regexp = options.extended_regexp;
+    let fixed_strings = options.fixed_strings;
+    let word_regexp = options.word_regexp;
+    let case_sensitive = options.case_sensitive;
+    let exclude_patterns = options.exclude_patterns;
+    let exclude_dirs = options.exclude_dirs;
+    let code_only = options.code_only;
+    let no_fts = options.no_fts;
+    let alpha = options.alpha;
+    let subdir_filter = options.subdir_filter;
+    let specific_file = options.specific_file;
+    let effective_root = options.project_root;
+    let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
+
+    // Build subset combining subdirectory filter, text pattern filter, and include patterns
+    let subset = {
+        let mut combined_ids: Option<Vec<i64>> = None;
+
+        // Apply subdirectory filter first if using parent index
+        if let Some(subdir) = subdir_filter {
+            let subdir_ids = searcher.filter_by_path_prefix(subdir)?;
+            if subdir_ids.is_empty() {
+                if !json && !files_only {
+                    eprintln!(
+                        "No indexed code units in subdirectory: {}",
+                        subdir.display()
+                    );
+                    if !colgrep::scan_reaches_subdir(
+                        effective_root,
+                        subdir,
+                        &config.extra_ignore,
+                        &config.force_include,
+                        &config.force_include_dirs_for(effective_root),
+                    ) {
+                        eprintln!(
+                            "This directory is excluded by the project's ignore rules; index it with: colgrep init {}",
+                            options.requested_path.unwrap_or(subdir).display()
+                        );
+                    }
+                }
+                return Ok(LoadedSearchResults {
+                    results: vec![],
+                    searched: false,
+                });
+            }
+            combined_ids = Some(subdir_ids);
+        }
+
+        // Apply text pattern filter: search indexed code directly (much faster than grep)
+        if let Some(pattern) = text_pattern {
+            // Use regex-based filtering with full grep flag support:
+            // -e now implies ERE by default (no need for -E flag)
+            // -F (fixed_strings): literal string matching, disables regex mode
+            // -w (word_regexp): whole word matching with \b boundaries
+            let pattern_ids = searcher.filter_by_text_pattern_with_options(
+                pattern,
+                effective_extended_regexp,
+                fixed_strings,
+                word_regexp,
+                case_sensitive,
+            )?;
+
+            if pattern_ids.is_empty() {
+                if !json && !files_only {
+                    eprintln!("No indexed code units contain pattern: {}", pattern);
+                }
+                return Ok(LoadedSearchResults {
+                    results: vec![],
+                    searched: false,
+                });
+            }
+
+            combined_ids = match combined_ids {
+                Some(existing) => {
+                    let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
+                    Some(
+                        pattern_ids
+                            .into_iter()
+                            .filter(|id| existing_set.contains(id))
+                            .collect(),
+                    )
+                }
+                None => Some(pattern_ids),
+            };
+        }
+
+        // Apply include pattern filter (file type filtering)
+        if !include_patterns.is_empty() {
+            let pattern_ids = searcher.filter_by_file_patterns(include_patterns)?;
+            combined_ids = match combined_ids {
+                Some(existing) => {
+                    let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
+                    Some(
+                        pattern_ids
+                            .into_iter()
+                            .filter(|id| existing_set.contains(id))
+                            .collect(),
+                    )
+                }
+                None => Some(pattern_ids),
+            };
+        }
+
+        // Apply specific file filter (when user passes a file path instead of directory)
+        if let Some(file_path) = specific_file {
+            // Convert absolute file path to relative path (relative to effective_root)
+            let rel_path = file_path
+                .strip_prefix(effective_root)
+                .unwrap_or(file_path)
+                .to_string_lossy()
+                .to_string();
+            let file_ids = searcher.filter_by_files(std::slice::from_ref(&rel_path))?;
+            if file_ids.is_empty() {
+                if !json && !files_only {
+                    eprintln!("No indexed code units in file: {}", file_path.display());
+                }
+                return Ok(LoadedSearchResults {
+                    results: vec![],
+                    searched: false,
+                });
+            }
+            combined_ids = match combined_ids {
+                Some(existing) => {
+                    let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
+                    Some(
+                        file_ids
+                            .into_iter()
+                            .filter(|id| existing_set.contains(id))
+                            .collect(),
+                    )
+                }
+                None => Some(file_ids),
+            };
+        }
+
+        // Apply exclude pattern filter (SQL-based: returns IDs that DON'T match patterns)
+        if !exclude_patterns.is_empty() {
+            let included_ids = searcher.filter_exclude_by_patterns(exclude_patterns)?;
+            let included_set: std::collections::HashSet<_> = included_ids.into_iter().collect();
+            combined_ids = match combined_ids {
+                Some(existing) => Some(
+                    existing
+                        .into_iter()
+                        .filter(|id| included_set.contains(id))
+                        .collect(),
+                ),
+                None => Some(included_set.into_iter().collect()),
+            };
+        }
+
+        // Apply exclude-dir filter (SQL-based: returns IDs NOT in excluded directories)
+        if !exclude_dirs.is_empty() {
+            let included_ids = searcher.filter_exclude_by_dirs(exclude_dirs)?;
+            let included_set: std::collections::HashSet<_> = included_ids.into_iter().collect();
+            combined_ids = match combined_ids {
+                Some(existing) => Some(
+                    existing
+                        .into_iter()
+                        .filter(|id| included_set.contains(id))
+                        .collect(),
+                ),
+                None => Some(included_set.into_iter().collect()),
+            };
+        }
+
+        // Check if subset is empty after combining
+        if let Some(ref ids) = combined_ids {
+            if ids.is_empty() {
+                if !json && !files_only {
+                    eprintln!("No indexed code units match the specified filters");
+                }
+                return Ok(LoadedSearchResults {
+                    results: vec![],
+                    searched: false,
+                });
+            }
+        }
+
+        combined_ids
+    };
+
+    // Search with optional filtering
+    // Request more results to allow for re-ranking with query boost and test function demotion
+    let search_top_k = top_k
+        .checked_mul(if code_only { 4 } else { 3 })
+        .ok_or_else(|| {
+            anyhow::anyhow!("top_k is too large for the search over-fetch multiplier")
+        })?;
+
+    // Resolve hybrid search: --semantic-only CLI flag overrides, then config, default is enabled
+    let hybrid_disabled = if no_fts {
+        true
+    } else {
+        !config.use_hybrid_search()
+    };
+
+    // CLI --alpha overrides config, config overrides default (0.55)
+    let hybrid_alpha = alpha.unwrap_or_else(|| config.get_hybrid_alpha());
+
+    // When no -e flag is provided, run BOTH semantic/hybrid search and text-pattern search
+    // This ensures exact matches are found even if the vector database doesn't rank them highly
+    let results = if let Some(pattern) = &text_pattern {
+        // -e flag provided: use existing hybrid search logic
+        // Enhance semantic query with -e pattern (strip regex metacharacters and dedupe tokens)
+        let sanitized_pattern = strip_regex_for_semantic(pattern);
+        let enhanced_query = merge_query_with_pattern(query, &sanitized_pattern);
+        if hybrid_disabled {
+            searcher.search(&enhanced_query, search_top_k, subset.as_deref())?
+        } else {
+            searcher.search_hybrid(
+                &enhanced_query,
+                search_top_k,
+                subset.as_deref(),
+                hybrid_alpha,
+            )?
+        }
+    } else {
+        // Encode query once and reuse across both searches
+        let query_emb = searcher.encode_query(query)?;
+
+        // Run FTS5 once and reuse across both searches
+        let fts5_results = if hybrid_disabled {
+            None
+        } else {
+            searcher.fts5_search(
+                query,
+                search_top_k.checked_mul(3).ok_or_else(|| {
+                    anyhow::anyhow!("top_k is too large for the FTS over-fetch multiplier")
+                })?,
+                subset.as_deref(),
+            )
+        };
+
+        // 1. Run semantic search (with FTS5 fusion if enabled)
+        let semantic_results = if hybrid_disabled {
+            searcher.search_with_embedding(&query_emb, search_top_k, subset.as_deref())?
+        } else {
+            searcher.search_hybrid_with_embedding(
+                &query_emb,
+                query,
+                search_top_k,
+                subset.as_deref(),
+                hybrid_alpha,
+                fts5_results.as_ref(),
+            )?
+        };
+
+        // 2. Run hybrid search: filter by query text, then semantic rank
+        // Use fixed_strings mode to treat the query as a literal pattern.
+        // The semantic-side query is *always* case-insensitive — ColBERT
+        // embeddings handle case fuzzily and we want broad recall here.
+        let text_filtered_ids =
+            searcher.filter_by_text_pattern_with_options(query, false, true, false, false)?;
+
+        let hybrid_results = if !text_filtered_ids.is_empty() {
+            // Intersect with existing subset if any
+            let hybrid_subset: Vec<i64> = match &subset {
+                Some(existing) => {
+                    let existing_set: std::collections::HashSet<_> =
+                        existing.iter().copied().collect();
+                    text_filtered_ids
+                        .into_iter()
+                        .filter(|id| existing_set.contains(id))
+                        .collect()
+                }
+                None => text_filtered_ids,
+            };
+
+            if !hybrid_subset.is_empty() {
+                // Reuse cached embedding and FTS5 results (filtered to subset)
+                if hybrid_disabled {
+                    searcher.search_with_embedding(
+                        &query_emb,
+                        search_top_k,
+                        Some(&hybrid_subset),
+                    )?
+                } else {
+                    // Pass `None` so FTS5 is refetched *within* the subset.
+                    // Reusing the global `fts5_results` here would carry
+                    // BM25 hits from outside the subset; they'd get filtered
+                    // down to a tiny intersection, hurting recall.
+                    searcher.search_hybrid_with_embedding(
+                        &query_emb,
+                        query,
+                        search_top_k,
+                        Some(&hybrid_subset),
+                        hybrid_alpha,
+                        None,
+                    )?
+                }
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
+        // 3. Merge results: one entry per file, span covers every matched
+        //    unit, score is the max across both calls.
+        //
+        // The previous `(file, line)` dedup was buggy: both
+        // `search_hybrid_with_embedding` calls run `collapse_by_file`
+        // internally, which sets `unit.line = min(line_i)` *across that
+        // call's candidate pool*. Two pools → two different mins for the
+        // same file → same file occupied two top-K slots.
+        use std::collections::hash_map::Entry;
+        let mut merged: HashMap<PathBuf, colgrep::SearchResult> = HashMap::new();
+        for result in semantic_results.into_iter().chain(hybrid_results) {
+            let key = result.unit.file.clone();
+            match merged.entry(key) {
+                Entry::Occupied(mut e) => {
+                    let existing = e.get_mut();
+                    let new_start = existing.unit.line.min(result.unit.line);
+                    let new_end = existing.unit.end_line.max(result.unit.end_line);
+                    if result.score > existing.score {
+                        *existing = result;
+                    }
+                    existing.unit.line = new_start;
+                    existing.unit.end_line = new_end;
+                }
+                Entry::Vacant(e) => {
+                    e.insert(result);
+                }
+            }
+        }
+        merged.into_values().collect::<Vec<_>>()
+    };
+
+    // Note: When -e is used, results are already filtered to units containing the pattern
+    // via filter_by_text_pattern_with_options() above, which supports -E, -F, -w flags.
+    //
+    // The legacy `compute_final_score` test-name demotion was removed; the
+    // hybrid pipeline now applies `ranking::file_path_penalty` (a much more
+    // complete language-aware test/bench/example/compat penalty) inside
+    // `Searcher::search_hybrid_with_embedding`.
+
+    // Convert file paths to absolute for proper display when merging results from multiple paths
+    let results: Vec<colgrep::SearchResult> = results
+        .into_iter()
+        .map(|mut r| {
+            if !r.unit.file.is_absolute() {
+                r.unit.file = effective_root.join(&r.unit.file);
+            }
+            r
+        })
+        .collect();
+
+    Ok(LoadedSearchResults {
+        results,
+        searched: true,
+    })
+}
+
+/// Discover, update, repair, and load the index for one CLI path before
+/// delegating all filtering and ranking to `search_loaded`.
 #[allow(clippy::too_many_arguments)]
 fn search_single_path(
     config: &Config,
@@ -1041,10 +1518,6 @@ fn search_single_path(
     } else {
         (path.clone(), None)
     };
-
-    // When -e is used without -F, automatically enable regex mode (ERE)
-    // This makes -e imply -E by default, with -F as the opt-out
-    let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
 
     // Resolve model: CLI > config > default
     let model = resolve_model(config, cli_model);
@@ -1092,13 +1565,6 @@ fn search_single_path(
     } else {
         None
     };
-
-    // Get files matching include patterns (for file-type filtering)
-    // BUG FIX: Don't scan filesystem for --include patterns.
-    // The filesystem scan finds files that aren't in the index, causing
-    // filter_by_files() to return empty results. Instead, let the code
-    // fall through to filter_by_file_patterns() which queries the index directly.
-    let include_files: Option<Vec<String>> = None;
 
     // Auto-index: try incremental update without blocking on the lock.
     // If another process is indexing, skip the update and search the existing index.
@@ -1188,10 +1654,10 @@ fn search_single_path(
         }
     }
 
-    // Verify index exists (at least partially)
+    // Verify the index belongs to this project/model pair. Searcher loading
+    // below validates the actual vector/filter stores.
     let index_dir = get_index_dir_for_project(&effective_root, &model)?;
-    let vector_index_path = get_vector_index_path(&index_dir);
-    if !vector_index_path.join("metadata.json").exists() {
+    if !index_exists(&effective_root, &model) {
         if no_update {
             anyhow::bail!(
                 "No index found and --no-update was passed. Run once without --no-update \
@@ -1310,345 +1776,40 @@ fn search_single_path(
         Err(e) => return Err(e),
     };
 
-    // Build subset combining subdirectory filter, text pattern filter, and include patterns
-    let subset = {
-        let mut combined_ids: Option<Vec<i64>> = None;
-
-        // Apply subdirectory filter first if using parent index
-        if let Some(ref subdir) = subdir_filter {
-            let subdir_ids = searcher.filter_by_path_prefix(subdir)?;
-            if subdir_ids.is_empty() {
-                if !json && !files_only {
-                    eprintln!(
-                        "No indexed code units in subdirectory: {}",
-                        subdir.display()
-                    );
-                    // Empty because the project's walk rules exclude this directory
-                    // (e.g. a .gitignore entry), not because it holds no code: tell
-                    // the user how to bring it under coverage.
-                    if !colgrep::scan_reaches_subdir(
-                        &effective_root,
-                        subdir,
-                        &config.extra_ignore,
-                        &config.force_include,
-                        &config.force_include_dirs_for(&effective_root),
-                    ) {
-                        eprintln!(
-                            "This directory is excluded by the project's ignore rules; index it with: colgrep init {}",
-                            search_path.display()
-                        );
-                    }
-                }
-                return Ok(vec![]);
-            }
-            combined_ids = Some(subdir_ids);
-        }
-
-        // Apply text pattern filter: search indexed code directly (much faster than grep)
-        if let Some(pattern) = text_pattern {
-            // Use regex-based filtering with full grep flag support:
-            // -e now implies ERE by default (no need for -E flag)
-            // -F (fixed_strings): literal string matching, disables regex mode
-            // -w (word_regexp): whole word matching with \b boundaries
-            let pattern_ids = searcher.filter_by_text_pattern_with_options(
-                pattern,
-                effective_extended_regexp,
-                fixed_strings,
-                word_regexp,
-                case_sensitive,
-            )?;
-
-            if pattern_ids.is_empty() {
-                if !json && !files_only {
-                    eprintln!("No indexed code units contain pattern: {}", pattern);
-                }
-                return Ok(vec![]);
-            }
-
-            combined_ids = match combined_ids {
-                Some(existing) => {
-                    let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
-                    Some(
-                        pattern_ids
-                            .into_iter()
-                            .filter(|id| existing_set.contains(id))
-                            .collect(),
-                    )
-                }
-                None => Some(pattern_ids),
-            };
-        }
-
-        // Apply include pattern filter (file type filtering)
-        // Only use filesystem-scanned files if non-empty; otherwise fall back to index-based pattern matching
-        if let Some(files) = include_files.as_ref().filter(|f| !f.is_empty()) {
-            let file_ids = searcher.filter_by_files(files)?;
-            combined_ids = match combined_ids {
-                Some(existing) => {
-                    let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
-                    Some(
-                        file_ids
-                            .into_iter()
-                            .filter(|id| existing_set.contains(id))
-                            .collect(),
-                    )
-                }
-                None => Some(file_ids),
-            };
-        } else if !include_patterns.is_empty() {
-            let pattern_ids = searcher.filter_by_file_patterns(include_patterns)?;
-            combined_ids = match combined_ids {
-                Some(existing) => {
-                    let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
-                    Some(
-                        pattern_ids
-                            .into_iter()
-                            .filter(|id| existing_set.contains(id))
-                            .collect(),
-                    )
-                }
-                None => Some(pattern_ids),
-            };
-        }
-
-        // Apply specific file filter (when user passes a file path instead of directory)
-        if let Some(ref file_path) = specific_file {
-            // Convert absolute file path to relative path (relative to effective_root)
-            let rel_path = file_path
-                .strip_prefix(&effective_root)
-                .unwrap_or(file_path)
-                .to_string_lossy()
-                .to_string();
-            let file_ids = searcher.filter_by_files(std::slice::from_ref(&rel_path))?;
-            if file_ids.is_empty() {
-                if !json && !files_only {
-                    eprintln!("No indexed code units in file: {}", file_path.display());
-                }
-                return Ok(vec![]);
-            }
-            combined_ids = match combined_ids {
-                Some(existing) => {
-                    let existing_set: std::collections::HashSet<_> = existing.into_iter().collect();
-                    Some(
-                        file_ids
-                            .into_iter()
-                            .filter(|id| existing_set.contains(id))
-                            .collect(),
-                    )
-                }
-                None => Some(file_ids),
-            };
-        }
-
-        // Apply exclude pattern filter (SQL-based: returns IDs that DON'T match patterns)
-        if !exclude_patterns.is_empty() {
-            let included_ids = searcher.filter_exclude_by_patterns(exclude_patterns)?;
-            let included_set: std::collections::HashSet<_> = included_ids.into_iter().collect();
-            combined_ids = match combined_ids {
-                Some(existing) => Some(
-                    existing
-                        .into_iter()
-                        .filter(|id| included_set.contains(id))
-                        .collect(),
-                ),
-                None => Some(included_set.into_iter().collect()),
-            };
-        }
-
-        // Apply exclude-dir filter (SQL-based: returns IDs NOT in excluded directories)
-        if !exclude_dirs.is_empty() {
-            let included_ids = searcher.filter_exclude_by_dirs(exclude_dirs)?;
-            let included_set: std::collections::HashSet<_> = included_ids.into_iter().collect();
-            combined_ids = match combined_ids {
-                Some(existing) => Some(
-                    existing
-                        .into_iter()
-                        .filter(|id| included_set.contains(id))
-                        .collect(),
-                ),
-                None => Some(included_set.into_iter().collect()),
-            };
-        }
-
-        // Check if subset is empty after combining
-        if let Some(ref ids) = combined_ids {
-            if ids.is_empty() {
-                if !json && !files_only {
-                    eprintln!("No indexed code units match the specified filters");
-                }
-                return Ok(vec![]);
-            }
-        }
-
-        combined_ids
+    let options = SearchOptions {
+        config,
+        query,
+        project_root: &effective_root,
+        requested_path: Some(&search_path),
+        top_k,
+        json,
+        include_patterns,
+        files_only,
+        text_pattern,
+        extended_regexp,
+        fixed_strings,
+        word_regexp,
+        case_sensitive,
+        exclude_patterns,
+        exclude_dirs,
+        code_only,
+        no_fts,
+        alpha,
+        subdir_filter: subdir_filter.as_deref(),
+        specific_file: specific_file.as_deref(),
     };
+    let loaded = search_loaded(&searcher, &options)?;
 
-    // Search with optional filtering
-    // Request more results to allow for re-ranking with query boost and test function demotion
-    let search_top_k = if code_only { top_k * 4 } else { top_k * 3 };
-
-    // Resolve hybrid search: --semantic-only CLI flag overrides, then config, default is enabled
-    let hybrid_disabled = if no_fts {
-        true
-    } else {
-        !config.use_hybrid_search()
-    };
-
-    // CLI --alpha overrides config, config overrides default (0.55)
-    let hybrid_alpha = alpha.unwrap_or_else(|| config.get_hybrid_alpha());
-
-    // When no -e flag is provided, run BOTH semantic/hybrid search and text-pattern search
-    // This ensures exact matches are found even if the vector database doesn't rank them highly
-    let results = if let Some(pattern) = &text_pattern {
-        // -e flag provided: use existing hybrid search logic
-        // Enhance semantic query with -e pattern (strip regex metacharacters and dedupe tokens)
-        let sanitized_pattern = strip_regex_for_semantic(pattern);
-        let enhanced_query = merge_query_with_pattern(query, &sanitized_pattern);
-        if hybrid_disabled {
-            searcher.search(&enhanced_query, search_top_k, subset.as_deref())?
-        } else {
-            searcher.search_hybrid(
-                &enhanced_query,
-                search_top_k,
-                subset.as_deref(),
-                hybrid_alpha,
-            )?
+    // Preserve search counts for one-shot CLI searches. The server never calls
+    // this wrapper and therefore never writes state.json.
+    if loaded.searched {
+        if let Ok(mut state) = IndexState::load(&index_dir) {
+            state.increment_search_count();
+            let _ = state.save(&index_dir);
         }
-    } else {
-        // Encode query once and reuse across both searches
-        let query_emb = searcher.encode_query(query)?;
-
-        // Run FTS5 once and reuse across both searches
-        let fts5_results = if hybrid_disabled {
-            None
-        } else {
-            searcher.fts5_search(query, search_top_k * 3, subset.as_deref())
-        };
-
-        // 1. Run semantic search (with FTS5 fusion if enabled)
-        let semantic_results = if hybrid_disabled {
-            searcher.search_with_embedding(&query_emb, search_top_k, subset.as_deref())?
-        } else {
-            searcher.search_hybrid_with_embedding(
-                &query_emb,
-                query,
-                search_top_k,
-                subset.as_deref(),
-                hybrid_alpha,
-                fts5_results.as_ref(),
-            )?
-        };
-
-        // 2. Run hybrid search: filter by query text, then semantic rank
-        // Use fixed_strings mode to treat the query as a literal pattern.
-        // The semantic-side query is *always* case-insensitive — ColBERT
-        // embeddings handle case fuzzily and we want broad recall here.
-        let text_filtered_ids =
-            searcher.filter_by_text_pattern_with_options(query, false, true, false, false)?;
-
-        let hybrid_results = if !text_filtered_ids.is_empty() {
-            // Intersect with existing subset if any
-            let hybrid_subset: Vec<i64> = match &subset {
-                Some(existing) => {
-                    let existing_set: std::collections::HashSet<_> =
-                        existing.iter().copied().collect();
-                    text_filtered_ids
-                        .into_iter()
-                        .filter(|id| existing_set.contains(id))
-                        .collect()
-                }
-                None => text_filtered_ids,
-            };
-
-            if !hybrid_subset.is_empty() {
-                // Reuse cached embedding and FTS5 results (filtered to subset)
-                if hybrid_disabled {
-                    searcher.search_with_embedding(
-                        &query_emb,
-                        search_top_k,
-                        Some(&hybrid_subset),
-                    )?
-                } else {
-                    // Pass `None` so FTS5 is refetched *within* the subset.
-                    // Reusing the global `fts5_results` here would carry
-                    // BM25 hits from outside the subset; they'd get filtered
-                    // down to a tiny intersection, hurting recall.
-                    searcher.search_hybrid_with_embedding(
-                        &query_emb,
-                        query,
-                        search_top_k,
-                        Some(&hybrid_subset),
-                        hybrid_alpha,
-                        None,
-                    )?
-                }
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
-        };
-
-        // 3. Merge results: one entry per file, span covers every matched
-        //    unit, score is the max across both calls.
-        //
-        // The previous `(file, line)` dedup was buggy: both
-        // `search_hybrid_with_embedding` calls run `collapse_by_file`
-        // internally, which sets `unit.line = min(line_i)` *across that
-        // call's candidate pool*. Two pools → two different mins for the
-        // same file → same file occupied two top-K slots.
-        use std::collections::hash_map::Entry;
-        let mut merged: HashMap<PathBuf, colgrep::SearchResult> = HashMap::new();
-        for result in semantic_results.into_iter().chain(hybrid_results) {
-            let key = result.unit.file.clone();
-            match merged.entry(key) {
-                Entry::Occupied(mut e) => {
-                    let existing = e.get_mut();
-                    let new_start = existing.unit.line.min(result.unit.line);
-                    let new_end = existing.unit.end_line.max(result.unit.end_line);
-                    if result.score > existing.score {
-                        *existing = result;
-                    }
-                    existing.unit.line = new_start;
-                    existing.unit.end_line = new_end;
-                }
-                Entry::Vacant(e) => {
-                    e.insert(result);
-                }
-            }
-        }
-        merged.into_values().collect::<Vec<_>>()
-    };
-
-    // Note: When -e is used, results are already filtered to units containing the pattern
-    // via filter_by_text_pattern_with_options() above, which supports -E, -F, -w flags.
-    //
-    // The legacy `compute_final_score` test-name demotion was removed; the
-    // hybrid pipeline now applies `ranking::file_path_penalty` (a much more
-    // complete language-aware test/bench/example/compat penalty) inside
-    // `Searcher::search_hybrid_with_embedding`.
-    let mut results: Vec<_> = results;
-    results.sort_by(cmp_results_deterministic);
-
-    // Increment search count
-    let index_dir = get_index_dir_for_project(&effective_root, &model)?;
-    if let Ok(mut state) = IndexState::load(&index_dir) {
-        state.increment_search_count();
-        let _ = state.save(&index_dir);
     }
 
-    // Convert file paths to absolute for proper display when merging results from multiple paths
-    let results: Vec<colgrep::SearchResult> = results
-        .into_iter()
-        .map(|mut r| {
-            if !r.unit.file.is_absolute() {
-                r.unit.file = effective_root.join(&r.unit.file);
-            }
-            r
-        })
-        .collect();
-
-    Ok(results)
+    Ok(loaded.results)
 }
 
 #[cfg(test)]
@@ -1700,6 +1861,17 @@ mod tests {
             None,
         );
         colgrep::SearchResult { unit, score }
+    }
+
+    #[test]
+    fn finalize_results_applies_shared_code_only_and_top_k_policy() {
+        let mut text = mk_result("README.md", 1, 2, 10.0);
+        text.unit.language = colgrep::Language::Markdown;
+        let code = mk_result("src/lib.rs", 1, 2, 1.0);
+        let results = finalize_results(vec![text, code], 1, true);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].unit.file, std::path::PathBuf::from("src/lib.rs"));
     }
 
     /// The deterministic comparator must order purely by (score desc, file,

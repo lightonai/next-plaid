@@ -46,7 +46,7 @@ Search:
 colgrep "database connection pooling"
 ```
 
-That's it. No server, no API, no dependencies. ColGREP is a single Rust binary with everything baked in. `colgrep init` builds the index for the first time. After that, every search detects file changes and updates the index automatically before returning results.
+That's it. No server, no API, no dependencies. ColGREP is a single Rust binary with everything baked in. `colgrep init` builds the index for the first time. After that, every search detects file changes and updates the index automatically before returning results. Integrations making repeated queries can optionally reuse a loaded index through [`colgrep serve --stdio`](docs/stdio-server.md).
 
 Regex meets semantics:
 

@@ -3775,46 +3775,6 @@ fn build_glob_set(patterns: &[String]) -> Option<GlobSet> {
     builder.build().ok()
 }
 
-/// Convert a glob pattern to a regex pattern
-/// e.g., "*.test.ts" -> ".*\\.test\\.ts$"
-/// e.g., "**/*.rs" -> ".*/.*\\.rs$"
-fn glob_to_regex(pattern: &str) -> String {
-    let mut regex = String::new();
-
-    // If pattern doesn't start with ** or /, match anywhere in path
-    if !pattern.starts_with("**/") && !pattern.starts_with('/') {
-        regex.push_str("(^|.*/)")
-    }
-
-    let mut chars = pattern.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '*' => {
-                if chars.peek() == Some(&'*') {
-                    chars.next(); // consume second *
-                    if chars.peek() == Some(&'/') {
-                        chars.next(); // consume /
-                        regex.push_str("(.*/)?");
-                    } else {
-                        regex.push_str(".*");
-                    }
-                } else {
-                    regex.push_str("[^/]*");
-                }
-            }
-            '?' => regex.push('.'),
-            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
-                regex.push('\\');
-                regex.push(c);
-            }
-            _ => regex.push(c),
-        }
-    }
-
-    regex.push('$');
-    regex
-}
-
 /// Check if a string contains glob pattern metacharacters
 fn is_glob_pattern(pattern: &str) -> bool {
     pattern.contains('*') || pattern.contains('?') || pattern.contains('[')
@@ -3899,6 +3859,15 @@ pub struct Searcher {
     model: Colbert,
     index: MmapIndex,
     index_path: String,
+}
+
+fn path_prefix_range(prefix: &Path) -> (String, String) {
+    let prefix = prefix.to_string_lossy();
+    let separator = std::path::MAIN_SEPARATOR;
+    (
+        format!("{prefix}{separator}"),
+        format!("{prefix}{}", char::from_u32(separator as u32 + 1).unwrap()),
+    )
 }
 
 impl Searcher {
@@ -4036,19 +4005,14 @@ impl Searcher {
     /// Filter results to files within a subdirectory.
     /// Returns document IDs where the file path has the given directory prefix.
     pub fn filter_by_path_prefix(&self, prefix: &Path) -> Result<Vec<i64>> {
-        let prefix_str = prefix.to_string_lossy();
-        // Match on a whole path component: a bare `{prefix}%` would also pull in
-        // sibling directories sharing the string prefix (`corpus` ⊃ `corpus-extra/`).
-        // Stored paths use native separators (serde serializes the unit's PathBuf),
-        // so the component boundary must too.
-        let sep = std::path::MAIN_SEPARATOR;
-        let like_pattern = format!("{}{}%", prefix_str.trim_end_matches(sep), sep);
+        let (start, end) = path_prefix_range(prefix);
+
         let subset = filtering::where_condition(
             &self.index_path,
-            "file LIKE ?",
-            &[serde_json::json!(like_pattern)],
+            "file >= ? AND file < ?",
+            &[serde_json::json!(start), serde_json::json!(end)],
         )
-        .unwrap_or_default();
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
         Ok(subset)
     }
@@ -4059,56 +4023,42 @@ impl Searcher {
             return Ok(vec![]);
         }
 
-        // Build globset from patterns
         let Some(glob_set) = build_glob_set(patterns) else {
             return Ok(vec![]);
         };
-
-        // Get all metadata from the index
-        let all_metadata = filtering::get(&self.index_path, None, &[], None).unwrap_or_default();
-
-        // Filter metadata by matching file paths against glob patterns
-        let matching_ids: Vec<i64> = all_metadata
-            .into_iter()
-            .filter_map(|row| {
-                let doc_id = row.get("_subset_")?.as_i64()?;
-                let file = row.get("file")?.as_str()?;
-                let path = Path::new(file);
-                if glob_set.is_match(path) {
-                    Some(doc_id)
-                } else {
-                    None
-                }
-            })
+        let files = filtering::get_distinct_strings(&self.index_path, "file")
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let matching_files: Vec<_> = files
+            .iter()
+            .filter(|file| glob_set.is_match(Path::new(file)))
             .collect();
-
+        let mut matching_ids = Vec::new();
+        for chunk in matching_files.chunks(256) {
+            let condition = format!(
+                "file IN ({})",
+                std::iter::repeat_n("?", chunk.len())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            let parameters: Vec<_> = chunk.iter().map(|file| serde_json::json!(file)).collect();
+            matching_ids.extend(
+                filtering::where_condition(&self.index_path, &condition, &parameters)
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+            );
+        }
+        matching_ids.sort_unstable();
         Ok(matching_ids)
     }
 
-    /// Get document IDs for code units that DON'T match exclude patterns (SQL-based)
-    /// Uses REGEXP to filter out files matching any of the glob-like patterns
+    /// Get document IDs for code units that don't match exclude patterns.
     pub fn filter_exclude_by_patterns(&self, patterns: &[String]) -> Result<Vec<i64>> {
-        if patterns.is_empty() {
-            // No exclusions - return all IDs
-            return filtering::where_condition(&self.index_path, "1=1", &[])
-                .map_err(|e| anyhow::anyhow!("{}", e));
-        }
-
-        // Convert glob patterns to regex patterns for SQL REGEXP
-        // e.g., "*.test.ts" -> ".*\\.test\\.ts$"
-        let regex_patterns: Vec<String> = patterns.iter().map(|p| glob_to_regex(p)).collect();
-
-        // Build a combined regex: (pattern1|pattern2|...)
-        let combined_regex = regex_patterns.join("|");
-
-        // Use NOT REGEXP to exclude matching files
-        let subset = filtering::where_condition_regexp(
-            &self.index_path,
-            "NOT (file REGEXP ?)",
-            &[serde_json::json!(combined_regex)],
-        )
-        .unwrap_or_default();
-
+        let excluded: HashSet<_> = self
+            .filter_by_file_patterns(patterns)?
+            .into_iter()
+            .collect();
+        let mut subset = filtering::where_condition(&self.index_path, "1=1", &[])
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        subset.retain(|id| !excluded.contains(id));
         Ok(subset)
     }
 
@@ -4137,7 +4087,7 @@ impl Searcher {
             "NOT (file REGEXP ?)",
             &[serde_json::json!(combined_regex)],
         )
-        .unwrap_or_default();
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
         Ok(subset)
     }
@@ -4768,6 +4718,18 @@ fn prompt_large_index_confirmation(num_units: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_prefix_range_is_component_bounded() {
+        let separator = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            path_prefix_range(Path::new("src_100%!")),
+            (
+                format!("src_100%!{separator}"),
+                format!("src_100%!{}", char::from_u32(separator as u32 + 1).unwrap())
+            )
+        );
+    }
 
     /// The mtime fast path in `compute_update_plan` must skip content hashing
     /// for files whose stored mtime is unchanged. The stored hash is wrong on

@@ -182,6 +182,15 @@ NOTES:
     • Useful for pre-warming the index before searching
     • Subsequent searches will be fast since the index is already built";
 
+pub const SERVE_HELP: &str = "\
+EXAMPLES:
+    colgrep serve --stdio
+    colgrep serve --stdio ./my-project --model lightonai/LateOn-Code-edge
+
+NOTES:
+    • Reuses one loaded project index
+    • Uses versioned newline-delimited JSON on stdin/stdout";
+
 pub const CONFIG_HELP: &str = "\
 EXAMPLES:
     # Show current configuration
@@ -582,6 +591,22 @@ pub enum Commands {
         /// Skip the automatic index update and search the existing index as-is
         #[arg(long = "no-update")]
         no_update: bool,
+    },
+
+    /// Serve search requests over local stdio
+    #[command(after_help = SERVE_HELP)]
+    Serve {
+        /// Enable the versioned NDJSON stdio transport
+        #[arg(long, required = true)]
+        stdio: bool,
+
+        /// Project directory whose existing index will be loaded
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// ColBERT model HuggingFace ID or local path
+        #[arg(long)]
+        model: Option<String>,
     },
 
     /// Show index status for a project
