@@ -222,6 +222,7 @@ colgrep --json "auth" | jq '.[] | .unit.file'
 | `colgrep settings`       | View or modify configuration           |
 | `colgrep settings --ignore` | Add extra ignore patterns (persistent) |
 | `colgrep settings --force-include` | Force-include normally ignored paths |
+| `colgrep ab`             | Visualize A/B token-savings results    |
 | `colgrep --stats`        | Show search statistics for all indexes |
 
 ---
@@ -367,6 +368,75 @@ colgrep settings --no-relative-paths
 ```
 
 > **Note:** JSON output (`--json`) always uses absolute paths regardless of this setting.
+
+### A/B Testing: Does colgrep Actually Save You Tokens?
+
+colgrep can measure its own worth on your real work, locally, and tell you plainly whether it is paying for itself. It is **off by default**, because measuring honestly means running some of your sessions *without* colgrep.
+
+**Enable it:**
+
+```bash
+colgrep settings --ab-test      # turn measurement on
+colgrep --install-claude-code   # once, so finished sessions get recorded
+```
+
+Then work normally for a few days and run:
+
+```bash
+colgrep ab                    # the report
+colgrep ab ~/projects/myapp   # one project
+colgrep ab --json             # machine-readable
+```
+
+```
+Is colgrep saving you tokens?
+
+/Users/me/projects/myapp
+18 sessions: 9 with colgrep, 9 without
+
+  WORTH IT   finding code costs 59% less with colgrep
+             the real saving is between 9% and 91% less
+
+  per session                 with colgrep      without
+  tokens used to find code           4,981        5,070   same
+  file:line references found          15.5          6.5   2.4x more
+  ──────────────────────────────────────────────────────────────────
+  tokens per reference found           321          780   59% less
+
+  searches run                         4.0          3.5
+  files opened afterwards              1.2          1.0
+  share of codebase read             0.30%        0.29%
+
+  Both used about the same number of tokens looking, but colgrep found 2.4x
+  more references, so each one came cheaper.
+
+What the rows mean
+  tokens used to find code    everything a search returned (colgrep, grep, rg, Grep/Glob),
+                              plus every file the agent opened afterwards to check a result
+  file:line references found  distinct file:line spots the agent cited in its answers —
+                              a stand-in for how much of the answer it actually located
+  tokens per reference found  the first row divided by the second — the number the verdict
+                              is based on. A tool that needs three searches to replace one
+                              grep costs more per reference even if each search is cheap.
+```
+
+The verdict is one of **WORTH IT**, **NOT HERE**, or **TOO EARLY**, and the table below it shows the arithmetic so you can check it: the first two rows divide into the third. They are per-session averages rather than totals, which keeps that division exact even when one arm happened to run more sessions than the other. A legend prints once at the end, so no row needs prior explanation.
+
+The verdict is one of **WORTH IT**, **NOT HERE**, or **TOO EARLY** — and the table below it shows the arithmetic, so you can see *why*. In the example above both arms spent about the same on searching; colgrep wins because it pointed the agent at more places for that spend. A "place" is a `file:line` the agent cited in its answer.
+
+**How it works.** With measurement on, each Claude Code session is randomly assigned an arm: *with colgrep* (the session hook injects the usual instructions) or *without* (the hook stays silent, so the agent uses its native Grep/Glob exactly as if colgrep were not installed). Neither arm is told it is being measured — telling the model would change its behavior and break the comparison. At session end, colgrep reads the transcript and adds up what locating code actually cost.
+
+**What gets counted.** Every byte a search tool returned — colgrep, `grep`, `rg`, Grep/Glob, `find`, `cat` — **plus** every byte a follow-up `Read` returned. Reads are part of the cost on purpose: colgrep prints compact `path:lines`, which is cheap by itself but pushes the agent into opening files that grep's inline match content would have shown directly. Counting searches alone would hide that.
+
+The headline is **tokens per reference found** rather than tokens spent, because cost alone rewards a tool that returns nothing. If colgrep needs three calls to replace one `grep`, that shows up here — which is the entire point.
+
+**Reading the verdict.** The range is what matters. When it spans both directions the report says so in words instead of pretending to a conclusion; a bare "significant" would be misleading on a dashboard you can re-run at will. `colgrep --reset-stats` clears the samples, and `colgrep settings --no-ab-test` ends the experiment (every session keeps colgrep again).
+
+```bash
+colgrep settings --ab-sessions-probability 0.3   # only 30% of sessions run without colgrep
+```
+
+> **A note on what this replaced.** An earlier version of this feature compared each colgrep search against a simulated `grep` of the same query, and reported savings of 48–69% per search. That number was retired: measured across 24 real agent sessions, **82% of the greps an agent actually writes are piped to `head`** and every one targets a specific file or directory, while the simulation grepped the whole repository unbounded. It was not a fair opponent. Per-search comparisons also cannot see the thing that matters most — how many calls each tool needs — so the measurement moved to whole sessions.
 
 ### Custom Ignore & Force-Include
 

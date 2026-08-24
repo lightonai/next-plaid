@@ -1,7 +1,10 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
 
+use colgrep::abtest::sessions::{self, SessionSample};
+use colgrep::abtest::stats_math::{fmt_change, fmt_thousands};
 use colgrep::{get_colgrep_data_dir, get_vector_index_path, IndexState, ProjectMetadata};
 
 /// Get the number of documents in an index by reading its metadata
@@ -15,6 +18,29 @@ fn get_index_document_count(vector_index_path: &Path) -> usize {
         }
     }
     0
+}
+
+/// One-line A/B summary. The full picture lives in `colgrep ab`; this is just
+/// enough to notice that data is accumulating.
+fn print_session_ab(samples: &[SessionSample]) {
+    let Some(s) = sessions::summarize_sessions(samples) else {
+        return;
+    };
+    println!(
+        "  A/B: {} sessions ({} with colgrep, {} without)",
+        s.n_treatment + s.n_control,
+        s.n_treatment,
+        s.n_control
+    );
+    match s.cost_ratio {
+        Some(ratio) => println!(
+            "    finding things costs {} per session with colgrep ({} vs {} tokens) — see `colgrep ab`",
+            fmt_change(ratio),
+            fmt_thousands(s.median_find_cost_treatment.round() as u64),
+            fmt_thousands(s.median_find_cost_control.round() as u64),
+        ),
+        None => println!("    not enough data yet — see `colgrep ab`"),
+    }
 }
 
 pub fn cmd_stats() -> Result<()> {
@@ -32,6 +58,16 @@ pub fn cmd_stats() -> Result<()> {
     if index_dirs.is_empty() {
         println!("No indexes found.");
         return Ok(());
+    }
+
+    // Session samples are stored globally; group them per project path so each
+    // project block below can pick up its own.
+    let mut session_groups: HashMap<String, Vec<SessionSample>> = HashMap::new();
+    for sample in sessions::load_session_samples() {
+        session_groups
+            .entry(sample.project_path.clone())
+            .or_default()
+            .push(sample);
     }
 
     let mut total_functions = 0usize;
@@ -60,10 +96,20 @@ pub fn cmd_stats() -> Result<()> {
         }
         println!("  Functions indexed: {}", num_functions);
         println!("  Search count: {}", state.search_count);
+        if let Some(samples) = session_groups.remove(&project_path) {
+            print_session_ab(&samples);
+        }
         println!();
 
         total_functions += num_functions;
         total_searches += state.search_count;
+    }
+
+    // Session samples for projects whose index was cleared or renamed.
+    for (project_path, samples) in session_groups {
+        println!("Project: {} (index no longer present)", project_path);
+        print_session_ab(&samples);
+        println!();
     }
 
     println!(
@@ -103,6 +149,12 @@ pub fn cmd_reset_stats() -> Result<()> {
         }
     }
 
-    println!("✅ Reset search statistics for {} index(es)", reset_count);
+    // A/B session samples live outside the per-index directories.
+    let _ = sessions::clear_session_samples();
+
+    println!(
+        "✅ Reset search statistics and A/B samples for {} index(es)",
+        reset_count
+    );
     Ok(())
 }

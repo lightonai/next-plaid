@@ -1,3 +1,4 @@
+mod ab;
 mod clear;
 mod config;
 mod hooks;
@@ -7,9 +8,10 @@ mod stats;
 mod status;
 mod update;
 
+pub use ab::cmd_ab;
 pub use clear::cmd_clear;
 pub use config::{cmd_config, cmd_set_model};
-pub use hooks::{cmd_session_hook, cmd_task_hook};
+pub use hooks::{cmd_grep_hook, cmd_session_end_hook, cmd_session_hook, cmd_task_hook};
 pub use init::{cmd_init, InitOptions};
 pub use search::cmd_search;
 pub use stats::{cmd_reset_stats, cmd_stats};

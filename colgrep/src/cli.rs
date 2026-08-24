@@ -182,6 +182,26 @@ NOTES:
     • Useful for pre-warming the index before searching
     • Subsequent searches will be fast since the index is already built";
 
+pub const AB_HELP: &str = "\
+EXAMPLES:
+    # Visual report for every project with A/B samples
+    colgrep ab
+
+    # One project only
+    colgrep ab ~/projects/myapp
+
+    # Machine-readable output for dashboards/scripting
+    colgrep ab --json
+
+NOTES:
+    • A/B measurement is opt-in and off by default; enable it with
+      `colgrep settings --ab-test`
+    • Measuring means running some Claude Code sessions WITHOUT colgrep, so
+      the two can be compared on real work
+    • Rerun `colgrep --install-claude-code` once so finished sessions are
+      recorded
+    • Clear all samples with: colgrep --reset-stats";
+
 pub const CONFIG_HELP: &str = "\
 EXAMPLES:
     # Show current configuration
@@ -261,6 +281,15 @@ EXAMPLES:
 
     # Show relative paths in search output (default, saves tokens for LLM usage)
     colgrep settings --relative-paths
+
+    # A/B: opt in to measuring what colgrep saves. Some Claude Code sessions
+    # will run WITHOUT colgrep (the control arm) so the two can be compared
+    # on real work. View results with `colgrep ab`.
+    colgrep settings --ab-test
+    colgrep settings --no-ab-test
+
+    # A/B tuning: share of sessions that run without colgrep (the control arm)
+    colgrep settings --ab-sessions-probability 0.3
 
 NOTES:
     • Values are stored in ~/.config/colgrep/config.json
@@ -442,6 +471,15 @@ pub struct Cli {
     #[arg(long = "task-hook", hide = true)]
     pub task_hook: bool,
 
+    /// Internal: Claude Code Grep/Glob PreToolUse hook (colgrep reminder,
+    /// silenced for session-A/B control sessions)
+    #[arg(long = "grep-hook", hide = true)]
+    pub grep_hook: bool,
+
+    /// Internal: Claude Code SessionEnd hook (records session A/B samples)
+    #[arg(long = "session-end-hook", hide = true)]
+    pub session_end_hook: bool,
+
     /// Disable embedding pooling (use full embeddings, slower but more precise)
     #[arg(long = "no-pool")]
     pub no_pool: bool,
@@ -614,6 +652,17 @@ pub enum Commands {
     /// Update colgrep to the latest version
     Update,
 
+    /// Visualize A/B measurement results (token savings vs grep, session A/B)
+    #[command(name = "ab", after_help = AB_HELP)]
+    Ab {
+        /// Only show results for this project (default: all projects)
+        path: Option<PathBuf>,
+
+        /// Output the report data as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Build or update the index without searching
     #[command(after_help = INIT_HELP)]
     Init {
@@ -777,6 +826,21 @@ pub enum Commands {
         /// Clear all force-include patterns and directory registrations
         #[arg(long = "clear-force-include")]
         clear_force_include: bool,
+
+        /// Opt in to A/B measurement of what colgrep saves. Some Claude Code
+        /// sessions will run WITHOUT colgrep (the control arm) so the two can
+        /// be compared on real work. View results with `colgrep ab`.
+        #[arg(long = "ab-test", conflicts_with = "no_ab_test")]
+        ab_test: bool,
+
+        /// Disable all A/B measurement (default)
+        #[arg(long = "no-ab-test", conflicts_with = "ab_test")]
+        no_ab_test: bool,
+
+        /// Probability that an enrolled Claude Code session runs as control
+        /// (0..1, default 0.5). Use 0 to reset to the default.
+        #[arg(long = "ab-sessions-probability", value_name = "FLOAT")]
+        ab_sessions_probability: Option<f32>,
     },
 }
 

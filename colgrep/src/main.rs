@@ -19,8 +19,9 @@ use colgrep::{
 
 use cli::{Cli, Commands};
 use commands::{
-    cmd_clear, cmd_config, cmd_init, cmd_reset_stats, cmd_search, cmd_session_hook, cmd_set_model,
-    cmd_stats, cmd_status, cmd_task_hook, cmd_update, InitOptions,
+    cmd_ab, cmd_clear, cmd_config, cmd_grep_hook, cmd_init, cmd_reset_stats, cmd_search,
+    cmd_session_end_hook, cmd_session_hook, cmd_set_model, cmd_stats, cmd_status, cmd_task_hook,
+    cmd_update, InitOptions,
 };
 
 /// Apply the persisted CoreML model cache directory (issue #129).
@@ -140,6 +141,14 @@ fn main() -> Result<()> {
 
     if cli.task_hook {
         return cmd_task_hook();
+    }
+
+    if cli.grep_hook {
+        return cmd_grep_hook();
+    }
+
+    if cli.session_end_hook {
+        return cmd_session_end_hook();
     }
 
     if cli.stats {
@@ -309,6 +318,7 @@ fn main() -> Result<()> {
             },
         ),
         Some(Commands::Update) => cmd_update(),
+        Some(Commands::Ab { path, json }) => cmd_ab(path.as_deref(), json),
         Some(Commands::Status { path }) => cmd_status(&path),
         Some(Commands::Clear { path, all }) => cmd_clear(&path, all),
         Some(Commands::SetModel { model }) => cmd_set_model(&model),
@@ -339,6 +349,9 @@ fn main() -> Result<()> {
             remove_force_include,
             clear_ignore,
             clear_force_include,
+            ab_test,
+            no_ab_test,
+            ab_sessions_probability,
         }) => cmd_config(
             default_k,
             default_n,
@@ -366,6 +379,9 @@ fn main() -> Result<()> {
             remove_force_include,
             clear_ignore,
             clear_force_include,
+            ab_test,
+            no_ab_test,
+            ab_sessions_probability,
         ),
         None => {
             // Default: run search if query is provided

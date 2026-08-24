@@ -20,6 +20,11 @@ pub const DEFAULT_POOL_FACTOR: usize = 2;
 /// Default parser recursion depth guard.
 pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1024;
 
+/// Default probability that an enrolled session runs as *control* in the
+/// opt-in session A/B experiment. 0.5 balances the arms, which reaches
+/// significance fastest.
+pub const DEFAULT_AB_SESSIONS_PROBABILITY: f32 = 0.5;
+
 /// Default batch size per encoding session for CPU
 /// Testing shows batch_size=1 gives best performance with parallel sessions on CPU
 pub const DEFAULT_BATCH_SIZE_CPU: usize = 1;
@@ -191,6 +196,24 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub force_include: Vec<String>,
 
+    /// Shadow A/B measurement of token savings vs a grep-equivalent baseline.
+    /// Default: disabled (opt-in via `settings --ab-test`). When enabled,
+    /// sampled searches additionally price what a grep of the same request
+    /// would have printed; results never change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ab_test: Option<bool>,
+
+    /// Opt-in session-level A/B: randomize whether the Claude Code session
+    /// hook injects colgrep (treatment) or stays silent (control), and record
+    /// real token usage per session. Default: disabled — control sessions
+    /// genuinely lose colgrep, so this requires explicit opt-in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ab_sessions: Option<bool>,
+
+    /// Probability that an enrolled session runs as control (default: 0.5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ab_sessions_probability: Option<f32>,
+
     /// Per-project force-included directories: indexed as part of the project
     /// even though its walk rules exclude them (most often a .gitignore entry —
     /// dataset corpora, build outputs). The directory counterpart of the
@@ -311,6 +334,53 @@ impl Config {
     /// Clear the binary storage setting (revert to default residual codes)
     pub fn clear_binary(&mut self) {
         self.binary = None;
+    }
+
+    /// Whether shadow A/B token-savings measurement is enabled (default: false).
+    pub fn use_ab_test(&self) -> bool {
+        self.ab_test.unwrap_or(false)
+    }
+
+    /// Set the shadow A/B measurement switch.
+    pub fn set_ab_test(&mut self, enabled: bool) {
+        self.ab_test = Some(enabled);
+    }
+
+    /// Clear the shadow A/B switch (revert to default: disabled).
+    pub fn clear_ab_test(&mut self) {
+        self.ab_test = None;
+    }
+
+    /// Whether the opt-in session-level A/B is enabled (default: false).
+    pub fn use_ab_sessions(&self) -> bool {
+        self.ab_sessions.unwrap_or(false)
+    }
+
+    /// Set the session A/B switch.
+    pub fn set_ab_sessions(&mut self, enabled: bool) {
+        self.ab_sessions = Some(enabled);
+    }
+
+    /// Clear the session A/B switch (revert to default: disabled).
+    pub fn clear_ab_sessions(&mut self) {
+        self.ab_sessions = None;
+    }
+
+    /// Probability that an enrolled session runs as control.
+    pub fn get_ab_sessions_probability(&self) -> f32 {
+        self.ab_sessions_probability
+            .unwrap_or(DEFAULT_AB_SESSIONS_PROBABILITY)
+            .clamp(0.0, 1.0)
+    }
+
+    /// Set the control-arm probability (clamped to [0, 1]).
+    pub fn set_ab_sessions_probability(&mut self, p: f32) {
+        self.ab_sessions_probability = Some(p.clamp(0.0, 1.0));
+    }
+
+    /// Clear the control-arm probability (revert to default: 0.5).
+    pub fn clear_ab_sessions_probability(&mut self) {
+        self.ab_sessions_probability = None;
     }
 
     /// Get the configured CoreML model cache directory, if any (issue #129).
@@ -1035,6 +1105,56 @@ mod tests {
         let restored: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.binary, Some(true));
         assert!(restored.use_binary());
+    }
+
+    #[test]
+    fn test_ab_test_defaults() {
+        let config = Config::default();
+        assert!(!config.use_ab_test(), "A/B must default to off");
+        assert!(!config.use_ab_sessions(), "session A/B must default to off");
+        assert_eq!(
+            config.get_ab_sessions_probability(),
+            DEFAULT_AB_SESSIONS_PROBABILITY
+        );
+        // Absent from JSON when unset (existing configs untouched).
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("ab_test"));
+        assert!(!json.contains("ab_sessions"));
+    }
+
+    #[test]
+    fn test_ab_test_set_clear_roundtrip() {
+        let mut config = Config::default();
+        config.set_ab_test(true);
+        config.set_ab_sessions(true);
+        config.set_ab_sessions_probability(0.3);
+
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: Config = serde_json::from_str(&json).unwrap();
+        assert!(restored.use_ab_test());
+        assert!(restored.use_ab_sessions());
+        assert_eq!(restored.get_ab_sessions_probability(), 0.3);
+
+        config.clear_ab_test();
+        config.clear_ab_sessions();
+        config.clear_ab_sessions_probability();
+        assert!(!config.use_ab_test(), "clear reverts to the off default");
+        assert!(!config.use_ab_sessions());
+    }
+
+    #[test]
+    fn test_ab_sessions_probability_is_clamped() {
+        let mut config = Config::default();
+        config.set_ab_sessions_probability(7.0);
+        assert_eq!(config.get_ab_sessions_probability(), 1.0);
+        config.set_ab_sessions_probability(-1.0);
+        assert_eq!(config.get_ab_sessions_probability(), 0.0);
+        // A hand-edited out-of-range value is clamped on read too.
+        let config = Config {
+            ab_sessions_probability: Some(3.0),
+            ..Default::default()
+        };
+        assert_eq!(config.get_ab_sessions_probability(), 1.0);
     }
 
     #[test]
