@@ -5,6 +5,7 @@
 //! - **next-plaid-onnx** - ONNX-based ColBERT encoding
 //! - **tree-sitter** - Multi-language code parsing
 
+pub mod abtest;
 pub mod acceleration;
 pub mod config;
 pub mod embed;

@@ -3,6 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 use ignore::WalkBuilder;
 
+use colgrep::abtest::sessions::{self, Arm, HookInput};
 use colgrep::{find_parent_index, index_exists, Config, DEFAULT_MODEL};
 
 /// Maximum number of files for a "small project" where we enable colgrep
@@ -50,16 +51,49 @@ fn is_small_project(root: &Path) -> bool {
     count > 0
 }
 
+/// Resolve the session A/B arm for a hook invocation, if the experiment is
+/// enabled and Claude Code supplied a session id on stdin.
+///
+/// `enroll` controls whether a missing assignment draws a new one. Only the
+/// SessionStart hook enrolls — and only when colgrep *would* inject (there is
+/// no treatment to withhold otherwise). Every other hook looks up the
+/// existing assignment so a session that was never enrolled stays out.
+fn session_ab_arm(config: &Config, input: &Option<HookInput>, enroll: bool) -> Option<Arm> {
+    if !config.use_ab_sessions() {
+        return None;
+    }
+    let session_id = input.as_ref()?.session_id.as_deref()?;
+    if enroll {
+        let cwd = std::env::current_dir().ok()?;
+        sessions::assign_arm(session_id, &cwd, config.get_ab_sessions_probability()).ok()
+    } else {
+        sessions::lookup_assignment(session_id).map(|a| a.arm)
+    }
+}
+
+fn print_empty_hook_response() -> Result<()> {
+    println!("{}", serde_json::json!({}));
+    Ok(())
+}
+
 /// Claude Code session hook - outputs JSON reminder for semantic search
 pub fn cmd_session_hook() -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let hook_input = sessions::read_hook_input();
 
     // Check if we should inject colgrep context
     if !should_inject_colgrep_context(&cwd) {
         // Return empty response - don't tell model about colgrep
-        let response = serde_json::json!({});
-        println!("{}", serde_json::to_string(&response)?);
-        return Ok(());
+        return print_empty_hook_response();
+    }
+
+    // Session A/B: control sessions get the empty response, so the agent
+    // behaves exactly as if colgrep were not installed. Enrollment happens
+    // here (and only here), after the injection check above, so both arms
+    // had a real treatment to receive or be denied.
+    let config = Config::load().unwrap_or_default();
+    if session_ab_arm(&config, &hook_input, true) == Some(Arm::Control) {
+        return print_empty_hook_response();
     }
 
     // Output the hook response with additional context
@@ -107,13 +141,18 @@ pub fn cmd_session_hook() -> Result<()> {
 /// This is triggered when the Task tool is used to spawn agents
 pub fn cmd_task_hook() -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let hook_input = sessions::read_hook_input();
 
     // Check if we should inject colgrep context
     if !should_inject_colgrep_context(&cwd) {
         // Return empty response - don't tell model about colgrep
-        let response = serde_json::json!({});
-        println!("{}", serde_json::to_string(&response)?);
-        return Ok(());
+        return print_empty_hook_response();
+    }
+
+    // Session A/B: control sessions must not leak colgrep into subagents.
+    let config = Config::load().unwrap_or_default();
+    if session_ab_arm(&config, &hook_input, false) == Some(Arm::Control) {
+        return print_empty_hook_response();
     }
 
     // Output the hook response with detailed agent instructions
@@ -151,4 +190,34 @@ pub fn cmd_task_hook() -> Result<()> {
 
     println!("{}", serde_json::to_string(&response)?);
     Ok(())
+}
+
+/// Claude Code Grep/Glob PreToolUse hook: reminds the agent that colgrep is
+/// available. Replaces the static `echo` the plugin used to ship, so control
+/// sessions of the session A/B don't have colgrep leaked to them.
+pub fn cmd_grep_hook() -> Result<()> {
+    let hook_input = sessions::read_hook_input();
+    let config = Config::load().unwrap_or_default();
+    if session_ab_arm(&config, &hook_input, false) == Some(Arm::Control) {
+        return print_empty_hook_response();
+    }
+
+    let response = serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": "Reminder: colgrep is available for semantic code search. Consider using colgrep for better results."
+        }
+    });
+    println!("{}", serde_json::to_string(&response)?);
+    Ok(())
+}
+
+/// Claude Code SessionEnd hook: records a session A/B sample for enrolled
+/// sessions by reading token usage from the transcript. Best-effort — a
+/// session that was never enrolled (or a missing transcript) records nothing.
+pub fn cmd_session_end_hook() -> Result<()> {
+    if let Some(input) = sessions::read_hook_input() {
+        let _ = sessions::record_session_end(&input);
+    }
+    print_empty_hook_response()
 }

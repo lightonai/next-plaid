@@ -19,8 +19,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"Reminder: colgrep is available for semantic code search. Consider using colgrep for better results.\"}}'",
-            "timeout": 5
+            "command": "colgrep --grep-hook",
+            "timeout": 10
           }
         ]
       },
@@ -31,6 +31,17 @@
             "type": "command",
             "command": "colgrep --task-hook",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "colgrep --session-end-hook",
+            "timeout": 15
           }
         ]
       }

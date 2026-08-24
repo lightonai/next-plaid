@@ -125,8 +125,13 @@ pub fn cmd_config(
     remove_force_include: Vec<String>,
     clear_ignore: bool,
     clear_force_include: bool,
+    ab_test: bool,
+    no_ab_test: bool,
+    ab_sessions_probability: Option<f32>,
 ) -> Result<()> {
     let mut config = Config::load()?;
+
+    let has_ab_changes = ab_test || no_ab_test || ab_sessions_probability.is_some();
 
     let has_ignore_changes = !add_ignore.is_empty()
         || !remove_ignore.is_empty()
@@ -157,6 +162,7 @@ pub fn cmd_config(
         && !binary
         && !no_binary
         && !has_ignore_changes
+        && !has_ab_changes
     {
         println!("Current configuration:");
         println!();
@@ -249,6 +255,21 @@ pub fn cmd_config(
             println!("  binary:      false (default)");
         }
 
+        // A/B measurement (one switch enables both experiments; a
+        // hand-edited config can still de-couple them, shown as "partial")
+        match (config.use_ab_test(), config.use_ab_sessions()) {
+            (true, true) => println!(
+                "  ab-test:     on ({:.0}% of sessions run without colgrep)",
+                100.0 * config.get_ab_sessions_probability()
+            ),
+            (false, false) => println!("  ab-test:     off (default)"),
+            (searches, sessions) => println!(
+                "  ab-test:     partial (searches {} · sessions {})",
+                if searches { "on" } else { "off" },
+                if sessions { "on" } else { "off" }
+            ),
+        }
+
         // max recursion depth
         let max_depth = config.get_max_recursion_depth();
         if config.max_recursion_depth.is_some() {
@@ -296,6 +317,12 @@ pub fn cmd_config(
         println!("Use --hybrid-search or --no-hybrid-search to toggle FTS5 hybrid search.");
         println!(
             "Use --alpha to set hybrid search balance (0=keyword, 1=semantic). Use 0 to reset."
+        );
+        println!(
+            "Use --ab-test/--no-ab-test to toggle A/B measurement of what colgrep saves (opt-in)."
+        );
+        println!(
+            "Use --ab-sessions-probability to set the share of sessions that run without colgrep."
         );
         println!("Use --ignore/--no-ignore to add/remove extra ignore patterns. --clear-ignore to reset.");
         println!("Use --force-include/--no-force-include to add/remove force-includes: an existing directory registers per-project (overrides .gitignore), anything else is a global pattern. --clear-force-include to reset.");
@@ -471,6 +498,44 @@ pub fn cmd_config(
         config.clear_binary();
         println!("✅ Disabled binary embedding storage (residual codes are now default)");
         println!("   Existing binary indexes will be re-embedded on their next update.");
+        changed = true;
+    }
+
+    // A/B measurement (opt-in): one switch controls the whole experiment.
+    if ab_test {
+        config.set_ab_test(true);
+        config.set_ab_sessions(true);
+        println!("✅ Enabled A/B measurement of what colgrep saves");
+        println!(
+            "   ⚠️  {:.0}% of your Claude Code sessions will run WITHOUT colgrep, as the",
+            100.0 * config.get_ab_sessions_probability()
+        );
+        println!("   control arm — that is what makes the comparison meaningful.");
+        println!("   Neither arm is told about the experiment; search results are never");
+        println!("   altered. Rerun `colgrep --install-claude-code` once so finished");
+        println!("   sessions are recorded, then see `colgrep ab`.");
+        println!("   Turn it off with `colgrep settings --no-ab-test`.");
+        changed = true;
+    } else if no_ab_test {
+        config.clear_ab_test();
+        config.clear_ab_sessions();
+        println!("✅ Disabled A/B measurement (default) — every session keeps colgrep");
+        changed = true;
+    }
+    if let Some(p) = ab_sessions_probability {
+        if p == 0.0 {
+            config.clear_ab_sessions_probability();
+            println!(
+                "✅ Reset session A/B control probability to {:.2} (default)",
+                colgrep::config::DEFAULT_AB_SESSIONS_PROBABILITY
+            );
+        } else {
+            config.set_ab_sessions_probability(p);
+            println!(
+                "✅ Set session A/B control probability to {:.2}",
+                config.get_ab_sessions_probability()
+            );
+        }
         changed = true;
     }
 
