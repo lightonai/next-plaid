@@ -46,8 +46,76 @@ where
     result
 }
 
-/// Default maximum GPU memory to use (4GB)
+/// Budget used when the driver cannot be asked how much VRAM is free (4 GiB).
 const DEFAULT_MAX_GPU_MEMORY: usize = 4 * 1024 * 1024 * 1024;
+
+/// Floor for a measured budget. One batch must still fit, and the caller falls back to
+/// CPU rather than failing if even this is too much.
+const MIN_GPU_MEMORY_BUDGET: usize = 128 * 1024 * 1024;
+
+/// Ceiling for a measured budget: past this, batches stop being the bottleneck and a
+/// bigger workspace only raises the blast radius of a mis-measurement.
+const MAX_GPU_MEMORY_BUDGET: usize = 32 * 1024 * 1024 * 1024;
+
+/// Fraction of *free* VRAM one indexing batch may occupy, as (numerator, denominator).
+/// The remainder absorbs allocator fragmentation, the cuBLAS workspace, and whatever
+/// else shares the device — this process is rarely alone on it.
+const FREE_VRAM_BUDGET_FRACTION: (usize, usize) = (3, 5);
+
+/// The indexing workspace budget, in bytes.
+///
+/// A fixed budget is wrong in both directions: 4 GiB leaves an 80 GiB card 95% idle, and
+/// still overcommits a 6 GiB card that is already hosting something else. Measuring free
+/// VRAM at call time makes one code path work on both, and `NEXT_PLAID_MAX_GPU_MEMORY_MB`
+/// pins it for benchmarking. When the driver cannot answer, keep the historical default.
+fn gpu_memory_budget(ctx: &CudaContext, requested: Option<usize>) -> usize {
+    if let Some(bytes) = requested {
+        return bytes;
+    }
+    if let Some(mb) = std::env::var("NEXT_PLAID_MAX_GPU_MEMORY_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&mb| mb > 0)
+    {
+        return mb.saturating_mul(1024 * 1024);
+    }
+    match ctx.device.mem_get_info() {
+        Ok((free, _total)) => {
+            let (num, den) = FREE_VRAM_BUDGET_FRACTION;
+            (free / den * num).clamp(MIN_GPU_MEMORY_BUDGET, MAX_GPU_MEMORY_BUDGET)
+        }
+        Err(_) => DEFAULT_MAX_GPU_MEMORY,
+    }
+}
+
+/// Whether a CUDA error is an out-of-memory condition, which a smaller batch may survive.
+fn is_oom(error: &crate::error::Error) -> bool {
+    let text = error.to_string().to_lowercase();
+    text.contains("out of memory") || text.contains("oom") || text.contains("alloc")
+}
+
+/// Runs `attempt` with a shrinking workspace budget, halving on OOM down to
+/// `MIN_GPU_MEMORY_BUDGET`.
+///
+/// The point is that no single budget is safe on a shared GPU: another process can take
+/// memory between the measurement and the allocation. Retrying smaller turns that race
+/// into a slower index build instead of a failed one; only when the floor also OOMs does
+/// the error reach the caller, which then falls back to CPU.
+fn with_oom_retry<T>(mut budget: usize, mut attempt: impl FnMut(usize) -> Result<T>) -> Result<T> {
+    loop {
+        match attempt(budget) {
+            Ok(value) => return Ok(value),
+            Err(error) if is_oom(&error) && budget > MIN_GPU_MEMORY_BUDGET => {
+                budget = (budget / 2).max(MIN_GPU_MEMORY_BUDGET);
+                eprintln!(
+                    "next-plaid: GPU out of memory during indexing; retrying with a {} MiB workspace",
+                    budget / (1024 * 1024)
+                );
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
 
 /// Global flag to track if CUDA has been determined to be broken/unavailable.
 /// Can be cleared with `clear_cuda_broken()` to retry initialization after
@@ -359,13 +427,32 @@ pub fn compress_into_codes_cuda_batched(
     let n = embeddings.nrows();
     let k = centroids.nrows();
     let dim = embeddings.ncols();
-    let max_mem = max_gpu_memory.unwrap_or(DEFAULT_MAX_GPU_MEMORY);
 
     if n == 0 {
         return Ok(Array1::zeros(0));
     }
 
-    let batch_size = compute_batch_size(n, k, dim, max_mem);
+    let budget = gpu_memory_budget(ctx, max_gpu_memory);
+    with_oom_retry(budget, |budget| {
+        compress_into_codes_cuda_pass(
+            ctx,
+            embeddings,
+            centroids,
+            compute_batch_size(n, k, dim, budget),
+        )
+    })
+}
+
+/// One `compress_into_codes` pass at a fixed batch size; retried smaller on OOM by the caller.
+fn compress_into_codes_cuda_pass(
+    ctx: &CudaContext,
+    embeddings: &ArrayView2<f32>,
+    centroids: &ArrayView2<f32>,
+    batch_size: usize,
+) -> Result<Array1<usize>> {
+    let n = embeddings.nrows();
+    let k = centroids.nrows();
+    let dim = embeddings.ncols();
 
     // Ensure centroids are contiguous
     let centroids_cont = if centroids.is_standard_layout() {
@@ -502,13 +589,32 @@ pub fn compress_and_residuals_cuda_batched(
     let n = embeddings.nrows();
     let k = centroids.nrows();
     let dim = embeddings.ncols();
-    let max_mem = max_gpu_memory.unwrap_or(DEFAULT_MAX_GPU_MEMORY);
 
     if n == 0 {
         return Ok((Array1::zeros(0), ndarray::Array2::zeros((0, dim))));
     }
 
-    let batch_size = compute_batch_size_with_residuals(n, k, dim, max_mem);
+    let budget = gpu_memory_budget(ctx, max_gpu_memory);
+    with_oom_retry(budget, |budget| {
+        compress_and_residuals_cuda_pass(
+            ctx,
+            embeddings,
+            centroids,
+            compute_batch_size_with_residuals(n, k, dim, budget),
+        )
+    })
+}
+
+/// One `compress_and_residuals` pass at a fixed batch size; retried smaller on OOM by the caller.
+fn compress_and_residuals_cuda_pass(
+    ctx: &CudaContext,
+    embeddings: &ArrayView2<f32>,
+    centroids: &ArrayView2<f32>,
+    batch_size: usize,
+) -> Result<(Array1<usize>, ndarray::Array2<f32>)> {
+    let n = embeddings.nrows();
+    let k = centroids.nrows();
+    let dim = embeddings.ncols();
 
     // Ensure centroids are contiguous
     let centroids_cont = if centroids.is_standard_layout() {
@@ -679,5 +785,76 @@ mod tests {
         for &code in codes.iter() {
             assert!(code < 64);
         }
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[test]
+    fn a_measured_budget_is_clamped_to_the_floor_and_ceiling() {
+        // The arithmetic gpu_memory_budget applies to (free, total), isolated from the driver.
+        let budget = |free: usize| {
+            let (num, den) = FREE_VRAM_BUDGET_FRACTION;
+            (free / den * num).clamp(MIN_GPU_MEMORY_BUDGET, MAX_GPU_MEMORY_BUDGET)
+        };
+        // A tiny card gets the floor, not a fraction that cannot host one batch.
+        assert_eq!(budget(64 * 1024 * 1024), MIN_GPU_MEMORY_BUDGET);
+        // A huge card is capped: past the ceiling a bigger workspace buys nothing.
+        assert_eq!(budget(200 * 1024 * 1024 * 1024), MAX_GPU_MEMORY_BUDGET);
+        // In between, 60% of free.
+        let free = 10 * 1024 * 1024 * 1024;
+        assert_eq!(budget(free), free / 5 * 3);
+    }
+
+    #[test]
+    fn a_smaller_budget_still_yields_at_least_one_row_per_batch() {
+        // compute_batch_size must never return 0, or indexing would spin forever.
+        assert_eq!(
+            compute_batch_size(1000, 65536, 128, MIN_GPU_MEMORY_BUDGET).min(1),
+            1
+        );
+        assert!(compute_batch_size(1000, 1 << 20, 128, 1024) >= 1);
+    }
+
+    #[test]
+    fn oom_retry_halves_until_it_succeeds() {
+        // Fails while the budget exceeds a threshold, then succeeds: mirrors a card whose
+        // free memory is smaller than the first measurement suggested.
+        let threshold = 512 * 1024 * 1024;
+        let mut attempts = 0;
+        let result = with_oom_retry(4 * 1024 * 1024 * 1024, |budget| {
+            attempts += 1;
+            if budget > threshold {
+                Err(Error::Codec("CUDA driver error: out of memory".into()))
+            } else {
+                Ok(budget)
+            }
+        });
+        assert_eq!(result.unwrap(), 512 * 1024 * 1024);
+        assert_eq!(attempts, 4); // 4 GiB -> 2 -> 1 -> 512 MiB
+    }
+
+    #[test]
+    fn a_non_oom_error_is_not_retried() {
+        let mut attempts = 0;
+        let result: Result<usize> = with_oom_retry(4 * 1024 * 1024 * 1024, |_| {
+            attempts += 1;
+            Err(Error::Codec("invalid centroid shape".into()))
+        });
+        assert!(result.is_err());
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn oom_at_the_floor_gives_up_instead_of_looping() {
+        let mut attempts = 0;
+        let result: Result<usize> = with_oom_retry(MIN_GPU_MEMORY_BUDGET, |_| {
+            attempts += 1;
+            Err(Error::Codec("out of memory".into()))
+        });
+        assert!(result.is_err());
+        assert_eq!(attempts, 1);
     }
 }

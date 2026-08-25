@@ -1311,6 +1311,56 @@ fn search_one_mmap_batched(
 }
 
 /// Search a memory-mapped index for multiple queries.
+/// Peak host bytes one query's stage-1 working set occupies.
+///
+/// Stage 1 materialises the `[nq, K]` query x centroid scores, a transposed copy, and a
+/// quantised `[K, stride]` companion; the LUT stage-2 path adds one more `[K, nq]`. All of
+/// them scale with the centroid count, so on a large index a single query is tens of MB and
+/// a whole batch in flight is gigabytes.
+fn per_query_workspace_bytes(num_centroids: usize, query_tokens: usize) -> usize {
+    let stride = query_tokens.div_ceil(16) * 16;
+    num_centroids
+        .saturating_mul(query_tokens)
+        .saturating_mul(4)
+        .saturating_mul(3)
+        .saturating_add(num_centroids.saturating_mul(stride))
+}
+
+/// Host memory a batch of queries may occupy, in bytes.
+///
+/// `NEXT_PLAID_SEARCH_MEMORY_MB` pins it; otherwise take a quarter of what the OS reports
+/// available, which keeps a 50-query batch on a 260k-centroid index from ballooning on a
+/// small machine while leaving a large one free to run the whole batch at once.
+fn search_memory_budget() -> usize {
+    const FALLBACK: usize = 2 * 1024 * 1024 * 1024;
+    if let Some(mb) = std::env::var("NEXT_PLAID_SEARCH_MEMORY_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&mb| mb > 0)
+    {
+        return mb.saturating_mul(1024 * 1024);
+    }
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find(|line| line.starts_with("MemAvailable:"))
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|kb| kb.parse::<usize>().ok())
+                .map(|kb| kb.saturating_mul(1024) / 4)
+        })
+        .unwrap_or(FALLBACK)
+}
+
+/// How many queries may be scored concurrently within the host memory budget.
+///
+/// Always at least one: a single query is allowed to exceed the budget rather than fail,
+/// matching the rest of the engine's preference for slow over dead.
+fn max_queries_in_flight(num_centroids: usize, query_tokens: usize, total: usize) -> usize {
+    let per_query = per_query_workspace_bytes(num_centroids, query_tokens).max(1);
+    (search_memory_budget() / per_query).clamp(1, total.max(1))
+}
+
 pub fn search_many_mmap(
     index: &crate::index::MmapIndex,
     queries: &[Array2<f32>],
@@ -1319,20 +1369,42 @@ pub fn search_many_mmap(
     subset: Option<&[i64]>,
 ) -> Result<Vec<QueryResult>> {
     if parallel {
-        let results: Vec<QueryResult> = queries
-            .par_iter()
-            .enumerate()
-            .map(|(i, query)| {
-                let mut result =
-                    search_one_mmap(index, query, params, subset).unwrap_or_else(|_| QueryResult {
-                        query_id: i,
-                        passage_ids: vec![],
-                        scores: vec![],
-                    });
-                result.query_id = i;
-                result
-            })
-            .collect();
+        // Bound how many per-query working sets are alive at once. Without this every
+        // query in the batch runs concurrently, and peak host memory is
+        // batch_size x O(centroids x query_tokens) with nothing capping it.
+        let max_tokens = queries.iter().map(|q| q.nrows()).max().unwrap_or(1).max(1);
+        let in_flight =
+            max_queries_in_flight(index.codec.num_centroids(), max_tokens, queries.len());
+
+        let score_chunk =
+            |offset: usize, chunk: &[Array2<f32>]| -> Vec<QueryResult> {
+                chunk
+                    .par_iter()
+                    .enumerate()
+                    .map(|(j, query)| {
+                        let i = offset + j;
+                        let mut result = search_one_mmap(index, query, params, subset)
+                            .unwrap_or_else(|_| QueryResult {
+                                query_id: i,
+                                passage_ids: vec![],
+                                scores: vec![],
+                            });
+                        result.query_id = i;
+                        result
+                    })
+                    .collect()
+            };
+
+        // Fast path: the whole batch fits, so behave exactly as before — no chunk seams,
+        // no extra allocation, nothing paid by callers who were never at risk.
+        if in_flight >= queries.len() {
+            return Ok(score_chunk(0, queries));
+        }
+
+        let mut results = Vec::with_capacity(queries.len());
+        for (c, chunk) in queries.chunks(in_flight).enumerate() {
+            results.extend(score_chunk(c * in_flight, chunk));
+        }
         Ok(results)
     } else {
         let mut results = Vec::with_capacity(queries.len());
