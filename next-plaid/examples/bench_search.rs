@@ -60,7 +60,14 @@ fn main() {
         })
         .collect();
 
-    let params = next_plaid::search::SearchParameters::default();
+    // Random queries score below the default centroid threshold, so stage 2 would never
+    // run and the benchmark would measure nothing. Disable the threshold and probe wider
+    // so the full pipeline executes on every query.
+    let params = next_plaid::search::SearchParameters {
+        centroid_score_threshold: None,
+        n_ivf_probe: 32,
+        ..next_plaid::search::SearchParameters::default()
+    };
     let rss_before = peak_rss_kib();
     let start = Instant::now();
     let results = index.search_batch(&queries, &params, true, None);
