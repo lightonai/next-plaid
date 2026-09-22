@@ -38,6 +38,8 @@
 //! }
 //! ```
 
+use std::collections::HashSet;
+
 use rusqlite::{params_from_iter, Connection, ToSql};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1745,65 +1747,90 @@ pub fn search_filtered(
         });
     }
 
+    if top_k == 0 {
+        return Ok(QueryResult {
+            query_id: 0,
+            passage_ids: vec![],
+            scores: vec![],
+        });
+    }
+
+    let allowed: HashSet<i64> = subset.iter().copied().collect();
+
     with_fts_conn(index_path, |conn| {
-        let content_keyed = fts_is_content_keyed(conn);
-        let mut merged: Vec<(i64, f32)> = Vec::new();
-        let top_k_i64 = top_k as i64;
+        // Run the MATCH exactly once and drop non-subset rows here, rather
+        // than handing the ids to SQLite as `... MATCH ? AND rowid IN (...)`.
+        //
+        // That shape looks like a pre-filter and behaves like the opposite:
+        // SQLite passes the rowid list to FTS5's xBestIndex as an *equality*
+        // constraint (the plan reads `VIRTUAL TABLE INDEX 0:=M1`) and then
+        // drives the loop from the ids, re-running the full-text query once
+        // per id at ~100 µs a go. Filtering therefore cost O(subset), and got
+        // slower the more documents the filter allowed through: on a 685 k-doc
+        // index a 41 k-id subset turned a 16 ms search into 3.7 s, and a 499 k
+        // one into 37 s. Chunking the ids to stay under SQLITE_PARAM_LIMIT
+        // only split the same work across more statements.
+        //
+        // Scanning the MATCH once bounds a filtered search by the cost of the
+        // unfiltered search it refines, whatever the subset size.
+        let sql = if fts_is_content_keyed(conn) {
+            // Rowids are stable _content_id_ values; translate to _subset_.
+            format!(
+                "SELECT M.\"{}\", CAST(-bm25(\"{}\") AS REAL) AS score \
+                 FROM \"{}\" JOIN METADATA M ON M.\"{}\" = \"{}\".rowid \
+                 WHERE \"{}\" MATCH ?",
+                SUBSET_COLUMN, FTS_TABLE, FTS_TABLE, CONTENT_ID_COLUMN, FTS_TABLE, FTS_TABLE
+            )
+        } else {
+            format!(
+                "SELECT rowid, CAST(-bm25(\"{}\") AS REAL) AS score \
+                 FROM \"{}\" WHERE \"{}\" MATCH ?",
+                FTS_TABLE, FTS_TABLE, FTS_TABLE
+            )
+        };
 
-        for chunk in subset.chunks(SQLITE_PARAM_LIMIT) {
-            let placeholders: Vec<&str> = std::iter::repeat_n("?", chunk.len()).collect();
-            let sql = if content_keyed {
-                format!(
-                    "SELECT M.\"{}\", CAST(-bm25(\"{}\") AS REAL) AS score \
-                     FROM \"{}\" JOIN METADATA M ON M.\"{}\" = \"{}\".rowid \
-                     WHERE \"{}\" MATCH ? AND M.\"{}\" IN ({}) \
-                     ORDER BY score DESC LIMIT ?",
-                    SUBSET_COLUMN,
-                    FTS_TABLE,
-                    FTS_TABLE,
-                    CONTENT_ID_COLUMN,
-                    FTS_TABLE,
-                    FTS_TABLE,
-                    SUBSET_COLUMN,
-                    placeholders.join(", ")
-                )
-            } else {
-                format!(
-                    "SELECT rowid, CAST(-bm25(\"{}\") AS REAL) AS score \
-                     FROM \"{}\" WHERE \"{}\" MATCH ? AND rowid IN ({}) \
-                     ORDER BY score DESC LIMIT ?",
-                    FTS_TABLE,
-                    FTS_TABLE,
-                    FTS_TABLE,
-                    placeholders.join(", ")
-                )
-            };
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| Error::Filtering(format!("Failed to prepare FTS5 query: {}", e)))?;
 
-            let mut params: Vec<Box<dyn ToSql>> = Vec::with_capacity(chunk.len() + 2);
-            params.push(Box::new(query.to_string()));
-            params.extend(chunk.iter().map(|&id| Box::new(id) as Box<dyn ToSql>));
-            params.push(Box::new(top_k_i64));
-            let param_refs: Vec<&dyn ToSql> = params.iter().map(|v| v.as_ref()).collect();
+        let mut rows = stmt
+            .query([query])
+            .map_err(|e| Error::Filtering(format!("FTS5 query failed: {}", e)))?;
 
-            let mut stmt = conn
-                .prepare(&sql)
-                .map_err(|e| Error::Filtering(format!("Failed to prepare FTS5 query: {}", e)))?;
-            let chunk_result = collect_fts_results(&mut stmt, &param_refs)?;
-            merged.extend(
-                chunk_result
-                    .passage_ids
-                    .into_iter()
-                    .zip(chunk_result.scores),
-            );
+        let mut hits: Vec<(i64, f32)> = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| Error::Filtering(format!("Failed to read FTS5 result: {}", e)))?
+        {
+            let doc_id: i64 = row
+                .get(0)
+                .map_err(|e| Error::Filtering(format!("Failed to read FTS5 result: {}", e)))?;
+            if !allowed.contains(&doc_id) {
+                continue;
+            }
+            let score: f32 = row
+                .get(1)
+                .map_err(|e| Error::Filtering(format!("Failed to read FTS5 result: {}", e)))?;
+            hits.push((doc_id, score));
         }
 
-        merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        merged.truncate(top_k);
+        // Descending score; document id breaks ties so equal-scoring rows come
+        // back in a stable order across calls.
+        let by_score = |a: &(i64, f32), b: &(i64, f32)| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        };
+        if hits.len() > top_k {
+            hits.select_nth_unstable_by(top_k - 1, by_score);
+            hits.truncate(top_k);
+        }
+        hits.sort_by(by_score);
 
         Ok(QueryResult {
             query_id: 0,
-            passage_ids: merged.iter().map(|(id, _)| *id).collect(),
-            scores: merged.into_iter().map(|(_, score)| score).collect(),
+            passage_ids: hits.iter().map(|(id, _)| *id).collect(),
+            scores: hits.into_iter().map(|(_, score)| score).collect(),
         })
     })
 }
@@ -2122,6 +2149,76 @@ mod tests {
         assert!(result.passage_ids.contains(&0));
         assert!(result.passage_ids.contains(&1));
         assert!(!result.passage_ids.contains(&2));
+    }
+
+    /// A subset larger than `SQLITE_PARAM_LIMIT` used to be split into chunks,
+    /// each running its own `rowid IN (...)` query. Whatever the subset size,
+    /// the answer must stay the unfiltered ranking restricted to the subset.
+    #[test]
+    fn test_search_filtered_large_subset_matches_unfiltered_ranking() {
+        let n = SQLITE_PARAM_LIMIT * 3;
+        let metadata: Vec<Value> = (0..n)
+            .map(|i| json!({"title": format!("document {i} about programming")}))
+            .collect();
+        let (_dir, path) = setup_with_metadata(&metadata);
+
+        // Every other document, so the subset spans several old chunks and
+        // interleaves with the documents it has to exclude.
+        let subset: Vec<i64> = (0..n as i64).filter(|i| i % 2 == 0).collect();
+        assert!(subset.len() > SQLITE_PARAM_LIMIT);
+
+        let top_k = 50;
+        let filtered = search_filtered(&path, "programming", top_k, &subset).unwrap();
+
+        assert_eq!(filtered.passage_ids.len(), top_k);
+        assert!(filtered.passage_ids.iter().all(|id| id % 2 == 0));
+
+        // Same ids, same order as ranking everything and then dropping the
+        // documents outside the subset.
+        let allowed: HashSet<i64> = subset.iter().copied().collect();
+        let expected: Vec<i64> = search(&path, "programming", n)
+            .unwrap()
+            .passage_ids
+            .into_iter()
+            .filter(|id| allowed.contains(id))
+            .take(top_k)
+            .collect();
+        assert_eq!(filtered.passage_ids, expected);
+
+        // Scores stay sorted descending.
+        assert!(filtered.scores.windows(2).all(|w| w[0] >= w[1]));
+    }
+
+    /// A filter that admits every document must not change the ranking, and a
+    /// filter that admits none must return nothing.
+    #[test]
+    fn test_search_filtered_subset_edges() {
+        let metadata = vec![
+            json!({"title": "rust programming language"}),
+            json!({"title": "python programming language"}),
+            json!({"title": "rust systems programming"}),
+        ];
+        let (_dir, path) = setup_with_metadata(&metadata);
+
+        let all: Vec<i64> = vec![0, 1, 2];
+        assert_eq!(
+            search_filtered(&path, "programming", 10, &all)
+                .unwrap()
+                .passage_ids,
+            search(&path, "programming", 10).unwrap().passage_ids
+        );
+
+        // Ids that are not in the index filter everything out.
+        assert!(search_filtered(&path, "programming", 10, &[404, 405])
+            .unwrap()
+            .passage_ids
+            .is_empty());
+
+        // top_k = 0 asks for nothing.
+        assert!(search_filtered(&path, "programming", 0, &all)
+            .unwrap()
+            .passage_ids
+            .is_empty());
     }
 
     #[test]
