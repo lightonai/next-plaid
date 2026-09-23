@@ -52,7 +52,9 @@ pub struct IndexConfigRequest {
     #[schema(example = 10000)]
     pub max_documents: Option<usize>,
     /// FTS5 tokenizer for full-text search over metadata.
-    /// "unicode61" (default) for word-level search, "trigram" for code/substring search.
+    /// "unicode61" (default) for word-level search, "trigram" for code/substring
+    /// search, "danish" for word-level search with Snowball Danish stemming
+    /// (so "kommunerne" matches a query for "kommunen"). Fixed at creation time.
     #[serde(default)]
     #[schema(example = "unicode61")]
     pub fts_tokenizer: Option<String>,
@@ -99,7 +101,7 @@ pub struct IndexConfigStored {
     #[serde(default)]
     #[schema(example = 10000)]
     pub max_documents: Option<usize>,
-    /// FTS5 tokenizer: "unicode61" (default) or "trigram"
+    /// FTS5 tokenizer: "unicode61" (default), "trigram" or "danish"
     #[serde(default = "default_fts_tokenizer")]
     #[schema(example = "unicode61")]
     pub fts_tokenizer: String,
@@ -117,12 +119,16 @@ fn default_fts_tokenizer() -> String {
     "unicode61".to_string()
 }
 
+/// FTS tokenizer names accepted by the API, in the order shown in error messages.
+pub const FTS_TOKENIZERS: [&str; 3] = ["unicode61", "trigram", "danish"];
+
 /// Parse an FTS tokenizer string into the library enum.
 /// Returns `None` for unrecognized values.
 pub fn parse_fts_tokenizer(s: &str) -> Option<next_plaid::FtsTokenizer> {
     match s {
         "unicode61" => Some(next_plaid::FtsTokenizer::Unicode61),
         "trigram" => Some(next_plaid::FtsTokenizer::Trigram),
+        "danish" => Some(next_plaid::FtsTokenizer::Danish),
         _ => None,
     }
 }
@@ -1036,6 +1042,28 @@ pub struct ErrorResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_fts_tokenizer_accepts_every_advertised_name() {
+        assert_eq!(
+            parse_fts_tokenizer("unicode61"),
+            Some(next_plaid::FtsTokenizer::Unicode61)
+        );
+        assert_eq!(
+            parse_fts_tokenizer("trigram"),
+            Some(next_plaid::FtsTokenizer::Trigram)
+        );
+        assert_eq!(
+            parse_fts_tokenizer("danish"),
+            Some(next_plaid::FtsTokenizer::Danish)
+        );
+        for name in FTS_TOKENIZERS {
+            assert!(parse_fts_tokenizer(name).is_some(), "{name}");
+        }
+        assert_eq!(parse_fts_tokenizer("klingon"), None);
+        // The default is unchanged so existing indexes keep their behaviour.
+        assert_eq!(default_fts_tokenizer(), "unicode61");
+    }
 
     #[test]
     fn decode_b64_embeddings_rejects_non_finite_values() {

@@ -201,7 +201,7 @@ POST /indices
 | `seed`               | `null`  | Random seed for K-means                       |
 | `start_from_scratch` | `999`   | Below this doc count, full rebuild on update  |
 | `max_documents`      | `null`  | Evict oldest when exceeded (null = unlimited) |
-| `fts_tokenizer`      | `"unicode61"` | FTS5 tokenizer: `"unicode61"` (words) or `"trigram"` (substrings) |
+| `fts_tokenizer`      | `"unicode61"` | FTS5 tokenizer: `"unicode61"` (words), `"trigram"` (substrings) or `"danish"` (words + Danish stemming, so `kommunerne` matches `kommunen`) |
 | `binary`             | `false` | Store documents as 1-bit signs (asymmetric binary MaxSim): ~4x smaller than `nbits: 4` and faster to search, at a small ranking-quality cost |
 
 > **`binary: true` caveats** — the storage scheme is fixed at creation time.

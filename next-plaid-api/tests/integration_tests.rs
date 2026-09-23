@@ -595,6 +595,92 @@ async fn test_create_index() {
 }
 
 #[tokio::test]
+async fn test_create_index_rejects_unknown_fts_tokenizer() {
+    let fixture = TestFixture::new().await;
+
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices"))
+        .json(&json!({
+            "name": "bad_tokenizer",
+            "config": { "fts_tokenizer": "klingon" }
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: Value = resp.json().await.unwrap();
+    let message = body.to_string();
+    assert!(message.contains("klingon"), "{message}");
+    assert!(message.contains("danish"), "{message}");
+}
+
+#[tokio::test]
+async fn test_danish_fts_tokenizer_matches_other_inflections() {
+    let fixture = TestFixture::new().await;
+
+    let dim = 64;
+    let documents = generate_documents(3, 20, dim);
+    let metadata = vec![
+        json!({"title": "Lokalplan for kommunens nye bygninger"}),
+        json!({"title": "Vejledning om affaldssortering i boligforeninger"}),
+        json!({"title": "Kommunerne vedtager lokalplaner for boligområder"}),
+    ];
+
+    // Declare the index with the Danish stemming tokenizer.
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices"))
+        .json(&json!({
+            "name": "lokalplaner",
+            "config": { "nbits": 4, "fts_tokenizer": "danish" }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "Status: {}", resp.status());
+    let body: CreateIndexResponse = resp.json().await.unwrap();
+    assert_eq!(body.config.fts_tokenizer, "danish");
+
+    let resp = fixture
+        .client
+        .post(fixture.url("/indices/lokalplaner/update"))
+        .json(&json!({ "documents": documents, "metadata": metadata }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+    fixture.wait_for_index("lokalplaner", 3, 10000).await;
+
+    // The stored tokenizer is read back at query time: "kommune" never appears
+    // verbatim, only as "kommunens" / "kommunerne".
+    let search = |query: &str| {
+        let body = json!({ "text_query": [query], "params": { "top_k": 10 } });
+        fixture
+            .client
+            .post(fixture.url("/indices/lokalplaner/search"))
+            .json(&body)
+            .send()
+    };
+
+    let resp = search("kommune").await.unwrap();
+    assert!(resp.status().is_success(), "Status: {}", resp.status());
+    let body: SearchResponse = resp.json().await.unwrap();
+    let mut ids = body.results[0].document_ids.clone();
+    ids.sort();
+    assert_eq!(ids, vec![0, 2]);
+
+    let resp = search("bygningerne").await.unwrap();
+    let body: SearchResponse = resp.json().await.unwrap();
+    assert_eq!(body.results[0].document_ids, vec![0]);
+
+    let resp = search("skole").await.unwrap();
+    let body: SearchResponse = resp.json().await.unwrap();
+    assert!(body.results[0].document_ids.is_empty());
+}
+
+#[tokio::test]
 async fn test_create_index_duplicate() {
     let fixture = TestFixture::new().await;
 

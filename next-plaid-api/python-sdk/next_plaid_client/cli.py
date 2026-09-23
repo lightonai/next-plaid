@@ -270,9 +270,9 @@ def index_get(ctx, name):
 )
 @click.option(
     "--fts-tokenizer",
-    type=click.Choice(["unicode61", "trigram"]),
+    type=click.Choice(["unicode61", "trigram", "danish"]),
     default=None,
-    help="FTS5 tokenizer.",
+    help="FTS5 tokenizer (danish = word-level with Danish stemming).",
 )
 @click.pass_context
 def index_create(ctx, name, nbits, batch_size, seed, max_documents, fts_tokenizer):
@@ -283,6 +283,7 @@ def index_create(ctx, name, nbits, batch_size, seed, max_documents, fts_tokenize
       next-plaid index create my_index
       next-plaid index create my_index --nbits 2 --max-documents 10000
       next-plaid index create code_index --fts-tokenizer trigram
+      next-plaid index create lokalplaner --fts-tokenizer danish
     """
     config = IndexConfig(
         nbits=int(nbits),

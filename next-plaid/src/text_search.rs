@@ -31,6 +31,9 @@
 //! // Or use trigram tokenizer for code / substring search
 //! text_search::index("my_index", &metadata, &doc_ids, &FtsTokenizer::Trigram)?;
 //!
+//! // Or stem Danish text so "kommunerne" matches a query for "kommunen"
+//! text_search::index("my_index", &metadata, &doc_ids, &FtsTokenizer::Danish)?;
+//!
 //! // Search
 //! let result = text_search::search("my_index", "quick brown fox", 10)?;
 //! for (id, score) in result.passage_ids.iter().zip(result.scores.iter()) {
@@ -38,7 +41,10 @@
 //! }
 //! ```
 
+use std::borrow::Cow;
+
 use rusqlite::{params_from_iter, Connection, ToSql};
+use rust_stemmers::{Algorithm, Stemmer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -87,22 +93,31 @@ const CONTENT_ID_INDEX: &str = "idx_metadata_content_id";
 ///   `ParseRequest`, and `parse_request`. Use [`sanitize_fts5_query_or`] on the
 ///   query side so each token is OR'd (a natural-language query rarely shares
 ///   *every* token with a relevant code unit).
+/// - `Danish` — word-level FTS5 tokenizer (`unicode61`) over content that has
+///   been **stemmed** with the Snowball Danish stemmer, so the inflected forms
+///   `kommunen` / `kommunens` / `kommunerne` all index (and match) as the same
+///   term. The tokenizer choice is persisted with the index, and [`search`] /
+///   [`search_filtered`] stem query terms the same way, so callers pass the
+///   query text unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FtsTokenizer {
     #[default]
     Unicode61,
     Trigram,
     IdentifierAware,
+    Danish,
 }
 
 impl FtsTokenizer {
-    /// Return the FTS5 `tokenize=` clause value. `IdentifierAware` rides on
-    /// top of `unicode61`; the splitting happens in [`prepare_document_text`].
+    /// Return the FTS5 `tokenize=` clause value. `IdentifierAware` and
+    /// `Danish` ride on top of `unicode61`; the splitting / stemming happens
+    /// in [`prepare_document_text`].
     fn fts5_tokenize_value(&self) -> &'static str {
         match self {
             FtsTokenizer::Unicode61 => "unicode61",
             FtsTokenizer::Trigram => "trigram",
             FtsTokenizer::IdentifierAware => "unicode61",
+            FtsTokenizer::Danish => "unicode61",
         }
     }
 
@@ -112,6 +127,7 @@ impl FtsTokenizer {
             FtsTokenizer::Unicode61 => "unicode61",
             FtsTokenizer::Trigram => "trigram",
             FtsTokenizer::IdentifierAware => "identifier_aware",
+            FtsTokenizer::Danish => "danish",
         }
     }
 
@@ -121,8 +137,76 @@ impl FtsTokenizer {
             "unicode61" => Some(FtsTokenizer::Unicode61),
             "trigram" => Some(FtsTokenizer::Trigram),
             "identifier_aware" => Some(FtsTokenizer::IdentifierAware),
+            "danish" => Some(FtsTokenizer::Danish),
             _ => None,
         }
+    }
+
+    /// The Snowball stemmer applied to document and query terms, if this
+    /// tokenizer stems at all.
+    fn stemmer(&self) -> Option<Stemmer> {
+        match self {
+            FtsTokenizer::Danish => Some(Stemmer::create(Algorithm::Danish)),
+            _ => None,
+        }
+    }
+}
+
+// =============================================================================
+// Stemming (used by FtsTokenizer::Danish)
+// =============================================================================
+
+/// Split `text` into words (maximal runs of alphanumeric characters, which is
+/// how FTS5's `unicode61` segments text), lowercase each and reduce it to its
+/// stem. Punctuation is dropped, so the output is a bag of stemmed terms.
+fn stem_words(text: &str, stemmer: &Stemmer) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| stemmer.stem(&w.to_lowercase()).into_owned())
+        .collect()
+}
+
+/// Stem the terms of a raw FTS5 MATCH expression while leaving its syntax
+/// intact: quotes, parentheses, `AND` / `OR` / `NOT` / `NEAR` operators and
+/// prefix queries (`kommun*`) pass through verbatim, every other word is
+/// lowercased and stemmed so it lines up with what [`stem_words`] indexed.
+fn stem_fts5_query(query: &str, stemmer: &Stemmer) -> String {
+    const OPERATORS: [&str; 4] = ["AND", "OR", "NOT", "NEAR"];
+
+    let mut out = String::with_capacity(query.len());
+    let mut word_start: Option<usize> = None;
+
+    let flush = |out: &mut String, word: &str, next: Option<char>| {
+        if OPERATORS.contains(&word) || next == Some('*') {
+            out.push_str(word);
+        } else {
+            out.push_str(&stemmer.stem(&word.to_lowercase()));
+        }
+    };
+
+    for (idx, c) in query.char_indices() {
+        if c.is_alphanumeric() {
+            word_start.get_or_insert(idx);
+            continue;
+        }
+        if let Some(start) = word_start.take() {
+            flush(&mut out, &query[start..idx], Some(c));
+        }
+        out.push(c);
+    }
+    if let Some(start) = word_start {
+        flush(&mut out, &query[start..], None);
+    }
+    out
+}
+
+/// Prepare a raw query for MATCH against an index built with `tokenizer`.
+/// Only stemming tokenizers rewrite the query; every other tokenizer returns
+/// it unchanged, so existing indices keep their exact query semantics.
+fn prepare_query_text<'a>(query: &'a str, tokenizer: &FtsTokenizer) -> Cow<'a, str> {
+    match tokenizer.stemmer() {
+        Some(stemmer) => Cow::Owned(stem_fts5_query(query, &stemmer)),
+        None => Cow::Borrowed(query),
     }
 }
 
@@ -271,12 +355,16 @@ pub fn tokenize_identifiers(text: &str) -> Vec<String> {
 
 /// Prepare the body of a document for FTS5 indexing. For
 /// [`FtsTokenizer::IdentifierAware`] this returns the identifier tokens joined
-/// by spaces (so FTS5's unicode61 sees one token per identifier sub-part);
+/// by spaces (so FTS5's unicode61 sees one token per identifier sub-part); for
+/// [`FtsTokenizer::Danish`] it returns the stemmed words joined by spaces;
 /// other tokenizers receive the original text unchanged.
 fn prepare_document_text(text: &str, tokenizer: &FtsTokenizer) -> String {
     match tokenizer {
         FtsTokenizer::IdentifierAware => tokenize_identifiers(text).join(" "),
-        _ => text.to_string(),
+        _ => match tokenizer.stemmer() {
+            Some(stemmer) => stem_words(text, &stemmer).join(" "),
+            None => text.to_string(),
+        },
     }
 }
 
@@ -1692,6 +1780,10 @@ pub fn search(index_path: &str, query: &str, top_k: usize) -> Result<QueryResult
     }
 
     with_fts_conn(index_path, |conn| {
+        // A stemming tokenizer indexed stems, so the query terms must be
+        // stemmed the same way; every other tokenizer leaves the query as-is.
+        let query = prepare_query_text(query, &stored_tokenizer(conn));
+
         // FTS5 bm25() returns negative scores (lower = better match).
         // We negate so higher = more relevant.
         let sql = if fts_is_content_keyed(conn) {
@@ -1715,6 +1807,7 @@ pub fn search(index_path: &str, query: &str, top_k: usize) -> Result<QueryResult
             .map_err(|e| Error::Filtering(format!("Failed to prepare FTS5 query: {}", e)))?;
 
         let top_k_i64 = top_k as i64;
+        let query = query.as_ref();
         collect_fts_results(&mut stmt, &[&query as &dyn ToSql, &top_k_i64])
     })
 }
@@ -1746,6 +1839,7 @@ pub fn search_filtered(
     }
 
     with_fts_conn(index_path, |conn| {
+        let query = prepare_query_text(query, &stored_tokenizer(conn));
         let content_keyed = fts_is_content_keyed(conn);
         let mut merged: Vec<(i64, f32)> = Vec::new();
         let top_k_i64 = top_k as i64;
@@ -1926,6 +2020,202 @@ mod tests {
         // Non-IdentifierAware tokenizers store the raw text unchanged.
         assert_eq!(prepare_document_text(body, &FtsTokenizer::Unicode61), body);
         assert_eq!(prepare_document_text(body, &FtsTokenizer::Trigram), body);
+    }
+
+    // ---- Danish stemming ----
+
+    fn danish() -> Stemmer {
+        FtsTokenizer::Danish
+            .stemmer()
+            .expect("Danish tokenizer stems")
+    }
+
+    #[test]
+    fn test_danish_stem_inflections_share_root() {
+        let stemmer = danish();
+        for group in [
+            ["kommunerne", "kommunens", "kommuner", "kommunen"],
+            ["bygningerne", "bygninger", "bygningen", "bygning"],
+            ["lokalplanerne", "lokalplaner", "lokalplanens", "lokalplan"],
+        ] {
+            let stems: Vec<String> = group.iter().map(|w| stemmer.stem(w).into_owned()).collect();
+            assert!(
+                stems.iter().all(|s| s == &stems[0]),
+                "{group:?} should share one stem, got {stems:?}"
+            );
+            // The stem must be a real prefix, not an empty string or the
+            // untouched word.
+            assert!(!stems[0].is_empty());
+            assert!(group.iter().all(|w| w.starts_with(stems[0].as_str())));
+        }
+    }
+
+    #[test]
+    fn test_stem_words_lowercases_and_splits_on_punctuation() {
+        let stemmer = danish();
+        let words = stem_words("Kommunernes bygninger, veje og (parker).", &stemmer);
+        assert_eq!(
+            words,
+            vec![
+                stemmer.stem("kommunernes").into_owned(),
+                stemmer.stem("bygninger").into_owned(),
+                stemmer.stem("veje").into_owned(),
+                stemmer.stem("og").into_owned(),
+                stemmer.stem("parker").into_owned(),
+            ]
+        );
+        assert!(words.iter().all(|w| !w.is_empty()));
+    }
+
+    #[test]
+    fn test_prepare_document_text_danish_stems() {
+        let prepared = prepare_document_text("Kommunerne bygger bygninger", &FtsTokenizer::Danish);
+        assert_eq!(
+            prepared,
+            stem_words("kommunerne bygger bygninger", &danish()).join(" ")
+        );
+        // Whatever the exact stem is, the inflections collapse onto it.
+        let kommune = prepare_document_text("kommunen", &FtsTokenizer::Danish);
+        assert_eq!(
+            prepare_document_text("kommunerne", &FtsTokenizer::Danish),
+            kommune
+        );
+        assert_eq!(
+            prepare_document_text("kommunens", &FtsTokenizer::Danish),
+            kommune
+        );
+    }
+
+    #[test]
+    fn test_stem_fts5_query_preserves_syntax() {
+        let stemmer = danish();
+        let kommun = stemmer.stem("kommunerne").into_owned();
+        let bygning = stemmer.stem("bygningerne").into_owned();
+
+        // Operators, quotes, parentheses and prefix wildcards pass through;
+        // everything else is lowercased and stemmed.
+        assert_eq!(
+            stem_fts5_query("Kommunerne AND (bygningerne OR veje*)", &stemmer),
+            format!("{kommun} AND ({bygning} OR veje*)")
+        );
+        assert_eq!(
+            stem_fts5_query("\"kommunerne bygningerne\" NOT lokalplan", &stemmer),
+            format!("\"{kommun} {bygning}\" NOT {}", stemmer.stem("lokalplan"))
+        );
+        // Lowercase `and` is an ordinary word, uppercase `AND` an operator.
+        assert_eq!(stem_fts5_query("AND", &stemmer), "AND");
+        assert_eq!(
+            stem_fts5_query("and", &stemmer),
+            stemmer.stem("and").into_owned()
+        );
+        assert_eq!(stem_fts5_query("", &stemmer), "");
+    }
+
+    #[test]
+    fn test_prepare_query_text_only_rewrites_stemming_tokenizers() {
+        let q = "Kommunerne AND bygninger";
+        for tok in [
+            FtsTokenizer::Unicode61,
+            FtsTokenizer::Trigram,
+            FtsTokenizer::IdentifierAware,
+        ] {
+            assert!(matches!(prepare_query_text(q, &tok), Cow::Borrowed(s) if s == q));
+        }
+        assert!(matches!(
+            prepare_query_text(q, &FtsTokenizer::Danish),
+            Cow::Owned(_)
+        ));
+    }
+
+    #[test]
+    fn test_danish_tokenizer_config_roundtrip() {
+        assert_eq!(FtsTokenizer::Danish.as_config_str(), "danish");
+        assert_eq!(
+            FtsTokenizer::from_config_str("danish"),
+            Some(FtsTokenizer::Danish)
+        );
+        assert_eq!(FtsTokenizer::Danish.fts5_tokenize_value(), "unicode61");
+        assert_eq!(FtsTokenizer::default(), FtsTokenizer::Unicode61);
+    }
+
+    #[test]
+    fn test_danish_index_matches_other_inflections() {
+        // End-to-end: index Danish text, then query with inflections that
+        // never appear verbatim in the documents. The stored tokenizer is
+        // read back from the DB at search time — nothing is passed by the
+        // caller — so this also covers persistence.
+        let metadata = vec![
+            json!({"title": "Lokalplan for kommunens nye bygninger"}),
+            json!({"title": "Vejledning om affaldssortering i boligforeninger"}),
+            json!({"title": "Kommunerne vedtager lokalplaner for boligområder"}),
+        ];
+        let (_dir, path) = setup_with_metadata_tokenizer(&metadata, &FtsTokenizer::Danish);
+
+        // "kommune" appears only as "kommunens" / "kommunerne".
+        let r = search(&path, "kommune", 10).unwrap();
+        let mut ids = r.passage_ids.clone();
+        ids.sort();
+        assert_eq!(ids, vec![0, 2]);
+
+        // "bygningerne" appears only as "bygninger".
+        let r = search(&path, "bygningerne", 10).unwrap();
+        assert_eq!(r.passage_ids, vec![0]);
+
+        // Multi-term (implicit AND) with a different inflection of each word:
+        // both docs 0 and 2 mention a kommune and a lokalplan ...
+        let r = search(&path, "Kommunen lokalplanen", 10).unwrap();
+        let mut ids = r.passage_ids.clone();
+        ids.sort();
+        assert_eq!(ids, vec![0, 2]);
+        // ... but only doc 2 also mentions boligområder.
+        let r = search(&path, "Kommunen boligområderne", 10).unwrap();
+        assert_eq!(r.passage_ids, vec![2]);
+
+        // Filtered search stems the query too.
+        let r = search_filtered(&path, "lokalplanerne", 10, &[0, 1]).unwrap();
+        assert_eq!(r.passage_ids, vec![0]);
+
+        // Unrelated inflection-free query still misses.
+        let r = search(&path, "skole", 10).unwrap();
+        assert!(r.passage_ids.is_empty());
+    }
+
+    #[test]
+    fn test_danish_index_survives_update_and_rebuild() {
+        let metadata = vec![
+            json!({"title": "kommunerne"}),
+            json!({"title": "boligerne"}),
+        ];
+        let (_dir, path) = setup_with_metadata_tokenizer(&metadata, &FtsTokenizer::Danish);
+
+        // Update a row in place (update_where re-indexes it through
+        // update_rows): the new text must be stemmed with the stored tokenizer.
+        crate::filtering::update_where(
+            &path,
+            "\"_subset_\" = ?",
+            &[json!(1)],
+            &json!({"title": "bygningerne"}),
+        )
+        .unwrap();
+        assert_eq!(search(&path, "bygning", 10).unwrap().passage_ids, vec![1]);
+        assert!(search(&path, "bolig", 10).unwrap().passage_ids.is_empty());
+
+        // Rebuild keeps the Danish tokenizer.
+        rebuild(&path).unwrap();
+        assert_eq!(search(&path, "kommunen", 10).unwrap().passage_ids, vec![0]);
+        assert_eq!(search(&path, "bygning", 10).unwrap().passage_ids, vec![1]);
+    }
+
+    #[test]
+    fn test_unicode61_index_does_not_stem() {
+        // Default behaviour is untouched: no stemming on a unicode61 index.
+        let metadata = vec![json!({"title": "kommunerne"})];
+        let (_dir, path) = setup_with_metadata_tokenizer(&metadata, &FtsTokenizer::Unicode61);
+        assert_eq!(
+            search(&path, "kommunerne", 10).unwrap().passage_ids,
+            vec![0]
+        );
+        assert!(search(&path, "kommune", 10).unwrap().passage_ids.is_empty());
     }
 
     #[test]

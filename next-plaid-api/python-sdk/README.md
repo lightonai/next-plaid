@@ -209,7 +209,7 @@ client.create_index("my_index", IndexConfig(
     seed=42,                    # Random seed
     start_from_scratch=999,     # Rebuild threshold
     max_documents=10000,        # Max documents (None = unlimited)
-    fts_tokenizer="unicode61"   # FTS5 tokenizer: "unicode61" (words) or "trigram" (substrings)
+    fts_tokenizer="unicode61"   # FTS5 tokenizer: "unicode61" (words), "trigram" (substrings) or "danish" (words + Danish stemming)
 ))
 ```
 
@@ -222,7 +222,7 @@ client.create_index("my_index", IndexConfig(
 | `seed` | `Optional[int]` | `None` | Random seed |
 | `start_from_scratch` | `int` | `999` | Rebuild threshold |
 | `max_documents` | `Optional[int]` | `None` | Max documents |
-| `fts_tokenizer` | `Optional[str]` | `None` | FTS5 tokenizer: `"unicode61"` (words) or `"trigram"` (substrings) |
+| `fts_tokenizer` | `Optional[str]` | `None` | FTS5 tokenizer: `"unicode61"` (words), `"trigram"` (substrings) or `"danish"` (words + Danish stemming) |
 
 #### Update Index Config
 
@@ -600,7 +600,7 @@ class IndexConfig:
     seed: Optional[int] = None           # Random seed
     start_from_scratch: int = 999        # Rebuild threshold
     max_documents: Optional[int] = None  # Max documents
-    fts_tokenizer: Optional[str] = None  # "unicode61" (words) or "trigram" (substrings)
+    fts_tokenizer: Optional[str] = None  # "unicode61" (words), "trigram" (substrings) or "danish" (Danish stemming)
 ```
 
 ### IndexInfo
@@ -812,6 +812,7 @@ next-plaid -u http://remote:8080 health
 next-plaid index create my_index
 next-plaid index create my_index --nbits 2 --max-documents 10000
 next-plaid index create code_index --fts-tokenizer trigram
+next-plaid index create lokalplaner --fts-tokenizer danish
 
 # Inspect
 next-plaid index list
@@ -832,7 +833,7 @@ next-plaid index delete my_index --dry-run
 | `--batch-size` | `50000` | Documents per indexing batch |
 | `--seed` | — | Random seed for K-means |
 | `--max-documents` | — | Evict oldest when exceeded (`0` to remove limit) |
-| `--fts-tokenizer` | — | `unicode61` (words) or `trigram` (substrings/code) |
+| `--fts-tokenizer` | — | `unicode61` (words), `trigram` (substrings/code) or `danish` (words + Danish stemming) |
 
 ### `document`
 

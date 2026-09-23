@@ -988,6 +988,18 @@ pub async fn create_index(
         ));
     }
 
+    // Validate the FTS tokenizer up front: it is fixed at creation time, and a
+    // typo must not silently fall back to the default tokenizer.
+    if let Some(tokenizer) = req.config.fts_tokenizer.as_deref() {
+        if crate::models::parse_fts_tokenizer(tokenizer).is_none() {
+            return Err(ApiError::BadRequest(format!(
+                "Unknown fts_tokenizer '{}'. Expected one of: {}",
+                tokenizer,
+                crate::models::FTS_TOKENIZERS.join(", ")
+            )));
+        }
+    }
+
     // Lock mainly to prevent race condition on file existence check
     let lock = get_index_lock(&req.name);
     let _guard = lock.lock().await;

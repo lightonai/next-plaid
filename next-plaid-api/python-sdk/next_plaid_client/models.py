@@ -15,7 +15,9 @@ class IndexConfig:
     Attributes:
         fts_tokenizer: FTS5 tokenizer for full-text search over metadata.
             "unicode61" (default) for word-level search,
-            "trigram" for code/substring search.
+            "trigram" for code/substring search,
+            "danish" for word-level search with Danish stemming
+            (inflections such as "kommunerne" match "kommunen").
         binary: Store documents as 1-bit signs scored with asymmetric binary
             MaxSim instead of residual quantization (default: False).
             ~4x smaller on disk and faster to search than nbits=4, at a small
