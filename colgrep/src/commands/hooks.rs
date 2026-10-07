@@ -90,11 +90,10 @@ fn session_context(agent_ready: bool) -> String {
 }
 
 const SESSION_AGENT_CONTEXT: &str = concat!(
-    "\nAGENT MODE (the local colgrep agent model is installed):\n",
+    "\nAGENT MODE:\n",
     "- `colgrep --agent \"where are sessions expired after logout\"`: a small local model searches with colgrep, reads files, and returns the relevant file:line ranges\n",
     "- Use it for open-ended questions when you don't know where to start (\"where is X handled\", \"why does Y happen\"); use plain `colgrep` when you know what to search for\n",
     "- Add `-c` to print the code, `--json` for structured output\n",
-    "- Takes ~20-60 seconds (longer on CPU): run it in the foreground and wait for the result\n",
 );
 
 const SESSION_CONTEXT: &str = concat!(
@@ -163,7 +162,7 @@ fn task_context(agent_ready: bool) -> String {
 }
 
 const TASK_AGENT_COMMAND: &str =
-    "- Locate code for an open question (local model, ~20-60 s): `colgrep --agent \"where is X handled\"`\n";
+    "- Locate code for an open question: `colgrep --agent \"where is X handled\"`\n";
 
 const TASK_CONTEXT_COMMANDS: &str = concat!(
     "IMPORTANT: Include colgrep instructions in your agent prompt!\n\n",
