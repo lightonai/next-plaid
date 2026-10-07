@@ -115,6 +115,12 @@ pub fn prepare(settings: &AgentSettings, progress: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `colgrep --agent` can answer right away: an endpoint is configured, or the
+/// model is already downloaded (on disk, no network check).
+pub fn agent_ready(settings: &AgentSettings) -> bool {
+    settings.endpoint.is_some() || crate::model::installed_model_file(settings).is_some()
+}
+
 /// Whether llama.cpp is compiled into this build (Apple Silicon).
 pub const BUILTIN_AVAILABLE: bool = cfg!(builtin_llama);
 

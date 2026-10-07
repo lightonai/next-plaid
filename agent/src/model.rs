@@ -35,15 +35,14 @@ pub fn resolve_model_file(settings: &AgentSettings, progress: bool) -> Result<Pa
     if looks_like_local_path(model) {
         return Err(format!("agent model path does not exist: {model}"));
     }
+    if let Some(path) = installed_model_file(settings) {
+        return Ok(path);
+    }
     let api = hub_api_builder()
         .with_progress(false)
         .build()
         .map_err(|e| format!("HuggingFace client: {e}"))?;
     let repo = api.model(model.to_string());
-    // A cached file is returned without touching the network.
-    if let Some(path) = hf_hub::Cache::from_env().model(model.to_string()).get(file) {
-        return Ok(path);
-    }
     repo.download_with_progress(file, crate::progress::HubProgress::new(progress))
         .map_err(|e| {
             format!(
@@ -52,6 +51,24 @@ pub fn resolve_model_file(settings: &AgentSettings, progress: bool) -> Result<Pa
              `colgrep settings --agent-model-file NAME` / `--agent-model REPO_OR_PATH`."
             )
         })
+}
+
+/// The model file when it is already on disk (a local path, or the Hugging Face
+/// cache), without touching the network: cheap enough for a session-start hook.
+pub fn installed_model_file(settings: &AgentSettings) -> Option<PathBuf> {
+    let model = settings.model();
+    let file = settings.model_file();
+    let local = expand_home(model);
+    if local.is_file() {
+        return Some(local);
+    }
+    if local.is_dir() {
+        return Some(local.join(file)).filter(|p| p.is_file());
+    }
+    if looks_like_local_path(model) {
+        return None;
+    }
+    hf_hub::Cache::from_env().model(model.to_string()).get(file)
 }
 
 /// A Hugging Face client configured from the environment, with the token from

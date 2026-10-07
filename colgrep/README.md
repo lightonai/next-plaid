@@ -158,6 +158,8 @@ pylate/losses/contrastive.py:224-228
 
 Progress lines go to stderr (only on a terminal); stdout carries just the locations.
 
+Once the model is downloaded (or an endpoint is configured), colgrep's Claude Code hooks also tell the coding agent about `colgrep --agent`, so it can delegate open-ended "where is X handled?" questions to it. Until then the hooks don't mention it.
+
 How it works:
 
 - **Same harness as training.** System prompt, tool schemas (`colgrep`, `terminal`, `finish`), chat template, observation format and the 10-turn budget are byte-identical to the one the model was trained and evaluated with.
