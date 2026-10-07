@@ -19,6 +19,7 @@ shell-words = "1"
 thiserror = "1"
 ureq = { version = "2", features = ["json"] }
 hf-hub = "0.4"
+indicatif = "0.17"
 
 num_cpus = "1"
 dirs = "5"

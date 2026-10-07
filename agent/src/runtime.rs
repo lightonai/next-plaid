@@ -88,10 +88,7 @@ pub fn llama_server(explicit: Option<&str>, progress: bool) -> Result<PathBuf, S
     let url = format!(
         "https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_CPP_RELEASE}/{asset}"
     );
-    if progress {
-        eprintln!("⬇️  Downloading the llama.cpp runtime ({LLAMA_CPP_RELEASE}, one-time)...");
-    }
-    let bytes = download(&url)?;
+    let bytes = download(&url, progress)?;
     let digest: String = Sha256::digest(&bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -115,16 +112,21 @@ pub fn llama_server(explicit: Option<&str>, progress: bool) -> Result<PathBuf, S
         .ok_or_else(|| format!("{asset} does not contain {}", server_exe()))
 }
 
-fn download(url: &str) -> Result<Vec<u8>, String> {
+fn download(url: &str, progress: bool) -> Result<Vec<u8>, String> {
     let resp = ureq::get(url)
         .timeout(std::time::Duration::from_secs(600))
         .call()
         .map_err(|e| format!("downloading {url}: {e}"))?;
+    let total = resp
+        .header("Content-Length")
+        .and_then(|v| v.parse::<u64>().ok());
+    let bar = crate::progress::download_bar(total, progress);
     let mut bytes = Vec::new();
-    resp.into_reader()
-        .take(512 * 1024 * 1024)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("downloading {url}: {e}"))?;
+    let read = bar
+        .wrap_read(resp.into_reader().take(512 * 1024 * 1024))
+        .read_to_end(&mut bytes);
+    bar.finish_and_clear();
+    read.map_err(|e| format!("downloading {url}: {e}"))?;
     Ok(bytes)
 }
 

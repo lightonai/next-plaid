@@ -12,6 +12,7 @@ pub mod llm;
 pub mod metal;
 pub mod model;
 pub mod profile;
+pub mod progress;
 pub mod protocol;
 pub mod pyjson;
 #[cfg(feature = "local")]

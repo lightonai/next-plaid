@@ -91,6 +91,30 @@ pub fn engine_ready() -> bool {
     true
 }
 
+/// Download whatever the local engine still needs (the model weights; on platforms
+/// without built-in llama.cpp, the llama.cpp runtime), with progress bars when
+/// `progress` is set. Call it before showing any spinner, so the bars draw cleanly;
+/// [`load_engine`] then finds everything in the caches. A no-op for endpoints.
+pub fn prepare(settings: &AgentSettings, progress: bool) -> Result<(), String> {
+    if settings.endpoint.is_some() {
+        return Ok(());
+    }
+    #[cfg(feature = "local")]
+    {
+        crate::model::resolve_model_file(settings, progress)?;
+        let builtin = match settings.runtime.as_deref().unwrap_or("auto") {
+            "server" => false,
+            _ => BUILTIN_AVAILABLE,
+        };
+        if !builtin {
+            crate::runtime::llama_server(settings.llama_server.as_deref(), progress)?;
+        }
+    }
+    #[cfg(not(feature = "local"))]
+    let _ = progress;
+    Ok(())
+}
+
 /// Whether llama.cpp is compiled into this build (Apple Silicon).
 pub const BUILTIN_AVAILABLE: bool = cfg!(all(
     feature = "local",
@@ -123,7 +147,7 @@ fn load_local(
         }
     };
     let t = std::time::Instant::now();
-    let path = crate::model::resolve_model_file(settings)?;
+    let path = crate::model::resolve_model_file(settings, progress)?;
     crate::profile::step("resolve model file", t);
     // Request every layer on the GPU; llama.cpp keeps them on the CPU when it finds none.
     let gpu_layers = if force_cpu {

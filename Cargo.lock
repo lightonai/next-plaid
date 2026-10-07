@@ -700,6 +700,7 @@ dependencies = [
  "flate2",
  "globset",
  "hf-hub",
+ "indicatif",
  "libc",
  "llama-cpp-2",
  "minijinja",

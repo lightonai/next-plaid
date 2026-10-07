@@ -159,6 +159,10 @@ pub fn cmd_agent(
     )?;
     let index_s = started.elapsed().as_secs_f64();
 
+    // First run: download the model (and, off Apple Silicon, the llama.cpp runtime) with
+    // a progress bar, before the spinner takes over the line.
+    colgrep_agent::engine::prepare(&settings, progress).map_err(anyhow::Error::msg)?;
+
     let mut view = AgentView::new();
     if progress {
         view.loading("loading the agent model");
@@ -257,18 +261,22 @@ pub fn cmd_agent(
         );
     }
 
-    let commands = outcome.profile.terminal_ms.len();
+    let plural =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let stats = format!(
-        "{} turns · {} searches · {} terminal command{} · {:.1}s",
-        outcome.turns,
-        outcome.n_searches,
-        commands,
-        if commands == 1 { "" } else { "s" },
+        "{} · {} · {} · {:.1}s",
+        plural(outcome.turns, "turn", "turns"),
+        plural(outcome.n_searches, "search", "searches"),
+        plural(
+            outcome.profile.terminal_ms.len(),
+            "terminal command",
+            "terminal commands"
+        ),
         seconds
     );
     if submitted {
         let n = locations.len();
-        let summary = format!("{n} location{} · {stats}", if n == 1 { "" } else { "s" });
+        let summary = format!("{} · {stats}", plural(n, "location", "locations"));
         if progress {
             view.footer(true, &summary);
         }
