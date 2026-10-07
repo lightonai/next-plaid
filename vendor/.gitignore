@@ -1,0 +1,3 @@
+# The vendored crate must be committed whole: the repository-wide `models/` rule
+# (for downloaded ONNX models) would otherwise drop llama.cpp sources.
+!models/
