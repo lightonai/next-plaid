@@ -25,7 +25,7 @@ pub use index::paths::{
 };
 pub use index::state::IndexState;
 pub use index::{
-    bre_to_ere, escape_literal_braces, index_exists, path_contains_ignored_dir,
+    bre_to_ere, count_units_up_to, escape_literal_braces, index_exists, path_contains_ignored_dir,
     scan_reaches_subdir, IndexBuilder, SearchResult, Searcher, UpdatePlan, UpdateStats,
     CONFIRMATION_THRESHOLD,
 };

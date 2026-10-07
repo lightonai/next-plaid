@@ -1,19 +1,21 @@
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::Result;
-use ignore::WalkBuilder;
 
-use colgrep::{find_parent_index, index_exists, Config, DEFAULT_MODEL};
+use colgrep::{count_units_up_to, find_parent_index, index_exists, Config, DEFAULT_MODEL};
 
-/// Maximum number of files for a "small project" where we enable colgrep
-/// even without a pre-existing index, so the first search auto-creates one quickly.
-const SMALL_PROJECT_FILE_LIMIT: usize = 50;
+/// Projects with fewer code units than this get the colgrep context even without an
+/// index: building one on the first search is quick enough.
+const SMALL_PROJECT_UNIT_LIMIT: usize = 5000;
 
-/// Check if colgrep context should be injected.
-/// Returns true if:
-/// - An index (for the currently selected model) already exists for this project
-///   or a parent project, OR
-/// - The project is small enough that auto-indexing on first search is fast
+/// Time allowed for that count: hooks run at every session start, so a project that
+/// cannot be sized within it (millions of files) is treated as large.
+const SMALL_PROJECT_BUDGET: Duration = Duration::from_secs(1);
+
+/// Check if colgrep context should be injected: the project (or a parent) has an
+/// index for the selected model, however out of date, or it is small enough
+/// (fewer than [`SMALL_PROJECT_UNIT_LIMIT`] code units) to index on the first search.
 fn should_inject_colgrep_context(project_root: &Path) -> bool {
     let model = Config::load()
         .ok()
@@ -21,33 +23,10 @@ fn should_inject_colgrep_context(project_root: &Path) -> bool {
         .unwrap_or_else(|| DEFAULT_MODEL.to_string());
     index_exists(project_root, &model)
         || matches!(find_parent_index(project_root, &model), Ok(Some(_)))
-        || is_small_project(project_root)
-}
-
-/// Quick check whether the project has few enough files that colgrep can
-/// index it on-the-fly without noticeable delay. Walks respecting .gitignore
-/// and stops counting as soon as we exceed the threshold.
-fn is_small_project(root: &Path) -> bool {
-    let walker = WalkBuilder::new(root)
-        .hidden(true) // skip hidden files/dirs
-        .git_ignore(true) // respect .gitignore
-        .git_global(true)
-        .git_exclude(true)
-        .max_depth(Some(10))
-        .build();
-
-    let mut count = 0usize;
-    for entry in walker {
-        let Ok(entry) = entry else { continue };
-        // Only count files, not directories
-        if entry.file_type().is_some_and(|ft| ft.is_file()) {
-            count += 1;
-            if count > SMALL_PROJECT_FILE_LIMIT {
-                return false;
-            }
-        }
-    }
-    count > 0
+        || matches!(
+            count_units_up_to(project_root, SMALL_PROJECT_UNIT_LIMIT, SMALL_PROJECT_BUDGET),
+            Some(n) if (1..SMALL_PROJECT_UNIT_LIMIT).contains(&n)
+        )
 }
 
 /// Claude Code session hook - outputs JSON reminder for semantic search

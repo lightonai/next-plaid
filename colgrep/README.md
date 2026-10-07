@@ -522,10 +522,10 @@ Config stored at `~/.config/colgrep/config.json`.
 The Claude Code integration installs session and task hooks that:
 
 - Inject colgrep usage instructions into the agent's system prompt
-- Check index health before activating (skips if >3000 chunks need indexing or index is desynced)
+- Activate when the project (or a parent) already has a colgrep index, even an outdated one, or when it has fewer than 5,000 code blocks, small enough to index on the first search. The count stops at 5,000 and within one second, so it stays instant on huge repositories.
 - Propagate colgrep instructions to spawned sub-agents via task hooks
 
-This means Claude Code automatically uses `colgrep` as its primary search tool when the index is ready.
+This means Claude Code automatically uses `colgrep` as its primary search tool wherever it is ready to answer.
 
 ### Kimi Code Integration
 
