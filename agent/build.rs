@@ -11,6 +11,7 @@ const GGML_SRC: &str = "../vendor/llama-cpp-sys-2/llama.cpp/ggml/src";
 const ASSETS: &str = "assets/metal";
 
 fn main() {
+    println!("cargo::rustc-check-cfg=cfg(builtin_llama)");
     println!("cargo::rustc-check-cfg=cfg(colgrep_metallib)");
     println!("cargo:rerun-if-changed={ASSETS}");
     println!("cargo:rerun-if-changed={GGML_SRC}/ggml-common.h");
@@ -20,6 +21,11 @@ fn main() {
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     if os != "macos" || arch != "aarch64" {
         return;
+    }
+    // llama.cpp is compiled in (with Metal) only on Apple Silicon; elsewhere the agent
+    // runs a downloaded llama-server.
+    if std::env::var_os("CARGO_FEATURE_LOCAL").is_some() {
+        println!("cargo:rustc-cfg=builtin_llama");
     }
     let assets = Path::new(ASSETS);
     let expected = match std::fs::read_to_string(assets.join("kernels.sha256")) {

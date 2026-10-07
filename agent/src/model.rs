@@ -35,15 +35,8 @@ pub fn resolve_model_file(settings: &AgentSettings, progress: bool) -> Result<Pa
     if looks_like_local_path(model) {
         return Err(format!("agent model path does not exist: {model}"));
     }
-    let mut builder = ApiBuilder::from_env().with_progress(false);
-    let token = std::env::var("HF_TOKEN")
-        .or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
-        .ok()
-        .map(|t| t.trim_matches('"').trim_matches('\'').to_string());
-    if token.is_some() {
-        builder = builder.with_token(token);
-    }
-    let api = builder
+    let api = hub_api_builder()
+        .with_progress(false)
         .build()
         .map_err(|e| format!("HuggingFace client: {e}"))?;
     let repo = api.model(model.to_string());
@@ -61,7 +54,23 @@ pub fn resolve_model_file(settings: &AgentSettings, progress: bool) -> Result<Pa
         })
 }
 
-fn looks_like_local_path(s: &str) -> bool {
+/// A Hugging Face client configured from the environment, with the token from
+/// `HF_TOKEN`, then `HUGGING_FACE_HUB_TOKEN`, then the HF token file (`$HF_HOME/token`).
+/// Shared by the agent model and colgrep's encoder download.
+pub fn hub_api_builder() -> ApiBuilder {
+    let builder = ApiBuilder::from_env(); // reads the token file
+    let token = std::env::var("HF_TOKEN")
+        .or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
+        .ok()
+        .map(|t| t.trim_matches('"').trim_matches('\'').to_string());
+    match token {
+        Some(t) => builder.with_token(Some(t)),
+        None => builder,
+    }
+}
+
+/// Whether `s` names a local path (as opposed to a Hugging Face repo id).
+pub fn looks_like_local_path(s: &str) -> bool {
     s.starts_with('.')
         || s.starts_with('/')
         || s.starts_with('~')

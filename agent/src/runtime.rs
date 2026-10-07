@@ -6,11 +6,8 @@
 //! machine) and a Vulkan backend that is loaded only when a GPU driver is present, so the
 //! same download runs on NVIDIA, AMD and Intel GPUs and falls back to the CPU otherwise.
 //! The archive is pinned to a release and verified against its SHA-256.
-
 use std::io::Read;
 use std::path::{Path, PathBuf};
-
-use sha2::{Digest, Sha256};
 
 /// Pinned llama.cpp release.
 pub const LLAMA_CPP_RELEASE: &str = "b11476";
@@ -89,10 +86,7 @@ pub fn llama_server(explicit: Option<&str>, progress: bool) -> Result<PathBuf, S
         "https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_CPP_RELEASE}/{asset}"
     );
     let bytes = download(&url, progress)?;
-    let digest: String = Sha256::digest(&bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let digest = crate::hash::sha256_hex(&bytes);
     if digest != sha256 {
         return Err(format!(
             "checksum mismatch for {url}: expected {sha256}, got {digest}"

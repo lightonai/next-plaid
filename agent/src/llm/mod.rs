@@ -5,7 +5,7 @@
 //! longest common prefix with the previous call: each turn re-sends the whole
 //! conversation, and only the new tokens should cost compute.
 
-#[cfg(all(feature = "local", target_os = "macos", target_arch = "aarch64"))]
+#[cfg(builtin_llama)]
 pub mod llama;
 pub mod openai;
 #[cfg(feature = "local")]

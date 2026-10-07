@@ -488,8 +488,9 @@ pub fn apply_agent_settings(settings: &mut AgentSettings, args: &AgentSettingsAr
     let a = args;
     if let Some(v) = &a.model {
         if let Some(m) = parse_text(v) {
-            let looks_local = m.starts_with(['.', '/', '~']) || m.ends_with(".gguf");
-            if looks_local && !colgrep_agent::config::expand_home(&m).exists() {
+            if colgrep_agent::model::looks_like_local_path(&m)
+                && !colgrep_agent::config::expand_home(&m).exists()
+            {
                 bail!("--agent-model: no such file or directory: {m}");
             }
         }

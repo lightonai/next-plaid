@@ -48,11 +48,11 @@ pub fn install(base: &Path) -> Result<PathBuf, String> {
     for (name, compressed) in embedded::FILES {
         let expected = embedded::sha256_of(name).ok_or(format!("no checksum for {name}"))?;
         let path = dir.join(name);
-        if std::fs::read(&path).is_ok_and(|on_disk| sha256_hex(&on_disk) == expected) {
+        if std::fs::read(&path).is_ok_and(|on_disk| crate::hash::sha256_hex(&on_disk) == expected) {
             continue;
         }
         let bytes = zstd::decode_all(compressed).map_err(|e| format!("{name}: {e}"))?;
-        if sha256_hex(&bytes) != expected {
+        if crate::hash::sha256_hex(&bytes) != expected {
             return Err(format!("embedded {name} does not match its checksum"));
         }
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -62,15 +62,6 @@ pub fn install(base: &Path) -> Result<PathBuf, String> {
         std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     Ok(dir)
-}
-
-#[cfg(colgrep_metallib)]
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
 }
 
 #[cfg(not(colgrep_metallib))]
@@ -88,7 +79,10 @@ mod tests {
         let dir = install(base.path()).unwrap();
         for (name, _) in embedded::FILES {
             let on_disk = std::fs::read(dir.join(name)).unwrap();
-            assert_eq!(sha256_hex(&on_disk), embedded::sha256_of(name).unwrap());
+            assert_eq!(
+                crate::hash::sha256_hex(&on_disk),
+                embedded::sha256_of(name).unwrap()
+            );
         }
         let mtime = std::fs::metadata(dir.join("default.metallib"))
             .unwrap()
@@ -113,7 +107,7 @@ mod tests {
         install(base.path()).unwrap();
         let repaired = std::fs::read(&path).unwrap();
         assert_eq!(
-            sha256_hex(&repaired),
+            crate::hash::sha256_hex(&repaired),
             embedded::sha256_of("default-bf16.metallib").unwrap()
         );
     }

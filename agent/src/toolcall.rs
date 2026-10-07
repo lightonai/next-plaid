@@ -9,6 +9,15 @@ use serde_json::{Map, Value};
 
 use crate::protocol::{find_tool, ToolCall};
 
+/// The tool-call markup (the model's chat template): `<function name="…">`,
+/// `<param name="…">value</param>`, values in CDATA when they need it.
+pub const FUNCTION_OPEN: &str = "<function";
+pub const FUNCTION_CLOSE: &str = "</function>";
+pub const PARAM_OPEN: &str = "<param";
+pub const PARAM_CLOSE: &str = "</param>";
+pub const CDATA_OPEN: &str = "<![CDATA[";
+pub const CDATA_CLOSE: &str = "]]>";
+
 /// The assistant reply: free text before the first call, then the calls in order.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ParsedReply {
@@ -25,7 +34,7 @@ pub fn parse_reply(text: &str, tools: &[Value], next_id: &mut usize) -> ParsedRe
     let mut calls = Vec::new();
     let mut rest = text;
     let mut content_end = None;
-    while let Some(start) = rest.find("<function") {
+    while let Some(start) = rest.find(FUNCTION_OPEN) {
         let Some((call, consumed)) = parse_function(&rest[start..], tools) else {
             break;
         };
@@ -72,30 +81,30 @@ fn parse_function(s: &str, tools: &[Value]) -> Option<ParsedFunction> {
         let rest = &s[pos..];
         let trimmed = rest.trim_start();
         pos += rest.len() - trimmed.len();
-        if let Some(after) = trimmed.strip_prefix("</function>") {
+        if let Some(after) = trimmed.strip_prefix(FUNCTION_CLOSE) {
             let consumed = s.len() - after.len();
             return Some(((name.clone(), type_arguments(&name, args, tools)), consumed));
         }
-        if !trimmed.starts_with("<param") {
+        if !trimmed.starts_with(PARAM_OPEN) {
             return None;
         }
         let tag_end = trimmed.find('>')?;
         let pname = attr_value(&trimmed[..tag_end], "name")?;
         let value_start = tag_end + 1;
         let after_tag = &trimmed[value_start..];
-        let (raw, value_len) = if let Some(cdata) = after_tag.strip_prefix("<![CDATA[") {
-            let end = cdata.find("]]>")?;
-            let tail = &cdata[end + 3..];
-            if !tail.starts_with("</param>") {
+        let (raw, value_len) = if let Some(cdata) = after_tag.strip_prefix(CDATA_OPEN) {
+            let end = cdata.find(CDATA_CLOSE)?;
+            if !cdata[end + CDATA_CLOSE.len()..].starts_with(PARAM_CLOSE) {
                 return None;
             }
-            (cdata[..end].to_string(), 9 + end + 3)
+            let len = CDATA_OPEN.len() + end + CDATA_CLOSE.len();
+            (cdata[..end].to_string(), len)
         } else {
-            let end = after_tag.find("</param>")?;
+            let end = after_tag.find(PARAM_CLOSE)?;
             (unescape_xml(&after_tag[..end]), end)
         };
         args.insert(pname, Value::String(raw));
-        pos += value_start + value_len + "</param>".len();
+        pos += value_start + value_len + PARAM_CLOSE.len();
     }
 }
 

@@ -11,12 +11,9 @@ use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use colgrep_agent::session::{Event, Observer};
+use colgrep_agent::toolcall::{CDATA_OPEN, FUNCTION_CLOSE, FUNCTION_OPEN, PARAM_CLOSE, PARAM_OPEN};
 
-const FUNCTION_OPEN: &str = "<function";
-const FUNCTION_CLOSE: &str = "</function>";
-const PARAM_OPEN: &str = "<param";
-const PARAM_CLOSE: &str = "</param>";
-const CDATA_OPEN: &str = "<![CDATA[";
+/// A CDATA value's end: `toolcall::CDATA_CLOSE` then `toolcall::PARAM_CLOSE`.
 const CDATA_PARAM_CLOSE: &str = "]]></param>";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -499,20 +496,6 @@ fn summarize(tool: &str, observation: &str) -> String {
 mod tests {
     use super::*;
 
-    fn rendered(chunks: &[&str]) -> String {
-        colored::control::set_override(false);
-        let mut view = AgentView::new();
-        // Capture by re-running the state machine and recording printed text.
-        let mut out = String::new();
-        for c in chunks {
-            view.buf.push_str(c);
-            let before = view.pos;
-            view.render();
-            out.push_str(&view.buf[before..view.pos]);
-        }
-        out
-    }
-
     #[test]
     fn markup_split_across_tokens_is_consumed_whole() {
         let call =
@@ -528,7 +511,6 @@ mod tests {
             assert_eq!(view.pos, call.len(), "split at {i}");
             assert_eq!(view.state, State::Outside, "split at {i}");
         }
-        assert_eq!(rendered(&[call]).len(), call.len());
     }
 
     #[test]

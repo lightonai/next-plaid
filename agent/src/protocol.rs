@@ -227,13 +227,9 @@ pub fn value_as_int(v: &Value) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::{Digest, Sha256};
 
     fn sha256(s: &str) -> String {
-        Sha256::digest(s.as_bytes())
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
+        crate::hash::sha256_hex(s.as_bytes())
     }
 
     /// The prompt and tool-schema hashes the shipped checkpoint was evaluated with

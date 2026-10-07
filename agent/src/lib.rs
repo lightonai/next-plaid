@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod engine;
+pub mod hash;
 pub mod llm;
 pub mod metal;
 pub mod model;

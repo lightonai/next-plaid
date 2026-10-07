@@ -50,20 +50,20 @@ pub fn load_engine(
 /// `kernels_dir` is where pre-compiled Metal kernels are kept (next to the colgrep
 /// indices); with them, initialization takes milliseconds instead.
 pub fn prewarm(settings: &AgentSettings, kernels_dir: Option<&std::path::Path>) {
-    #[cfg(all(feature = "local", target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(builtin_llama)]
     if settings.endpoint.is_none() && settings.runtime.as_deref().unwrap_or("auto") != "server" {
         if let Some(base) = kernels_dir {
             use_precompiled_kernels(base);
         }
         crate::llm::llama::prewarm_backend();
     }
-    #[cfg(not(all(feature = "local", target_os = "macos", target_arch = "aarch64")))]
+    #[cfg(not(builtin_llama))]
     let _ = (settings, kernels_dir);
 }
 
 /// Point ggml at the pre-compiled Metal kernels, installing them under `base` first.
 /// A `GGML_METAL_LIB_DIR` the user set wins. Must run before the backend initializes.
-#[cfg(all(feature = "local", target_os = "macos", target_arch = "aarch64"))]
+#[cfg(builtin_llama)]
 fn use_precompiled_kernels(base: &std::path::Path) {
     if !crate::metal::AVAILABLE || std::env::var_os("GGML_METAL_LIB_DIR").is_some() {
         return;
@@ -85,9 +85,9 @@ fn use_precompiled_kernels(base: &std::path::Path) {
 /// Whether the engine's one-time initialization (GPU kernels) is done. Always true
 /// for engines that have none.
 pub fn engine_ready() -> bool {
-    #[cfg(all(feature = "local", target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(builtin_llama)]
     return crate::llm::llama::backend_ready();
-    #[cfg(not(all(feature = "local", target_os = "macos", target_arch = "aarch64")))]
+    #[cfg(not(builtin_llama))]
     true
 }
 
@@ -116,11 +116,7 @@ pub fn prepare(settings: &AgentSettings, progress: bool) -> Result<(), String> {
 }
 
 /// Whether llama.cpp is compiled into this build (Apple Silicon).
-pub const BUILTIN_AVAILABLE: bool = cfg!(all(
-    feature = "local",
-    target_os = "macos",
-    target_arch = "aarch64"
-));
+pub const BUILTIN_AVAILABLE: bool = cfg!(builtin_llama);
 
 #[cfg(feature = "local")]
 fn load_local(
@@ -155,11 +151,14 @@ fn load_local(
     } else {
         settings.gpu_layers.unwrap_or(999)
     };
+    #[cfg(builtin_llama)]
     if builtin {
-        load_builtin(settings, &path, template_override, gpu_layers)
-    } else {
-        load_server(settings, &path, template_override, gpu_layers, progress)
+        return load_builtin(settings, &path, template_override, gpu_layers);
     }
+    // Without llama.cpp compiled in, `builtin` was rejected above.
+    #[cfg(not(builtin_llama))]
+    debug_assert!(!builtin);
+    load_server(settings, &path, template_override, gpu_layers, progress)
 }
 
 #[cfg(feature = "local")]
@@ -211,7 +210,7 @@ fn load_server(
     })
 }
 
-#[cfg(all(feature = "local", target_os = "macos", target_arch = "aarch64"))]
+#[cfg(builtin_llama)]
 fn load_builtin(
     settings: &AgentSettings,
     path: &std::path::Path,
@@ -252,19 +251,6 @@ fn load_builtin(
     })
 }
 
-#[cfg(all(
-    feature = "local",
-    not(all(target_os = "macos", target_arch = "aarch64"))
-))]
-fn load_builtin(
-    _settings: &AgentSettings,
-    _path: &std::path::Path,
-    _template_override: Option<String>,
-    _gpu_layers: u32,
-) -> Result<Engine, String> {
-    unreachable!("BUILTIN_AVAILABLE is false on this platform")
-}
-
 #[cfg(feature = "local")]
 fn file_name(path: &std::path::Path) -> String {
     path.file_name()
@@ -275,18 +261,12 @@ fn file_name(path: &std::path::Path) -> String {
 /// CPU threads for local inference: the performance cores. Generation is memory-bound,
 /// and threads on efficiency cores (or SMT siblings) slow every token down to their
 /// pace — on an M3 Pro, 5 threads generate ~40 tok/s and 11 threads ~10 tok/s.
-#[cfg(all(feature = "local", target_os = "macos", target_arch = "aarch64"))]
+#[cfg(builtin_llama)]
 fn default_threads() -> usize {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(n) = macos_performance_cores() {
-            return n;
-        }
-    }
-    num_cpus::get_physical().max(1)
+    macos_performance_cores().unwrap_or_else(|| num_cpus::get_physical().max(1))
 }
 
-#[cfg(all(feature = "local", target_os = "macos", target_arch = "aarch64"))]
+#[cfg(builtin_llama)]
 fn macos_performance_cores() -> Option<usize> {
     let mut value: i32 = 0;
     let mut size = std::mem::size_of::<i32>();

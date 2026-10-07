@@ -214,10 +214,7 @@ impl LlamaEngine {
         for t in tokens {
             h.update(t.0.to_le_bytes());
         }
-        let key: String = h.finalize()[..16]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let key = crate::hash::hex(&h.finalize()[..16]);
         Some(dir.join(format!("{key}.kv")))
     }
 
