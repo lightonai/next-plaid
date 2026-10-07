@@ -450,6 +450,33 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
 #endif
 
 #if GGML_METAL_EMBED_LIBRARY
+    // Pre-compiled kernels from GGML_METAL_LIB_DIR: the embedded sources compiled ahead
+    // of time (`default.metallib`, or `default-bf16.metallib` for devices with bfloat).
+    // Loading them takes milliseconds, where compiling the embedded sources takes ~20 s
+    // whenever the system shader cache misses. Falls back to the sources when absent.
+    NSString * lib_dir = [[NSProcessInfo processInfo].environment objectForKey:@"GGML_METAL_LIB_DIR"];
+    if (lib_dir) {
+        const int64_t t_start = ggml_time_us();
+        NSString * lib_name = ggml_metal_device_get_props(dev)->has_bfloat ? @"default-bf16.metallib" : @"default.metallib";
+        NSString * lib_path = [lib_dir stringByAppendingPathComponent:lib_name];
+        if ([[NSFileManager defaultManager] isReadableFileAtPath:lib_path]) {
+            NSError * error = nil;
+            id<MTLLibrary> lib = [device newLibraryWithURL:[NSURL fileURLWithPath:lib_path] error:&error];
+            if (lib) {
+                res->objs[0]        = lib;
+                res->single_library = true;
+                if (ggml_metal_device_get_props(dev)->has_tensor) {
+                    // the tensor API kernels are not part of the pre-compiled library
+                    ggml_metal_device_disable_tensor(dev);
+                }
+                GGML_LOG_INFO("%s: loaded pre-compiled '%s' in %.3f sec\n", __func__, [lib_path UTF8String], (ggml_time_us() - t_start) / 1e6);
+                return res;
+            }
+            GGML_LOG_WARN("%s: cannot load '%s' (%s), compiling the embedded sources\n", __func__,
+                    [lib_path UTF8String], [[error description] UTF8String]);
+        }
+    }
+
     GGML_LOG_INFO("%s: using embedded metal library\n", __func__);
 
     // start/end symbols emitted by CMake (see CMakeLists.txt), one pair per kind
