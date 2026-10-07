@@ -19,8 +19,8 @@ use colgrep::{
 
 use cli::{Cli, Commands};
 use commands::{
-    cmd_clear, cmd_config, cmd_init, cmd_reset_stats, cmd_search, cmd_session_hook, cmd_set_model,
-    cmd_stats, cmd_status, cmd_task_hook, cmd_update, InitOptions,
+    cmd_agent, cmd_clear, cmd_config, cmd_init, cmd_reset_stats, cmd_search, cmd_session_hook,
+    cmd_set_model, cmd_stats, cmd_status, cmd_task_hook, cmd_update, InitOptions,
 };
 
 /// Apply the persisted CoreML model cache directory (issue #129).
@@ -339,6 +339,7 @@ fn main() -> Result<()> {
             remove_force_include,
             clear_ignore,
             clear_force_include,
+            agent,
         }) => cmd_config(
             default_k,
             default_n,
@@ -366,7 +367,25 @@ fn main() -> Result<()> {
             remove_force_include,
             clear_ignore,
             clear_force_include,
+            agent,
         ),
+        None if cli.agent => match cli.query {
+            Some(task) => cmd_agent(
+                &task,
+                &cli.paths,
+                cli.model.as_deref(),
+                cli.json,
+                cli.files_only,
+                cli.show_content,
+                cli.context_lines,
+                cli.auto_confirm,
+                cli.no_update,
+                cli.force_cpu,
+            ),
+            None => anyhow::bail!(
+                "--agent needs a query, e.g. colgrep --agent \"where are sessions expired\""
+            ),
+        },
         None => {
             // Default: run search if query is provided
             // If only -e pattern is given without a query, use the pattern as the query too

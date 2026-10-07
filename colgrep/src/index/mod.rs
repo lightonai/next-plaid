@@ -1320,8 +1320,6 @@ impl IndexBuilder {
             };
 
             // Print model info after ONNX runtime is initialized (and any potential re-exec)
-            eprintln!("🤖 Model: {} ({})", self.model_id, execution_provider);
-            eprintln!("📂 Building index...");
 
             // Use runtime default for batch size (respects cuDNN availability)
             let batch = self
@@ -1940,12 +1938,7 @@ impl IndexBuilder {
 
         // Progress bar for parsing
         let pb = ProgressBar::new(files_to_index.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
-                .unwrap()
-                .progress_chars("█▓░"),
-        );
+        pb.set_style(index_progress_style());
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
         pb.set_message("Parsing files...");
 
@@ -1980,12 +1973,7 @@ impl IndexBuilder {
         self.ensure_model_created(new_units.len())?;
 
         let pb = ProgressBar::new(new_units.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                .unwrap()
-                .progress_chars("█▓░"),
-        );
+        pb.set_style(index_progress_style());
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
         pb.set_message("Encoding...");
 
@@ -2210,12 +2198,7 @@ impl IndexBuilder {
         // Parse the remaining files (cheap relative to embedding) and build the call graph
         // over them so `called_by` is populated for this build's units.
         let pb = ProgressBar::new(todo.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
-                .unwrap()
-                .progress_chars("█▓░"),
-        );
+        pb.set_style(index_progress_style());
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
         pb.set_message("Parsing files...");
 
@@ -2304,12 +2287,7 @@ impl IndexBuilder {
             BUILD_CHECKPOINT_UNITS
         };
         let encode_pb = ProgressBar::new(total_units as u64);
-        encode_pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                .unwrap()
-                .progress_chars("█▓░"),
-        );
+        encode_pb.set_style(index_progress_style());
         encode_pb.enable_steady_tick(std::time::Duration::from_millis(100));
         encode_pb.set_message("Encoding...");
 
@@ -2448,12 +2426,7 @@ impl IndexBuilder {
 
         // Progress bar for parsing files
         let pb = ProgressBar::new(files.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
-                .unwrap()
-                .progress_chars("█▓░"),
-        );
+        pb.set_style(index_progress_style());
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
         pb.set_message("Parsing files...");
 
@@ -2684,12 +2657,7 @@ impl IndexBuilder {
         // Progress bar for parsing (only if there are files to index)
         let pb = if !files_to_index.is_empty() {
             let pb = ProgressBar::new(files_to_index.len() as u64);
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
-                    .unwrap()
-                    .progress_chars("█▓░"),
-            );
+            pb.set_style(index_progress_style());
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb.set_message("Parsing files...");
             Some(pb)
@@ -2753,12 +2721,7 @@ impl IndexBuilder {
 
             // Progress bar for encoding
             let pb = ProgressBar::new(new_units.len() as u64);
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                    .unwrap()
-                    .progress_chars("█▓░"),
-            );
+            pb.set_style(index_progress_style());
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb.set_message("Encoding...");
 
@@ -3359,12 +3322,7 @@ impl IndexBuilder {
         // Progress bar for encoding
         let pb = if show_progress {
             let pb = ProgressBar::new(units.len() as u64);
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                    .unwrap()
-                    .progress_chars("█▓░"),
-            );
+            pb.set_style(index_progress_style());
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb.set_message("Encoding...");
             Some(pb)
@@ -4701,6 +4659,13 @@ fn collapse_by_file(results: Vec<SearchResult>, top_k: usize) -> Vec<SearchResul
         }
     }
     out
+}
+
+/// The indexing progress bar: just the bar and the count, cleared when indexing is done.
+fn index_progress_style() -> ProgressStyle {
+    ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len}")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .progress_chars("█▓░")
 }
 
 /// SQLite stores booleans as integers and arrays as JSON strings. Normalize

@@ -113,6 +113,13 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
 
+    /// Settings of the code-localization agent (`colgrep --agent`)
+    #[serde(
+        default,
+        skip_serializing_if = "colgrep_agent::config::AgentSettings::is_empty"
+    )]
+    pub agent: colgrep_agent::config::AgentSettings,
+
     /// Default number of results (-k)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_k: Option<usize>,

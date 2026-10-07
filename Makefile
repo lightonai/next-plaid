@@ -232,6 +232,9 @@ endif
 	@# Update path dependency versions in colgrep/Cargo.toml
 	@sed -i 's/next-plaid = { path = "..\/next-plaid", version = "[^"]*"/next-plaid = { path = "..\/next-plaid", version = "$(VERSION)"/' colgrep/Cargo.toml
 	@sed -i 's/next-plaid-onnx = { path = "..\/next-plaid-onnx", version = "[^"]*"/next-plaid-onnx = { path = "..\/next-plaid-onnx", version = "$(VERSION)"/' colgrep/Cargo.toml
+	@# The agent crate (agent/) inherits the workspace version; colgrep's pin on it follows
+	@sed -i 's/colgrep-agent = { path = "..\/agent", version = "[^"]*"/colgrep-agent = { path = "..\/agent", version = "$(VERSION)"/' colgrep/Cargo.toml
+	@grep -q 'version.workspace = true' agent/Cargo.toml || { echo "agent/Cargo.toml must use version.workspace = true"; exit 1; }
 	@echo "  ✓ Updated path dependencies in colgrep/Cargo.toml"
 	@# Update Claude plugin versions
 	@sed -i 's/"version": "[^"]*"/"version": "$(VERSION)"/' colgrep/src/install/plugin.json
@@ -280,7 +283,8 @@ endif
 	@echo ""
 	@echo "Version bumped to $(VERSION). Files updated:"
 	@echo "  - Cargo.toml (workspace version)"
-	@echo "  - colgrep/Cargo.toml (path dependencies)"
+	@echo "  - colgrep/Cargo.toml (path dependencies, incl. colgrep-agent)"
+	@echo "  - agent/Cargo.toml (inherits the workspace version)"
 	@echo "  - colgrep/src/install/{plugin,marketplace}.json"
 	@echo "  - colgrep/python-sdk/{Cargo.toml,pyproject.toml,__init__.py}"
 	@echo "  - .claude-plugin/marketplace.json"

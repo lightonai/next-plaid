@@ -1,0 +1,81 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "colgrep",
+      "description": "Search repository code with query alone (semantic search), pattern alone (lexical regex search), or query + pattern (semantic search with regex filtering).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Optional natural-language query, e.g. \"where session token expiry is validated\"."
+          },
+          "k": {
+            "type": "integer",
+            "description": "Number of results to return (default 10, max 25)."
+          },
+          "path": {
+            "type": "string",
+            "description": "Optional subdirectory or file to scope the search."
+          },
+          "include": {
+            "type": "string",
+            "description": "Optional file glob, e.g. \"*.py\"."
+          },
+          "pattern": {
+            "type": "string",
+            "description": "Optional grep-style regex (colgrep -e). Use with `query` for semantic search with regex filtering, or without `query` for lexical search only. Use for exact names, numbers, or rare terms, e.g. \"Art Deco|South Beach\". Case-insensitive; if it matches nothing, retry without it."
+          },
+          "command": {
+            "type": "string",
+            "description": "Alternative: a full colgrep CLI string."
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "terminal",
+      "description": "Run one read-only shell command (ls/cd/cat/head/tail/pwd/grep/find/…). Use colgrep for semantic search.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "One shell command."
+          }
+        },
+        "required": [
+          "command"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "finish",
+      "description": "Submit your final answer: the code locations a developer must read and edit. Call this once, when you are done searching. Each location is a string 'path/to/file:START-END': a repository-relative file path and inclusive, 1-based line range (START <= END). Use the exact relevant lines you verified; list separate ranges for disjoint regions.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "locations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[^:\\n]+:[1-9][0-9]*-[1-9][0-9]*$"
+            },
+            "description": "Relevant file:START-END ranges, most important first."
+          }
+        },
+        "required": [
+          "locations"
+        ]
+      }
+    }
+  }
+]

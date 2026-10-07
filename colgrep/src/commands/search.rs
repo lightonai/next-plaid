@@ -459,7 +459,7 @@ pub fn resolve_verbose(config: &Config) -> bool {
 /// otherwise-identical runs — including the same query with and without
 /// `--json`. The tie-break removes that nondeterminism so the result list is
 /// purely a function of the index + query + flags.
-fn cmp_results_deterministic(
+pub(crate) fn cmp_results_deterministic(
     a: &colgrep::SearchResult,
     b: &colgrep::SearchResult,
 ) -> std::cmp::Ordering {
@@ -617,6 +617,70 @@ pub fn cmd_search(
     // When -e is used without -F, automatically enable regex mode (ERE)
     let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
 
+    print_results(
+        &config,
+        &results,
+        &PrintOptions {
+            query,
+            files_only,
+            json,
+            use_relative,
+            show_content,
+            cli_context_lines,
+            context_lines,
+            text_pattern,
+            effective_extended_regexp,
+            fixed_strings,
+            word_regexp,
+            case_sensitive,
+            regex_unbounded,
+            top_k,
+        },
+    )
+}
+
+/// How [`print_results`] renders results: the display flags of a search.
+pub(crate) struct PrintOptions<'a> {
+    pub query: &'a str,
+    pub files_only: bool,
+    pub json: bool,
+    pub use_relative: bool,
+    pub show_content: bool,
+    pub cli_context_lines: Option<usize>,
+    pub context_lines: usize,
+    pub text_pattern: Option<&'a str>,
+    pub effective_extended_regexp: bool,
+    pub fixed_strings: bool,
+    pub word_regexp: bool,
+    pub case_sensitive: bool,
+    pub regex_unbounded: bool,
+    pub top_k: usize,
+}
+
+/// Print search results the way `colgrep` shows them: compact `path:start-end` lines,
+/// or highlighted code with `-c` / `-n` / the verbose setting.
+pub(crate) fn print_results(
+    config: &Config,
+    results: &[colgrep::SearchResult],
+    opts: &PrintOptions<'_>,
+) -> Result<()> {
+    let PrintOptions {
+        query,
+        files_only,
+        json,
+        use_relative,
+        show_content,
+        cli_context_lines,
+        context_lines,
+        text_pattern,
+        effective_extended_regexp,
+        fixed_strings,
+        word_regexp,
+        case_sensitive,
+        regex_unbounded,
+        top_k,
+    } = *opts;
+    let results: Vec<colgrep::SearchResult> = results.to_vec();
     // Output
     if files_only {
         // -l mode: show only unique filenames
@@ -639,7 +703,7 @@ pub fn cmd_search(
         let verbose = if show_content || cli_context_lines.is_some_and(|n| n > 0) {
             true // Force verbose when user explicitly requests content display
         } else {
-            resolve_verbose(&config)
+            resolve_verbose(config)
         };
 
         // Maximum characters of matching line content to show in compact mode
@@ -996,12 +1060,42 @@ fn find_existing_parent_and_list(path: &Path) -> String {
     }
 }
 
+/// A project index loaded for searching, plus where the requested path sits inside it.
+pub(crate) struct LoadedIndex {
+    pub searcher: Searcher,
+    /// Root of the indexed project (a parent of the requested path when it reuses a
+    /// parent project's index).
+    pub effective_root: PathBuf,
+    /// The requested directory relative to `effective_root`, when it is a subdirectory.
+    pub subdir_filter: Option<PathBuf>,
+    /// The requested file, when a file (not a directory) was given.
+    pub specific_file: Option<PathBuf>,
+    /// The requested path, canonical (the parent directory when a file was given).
+    pub search_path: PathBuf,
+    pub model: String,
+}
+
+/// Filters and ranking options of one query against a [`LoadedIndex`].
+pub(crate) struct QueryOptions<'a> {
+    pub text_pattern: Option<&'a str>,
+    pub extended_regexp: bool,
+    pub fixed_strings: bool,
+    pub word_regexp: bool,
+    pub case_sensitive: bool,
+    pub include_patterns: &'a [String],
+    pub exclude_patterns: &'a [String],
+    pub exclude_dirs: &'a [String],
+    pub code_only: bool,
+    pub no_fts: bool,
+    pub alpha: Option<f32>,
+}
+
 /// Search a single path and return results with absolute file paths
 #[allow(clippy::too_many_arguments)]
 fn search_single_path(
     config: &Config,
     query: &str,
-    path: &PathBuf,
+    path: &Path,
     top_k: usize,
     cli_model: Option<&str>,
     json: bool,
@@ -1022,6 +1116,64 @@ fn search_single_path(
     static_batch: bool,
     no_update: bool,
 ) -> Result<Vec<colgrep::SearchResult>> {
+    let quiet = json || files_only;
+    let loaded = load_index(
+        config,
+        path,
+        cli_model,
+        quiet,
+        include_patterns,
+        pool_factor,
+        auto_confirm,
+        static_batch,
+        no_update,
+    )?;
+    let results = run_query(
+        config,
+        &loaded,
+        loaded.subdir_filter.as_deref(),
+        loaded.specific_file.as_deref(),
+        query,
+        top_k,
+        &QueryOptions {
+            text_pattern,
+            extended_regexp,
+            fixed_strings,
+            word_regexp,
+            case_sensitive,
+            include_patterns,
+            exclude_patterns,
+            exclude_dirs,
+            code_only,
+            no_fts,
+            alpha,
+        },
+        quiet,
+    )?;
+
+    // Increment search count
+    let index_dir = get_index_dir_for_project(&loaded.effective_root, &loaded.model)?;
+    if let Ok(mut state) = IndexState::load(&index_dir) {
+        state.increment_search_count();
+        let _ = state.save(&index_dir);
+    }
+
+    Ok(results)
+}
+
+/// Update (unless `no_update`) and load the index covering `path`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn load_index(
+    config: &Config,
+    path: &Path,
+    cli_model: Option<&str>,
+    quiet: bool,
+    include_patterns: &[String],
+    pool_factor: Option<usize>,
+    auto_confirm: bool,
+    static_batch: bool,
+    no_update: bool,
+) -> Result<LoadedIndex> {
     let path = match std::fs::canonicalize(path) {
         Ok(p) => p,
         Err(_) => {
@@ -1041,10 +1193,6 @@ fn search_single_path(
     } else {
         (path.clone(), None)
     };
-
-    // When -e is used without -F, automatically enable regex mode (ERE)
-    // This makes -e imply -E by default, with -F as the opt-out
-    let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
 
     // Resolve model: CLI > config > default
     let model = resolve_model(config, cli_model);
@@ -1082,7 +1230,7 @@ fn search_single_path(
     // This does NOT escape to a different or parent index, it only removes the subdir restriction
     let subdir_filter = if let Some(ref subdir) = subdir_filter {
         if should_search_from_root(include_patterns, subdir, &effective_root) {
-            if !json && !files_only {
+            if !quiet {
                 eprintln!("📂 Pattern escapes subdirectory, searching full project");
             }
             None // Skip subdir filter, search full index (still bounded by effective_root)
@@ -1092,13 +1240,6 @@ fn search_single_path(
     } else {
         None
     };
-
-    // Get files matching include patterns (for file-type filtering)
-    // BUG FIX: Don't scan filesystem for --include patterns.
-    // The filesystem scan finds files that aren't in the index, causing
-    // filter_by_files() to return empty results. Instead, let the code
-    // fall through to filter_by_file_patterns() which queries the index directly.
-    let include_files: Option<Vec<String>> = None;
 
     // Auto-index: try incremental update without blocking on the lock.
     // If another process is indexing, skip the update and search the existing index.
@@ -1120,29 +1261,12 @@ fn search_single_path(
 
         // Try non-blocking index update
         match builder.try_index(None, false) {
-            Ok(Some(stats)) => {
-                let changes = stats.added + stats.changed + stats.deleted;
-                if changes > 0 && !json && !files_only {
-                    if let Some(ref info) = parent_info {
-                        eprintln!(
-                            "📂 Using index: {} (subdir: {}): indexed {} files\n",
-                            display_path(&info.project_path, false),
-                            info.relative_subdir.display(),
-                            changes
-                        );
-                    } else {
-                        eprintln!(
-                            "📂 Using index: {}: indexed {} files\n",
-                            display_path(&effective_root, false),
-                            changes
-                        );
-                    }
-                }
-            }
+            // Indexing progress is shown by the bar, which clears itself when done.
+            Ok(Some(_)) => {}
             Ok(None) => {
                 // Lock held by another process — search existing index
                 index_locked = true;
-                if !json && !files_only {
+                if !quiet {
                     eprintln!(
                         "📂 Index is being updated by another process, searching existing index..."
                     );
@@ -1159,7 +1283,7 @@ fn search_single_path(
                     || err_str.contains("Index load failed")
                 {
                     // Index is corrupted - clear and rebuild
-                    if !json && !files_only {
+                    if !quiet {
                         eprintln!("⚠️  Index corrupted, rebuilding...");
                     }
 
@@ -1235,7 +1359,7 @@ fn search_single_path(
             // Another process is updating the index — the load failure is likely
             // due to a transient mid-write state. Retry a few times with short delays
             // rather than blocking on the lock (the updater may run for minutes).
-            if !json && !files_only {
+            if !quiet {
                 eprintln!("⏳ Index load failed during update, retrying...");
             }
             const MAX_RETRIES: u32 = 3;
@@ -1279,7 +1403,7 @@ fn search_single_path(
                      Rerun without --no-update to repair the index."
                 });
             }
-            if !json && !files_only {
+            if !quiet {
                 eprintln!("⚠️  Index corrupted, rebuilding...");
             }
 
@@ -1310,15 +1434,65 @@ fn search_single_path(
         Err(e) => return Err(e),
     };
 
+    Ok(LoadedIndex {
+        searcher,
+        effective_root,
+        subdir_filter,
+        specific_file,
+        search_path,
+        model,
+    })
+}
+
+/// Run one query against a loaded index; results carry absolute file paths.
+///
+/// `subdir_filter` / `specific_file` scope the query inside the index (relative to its
+/// root, and an absolute file path respectively).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_query(
+    config: &Config,
+    loaded: &LoadedIndex,
+    subdir_filter: Option<&Path>,
+    specific_file: Option<&Path>,
+    query: &str,
+    top_k: usize,
+    opts: &QueryOptions<'_>,
+    quiet: bool,
+) -> Result<Vec<colgrep::SearchResult>> {
+    let QueryOptions {
+        text_pattern,
+        extended_regexp,
+        fixed_strings,
+        word_regexp,
+        case_sensitive,
+        include_patterns,
+        exclude_patterns,
+        exclude_dirs,
+        code_only,
+        no_fts,
+        alpha,
+    } = *opts;
+    let searcher = &loaded.searcher;
+    let effective_root = &loaded.effective_root;
+    let search_path = &loaded.search_path;
+    // When -e is used without -F, automatically enable regex mode (ERE)
+    let effective_extended_regexp = extended_regexp || (text_pattern.is_some() && !fixed_strings);
+    // Get files matching include patterns (for file-type filtering)
+    // BUG FIX: Don't scan filesystem for --include patterns.
+    // The filesystem scan finds files that aren't in the index, causing
+    // filter_by_files() to return empty results. Instead, let the code
+    // fall through to filter_by_file_patterns() which queries the index directly.
+    let include_files: Option<Vec<String>> = None;
+
     // Build subset combining subdirectory filter, text pattern filter, and include patterns
     let subset = {
         let mut combined_ids: Option<Vec<i64>> = None;
 
         // Apply subdirectory filter first if using parent index
-        if let Some(ref subdir) = subdir_filter {
+        if let Some(subdir) = subdir_filter {
             let subdir_ids = searcher.filter_by_path_prefix(subdir)?;
             if subdir_ids.is_empty() {
-                if !json && !files_only {
+                if !quiet {
                     eprintln!(
                         "No indexed code units in subdirectory: {}",
                         subdir.display()
@@ -1327,11 +1501,11 @@ fn search_single_path(
                     // (e.g. a .gitignore entry), not because it holds no code: tell
                     // the user how to bring it under coverage.
                     if !colgrep::scan_reaches_subdir(
-                        &effective_root,
+                        effective_root,
                         subdir,
                         &config.extra_ignore,
                         &config.force_include,
-                        &config.force_include_dirs_for(&effective_root),
+                        &config.force_include_dirs_for(effective_root),
                     ) {
                         eprintln!(
                             "This directory is excluded by the project's ignore rules; index it with: colgrep init {}",
@@ -1359,7 +1533,7 @@ fn search_single_path(
             )?;
 
             if pattern_ids.is_empty() {
-                if !json && !files_only {
+                if !quiet {
                     eprintln!("No indexed code units contain pattern: {}", pattern);
                 }
                 return Ok(vec![]);
@@ -1412,16 +1586,16 @@ fn search_single_path(
         }
 
         // Apply specific file filter (when user passes a file path instead of directory)
-        if let Some(ref file_path) = specific_file {
+        if let Some(file_path) = specific_file {
             // Convert absolute file path to relative path (relative to effective_root)
             let rel_path = file_path
-                .strip_prefix(&effective_root)
+                .strip_prefix(effective_root)
                 .unwrap_or(file_path)
                 .to_string_lossy()
                 .to_string();
             let file_ids = searcher.filter_by_files(std::slice::from_ref(&rel_path))?;
             if file_ids.is_empty() {
-                if !json && !files_only {
+                if !quiet {
                     eprintln!("No indexed code units in file: {}", file_path.display());
                 }
                 return Ok(vec![]);
@@ -1473,7 +1647,7 @@ fn search_single_path(
         // Check if subset is empty after combining
         if let Some(ref ids) = combined_ids {
             if ids.is_empty() {
-                if !json && !files_only {
+                if !quiet {
                     eprintln!("No indexed code units match the specified filters");
                 }
                 return Ok(vec![]);
@@ -1629,13 +1803,6 @@ fn search_single_path(
     // `Searcher::search_hybrid_with_embedding`.
     let mut results: Vec<_> = results;
     results.sort_by(cmp_results_deterministic);
-
-    // Increment search count
-    let index_dir = get_index_dir_for_project(&effective_root, &model)?;
-    if let Ok(mut state) = IndexState::load(&index_dir) {
-        state.increment_search_count();
-        let _ = state.save(&index_dir);
-    }
 
     // Convert file paths to absolute for proper display when merging results from multiple paths
     let results: Vec<colgrep::SearchResult> = results

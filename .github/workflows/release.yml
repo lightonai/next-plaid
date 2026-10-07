@@ -345,6 +345,11 @@ jobs:
         continue-on-error: true # May already be published
       - name: Wait for crates.io index
         run: sleep 30
+      - name: Publish colgrep-agent
+        run: cargo publish -p colgrep-agent --no-verify
+        continue-on-error: true # May already be published
+      - name: Wait for crates.io index
+        run: sleep 30
       - name: Publish colgrep
         run: cargo publish -p colgrep --no-verify
         continue-on-error: true # May already be published

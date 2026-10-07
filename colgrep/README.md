@@ -136,6 +136,88 @@ colgrep settings --no-hybrid-search
 
 ---
 
+## Agent Mode (`--agent`)
+
+`colgrep --agent` hands your question to a small local model trained to localize code with colgrep ([`lightonai/colgrep-default-minicpm5-2B`](https://huggingface.co/lightonai/colgrep-default-minicpm5-2B)). It searches the repository, reads the candidates, and returns the files and line ranges to look at, like a sub-agent that only does code search:
+
+```bash
+colgrep --agent "sessions never expire after logout"
+colgrep --agent "crash when the config file is empty" ./backend -c   # show the lines
+colgrep --agent --json "where are retries configured"              # for scripts / agents
+```
+
+```
+$ colgrep --agent "Training loss becomes NaN when using the contrastive loss with in-batch negatives"
+   1 colgrep 'contrastive loss training'
+   2 cat -n pylate/losses/contrastive.py
+   3 cat -n pylate/losses/contrastive.py | sed -n '96,232p'
+   ...
+pylate/losses/contrastive.py:224-228
+🤖 8 turns · 2 searches · 2 reads · 38291 prompt tokens (31171 cached) · 283 generated · model 19.7s · tools 0.0s · total 20.3s
+```
+
+Progress lines go to stderr (only on a terminal); stdout carries just the locations.
+
+How it works:
+
+- **Same harness as training.** System prompt, tool schemas (`colgrep`, `terminal`, `finish`), chat template, observation format and the 10-turn budget are byte-identical to the one the model was trained and evaluated with.
+- **Read-only.** The model's terminal is interpreted in-process: no process is ever spawned and no file is opened for writing. Paths are confined to the repository (symlinks included). `cat`, `head`, `tail`, `sed -n`, `grep`, `find`, `wc`, `awk` line ranges, pipes and globs work; redirections, `sed -i`, `find -exec`, `rm`, interpreters and `git` are refused.
+- **Searches stay in-process.** The index and the ColBERT encoder are loaded once and reused for every search the agent makes.
+- **Reproducible.** The sampling seed is fixed by default: the same question on the same repository state gives the same answer, run after run (`--agent-seed N` draws another sample).
+- **Local inference on the GPU when there is one**, on llama.cpp (GGUF weights), with every turn reusing the KV cache of the previous one:
+  - **Apple Silicon**: llama.cpp is built into colgrep and runs on Metal. The static part of the prompt is also cached on disk (`~/Library/Caches/colgrep/agent-prefix`).
+  - **Linux, Windows, Intel Macs**: on first use colgrep downloads ggml-org's official llama.cpp build for the platform (~30 MB, pinned release, SHA-256 verified, cached under `~/.cache/colgrep/llama.cpp`) and runs a private `llama-server` for the session. It ships CPU kernels for every x86 generation (SSE4.2 to AVX-512, picked at runtime) and a Vulkan backend: NVIDIA, AMD and Intel GPUs are used automatically when their driver is installed, the CPU otherwise. The server is bound to `127.0.0.1` and stops with colgrep.
+
+Measured on an M3 Pro (Q8_0 weights, typical 6–10 turn sessions): **~20 s per question on Metal, ~75–90 s on CPU only**, 3–4 GB peak memory. The first run after installing a new binary also compiles the Metal shaders once (~20 s). `--force-cpu` (or `--agent-gpu-layers 0`) keeps the model on the CPU.
+
+### Configuring the agent
+
+Every agent setting lives in `colgrep settings` and accepts `default` to go back to the built-in value (`--agent-reset` resets them all):
+
+```bash
+colgrep settings                                    # shows the Agent block
+colgrep settings --agent-model ~/models/agent.gguf  # local GGUF file, directory, or HF repo
+colgrep settings --agent-model-file other-Q4_K_M.gguf
+colgrep settings --agent-prompt ./prompt.txt        # replace the system prompt
+colgrep settings --agent-tools ./tools.json         # replace the tool schemas
+colgrep settings --agent-chat-template ./tpl.jinja  # replace the chat template
+colgrep settings --agent-max-turns 6 --agent-search-k 15
+colgrep settings --agent-temperature 0 --agent-top-p 0.9 --agent-top-k 40 --agent-seed 7
+colgrep settings --agent-context 32768 --agent-max-tokens 1024
+colgrep settings --agent-gpu-layers 0               # CPU only (or use --force-cpu per run)
+colgrep settings --agent-threads 6                  # default: performance cores
+colgrep settings --agent-thinking on                # for models trained with reasoning
+colgrep settings --agent-runtime server             # auto (default), builtin (Apple Silicon) or server
+colgrep settings --agent-llama-server ~/llama.cpp/build/bin/llama-server  # e.g. your own CUDA build
+```
+
+| Setting | Default |
+|---|---|
+| `--agent-model` / `--agent-model-file` | `lightonai/colgrep-default-minicpm5-2B` / `colgrep-default-minicpm5-2B-Q8_0.gguf` |
+| `--agent-max-turns` | 10 (the last turn only accepts `finish`) |
+| `--agent-search-k` | 10 hits per search (the model may ask for up to 25) |
+| `--agent-temperature` / `--agent-top-p` / `--agent-top-k` | 0.6 / 0.95 / 20 (evaluation sampling) |
+| `--agent-max-tokens` / `--agent-context` | 2048 per turn / 16384 |
+| `--agent-seed` | 0 (reproducible) |
+
+Private model repos use the same token lookup as the encoder (`HF_TOKEN`, then `HUGGING_FACE_HUB_TOKEN`, then the HF token file).
+
+### Serving the model on a GPU server
+
+Point the agent at any OpenAI-compatible server; prompts go through `/v1/completions`, so no server-side tool parser is needed:
+
+```bash
+# vLLM
+vllm serve lightonai/colgrep-default-minicpm5-2B --port 8000
+colgrep settings --agent-endpoint http://localhost:8000/v1
+
+# llama-server (--special keeps the tool-call tokens in the output)
+llama-server -m colgrep-default-minicpm5-2B-Q8_0.gguf --port 8000 --special
+colgrep settings --agent-endpoint http://localhost:8000/v1
+```
+
+Set `COLGREP_AGENT_API_KEY` (or `OPENAI_API_KEY`) if the server needs one. `COLGREP_AGENT_DEBUG=1` prints per-turn timings and `COLGREP_AGENT_TRACE=trace.json` saves the full transcript.
+
 ## CLI Reference
 
 ### Search Options

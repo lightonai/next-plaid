@@ -1,0 +1,54 @@
+[package]
+name = "colgrep-agent"
+version.workspace = true
+edition = "2021"
+description = "Small read-only code-localization agent that searches a repository with colgrep"
+license = "Apache-2.0"
+repository = "https://github.com/lightonai/next-plaid"
+homepage = "https://github.com/lightonai/next-plaid"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+minijinja = { version = "2", features = ["preserve_order", "loop_controls", "json"] }
+minijinja-contrib = { version = "2", features = ["pycompat"] }
+regex = "1"
+globset = "0.4"
+walkdir = "2"
+shell-words = "1"
+thiserror = "1"
+ureq = { version = "2", features = ["json"] }
+hf-hub = "0.4"
+
+num_cpus = "1"
+dirs = "5"
+sha2 = "0.10"
+libc = "0.2"
+
+# Apple Silicon: llama.cpp is built in and runs on Metal (CPU with --force-cpu or
+# --agent-gpu-layers 0). Other platforms run ggml-org's prebuilt llama-server, which
+# picks CPU kernels for the machine and uses a Vulkan GPU when there is one.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+llama-cpp-2 = { version = "0.1.158", default-features = false, features = ["metal"], optional = true }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies.zstd]
+version = "0.13"
+
+[target.'cfg(unix)'.dependencies]
+flate2 = "1"
+tar = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[features]
+default = ["local"]
+# Local inference: built-in llama.cpp on Apple Silicon, managed llama-server elsewhere.
+local = ["dep:llama-cpp-2"]
+
+[build-dependencies]
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,82 @@
+[
+ {
+  "role": "system",
+  "content": "You are a code-search agent. Given a software problem statement, find the exact code locations — files and line ranges — a developer must read and edit to solve it. This is a RETRIEVAL task: locate the relevant context; do NOT write a fix.\n\nFollow this method:\n• Start broad: use semantic search to survey the codebase and identify candidate files related to the problem.\n• Narrow down: refine searches with path scopes, file-type filters, or regex pre-filters to isolate the most relevant code.\n• Read and verify: open promising files and read the exact lines to confirm they are the right locations.\n• Iterate: if results are too broad or off-target, reformulate your query from a different angle and search again.\n\nYou MUST search the repository before answering. Never answer from prior knowledge.\n\n### Finishing\nWhen you have identified the relevant locations, you MUST use the `finish` tool to submit your answer. Do NOT simply reply with text — call the tool.\nThe `finish` tool expects a `locations` list; each entry is a string:\n- `path/to/file:START-END` (repository-relative path; inclusive, 1-based lines)\nSTART must be positive and no greater than END. Use START-END even for one line.\nSubmit the exact relevant lines you verified, with separate ranges for disjoint regions. Every entry must include a line range.\nCall `finish` once when done. Do not keep searching after you know the answer."
+ },
+ {
+  "role": "user",
+  "content": "Problem statement:\nSessions never expire — café ünïcode\n\nYou are at the repository root. Top-level contents:\nsrc/  README.md\n\nFind the code locations relevant to this problem."
+ },
+ {
+  "role": "assistant",
+  "content": "",
+  "tool_calls": [
+   {
+    "id": "call_1",
+    "type": "function",
+    "function": {
+     "name": "colgrep",
+     "arguments": {
+      "query": "session token expiry check",
+      "k": 10
+     }
+    }
+   },
+   {
+    "id": "call_2",
+    "type": "function",
+    "function": {
+     "name": "colgrep",
+     "arguments": {
+      "query": "expire",
+      "pattern": "expir(e|y)",
+      "include": "*.py"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "call_1",
+  "content": "$ colgrep 'session token expiry check' -k 10\n[1] src/auth.py:1-2  (function check)\n      def check():\n          pass\n\n[This is the output of turn 1 (10 turn limit).]"
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "call_2",
+  "content": "$ colgrep expire --include '*.py' -e 'expir(e|y)'\n(no results — try a broader or differently-worded query)\n\n[This is the output of turn 1 (10 turn limit).]"
+ },
+ {
+  "role": "assistant",
+  "content": "Let me read it.",
+  "tool_calls": [
+   {
+    "id": "call_3",
+    "type": "function",
+    "function": {
+     "name": "terminal",
+     "arguments": {
+      "command": "sed -n '1,5p' src/auth.py && grep -n \"x<y\" src/a.py"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "role": "tool",
+  "tool_call_id": "call_3",
+  "content": "$ sed -n '1,5p' src/auth.py\ndef check():\n\n[This is the output of turn 2 (10 turn limit).]"
+ },
+ {
+  "role": "assistant",
+  "content": "src/auth.py:1-2"
+ },
+ {
+  "role": "user",
+  "content": "That was not a valid action. Either call a tool with a command, or submit via finish / <answer>.\n(Attempt 1/3)"
+ },
+ {
+  "role": "user",
+  "content": "This is your final turn. Call finish now with your best file:START-END locations based on the evidence already gathered. Do not search further."
+ }
+]

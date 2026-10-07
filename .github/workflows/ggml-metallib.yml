@@ -1,0 +1,52 @@
+name: ggml-metallib
+on:
+  workflow_dispatch:
+    inputs:
+      crate_version:
+        description: llama-cpp-sys-2 version
+        default: "0.1.158"
+      kernels_sha256:
+        description: expected hash of the kernel sources
+        default: ""
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Fetch llama-cpp-sys-2 from crates.io
+        run: |
+          curl -sSfL "https://static.crates.io/crates/llama-cpp-sys-2/llama-cpp-sys-2-${{ inputs.crate_version }}.crate" | tar xz
+          echo "G=$PWD/llama-cpp-sys-2-${{ inputs.crate_version }}/llama.cpp/ggml/src" >> $GITHUB_ENV
+      - name: Check kernel sources
+        run: |
+          cd "$G"
+          SUM=$( (cat ggml-common.h ggml-metal/ggml-metal-impl.h; for f in $(ls ggml-metal/kernels/ | sort); do cat ggml-metal/kernels/$f; done) | shasum -a 256 | cut -d' ' -f1)
+          echo "kernels sha256: $SUM"
+          if [ -n "${{ inputs.kernels_sha256 }}" ] && [ "$SUM" != "${{ inputs.kernels_sha256 }}" ]; then echo "kernel sources differ"; exit 1; fi
+          echo "$SUM" > "$GITHUB_WORKSPACE/kernels.sha256"
+      - name: Compile default.metallib and default-bf16.metallib
+        run: |
+          xcodebuild -version; xcrun -sdk macosx --show-sdk-version
+          SRCS=$(sed -n '/set(METALLIB_KERNEL_SOURCES/,/)/p' "$G/ggml-metal/CMakeLists.txt" | grep -o 'kernels/[A-Za-z0-9_-]*\.metal')
+          mkdir -p out
+          for variant in plain bf16; do
+            B="build-$variant"; mkdir -p "$B/kernels"
+            cp "$G/ggml-common.h" "$G/ggml-metal/ggml-metal-impl.h" "$B/"
+            cp "$G"/ggml-metal/kernels/*.h "$G"/ggml-metal/kernels/*.metal "$B/kernels/"
+            FLAGS="-O3 -mmacosx-version-min=14.0"
+            NAME=default.metallib
+            if [ "$variant" = bf16 ]; then FLAGS="$FLAGS -DGGML_METAL_HAS_BF16"; NAME=default-bf16.metallib; fi
+            AIRS=""
+            for s in $SRCS; do
+              a="$B/$(basename "$s" .metal).air"
+              xcrun -sdk macosx metal $FLAGS -I "$B" -c "$B/$s" -o "$a"
+              AIRS="$AIRS $a"
+            done
+            xcrun -sdk macosx metallib $AIRS -o "out/$NAME"
+          done
+          cp kernels.sha256 out/
+          (cd out && shasum -a 256 *.metallib | tee SHA256SUMS)
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ggml-metallib-${{ inputs.crate_version }}
+          path: out/
