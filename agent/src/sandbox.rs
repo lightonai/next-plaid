@@ -385,7 +385,7 @@ fn parse_n(args: &[String], default: usize) -> Result<(usize, Vec<String>), Buil
         } else if let Some(v) = a.strip_prefix("-n") {
             n = v.parse().map_err(|_| bad(v))?;
         } else if a.len() > 1 && a.starts_with('-') && a[1..].chars().all(|c| c.is_ascii_digit()) {
-            n = a[1..].parse().unwrap();
+            n = a[1..].parse().map_err(|_| bad(a))?;
         } else if !a.starts_with('-') {
             files.push(a.clone());
         }
@@ -1957,7 +1957,8 @@ impl<'a> Shell<'a> {
             }
             i += 1;
         }
-        let mut cmd: Vec<String> = args[i..].to_vec();
+        // A trailing option without its value (`xargs -n`) leaves `i` past the end.
+        let mut cmd: Vec<String> = args.get(i..).map(<[String]>::to_vec).unwrap_or_default();
         if cmd.is_empty() {
             cmd.push("echo".into());
         }
@@ -2765,6 +2766,129 @@ mod tests {
         );
         // The cwd never left the repository.
         assert!(sb.cwd().starts_with(sb.root()));
+    }
+
+    #[test]
+    /// The model writes the commands: no input, however odd, may panic the sandbox
+    /// (which would abort colgrep mid-session). Every tool × hostile argument × file.
+    fn no_command_panics() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir(d.path().join("src")).unwrap();
+        std::fs::write(d.path().join("a.txt"), "alpha\nbeta é\n\ngamma\n").unwrap();
+        std::fs::write(d.path().join("src/b.rs"), "fn x() {}\n").unwrap();
+        let tools = [
+            "cat",
+            "cat -n",
+            "head",
+            "tail",
+            "sed -n",
+            "sed",
+            "grep",
+            "grep -n",
+            "grep -rn",
+            "grep -c",
+            "grep -A",
+            "grep -B",
+            "grep -C",
+            "grep -m",
+            "find",
+            "find .",
+            "wc",
+            "wc -l",
+            "ls",
+            "ls -la",
+            "awk",
+            "sort",
+            "uniq",
+            "cut -d:",
+            "cut -f",
+            "tr",
+            "nl",
+            "rg",
+            "echo",
+            "cd",
+            "pwd",
+            "head -n",
+            "tail -n",
+            "tail -c",
+            "head -c",
+            "sed -n -e",
+            "xargs",
+            "tree",
+            "file",
+            "stat",
+            "diff",
+        ];
+        let args = [
+            "",
+            "-",
+            "--",
+            "-0",
+            "-1",
+            "-99999999999999999999999",
+            "99999999999999999999999",
+            "-n",
+            "-n -5",
+            "+3",
+            "'1,99999999999999999999999p'",
+            "'0,0p'",
+            "'5,1p'",
+            "'$p'",
+            "'/a/,/b/p'",
+            "'s/a/b/g'",
+            "'{print $99999999999}'",
+            "'NR==99999999999999999999'",
+            "'['",
+            "'('",
+            "'*'",
+            "\"",
+            "'",
+            "é",
+            "a.txt",
+            "src",
+            "src/b.rs:1-99999999999999999999",
+            "a.txt:5-1",
+            "a.txt:-1",
+            "../a.txt",
+            "/",
+            "*",
+            "**",
+            "{a,b}",
+            "$(x)",
+            "`x`",
+            "|",
+            "| head",
+            "&&",
+            ";",
+            ">",
+            "2>&1",
+            "<",
+            "-name '*.rs' -maxdepth 99999999999999999999",
+            "-k 0",
+            "-A 99999999999999999999 x a.txt",
+            "-m 0 x a.txt",
+            "-type",
+            "-exec",
+            "-c 99999999999999999999 a.txt",
+            "-d '' -f 99999999999999999999 a.txt",
+        ];
+        let mut sb = Sandbox::new(d.path()).unwrap();
+        let mut n = 0;
+        let mut failures = Vec::new();
+        for t in tools {
+            for a in args {
+                for b in ["", " a.txt", " src", " a.txt a.txt"] {
+                    let cmd = format!("{t} {a}{b}");
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sb.run(&cmd)));
+                    if r.is_err() {
+                        failures.push(cmd);
+                    }
+                    n += 1;
+                }
+            }
+        }
+        assert!(n > 8000);
+        assert!(failures.is_empty(), "panicked on: {failures:#?}");
     }
 
     #[test]
