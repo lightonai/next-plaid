@@ -93,7 +93,6 @@ const SESSION_AGENT_CONTEXT: &str = concat!(
     "\nAGENT MODE:\n",
     "- `colgrep --agent \"where are sessions expired after logout\"`: a small local model searches with colgrep, reads files, and returns the relevant file:line ranges\n",
     "- Use it for open-ended questions when you don't know where to start (\"where is X handled\", \"why does Y happen\"); use plain `colgrep` when you know what to search for\n",
-    "- Add `-c` to print the code, `--json` for structured output\n",
 );
 
 const SESSION_CONTEXT: &str = concat!(
