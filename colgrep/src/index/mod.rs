@@ -983,9 +983,10 @@ fn run_chunk_pipeline(
 
         let prepared = prepare_deduplicated_chunk(unit_chunk);
 
-        tokenize_tx
-            .send(prepared)
-            .context("Failed to send prepared chunk to tokenize stage")?;
+        // A closed channel means a stage stopped: its own result says why.
+        if tokenize_tx.send(prepared).is_err() {
+            break;
+        }
     }
 
     // Signal pipeline shutdown: dropping the sender closes the channel,
@@ -993,23 +994,23 @@ fn run_chunk_pipeline(
     // all downstream stages.
     drop(tokenize_tx);
 
-    tokenize_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Tokenize stage thread panicked"))??;
-    encode_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Encode stage thread panicked"))??;
-    pool_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Pool stage thread panicked"))??;
-    index_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Index stage thread panicked"))??;
-    metadata_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Metadata stage thread panicked"))??;
+    let results = [
+        ("Tokenize", tokenize_handle.join()),
+        ("Encode", encode_handle.join()),
+        ("Pool", pool_handle.join()),
+        ("Index", index_handle.join()),
+        ("Metadata", metadata_handle.join()),
+    ];
+    // On Ctrl-C the encode stage stops early and drops its channel, so the stages
+    // feeding it fail to send: report the interruption, not those side effects.
+    if was_interrupted || is_interrupted() {
+        return Ok(true);
+    }
+    for (stage, result) in results {
+        result.map_err(|_| anyhow::anyhow!("{stage} stage thread panicked"))??;
+    }
 
-    Ok(was_interrupted)
+    Ok(false)
 }
 
 fn parse_files_parallel(
