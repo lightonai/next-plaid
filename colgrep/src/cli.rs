@@ -502,7 +502,6 @@ pub struct Cli {
             "alpha",
             "no_pool",
             "pool_factor",
-            "force_gpu",
             "stats",
             "reset_stats",
         ]

@@ -1006,7 +1006,9 @@ fn run_chunk_pipeline(
     if was_interrupted || is_interrupted() {
         return Ok(true);
     }
-    for (stage, result) in results {
+    // From the last stage back: a stage that fails closes its input, so the stages
+    // before it then fail to send; the last failure is the cause.
+    for (stage, result) in results.into_iter().rev() {
         result.map_err(|_| anyhow::anyhow!("{stage} stage thread panicked"))??;
     }
 
