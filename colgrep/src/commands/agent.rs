@@ -154,6 +154,11 @@ pub fn cmd_agent(
         no_update,
     )?;
     let index_s = started.elapsed().as_secs_f64();
+    // A Ctrl-C while the index loaded stopped it at a checkpoint (or arrived after it was
+    // up to date): stop here rather than start the session anyway.
+    if colgrep::is_interrupted() {
+        std::process::exit(130);
+    }
     // Indexing is done; from here on nothing is written that must be finished, so
     // Ctrl-C stops the agent at once (and any llama-server it started).
     colgrep::exit_immediately_on_interrupt(colgrep_agent::shutdown::kill_children);
@@ -337,6 +342,9 @@ pub fn cmd_install_agent(force_cpu: bool) -> Result<()> {
         println!("colgrep --agent uses the model served at {endpoint}: nothing to download.");
         return Ok(());
     }
+    // Downloads land under temporary names and installs are renamed into place, so an
+    // interrupted install leaves nothing half-written: Ctrl-C stops it at once.
+    colgrep::exit_immediately_on_interrupt(colgrep_agent::shutdown::kill_children);
     let progress = std::io::stderr().is_terminal();
     colgrep_agent::engine::prewarm(&settings, metal_kernels_dir().as_deref());
     colgrep_agent::engine::prepare(&settings, progress).map_err(anyhow::Error::msg)?;
