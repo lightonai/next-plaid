@@ -12,7 +12,7 @@
 </div>
 
 <p align="center">
-  <img width="680" src="docs/colgrep-demo.gif" alt="ColGREP demo"/>
+  <img width="820" src="docs/colgrep-demo.gif" alt="ColGREP demo"/>
 </p>
 
 ---

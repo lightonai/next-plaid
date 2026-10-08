@@ -4,7 +4,7 @@
   Combines regex filtering with semantic ranking with LateOn-Code-edge multi-vector embeddings.<br/>
   A single Rust binary. No server. No API. 100% local, your code never leaves your machine.</p>
 
-  <img width="680" src="../docs/colgrep-demo.gif" alt="ColGREP demo"/>
+  <img width="820" src="../docs/colgrep-demo.gif" alt="ColGREP demo"/>
 
   <p>
     <a href="#quick-start"><b>Quick Start</b></a>
