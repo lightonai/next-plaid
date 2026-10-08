@@ -123,7 +123,10 @@ impl LlamaServer {
         this.client = OpenAiCompletions::new(&format!("{base}/v1"), "local", &this.props.bos_token);
         this.device = match gpu {
             Some(name) => format!("GPU: {name}"),
-            None => "CPU".into(),
+            None => match opts.threads {
+                Some(t) => format!("CPU, {t} threads"),
+                None => "CPU".into(),
+            },
         };
         Ok(this)
     }
