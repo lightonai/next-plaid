@@ -13,10 +13,12 @@
 //! harness's bubblewrap-confined bash. Writes (`>`, `sed -i`, `find -exec`, `rm`, …),
 //! substitutions and interpreters are refused with a message the model can act on.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use globset::{GlobBuilder, GlobMatcher};
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use regex::Regex;
 
 /// A single file view is capped; the model uses ranges for more.
@@ -62,15 +64,97 @@ impl CmdResult {
 pub struct Sandbox {
     root: PathBuf,
     cwd: PathBuf,
+    /// Each directory's `.gitignore` (the root's with `.git/info/exclude`), loaded the
+    /// first time a walk enters the directory; `None` when it has none.
+    gitignores: std::sync::Mutex<HashMap<PathBuf, Option<std::sync::Arc<Gitignore>>>>,
 }
+
+/// Directories `find` and `grep -r` never descend into unless asked to start there:
+/// dependencies, caches and VCS data, never the code being looked for, and often most of
+/// a large repository's files.
+const SKIPPED_DIRS: &[&str] = &[
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".tox",
+    ".nox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".next",
+    ".nuxt",
+    ".parcel-cache",
+    ".turbo",
+    ".gradle",
+];
 
 impl Sandbox {
     pub fn new(root: &Path) -> std::io::Result<Self> {
         let root = fs::canonicalize(root)?;
         Ok(Self {
             cwd: root.clone(),
+            gitignores: Default::default(),
             root,
         })
+    }
+
+    /// The `.gitignore` of `dir` (inside the repository), cached.
+    fn gitignore_of(&self, dir: &Path) -> Option<std::sync::Arc<Gitignore>> {
+        let mut cache = self.gitignores.lock().unwrap_or_else(|e| e.into_inner());
+        cache
+            .entry(dir.to_path_buf())
+            .or_insert_with(|| {
+                let mut files = vec![dir.join(".gitignore")];
+                if dir == self.root {
+                    files.push(dir.join(".git").join("info").join("exclude"));
+                }
+                let files: Vec<PathBuf> = files.into_iter().filter(|f| f.is_file()).collect();
+                if files.is_empty() {
+                    return None;
+                }
+                let mut builder = GitignoreBuilder::new(dir);
+                for f in &files {
+                    builder.add(f);
+                }
+                builder.build().ok().map(std::sync::Arc::new)
+            })
+            .clone()
+    }
+
+    /// Whether a walk (`find`, `grep -r`) skips `path`: an always-skipped directory, or
+    /// a path the repository ignores. Like ripgrep, so a large repository's dependencies
+    /// and build outputs do not make every command crawl.
+    fn walk_skips(&self, path: &Path, is_dir: bool) -> bool {
+        if is_dir
+            && path
+                .file_name()
+                .is_some_and(|n| SKIPPED_DIRS.contains(&n.to_string_lossy().as_ref()))
+        {
+            return true;
+        }
+        if !path.starts_with(&self.root) {
+            return false;
+        }
+        // The deepest .gitignore with a rule for the path decides, as in git.
+        for dir in path.ancestors().skip(1) {
+            if let Some(gi) = self.gitignore_of(dir) {
+                let m = gi.matched(path, is_dir);
+                if m.is_ignore() {
+                    return true;
+                }
+                if m.is_whitelist() {
+                    return false;
+                }
+            }
+            if dir == self.root {
+                break;
+            }
+        }
+        false
     }
 
     pub fn root(&self) -> &Path {
@@ -406,6 +490,7 @@ impl Sandbox {
             sb: self,
             cwd: self.cwd.clone(),
             deadline: std::time::Instant::now() + TIME_BUDGET,
+            line_limit: None,
         };
         let out = shell.run_line(command);
         let out = out.trim_matches('\n');
@@ -706,6 +791,9 @@ struct Shell<'a> {
     sb: &'a Sandbox,
     cwd: PathBuf,
     deadline: std::time::Instant,
+    /// Lines the next pipeline stage reads (it is `head -n N`): commands that can stop
+    /// early (find, grep) stop there, as they would on SIGPIPE in a real shell.
+    line_limit: Option<usize>,
 }
 
 /// What one command produced.
@@ -742,6 +830,12 @@ struct Cmd {
 impl<'a> Shell<'a> {
     fn timed_out(&self) -> bool {
         std::time::Instant::now() >= self.deadline
+    }
+
+    /// Whether `out` already holds every line the next stage (`head -n N`) reads.
+    fn enough_lines(&self, out: &str) -> bool {
+        self.line_limit
+            .is_some_and(|n| out.bytes().filter(|&b| b == b'\n').count() >= n)
     }
 
     fn run_line(&mut self, line: &str) -> String {
@@ -796,11 +890,16 @@ impl<'a> Shell<'a> {
                 cmds.last_mut().unwrap().push(t);
             }
         }
+        // A stage piped into `head -n N` only needs its first N lines.
+        let limits: Vec<Option<usize>> = (0..cmds.len())
+            .map(|i| cmds.get(i + 1).and_then(|next| head_line_limit(next)))
+            .collect();
         let mut stdin: Option<String> = None;
         let mut errors = String::new();
         let mut status = 0;
         let n = cmds.len();
         for (i, toks) in cmds.into_iter().enumerate() {
+            self.line_limit = limits[i];
             let cmd = match self.build_cmd(toks) {
                 Ok(c) => c,
                 Err(e) => {
@@ -1155,53 +1254,15 @@ impl<'a> Shell<'a> {
 
     fn head_tail(&self, args: &[String], stdin: Option<String>, head: bool) -> Out {
         let cmd = if head { "head" } else { "tail" };
-        let mut count: i64 = 10;
-        let mut from_start = false; // tail -n +N
-        let mut bytes = false;
-        let mut files = Vec::new();
-        let mut i = 0;
-        let parse = |v: &str| -> Result<(i64, bool), String> {
-            let plus = v.starts_with('+');
-            v.trim_start_matches(['+', '-'])
-                .parse::<i64>()
-                .map(|n| (n, plus))
-                .map_err(|_| format!("{cmd}: invalid number of lines: '{v}'\n"))
+        let HeadTailArgs {
+            count,
+            from_start,
+            bytes,
+            files,
+        } = match parse_head_tail(args, cmd) {
+            Ok(a) => a,
+            Err(e) => return Out::err(e, 1),
         };
-        while i < args.len() {
-            let a = &args[i];
-            let value = if a == "-n" || a == "-c" || a == "--lines" || a == "--bytes" {
-                bytes = a == "-c" || a == "--bytes";
-                i += 1;
-                args.get(i).cloned()
-            } else if let Some(v) = a.strip_prefix("--lines=") {
-                Some(v.to_string())
-            } else if let Some(v) = a.strip_prefix("-n").filter(|v| !v.is_empty()) {
-                Some(v.to_string())
-            } else if let Some(v) = a.strip_prefix("-c").filter(|v| !v.is_empty()) {
-                bytes = true;
-                Some(v.to_string())
-            } else if a.len() > 1
-                && a.starts_with('-')
-                && a[1..].chars().all(|c| c.is_ascii_digit())
-            {
-                Some(a[1..].to_string())
-            } else {
-                if !a.starts_with('-') || a == "-" {
-                    files.push(a.clone());
-                }
-                None
-            };
-            if let Some(v) = value {
-                match parse(&v) {
-                    Ok((n, plus)) => {
-                        count = n;
-                        from_start = plus;
-                    }
-                    Err(e) => return Out::err(e, 1),
-                }
-            }
-            i += 1;
-        }
         let multiple = files.len() > 1;
         let (inputs, errs) = self.inputs(&files, stdin, cmd);
         let mut out = String::new();
@@ -1486,6 +1547,9 @@ impl<'a> Shell<'a> {
                             }
                             grep_text(&shown, &text, &regex, &o, with_filename, &mut out);
                         }
+                        if self.enough_lines(&out.stdout) {
+                            break 'targets;
+                        }
                         if o.quiet && out.matched {
                             break 'targets;
                         }
@@ -1509,6 +1573,9 @@ impl<'a> Shell<'a> {
                         out.stderr.push_str(&truncated_note("grep", &t));
                     }
                     grep_text(&t, &text, &regex, &o, with_filename, &mut out);
+                    if self.enough_lines(&out.stdout) {
+                        break 'targets;
+                    }
                 }
             }
         }
@@ -1527,16 +1594,18 @@ impl<'a> Shell<'a> {
 
     /// Files under `dir` (sorted, `.git` skipped, never leaving the repository) as
     /// `(path, path relative to dir)`.
-    fn walk_files(&self, dir: &Path) -> Vec<(PathBuf, String)> {
+    fn walk_files<'b>(&'b self, dir: &'b Path) -> impl Iterator<Item = (PathBuf, String)> + 'b {
         walkdir::WalkDir::new(dir)
             .sort_by_file_name()
             .into_iter()
-            .filter_entry(|e| e.file_name() != ".git")
+            .filter_entry(move |e| {
+                e.depth() == 0 || !self.sb.walk_skips(e.path(), e.file_type().is_dir())
+            })
             .filter_map(Result::ok)
-            .take_while(|_| !self.timed_out())
+            .take_while(move |_| !self.timed_out())
             .filter(|e| e.file_type().is_file())
-            .filter(|e| e.path().starts_with(&self.sb.root))
-            .map(|e| {
+            .filter(move |e| e.path().starts_with(&self.sb.root))
+            .map(move |e| {
                 let rel = e
                     .path()
                     .strip_prefix(dir)
@@ -1545,7 +1614,6 @@ impl<'a> Shell<'a> {
                     .replace('\\', "/");
                 (e.path().to_path_buf(), rel)
             })
-            .collect()
     }
 
     fn find(&self, args: &[String]) -> Out {
@@ -1623,6 +1691,7 @@ impl<'a> Shell<'a> {
         }
         let mut out = String::new();
         let mut errs = String::new();
+        let mut printed = 0;
         for start in &starts {
             let root = match self.resolve(start) {
                 Ok(p) => p,
@@ -1634,7 +1703,12 @@ impl<'a> Shell<'a> {
                     continue;
                 }
             };
-            let mut it = walkdir::WalkDir::new(&root).sort_by_file_name().into_iter();
+            let mut it = walkdir::WalkDir::new(&root)
+                .sort_by_file_name()
+                .into_iter()
+                .filter_entry(|e| {
+                    e.depth() == 0 || !self.sb.walk_skips(e.path(), e.file_type().is_dir())
+                });
             while let Some(entry) = it.next() {
                 let Ok(e) = entry else { continue };
                 if e.depth() > max_depth {
@@ -1674,11 +1748,18 @@ impl<'a> Shell<'a> {
                     } else if e.depth() >= min_depth {
                         out.push_str(&shown);
                         out.push('\n');
+                        printed += 1;
                     }
                 }
-                if out.len() > MAX_READ_BYTES || self.timed_out() {
+                if out.len() > MAX_READ_BYTES
+                    || self.timed_out()
+                    || self.line_limit.is_some_and(|n| printed >= n)
+                {
                     break;
                 }
+            }
+            if self.line_limit.is_some_and(|n| printed >= n) {
+                break;
             }
             if out.len() > MAX_READ_BYTES {
                 errs.push_str(&cut_note("find"));
@@ -2171,12 +2252,24 @@ fn floor_char_boundary(s: &str, mut i: usize) -> usize {
 }
 
 /// Text of a file and whether it was cut, or None for binary content (a NUL in the
-/// first 8 KiB) and unreadable files.
+/// first 8 KiB) and unreadable files. Binary files are recognised from those 8 KiB alone,
+/// so `grep -r` does not read 16 MiB of every image or model file to skip it.
 fn read_text_file(p: &Path) -> Option<(String, bool)> {
-    let (bytes, cut) = read_capped(p).ok()?;
-    if bytes[..bytes.len().min(8192)].contains(&0) {
+    use std::io::Read;
+    if !fs::metadata(p).ok()?.is_file() {
         return None;
     }
+    let mut file = fs::File::open(p).ok()?;
+    let mut bytes = Vec::new();
+    file.by_ref().take(8192).read_to_end(&mut bytes).ok()?;
+    if bytes.contains(&0) {
+        return None;
+    }
+    file.take((MAX_READ_BYTES + 1 - bytes.len()) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let cut = bytes.len() > MAX_READ_BYTES;
+    bytes.truncate(MAX_READ_BYTES);
     Some((String::from_utf8_lossy(&bytes).into_owned(), cut))
 }
 
@@ -2241,6 +2334,84 @@ fn stream_lines(p: &Path, mut line: impl FnMut(usize, &str)) -> std::io::Result<
             return Ok((n, false));
         }
     }
+}
+
+/// `head` / `tail` options: line or byte count, `+N` (tail from line N), files.
+struct HeadTailArgs {
+    count: i64,
+    from_start: bool,
+    bytes: bool,
+    files: Vec<String>,
+}
+
+fn parse_head_tail(args: &[String], cmd: &str) -> Result<HeadTailArgs, String> {
+    let mut count: i64 = 10;
+    let mut from_start = false; // tail -n +N
+    let mut bytes = false;
+    let mut files = Vec::new();
+    let mut i = 0;
+    let parse = |v: &str| -> Result<(i64, bool), String> {
+        let plus = v.starts_with('+');
+        v.trim_start_matches(['+', '-'])
+            .parse::<i64>()
+            .map(|n| (n, plus))
+            .map_err(|_| format!("{cmd}: invalid number of lines: '{v}'\n"))
+    };
+    while i < args.len() {
+        let a = &args[i];
+        let value = if a == "-n" || a == "-c" || a == "--lines" || a == "--bytes" {
+            bytes = a == "-c" || a == "--bytes";
+            i += 1;
+            args.get(i).cloned()
+        } else if let Some(v) = a.strip_prefix("--lines=") {
+            Some(v.to_string())
+        } else if let Some(v) = a.strip_prefix("-n").filter(|v| !v.is_empty()) {
+            Some(v.to_string())
+        } else if let Some(v) = a.strip_prefix("-c").filter(|v| !v.is_empty()) {
+            bytes = true;
+            Some(v.to_string())
+        } else if a.len() > 1 && a.starts_with('-') && a[1..].chars().all(|c| c.is_ascii_digit()) {
+            Some(a[1..].to_string())
+        } else {
+            if !a.starts_with('-') || a == "-" {
+                files.push(a.clone());
+            }
+            None
+        };
+        if let Some(v) = value {
+            match parse(&v) {
+                Ok((n, plus)) => {
+                    count = n;
+                    from_start = plus;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        i += 1;
+    }
+    Ok(HeadTailArgs {
+        count,
+        from_start,
+        bytes,
+        files,
+    })
+}
+
+/// The lines a pipeline stage reads when it is `head -n N` on its stdin, if it is.
+fn head_line_limit(toks: &[Tok]) -> Option<usize> {
+    let words: Vec<String> = toks
+        .iter()
+        .map(|t| match t {
+            Tok::Word { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let (name, args) = words.split_first()?;
+    if name.rsplit('/').next() != Some("head") {
+        return None;
+    }
+    let a = parse_head_tail(args, "head").ok()?;
+    (!a.bytes && a.files.is_empty()).then(|| a.count.max(0) as usize)
 }
 
 /// Whether `path` (absolute, possibly with `..`) stays inside `root` once normalised.
@@ -3297,5 +3468,66 @@ mod tests {
         let r = sb.run("find . -type f | xargs cat | wc -c");
         let n: usize = r.output.lines().last().unwrap().trim().parse().unwrap();
         assert!(n <= MAX_READ_BYTES * 2, "{n}");
+    }
+
+    #[test]
+    fn walks_skip_dependencies_and_gitignored_paths() {
+        let (d, _) = repo();
+        let root = d.path();
+        for dir in ["node_modules/pkg", "web/dist", "web/src", ".venv/lib"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        fs::write(root.join("node_modules/pkg/needle.py"), "needle\n").unwrap();
+        fs::write(root.join(".venv/lib/needle.py"), "needle\n").unwrap();
+        // A nested .gitignore, with a re-include that must win.
+        fs::write(root.join("web/.gitignore"), "dist/*\n!dist/keep.py\n").unwrap();
+        fs::write(root.join("web/dist/needle.py"), "needle\n").unwrap();
+        fs::write(root.join("web/dist/keep.py"), "needle\n").unwrap();
+        fs::write(root.join("web/src/needle.py"), "needle\n").unwrap();
+        let mut sb = Sandbox::new(root).unwrap();
+        assert_eq!(
+            sb.run("find . -name needle.py").output,
+            "./web/src/needle.py"
+        );
+        assert_eq!(
+            sb.run("grep -rl needle .").output,
+            "./web/dist/keep.py\n./web/src/needle.py"
+        );
+        // Named explicitly, a skipped directory is searched.
+        assert_eq!(
+            sb.run("find node_modules -name needle.py").output,
+            "node_modules/pkg/needle.py"
+        );
+    }
+
+    #[test]
+    fn head_stops_find_and_grep_early_with_the_same_output() {
+        let (d, _) = repo();
+        for i in 0..300 {
+            fs::write(d.path().join(format!("f{i:03}.txt")), "match\n").unwrap();
+        }
+        let mut sb = Sandbox::new(d.path()).unwrap();
+        for (short, long) in [
+            (
+                "find . -name '*.txt' | head -7",
+                "find . -name '*.txt' | head -300",
+            ),
+            ("grep -rl match . | head -5", "grep -rl match . | head -300"),
+            ("grep -rn match . | head", "grep -rn match . | head -300"),
+        ] {
+            let short_out = sb.run(short).output;
+            let long_out = sb.run(long).output;
+            let n = short_out.lines().count();
+            assert!(n > 0);
+            let first: Vec<&str> = long_out.lines().take(n).collect();
+            assert_eq!(short_out.lines().collect::<Vec<_>>(), first, "{short}");
+        }
+        assert_eq!(
+            sb.run("find . -name '*.txt' | head -7")
+                .output
+                .lines()
+                .count(),
+            7
+        );
     }
 }

@@ -15,6 +15,8 @@ minijinja-contrib = { version = "2", features = ["pycompat"] }
 regex = "1"
 globset = "0.4"
 walkdir = "2"
+# Gitignore matching for the terminal's find and grep -r (already built for colgrep).
+ignore = "0.4"
 shell-words = "1"
 thiserror = "1"
 ureq = { version = "2", features = ["json"] }
