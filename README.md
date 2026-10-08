@@ -123,6 +123,38 @@ flowchart TD
     style F1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
 ```
 
+**Agent mode.** Your coding agent (Claude, GPT, Gemini, …) can call `colgrep` itself, or hand the whole question to `colgrep --agent`: a small search model that runs on your machine, calls colgrep as many times as it needs, reads the candidates, and returns only the lines that answer. The large model gets the answer without spending its context on the search.
+
+```mermaid
+flowchart TD
+    L["Coding agent · Claude, GPT, Gemini, …"]
+    A["colgrep --agent · 2B search model"]
+    S["colgrep"]
+    M["LateOn-Code-edge · 17M"]
+    I["NextPlaid index"]
+
+    L -->|"delegates a question"| A
+    L -->|"or searches directly"| S
+    A -->|"many searches and reads"| S
+    S --> M
+    M --> I
+    A -. "file:line locations" .-> L
+
+    L -.- L1["Plans, edits, reviews · large model, any provider"]
+    A -.- A1["Searches, reads files read-only, picks the exact lines
+runs locally on GPU or CPU"]
+    M -.- M1["Multi-vector embedding per code unit · runs on CPU"]
+
+    style L fill:#4a90d9,stroke:#357abd,color:#fff
+    style A fill:#9b59b6,stroke:#8445a0,color:#fff
+    style S fill:#50b86c,stroke:#3d9956,color:#fff
+    style M fill:#e8913a,stroke:#d07a2e,color:#fff
+    style I fill:#e8913a,stroke:#d07a2e,color:#fff
+    style L1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+    style A1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+    style M1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+```
+
 **What the model sees.** Each code unit is converted to structured text before embedding:
 
 ```python
