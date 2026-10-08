@@ -482,7 +482,31 @@ pub struct Cli {
     /// Answer QUERY with the code-localization agent: a small local model searches the
     /// repository with colgrep and reads files (read-only), then returns the relevant
     /// locations. Configure it with `colgrep settings --agent-*`.
-    #[arg(long = "agent")]
+    ///
+    /// The agent picks its own searches: search-only options are rejected rather than
+    /// silently ignored.
+    #[arg(
+        long = "agent",
+        conflicts_with_all = [
+            "top_k",
+            "include_patterns",
+            "exclude_patterns",
+            "exclude_dirs",
+            "text_pattern",
+            "extended_regexp",
+            "fixed_strings",
+            "word_regexp",
+            "case_sensitive",
+            "code_only",
+            "no_fts",
+            "alpha",
+            "no_pool",
+            "pool_factor",
+            "force_gpu",
+            "stats",
+            "reset_stats",
+        ]
+    )]
     pub agent: bool,
 
     /// When to colorize output and syntax highlighting: auto, always, or never.
