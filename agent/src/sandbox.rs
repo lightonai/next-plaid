@@ -26,11 +26,15 @@ pub const MAX_LS_ENTRIES: usize = 200;
 pub const MAX_OUTPUT_CHARS: usize = 4000;
 /// Hard cap on what one shell command may produce before it is cut off.
 const MAX_SHELL_BYTES: usize = 2_000_000;
-/// Bytes read from one file, and from all the files of one command: a data file of
-/// several GB is not loaded whole to show its first lines.
-const MAX_READ_BYTES: usize = 32 << 20;
+/// Bytes a command reads from files (per file and in total) and passes down a pipe:
+/// commands are bounded by their input, never by a data file of several GB. Anything
+/// cut is said on stderr.
+const MAX_READ_BYTES: usize = 16 << 20;
 /// Paths a glob expands to (`*/../*/../*` grows exponentially).
 const MAX_GLOB_MATCHES: usize = 10_000;
+/// Wall-clock budget of one command line: loops over files stop past it (a glob can
+/// make `grep -r` or `find` walk the repository thousands of times).
+const TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 /// Where the training sandbox mounted the repository; models write paths under it.
 pub const SANDBOX_REPO: &str = "/repo";
 
@@ -249,6 +253,32 @@ impl Sandbox {
         let Some(file) = files.first() else {
             return Ok(CmdResult::text("tail: missing file operand"));
         };
+        let p = self.regular_file(file)?;
+        if file_len(&p) > MAX_READ_BYTES {
+            // Too large to load: keep only the last lines while reading it through.
+            let keep = n.clamp(1, MAX_CAT_LINES);
+            let mut last = std::collections::VecDeque::with_capacity(keep);
+            let (total, complete) = stream_lines(&p, |i, line| {
+                if last.len() == keep {
+                    last.pop_front();
+                }
+                last.push_back(format!("{i:6}\t{line}"));
+            })
+            .map_err(|e| BuiltinError::Message(e.to_string()))?;
+            if !complete {
+                return Ok(CmdResult::text(format!(
+                    "tail: {file}: too large to read to the end within {} s; use head, \
+                     sed -n or grep -n",
+                    TIME_BUDGET.as_secs()
+                )));
+            }
+            let start = (total + 1).saturating_sub(last.len()).max(1);
+            let body = Vec::from(last).join("\n");
+            return Ok(CmdResult {
+                output: clip(&body),
+                retrieved: Some((rel_str(&self.root, &p), start, total)),
+            });
+        }
         let (_, text) = self.file_text(file)?;
         let total = py_splitlines(&text).len();
         let start = (total as i64 - n as i64 + 1).max(1);
@@ -259,7 +289,7 @@ impl Sandbox {
         })
     }
 
-    fn file_text(&self, spec: &str) -> Result<(String, String), BuiltinError> {
+    fn regular_file(&self, spec: &str) -> Result<PathBuf, BuiltinError> {
         let p = self.resolve(spec).map_err(|e| e.builtin(spec))?;
         if p.is_dir() {
             return Err(BuiltinError::Message(format!("{spec} is a directory")));
@@ -267,6 +297,12 @@ impl Sandbox {
         if !p.is_file() {
             return Err(BuiltinError::NotFound);
         }
+        Ok(p)
+    }
+
+    /// Text of a file of at most [`MAX_READ_BYTES`] (larger ones are streamed).
+    fn file_text(&self, spec: &str) -> Result<(String, String), BuiltinError> {
+        let p = self.regular_file(spec)?;
         let (bytes, _) = read_capped(&p).map_err(|e| BuiltinError::Message(e.to_string()))?;
         Ok((
             rel_str(&self.root, &p),
@@ -293,6 +329,10 @@ impl Sandbox {
                     }
                 }
             }
+        }
+        let p = self.regular_file(spec)?;
+        if file_len(&p) > MAX_READ_BYTES {
+            return self.read_lines_streamed(&p, range);
         }
         let (rel, text) = self.file_text(spec)?;
         let lines = py_splitlines(&text);
@@ -323,6 +363,41 @@ impl Sandbox {
         Ok((rel, start.max(0) as usize, end.max(0) as usize, body))
     }
 
+    /// [`Self::read_lines`] for a file too large to load: lines are read one at a time
+    /// and only the shown ones kept (split on `\n`; the count says "more than" when the
+    /// file could not be read to the end within the time budget).
+    fn read_lines_streamed(
+        &self,
+        p: &Path,
+        range: Option<(i64, i64)>,
+    ) -> Result<(String, usize, usize, String), BuiltinError> {
+        let start = range.map_or(1, |(a, _)| a.max(1)) as usize;
+        let last = match range {
+            Some((_, b)) if b != 0 => b.max(0) as usize,
+            _ => usize::MAX,
+        };
+        let stop = last.min(start.saturating_add(MAX_CAT_LINES - 1));
+        let mut shown = Vec::new();
+        let (n, complete) = stream_lines(p, |i, line| {
+            if i >= start && i <= stop {
+                shown.push(format!("{i:6}\t{line}"));
+            }
+        })
+        .map_err(|e| BuiltinError::Message(e.to_string()))?;
+        let end = stop.min(n);
+        let mut body = shown.join("\n");
+        if !complete {
+            body.push_str(&format!(
+                "\n... (file has more than {n} lines; showing {start}-{end})"
+            ));
+        } else if end < n {
+            body.push_str(&format!(
+                "\n... (file has {n} lines; showing {start}-{end})"
+            ));
+        }
+        Ok((rel_str(&self.root, p), start, end, body))
+    }
+
     // ---------------------------------------------------------------- shell emulation
 
     fn shell(&mut self, command: &str) -> CmdResult {
@@ -330,6 +405,7 @@ impl Sandbox {
         let mut shell = Shell {
             sb: self,
             cwd: self.cwd.clone(),
+            deadline: std::time::Instant::now() + TIME_BUDGET,
         };
         let out = shell.run_line(command);
         let out = out.trim_matches('\n');
@@ -629,6 +705,7 @@ fn is_expansion(next: Option<&char>) -> bool {
 struct Shell<'a> {
     sb: &'a Sandbox,
     cwd: PathBuf,
+    deadline: std::time::Instant,
 }
 
 /// What one command produced.
@@ -663,6 +740,10 @@ struct Cmd {
 }
 
 impl<'a> Shell<'a> {
+    fn timed_out(&self) -> bool {
+        std::time::Instant::now() >= self.deadline
+    }
+
     fn run_line(&mut self, line: &str) -> String {
         let toks = match lex(line) {
             Ok(t) => t,
@@ -755,11 +836,17 @@ impl<'a> Shell<'a> {
                 }
             }
             status = out.status;
-            let stdout = if cmd.discard_stdout {
+            let mut stdout = if cmd.discard_stdout {
                 String::new()
             } else {
                 out.stdout
             };
+            if stdout.len() > MAX_READ_BYTES {
+                stdout.truncate(floor_char_boundary(&stdout, MAX_READ_BYTES));
+                if !out.stderr.contains(&cut_note(&cmd.argv[0])) {
+                    errors.push_str(&cut_note(&cmd.argv[0]));
+                }
+            }
             if i + 1 == n {
                 errors.push_str(&stdout);
             } else {
@@ -873,11 +960,13 @@ impl<'a> Shell<'a> {
                         next.push((dir.join(&name), join(&name)));
                     }
                 }
-                if next.len() >= MAX_GLOB_MATCHES {
+                if next.len() >= MAX_GLOB_MATCHES || self.timed_out() {
                     break;
                 }
             }
             next.truncate(MAX_GLOB_MATCHES);
+            // `..` must not climb out of the repository, even halfway through a pattern.
+            next.retain(|(p, _)| lexically_within(&self.sb.root, p));
             current = next;
         }
         current
@@ -1042,11 +1131,16 @@ impl<'a> Shell<'a> {
         let (inputs, errs) = self.inputs(&files, stdin, "cat");
         let mut out = String::new();
         let mut n = 0;
-        for (_, text) in inputs {
+        let mut errs = errs;
+        'files: for (_, text) in inputs {
             if number {
                 for line in text.split_inclusive('\n') {
                     n += 1;
                     out.push_str(&format!("{n:6}\t{line}"));
+                    if out.len() > MAX_READ_BYTES {
+                        errs.push_str(&cut_note("cat"));
+                        break 'files;
+                    }
                 }
             } else {
                 out.push_str(&text);
@@ -1191,11 +1285,15 @@ impl<'a> Shell<'a> {
             Ok(p) => p,
             Err(e) => return Out::err(format!("sed: -e expression #1: {e}\n"), 1),
         };
-        let (inputs, errs) = self.inputs(&rest, stdin, "sed");
+        let (inputs, mut errs) = self.inputs(&rest, stdin, "sed");
         let text: String = inputs.into_iter().map(|(_, t)| t).collect();
+        let (stdout, cut) = program.run(&text, quiet);
+        if cut {
+            errs.push_str(&cut_note("sed"));
+        }
         Out {
-            stdout: program.run(&text, quiet),
-            status: if errs.is_empty() { 0 } else { 2 },
+            stdout,
+            status: if errs.is_empty() || cut { 0 } else { 2 },
             stderr: errs,
         }
     }
@@ -1348,7 +1446,15 @@ impl<'a> Shell<'a> {
             } else {
                 positional
             };
-            for t in targets {
+            'targets: for t in targets {
+                if out.stdout.len() > MAX_READ_BYTES {
+                    out.stderr.push_str(&cut_note(name));
+                    break;
+                }
+                if self.timed_out() {
+                    out.stderr.push_str(&time_note(name));
+                    break;
+                }
                 let p = match self.resolve(&t) {
                     Ok(p) => p,
                     Err(e) => {
@@ -1375,13 +1481,21 @@ impl<'a> Shell<'a> {
                             format!("{}/{rel}", t.trim_end_matches('/'))
                         };
                         if let Some((text, cut)) = read_text_file(&file) {
-                            if cut {
+                            if cut && !out.stderr.contains("MiB were read") {
                                 out.stderr.push_str(&truncated_note("grep", &shown));
                             }
                             grep_text(&shown, &text, &regex, &o, with_filename, &mut out);
                         }
-                        if out.stdout.len() > MAX_SHELL_BYTES || (o.quiet && out.matched) {
-                            break;
+                        if o.quiet && out.matched {
+                            break 'targets;
+                        }
+                        if out.stdout.len() > MAX_READ_BYTES {
+                            out.stderr.push_str(&cut_note(name));
+                            break 'targets;
+                        }
+                        if self.timed_out() {
+                            out.stderr.push_str(&time_note(name));
+                            break 'targets;
                         }
                     }
                 } else if !p.is_file() {
@@ -1419,6 +1533,7 @@ impl<'a> Shell<'a> {
             .into_iter()
             .filter_entry(|e| e.file_name() != ".git")
             .filter_map(Result::ok)
+            .take_while(|_| !self.timed_out())
             .filter(|e| e.file_type().is_file())
             .filter(|e| e.path().starts_with(&self.sb.root))
             .map(|e| {
@@ -1561,9 +1676,17 @@ impl<'a> Shell<'a> {
                         out.push('\n');
                     }
                 }
-                if out.len() > MAX_SHELL_BYTES {
+                if out.len() > MAX_READ_BYTES || self.timed_out() {
                     break;
                 }
+            }
+            if out.len() > MAX_READ_BYTES {
+                errs.push_str(&cut_note("find"));
+                break;
+            }
+            if self.timed_out() {
+                errs.push_str(&time_note("find"));
+                break;
             }
         }
         Out {
@@ -1966,16 +2089,20 @@ impl<'a> Shell<'a> {
             .filter(|(i, a)| !(a.starts_with('-') || (*i > 0 && args[i - 1] == "-b")))
             .map(|(_, a)| a.clone())
             .collect();
-        let (inputs, errs) = self.inputs(&files, stdin, "nl");
+        let (inputs, mut errs) = self.inputs(&files, stdin, "nl");
         let mut out = String::new();
         let mut n = 0;
-        for (_, text) in inputs {
+        'files: for (_, text) in inputs {
             for line in text.lines() {
                 if line.is_empty() && !all {
                     out.push_str("       \n");
                 } else {
                     n += 1;
                     out.push_str(&format!("{n:6}\t{line}\n"));
+                }
+                if out.len() > MAX_READ_BYTES {
+                    errs.push_str(&cut_note("nl"));
+                    break 'files;
                 }
             }
         }
@@ -2067,6 +2194,81 @@ fn read_capped(p: &Path) -> std::io::Result<(Vec<u8>, bool)> {
     let cut = bytes.len() > MAX_READ_BYTES;
     bytes.truncate(MAX_READ_BYTES);
     Ok((bytes, cut))
+}
+
+fn file_len(p: &Path) -> usize {
+    fs::metadata(p).map_or(0, |m| m.len() as usize)
+}
+
+/// Calls `line(number, text)` for each line of `p` (1-based, split on `\n`, a trailing
+/// `\r` dropped, each line cut at [`MAX_SHELL_BYTES`]), without loading the file.
+/// Returns the number of lines read and whether the end was reached within
+/// [`TIME_BUDGET`].
+fn stream_lines(p: &Path, mut line: impl FnMut(usize, &str)) -> std::io::Result<(usize, bool)> {
+    use std::io::BufRead;
+    let deadline = std::time::Instant::now() + TIME_BUDGET;
+    let mut reader = std::io::BufReader::with_capacity(1 << 20, fs::File::open(p)?);
+    let mut buf: Vec<u8> = Vec::new();
+    let mut n = 0;
+    loop {
+        buf.clear();
+        // read_until without the unbounded buffer: keep at most MAX_SHELL_BYTES of a line.
+        let mut eof = true;
+        loop {
+            let chunk = reader.fill_buf()?;
+            if chunk.is_empty() {
+                break;
+            }
+            eof = false;
+            let (take, done) = match chunk.iter().position(|&b| b == b'\n') {
+                Some(i) => (i + 1, true),
+                None => (chunk.len(), false),
+            };
+            let room = MAX_SHELL_BYTES.saturating_sub(buf.len());
+            buf.extend_from_slice(&chunk[..take.min(room)]);
+            reader.consume(take);
+            if done {
+                break;
+            }
+        }
+        if eof {
+            return Ok((n, true));
+        }
+        n += 1;
+        let text = String::from_utf8_lossy(&buf);
+        line(n, text.trim_end_matches('\n').trim_end_matches('\r'));
+        if n % 4096 == 0 && std::time::Instant::now() >= deadline {
+            return Ok((n, false));
+        }
+    }
+}
+
+/// Whether `path` (absolute, possibly with `..`) stays inside `root` once normalised.
+fn lexically_within(root: &Path, path: &Path) -> bool {
+    let mut parts: Vec<Component> = Vec::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                if parts.pop().is_none() {
+                    return false;
+                }
+            }
+            Component::CurDir => {}
+            other => parts.push(other),
+        }
+    }
+    parts.iter().collect::<PathBuf>().starts_with(root)
+}
+
+fn cut_note(cmd: &str) -> String {
+    format!("{cmd}: output cut at {} MiB\n", MAX_READ_BYTES >> 20)
+}
+
+fn time_note(cmd: &str) -> String {
+    format!(
+        "{cmd}: stopped after {} s (time limit of a command)\n",
+        TIME_BUDGET.as_secs()
+    )
 }
 
 fn truncated_note(cmd: &str, path: &str) -> String {
@@ -2495,7 +2697,8 @@ impl SedProgram {
         Ok(Self(instrs))
     }
 
-    fn run(&self, text: &str, quiet: bool) -> String {
+    /// The output, and whether it was cut at [`MAX_READ_BYTES`].
+    fn run(&self, text: &str, quiet: bool) -> (String, bool) {
         let lines: Vec<&str> = text.lines().collect();
         let last = lines.len();
         let mut active: Vec<Option<usize>> = vec![None; self.0.len()];
@@ -2540,6 +2743,9 @@ impl SedProgram {
                     SedCmd::Print => {
                         out.push_str(&pattern);
                         out.push('\n');
+                        if out.len() > MAX_READ_BYTES {
+                            break 'lines;
+                        }
                     }
                     SedCmd::Delete => continue 'lines,
                     SedCmd::LineNumber => out.push_str(&format!("{n}\n")),
@@ -2548,18 +2754,14 @@ impl SedProgram {
                             out.push_str(&pattern);
                             out.push('\n');
                         }
-                        return out;
+                        return (out, false);
                     }
                     SedCmd::Subst(re, rep, global, print) => {
-                        let (replaced, changed, cut) = substitute(re, rep, &pattern, *global);
+                        let (replaced, changed) = substitute(re, rep, &pattern, *global);
                         pattern = replaced;
                         if changed && *print {
                             out.push_str(&pattern);
                             out.push('\n');
-                        }
-                        if cut {
-                            out.push_str(&pattern);
-                            return out;
                         }
                     }
                 }
@@ -2568,45 +2770,47 @@ impl SedProgram {
                 out.push_str(&pattern);
                 out.push('\n');
             }
-            if out.len() > MAX_SHELL_BYTES {
-                return out;
+            if out.len() > MAX_READ_BYTES {
+                break;
             }
         }
-        out
+        let cut = out.len() > MAX_READ_BYTES;
+        if cut {
+            out.truncate(floor_char_boundary(&out, MAX_READ_BYTES));
+        }
+        (out, cut)
     }
 }
 
-/// `s/re/rep/[g]` on one line, as `Regex::replace(_all)` computes it but never building
-/// more than [`MAX_SHELL_BYTES`]: `s/./&&&&&&&&&&/g` repeated grows a line tenfold each
-/// time. Returns the line, whether it changed, and whether it was cut.
-fn substitute(re: &Regex, rep: &str, text: &str, global: bool) -> (String, bool, bool) {
+/// `s/re/rep/[g]` on one line, as `Regex::replace(_all)` computes it but never growing
+/// the line past `max(its length, MAX_SHELL_BYTES)`: `s/./&&&&&&&&&&/g` repeated grows a
+/// line tenfold each time. Returns the line and whether it changed.
+fn substitute(re: &Regex, rep: &str, text: &str, global: bool) -> (String, bool) {
+    let limit = text.len().max(MAX_SHELL_BYTES);
     let mut out = String::new();
     let mut last = 0;
-    let mut changed = false;
+    let mut matched = false;
     for caps in re.captures_iter(text) {
         let m = caps.get(0).expect("group 0 always matches");
         out.push_str(&text[last..m.start()]);
         caps.expand(rep, &mut out);
         last = m.end();
-        changed = true;
-        if out.len() > MAX_SHELL_BYTES {
-            out.truncate(floor_char_boundary(&out, MAX_SHELL_BYTES));
-            return (out, true, true);
-        }
-        if !global {
+        matched = true;
+        if out.len() > limit || !global {
             break;
         }
     }
-    if !changed {
-        return (text.to_string(), false, false);
+    if !matched {
+        return (text.to_string(), false);
     }
-    out.push_str(&text[last..]);
-    let cut = out.len() > MAX_SHELL_BYTES;
-    if cut {
-        out.truncate(floor_char_boundary(&out, MAX_SHELL_BYTES));
+    if out.len() <= limit {
+        out.push_str(&text[last..]);
+    }
+    if out.len() > limit {
+        out.truncate(floor_char_boundary(&out, limit));
     }
     let changed = out != text;
-    (out, changed, cut)
+    (out, changed)
 }
 
 #[cfg(test)]
@@ -3086,7 +3290,10 @@ mod tests {
         .unwrap();
         let r = sb.run("head -n 1 big.txt | wc -c");
         assert!(r.output.ends_with("100"), "{}", r.output);
-        assert!(r.output.contains("only the first 32 MiB were read"));
+        assert!(r.output.contains(&format!(
+            "only the first {} MiB were read",
+            MAX_READ_BYTES >> 20
+        )));
         let r = sb.run("find . -type f | xargs cat | wc -c");
         let n: usize = r.output.lines().last().unwrap().trim().parse().unwrap();
         assert!(n <= MAX_READ_BYTES * 2, "{n}");
