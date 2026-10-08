@@ -20,8 +20,6 @@ const MARKETPLACE_JSON: &str = include_str!("marketplace.json");
 const PLUGIN_JSON: &str = include_str!("plugin.json");
 const HOOK_JSON: &str = include_str!("hook.json");
 
-use super::SKILL_MD;
-
 /// Get the marketplace directory path (in user's data directory)
 fn get_marketplace_dir() -> Result<PathBuf> {
     Ok(crate::index::paths::xdg_data_home_or_default()?
@@ -69,7 +67,9 @@ fn create_marketplace_files() -> Result<PathBuf> {
     // Write plugin files
     fs::write(plugin_claude_dir.join("plugin.json"), PLUGIN_JSON)?;
     fs::write(hooks_dir.join("hook.json"), HOOK_JSON)?;
-    fs::write(skills_dir.join("SKILL.md"), SKILL_MD)?;
+    // A standalone SKILL.md: Claude Code's skill loader rejects one without
+    // YAML frontmatter (#179).
+    fs::write(skills_dir.join("SKILL.md"), super::standalone_skill_md(""))?;
 
     Ok(marketplace_dir)
 }

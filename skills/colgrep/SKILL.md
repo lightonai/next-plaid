@@ -1,3 +1,8 @@
+---
+name: colgrep
+description: Semantic code search with colgrep - use colgrep as the primary search tool instead of Grep/Glob
+---
+
 # Semantic Code Search
 
 This repository has `colgrep` installed - a semantic code search CLI.
