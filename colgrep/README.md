@@ -46,23 +46,21 @@ CUDA_VISIBLE_DEVICES=0 uv run python -m benchmarks.baselines.colgrep
 
 Homebrew (macOS / Linux)
 ```bash
-brew install lightonai/tap/colgrep
+brew install lightonai/tap/colgrep && colgrep --install-agent
 ```
 
 Shell installer (macOS / Linux)
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh && "${CARGO_HOME:-$HOME/.cargo}/bin/colgrep" --install-agent
 ```
 
 Windows (PowerShell)
-```bash
-powershell -c "irm https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.ps1 | iex"
+```powershell
+irm https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.ps1 | iex
+& "$env:USERPROFILE\.cargo\bin\colgrep.exe" --install-agent
 ```
 
-Optional, and recommended: enable [agent mode](#agent-mode---agent), a small local model that explores your codebase like a sub-agent and returns the code locations that answer a question (one-time 2.5 GB download)
-```bash
-colgrep --install-agent
-```
+`colgrep --install-agent` downloads the local model behind [agent mode](#agent-mode---agent) (one-time, 2.5 GB): a small model that explores your codebase like a sub-agent and returns the code locations that answer a question. To install colgrep alone, leave it out; you can run it later.
 
 > **macOS** binaries ship with **Apple Accelerate + CoreML** enabled — full hardware acceleration out of the box.
 >
