@@ -26,6 +26,11 @@ pub const MAX_LS_ENTRIES: usize = 200;
 pub const MAX_OUTPUT_CHARS: usize = 4000;
 /// Hard cap on what one shell command may produce before it is cut off.
 const MAX_SHELL_BYTES: usize = 2_000_000;
+/// Bytes read from one file, and from all the files of one command: a data file of
+/// several GB is not loaded whole to show its first lines.
+const MAX_READ_BYTES: usize = 32 << 20;
+/// Paths a glob expands to (`*/../*/../*` grows exponentially).
+const MAX_GLOB_MATCHES: usize = 10_000;
 /// Where the training sandbox mounted the repository; models write paths under it.
 pub const SANDBOX_REPO: &str = "/repo";
 
@@ -262,7 +267,7 @@ impl Sandbox {
         if !p.is_file() {
             return Err(BuiltinError::NotFound);
         }
-        let bytes = fs::read(&p).map_err(|e| BuiltinError::Message(e.to_string()))?;
+        let (bytes, _) = read_capped(&p).map_err(|e| BuiltinError::Message(e.to_string()))?;
         Ok((
             rel_str(&self.root, &p),
             String::from_utf8_lossy(&bytes).into_owned(),
@@ -725,7 +730,12 @@ impl<'a> Shell<'a> {
             };
             if let Some(f) = &cmd.stdin_file {
                 match self.read_file(f, "bash") {
-                    Ok(text) => stdin = Some(text),
+                    Ok((text, cut)) => {
+                        if cut {
+                            errors.push_str(&truncated_note("bash", f));
+                        }
+                        stdin = Some(text)
+                    }
                     Err(e) => {
                         errors.push_str(&e);
                         errors.push('\n');
@@ -819,14 +829,16 @@ impl<'a> Shell<'a> {
     }
 
     fn expand_glob(&self, pattern: &str) -> Vec<String> {
-        let (base, rel_pattern) = if let Some(rest) = pattern.strip_prefix("/repo/") {
-            (self.sb.root.clone(), rest.to_string())
+        // Matches of `/repo/...` keep that prefix, so they still name the same files
+        // after a `cd`.
+        let (base, rel_pattern, shown_root) = if let Some(rest) = pattern.strip_prefix("/repo/") {
+            (self.sb.root.clone(), rest.to_string(), "/repo".to_string())
         } else if pattern.starts_with('/') {
             return Vec::new();
         } else {
-            (self.cwd.clone(), pattern.to_string())
+            (self.cwd.clone(), pattern.to_string(), String::new())
         };
-        let mut current: Vec<(PathBuf, String)> = vec![(base, String::new())];
+        let mut current: Vec<(PathBuf, String)> = vec![(base, shown_root)];
         let comps: Vec<&str> = rel_pattern.split('/').collect();
         for (ci, comp) in comps.iter().enumerate() {
             let last = ci + 1 == comps.len();
@@ -861,7 +873,11 @@ impl<'a> Shell<'a> {
                         next.push((dir.join(&name), join(&name)));
                     }
                 }
+                if next.len() >= MAX_GLOB_MATCHES {
+                    break;
+                }
             }
+            next.truncate(MAX_GLOB_MATCHES);
             current = next;
         }
         current
@@ -882,13 +898,14 @@ impl<'a> Shell<'a> {
         })
     }
 
-    fn read_file(&self, path: &str, cmd: &str) -> Result<String, String> {
+    /// The file's text, and whether it was cut at [`MAX_READ_BYTES`].
+    fn read_file(&self, path: &str, cmd: &str) -> Result<(String, bool), String> {
         let p = self.resolve(path).map_err(|e| format!("{cmd}: {e}"))?;
         if p.is_dir() {
             return Err(format!("{cmd}: {path}: Is a directory"));
         }
-        fs::read(&p)
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
+        read_capped(&p)
+            .map(|(b, cut)| (String::from_utf8_lossy(&b).into_owned(), cut))
             .map_err(|e| format!("{cmd}: {path}: {e}"))
     }
 
@@ -904,9 +921,23 @@ impl<'a> Shell<'a> {
             return (vec![("-".into(), stdin.unwrap_or_default())], errs);
         }
         let mut out = Vec::new();
+        let mut total = 0;
         for f in files {
+            if total > MAX_READ_BYTES {
+                errs.push_str(&format!(
+                    "{cmd}: stopped after {} MiB of input\n",
+                    MAX_READ_BYTES >> 20
+                ));
+                break;
+            }
             match self.read_file(f, cmd) {
-                Ok(t) => out.push((f.clone(), t)),
+                Ok((t, cut)) => {
+                    if cut {
+                        errs.push_str(&truncated_note(cmd, f));
+                    }
+                    total += t.len();
+                    out.push((f.clone(), t))
+                }
                 Err(e) => {
                     errs.push_str(&e);
                     errs.push('\n');
@@ -1343,14 +1374,26 @@ impl<'a> Shell<'a> {
                         } else {
                             format!("{}/{rel}", t.trim_end_matches('/'))
                         };
-                        if let Some(text) = read_text_file(&file) {
+                        if let Some((text, cut)) = read_text_file(&file) {
+                            if cut {
+                                out.stderr.push_str(&truncated_note("grep", &shown));
+                            }
                             grep_text(&shown, &text, &regex, &o, with_filename, &mut out);
                         }
                         if out.stdout.len() > MAX_SHELL_BYTES || (o.quiet && out.matched) {
                             break;
                         }
                     }
-                } else if let Some(text) = read_text_file(&p) {
+                } else if !p.is_file() {
+                    if !o.quiet {
+                        out.stderr
+                            .push_str(&format!("{name}: {t}: not a regular file\n"));
+                    }
+                    out.error = true;
+                } else if let Some((text, cut)) = read_text_file(&p) {
+                    if cut {
+                        out.stderr.push_str(&truncated_note("grep", &t));
+                    }
                     grep_text(&t, &text, &regex, &o, with_filename, &mut out);
                 }
             }
@@ -1979,6 +2022,9 @@ impl<'a> Shell<'a> {
                     out.stdout.push_str(&o.stdout);
                     out.stderr.push_str(&o.stderr);
                     out.status = out.status.max(o.status);
+                    if out.stdout.len() > MAX_SHELL_BYTES {
+                        break;
+                    }
                 }
                 out
             }
@@ -1997,13 +2043,37 @@ fn floor_char_boundary(s: &str, mut i: usize) -> usize {
     i
 }
 
-/// Text of a file, or None for binary content (a NUL in the first 8 KiB).
-fn read_text_file(p: &Path) -> Option<String> {
-    let bytes = fs::read(p).ok()?;
+/// Text of a file and whether it was cut, or None for binary content (a NUL in the
+/// first 8 KiB) and unreadable files.
+fn read_text_file(p: &Path) -> Option<(String, bool)> {
+    let (bytes, cut) = read_capped(p).ok()?;
     if bytes[..bytes.len().min(8192)].contains(&0) {
         return None;
     }
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    Some((String::from_utf8_lossy(&bytes).into_owned(), cut))
+}
+
+/// At most [`MAX_READ_BYTES`] of a regular file, and whether it was cut. FIFOs and
+/// devices are refused: reading one would block or never end.
+fn read_capped(p: &Path) -> std::io::Result<(Vec<u8>, bool)> {
+    use std::io::Read;
+    if !fs::metadata(p)?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(p)?
+        .take(MAX_READ_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    let cut = bytes.len() > MAX_READ_BYTES;
+    bytes.truncate(MAX_READ_BYTES);
+    Ok((bytes, cut))
+}
+
+fn truncated_note(cmd: &str, path: &str) -> String {
+    format!(
+        "{cmd}: {path}: only the first {} MiB were read\n",
+        MAX_READ_BYTES >> 20
+    )
 }
 
 fn glob_matcher(pattern: &str, case_insensitive: bool) -> Option<GlobMatcher> {
@@ -2481,16 +2551,15 @@ impl SedProgram {
                         return out;
                     }
                     SedCmd::Subst(re, rep, global, print) => {
-                        let replaced = if *global {
-                            re.replace_all(&pattern, rep.as_str())
-                        } else {
-                            re.replace(&pattern, rep.as_str())
-                        };
-                        let changed = replaced != pattern;
-                        pattern = replaced.into_owned();
+                        let (replaced, changed, cut) = substitute(re, rep, &pattern, *global);
+                        pattern = replaced;
                         if changed && *print {
                             out.push_str(&pattern);
                             out.push('\n');
+                        }
+                        if cut {
+                            out.push_str(&pattern);
+                            return out;
                         }
                     }
                 }
@@ -2499,9 +2568,45 @@ impl SedProgram {
                 out.push_str(&pattern);
                 out.push('\n');
             }
+            if out.len() > MAX_SHELL_BYTES {
+                return out;
+            }
         }
         out
     }
+}
+
+/// `s/re/rep/[g]` on one line, as `Regex::replace(_all)` computes it but never building
+/// more than [`MAX_SHELL_BYTES`]: `s/./&&&&&&&&&&/g` repeated grows a line tenfold each
+/// time. Returns the line, whether it changed, and whether it was cut.
+fn substitute(re: &Regex, rep: &str, text: &str, global: bool) -> (String, bool, bool) {
+    let mut out = String::new();
+    let mut last = 0;
+    let mut changed = false;
+    for caps in re.captures_iter(text) {
+        let m = caps.get(0).expect("group 0 always matches");
+        out.push_str(&text[last..m.start()]);
+        caps.expand(rep, &mut out);
+        last = m.end();
+        changed = true;
+        if out.len() > MAX_SHELL_BYTES {
+            out.truncate(floor_char_boundary(&out, MAX_SHELL_BYTES));
+            return (out, true, true);
+        }
+        if !global {
+            break;
+        }
+    }
+    if !changed {
+        return (text.to_string(), false, false);
+    }
+    out.push_str(&text[last..]);
+    let cut = out.len() > MAX_SHELL_BYTES;
+    if cut {
+        out.truncate(floor_char_boundary(&out, MAX_SHELL_BYTES));
+    }
+    let changed = out != text;
+    (out, changed, cut)
 }
 
 #[cfg(test)]
@@ -2905,5 +3010,85 @@ mod tests {
         assert_eq!(py_splitlines("a\nb\r\nc\rd"), vec!["a", "b", "c", "d"]);
         assert_eq!(py_splitlines("a\n"), vec!["a"]);
         assert_eq!(py_splitlines(""), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn sed_substitution_growth_is_bounded() {
+        let (_d, mut sb) = repo();
+        // Each instruction makes the line ten times longer: 10^12 bytes unbounded.
+        let grow = ["-e 's/./&&&&&&&&&&/g'"; 12].join(" ");
+        let r = sb.run(&format!("sed {grow} README.md | wc -c"));
+        let n: usize = r.output.trim().parse().unwrap();
+        assert!(n <= MAX_SHELL_BYTES + 1, "{n}");
+        // Ordinary substitutions are unchanged.
+        assert_eq!(sb.run("sed 's/l/L/g' README.md").output, "heLLo");
+        assert_eq!(
+            sb.run("sed 's/\\(h\\)\\(e\\)/\\2\\1/' README.md").output,
+            "ehllo"
+        );
+    }
+
+    #[test]
+    fn glob_expansion_is_bounded() {
+        let (d, mut sb) = repo();
+        for i in 0..30 {
+            fs::create_dir_all(d.path().join(format!("d{i}"))).unwrap();
+        }
+        // 32^6 paths unbounded.
+        let pattern = ["*"; 6].join("/../");
+        let r = sb.run(&format!("echo {pattern} | wc -w"));
+        let n: usize = r.output.trim().parse().unwrap();
+        assert!(n <= MAX_GLOB_MATCHES, "{n}");
+    }
+
+    #[test]
+    fn repo_globs_keep_their_prefix_after_cd() {
+        let (_d, mut sb) = repo();
+        sb.run("cd src");
+        assert_eq!(
+            sb.run("echo /repo/src/pkg/*.py").output,
+            "/repo/src/pkg/token.py"
+        );
+        assert!(sb
+            .run("cat /repo/src/pkg/*.py")
+            .output
+            .contains("check_token"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifos_are_refused_not_read() {
+        let (d, mut sb) = repo();
+        let fifo = d.path().join("pipe");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        for cmd in [
+            "cat pipe | head -1",
+            "grep x pipe",
+            "wc -l pipe",
+            "cat < pipe",
+        ] {
+            let out = sb.run(cmd).output;
+            assert!(out.contains("not a regular file"), "{cmd}: {out}");
+        }
+        assert!(sb.run("grep -r check_token .").output.contains("token.py"));
+    }
+
+    #[test]
+    fn large_files_are_read_up_to_the_cap() {
+        let (d, mut sb) = repo();
+        let line = "x".repeat(99) + "\n";
+        fs::write(
+            d.path().join("big.txt"),
+            line.repeat(MAX_READ_BYTES / 100 + 1000),
+        )
+        .unwrap();
+        let r = sb.run("head -n 1 big.txt | wc -c");
+        assert!(r.output.ends_with("100"), "{}", r.output);
+        assert!(r.output.contains("only the first 32 MiB were read"));
+        let r = sb.run("find . -type f | xargs cat | wc -c");
+        let n: usize = r.output.lines().last().unwrap().trim().parse().unwrap();
+        assert!(n <= MAX_READ_BYTES * 2, "{n}");
     }
 }
