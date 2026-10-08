@@ -1507,9 +1507,6 @@ pub fn fuse_relative_score(
     (ids, s)
 }
 
-/// Chunk size for `IN (?, ...)` lists, below SQLite's bound-parameter limit.
-const SQLITE_PARAM_LIMIT: usize = 900;
-
 /// An `IN` clause over `ids`, bound as a single parameter: the ids travel as one JSON
 /// array that SQLite unpacks with `json_each`. Any number of ids fits (no 999-variable
 /// limit, no temp table), so it also works on read-only connections.
@@ -1630,40 +1627,7 @@ fn collect_fts_results(
 /// }
 /// ```
 pub fn search(index_path: &str, query: &str, top_k: usize) -> Result<QueryResult> {
-    if query.is_empty() {
-        return Ok(QueryResult {
-            query_id: 0,
-            passage_ids: vec![],
-            scores: vec![],
-        });
-    }
-
-    with_fts_conn(index_path, |conn| {
-        // FTS5 bm25() returns negative scores (lower = better match).
-        // We negate so higher = more relevant.
-        let sql = if fts_is_content_keyed(conn) {
-            // Rowids are stable _content_id_ values; translate to _subset_.
-            format!(
-                "SELECT M.\"{}\", CAST(-bm25(\"{}\") AS REAL) AS score \
-                 FROM \"{}\" JOIN METADATA M ON M.\"{}\" = \"{}\".rowid \
-                 WHERE \"{}\" MATCH ? ORDER BY score DESC LIMIT ?",
-                SUBSET_COLUMN, FTS_TABLE, FTS_TABLE, CONTENT_ID_COLUMN, FTS_TABLE, FTS_TABLE
-            )
-        } else {
-            format!(
-                "SELECT rowid, CAST(-bm25(\"{}\") AS REAL) AS score \
-                 FROM \"{}\" WHERE \"{}\" MATCH ? ORDER BY score DESC LIMIT ?",
-                FTS_TABLE, FTS_TABLE, FTS_TABLE
-            )
-        };
-
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| Error::Filtering(format!("Failed to prepare FTS5 query: {}", e)))?;
-
-        let top_k_i64 = top_k as i64;
-        collect_fts_results(&mut stmt, &[&query as &dyn ToSql, &top_k_i64])
-    })
+    bm25_search(index_path, query, top_k, None)
 }
 
 /// Full-text search restricted to a subset of document IDs.
@@ -1683,7 +1647,17 @@ pub fn search_filtered(
             scores: vec![],
         });
     }
+    bm25_search(index_path, query, top_k, Some(subset))
+}
 
+/// The `top_k` best BM25 matches of `query`, among `subset` when given, as one query:
+/// a single FTS5 scan, with bm25() evaluated only for the rows the subset keeps.
+fn bm25_search(
+    index_path: &str,
+    query: &str,
+    top_k: usize,
+    subset: Option<&[i64]>,
+) -> Result<QueryResult> {
     if query.is_empty() {
         return Ok(QueryResult {
             query_id: 0,
@@ -1693,65 +1667,41 @@ pub fn search_filtered(
     }
 
     with_fts_conn(index_path, |conn| {
-        let content_keyed = fts_is_content_keyed(conn);
-        let mut merged: Vec<(i64, f32)> = Vec::new();
-        let top_k_i64 = top_k as i64;
-
-        for chunk in subset.chunks(SQLITE_PARAM_LIMIT) {
-            let placeholders: Vec<&str> = std::iter::repeat_n("?", chunk.len()).collect();
-            let sql = if content_keyed {
+        // Content-keyed rowids are stable _content_id_ values; translate to _subset_.
+        let (id, from) = if fts_is_content_keyed(conn) {
+            (
+                format!("M.\"{}\"", SUBSET_COLUMN),
                 format!(
-                    "SELECT M.\"{}\", CAST(-bm25(\"{}\") AS REAL) AS score \
-                     FROM \"{}\" JOIN METADATA M ON M.\"{}\" = \"{}\".rowid \
-                     WHERE \"{}\" MATCH ? AND M.\"{}\" IN ({}) \
-                     ORDER BY score DESC LIMIT ?",
-                    SUBSET_COLUMN,
-                    FTS_TABLE,
-                    FTS_TABLE,
-                    CONTENT_ID_COLUMN,
-                    FTS_TABLE,
-                    FTS_TABLE,
-                    SUBSET_COLUMN,
-                    placeholders.join(", ")
-                )
-            } else {
-                format!(
-                    "SELECT rowid, CAST(-bm25(\"{}\") AS REAL) AS score \
-                     FROM \"{}\" WHERE \"{}\" MATCH ? AND rowid IN ({}) \
-                     ORDER BY score DESC LIMIT ?",
-                    FTS_TABLE,
-                    FTS_TABLE,
-                    FTS_TABLE,
-                    placeholders.join(", ")
-                )
-            };
-
-            let mut params: Vec<Box<dyn ToSql>> = Vec::with_capacity(chunk.len() + 2);
-            params.push(Box::new(query.to_string()));
-            params.extend(chunk.iter().map(|&id| Box::new(id) as Box<dyn ToSql>));
-            params.push(Box::new(top_k_i64));
-            let param_refs: Vec<&dyn ToSql> = params.iter().map(|v| v.as_ref()).collect();
-
-            let mut stmt = conn
-                .prepare(&sql)
-                .map_err(|e| Error::Filtering(format!("Failed to prepare FTS5 query: {}", e)))?;
-            let chunk_result = collect_fts_results(&mut stmt, &param_refs)?;
-            merged.extend(
-                chunk_result
-                    .passage_ids
-                    .into_iter()
-                    .zip(chunk_result.scores),
-            );
+                    "\"{}\" JOIN METADATA M ON M.\"{}\" = \"{}\".rowid",
+                    FTS_TABLE, CONTENT_ID_COLUMN, FTS_TABLE
+                ),
+            )
+        } else {
+            ("rowid".to_string(), format!("\"{}\"", FTS_TABLE))
+        };
+        // FTS5 bm25() returns negative scores (lower = better match).
+        // We negate so higher = more relevant.
+        let mut sql = format!(
+            "SELECT {id}, CAST(-bm25(\"{}\") AS REAL) AS score \
+             FROM {from} WHERE \"{}\" MATCH ?",
+            FTS_TABLE, FTS_TABLE
+        );
+        let mut params: Vec<Box<dyn ToSql>> = vec![Box::new(query.to_string())];
+        if let Some(subset) = subset {
+            let (in_clause, ids_json) = build_in_clause(subset);
+            // The unary `+` keeps the subset a filter on the single MATCH scan: as an
+            // index constraint, `rowid IN (...)` makes FTS5 re-run the MATCH once per id.
+            sql.push_str(&format!(" AND +{id} {in_clause}"));
+            params.push(Box::new(ids_json));
         }
+        sql.push_str(" ORDER BY score DESC LIMIT ?");
+        params.push(Box::new(top_k as i64));
 
-        merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        merged.truncate(top_k);
-
-        Ok(QueryResult {
-            query_id: 0,
-            passage_ids: merged.iter().map(|(id, _)| *id).collect(),
-            scores: merged.into_iter().map(|(_, score)| score).collect(),
-        })
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| Error::Filtering(format!("Failed to prepare FTS5 query: {}", e)))?;
+        let param_refs: Vec<&dyn ToSql> = params.iter().map(|v| v.as_ref()).collect();
+        collect_fts_results(&mut stmt, &param_refs)
     })
 }
 
@@ -2069,6 +2019,39 @@ mod tests {
         assert!(result.passage_ids.contains(&0));
         assert!(result.passage_ids.contains(&1));
         assert!(!result.passage_ids.contains(&2));
+    }
+
+    #[test]
+    fn test_search_filtered_large_subset_matches_unfiltered_ranking() {
+        // Document i mentions "rust" i / 100 + 1 times: the highest ids score best,
+        // a hundred documents per score.
+        let metadata: Vec<Value> = (0..3000)
+            .map(|i| json!({"title": "rust ".repeat(i / 100 + 1) + &format!("doc{i}")}))
+            .collect();
+        let (_dir, path) = setup_with_metadata(&metadata);
+
+        // Odd ids, unsorted, each listed twice and in different 900-id chunks, plus
+        // ids that do not exist.
+        let mut subset: Vec<i64> = (0..3000).rev().filter(|i| i % 2 == 1).collect();
+        subset.extend(subset.clone());
+        subset.extend([-1, 5000]);
+
+        let filtered = search_filtered(&path, "rust", 100, &subset).unwrap();
+        let unique: std::collections::HashSet<i64> = filtered.passage_ids.iter().copied().collect();
+        assert_eq!(unique.len(), 100, "each document is returned once");
+        assert!(filtered.passage_ids.iter().all(|id| id % 2 == 1));
+
+        // Same scores as the best odd documents of an unfiltered search.
+        let all = search(&path, "rust", 3000).unwrap();
+        let best_odd: Vec<f32> = all
+            .passage_ids
+            .iter()
+            .zip(&all.scores)
+            .filter(|(id, _)| *id % 2 == 1)
+            .map(|(_, s)| *s)
+            .take(100)
+            .collect();
+        assert_eq!(filtered.scores, best_odd);
     }
 
     #[test]
