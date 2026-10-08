@@ -340,7 +340,16 @@ pub fn cmd_install_agent(force_cpu: bool) -> Result<()> {
     let progress = std::io::stderr().is_terminal();
     colgrep_agent::engine::prewarm(&settings, metal_kernels_dir().as_deref());
     colgrep_agent::engine::prepare(&settings, progress).map_err(anyhow::Error::msg)?;
-    let engine = load_engine(&settings, force_cpu, progress).map_err(anyhow::Error::msg)?;
+    let mut engine = load_engine(&settings, force_cpu, progress).map_err(anyhow::Error::msg)?;
+    // Compute the cache of the prompt every question starts with now, so the first
+    // question does not pay for it.
+    let session_config = settings.session_config().map_err(anyhow::Error::msg)?;
+    colgrep_agent::session::warm_prefix(
+        &engine.template,
+        &session_config,
+        engine.generator.as_mut(),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("✓ colgrep --agent is ready · {}", engine.description);
     println!("  Try: colgrep --agent \"where is the configuration loaded\"");
     Ok(())

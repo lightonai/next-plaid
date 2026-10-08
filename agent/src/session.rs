@@ -212,11 +212,9 @@ pub fn run(
         .filter(|t| t.pointer("/function/name").and_then(Value::as_str) == Some("finish"))
         .cloned()
         .collect();
-    if let Some(prefix) = static_prefix(template, config) {
-        let t = Instant::now();
-        llm.warm_prefix(&prefix).map_err(std::io::Error::other)?;
-        out.profile.warm_prefix_ms = ms(t);
-    }
+    let t = Instant::now();
+    warm_prefix(template, config, llm).map_err(std::io::Error::other)?;
+    out.profile.warm_prefix_ms = ms(t);
     let mut retries = 0;
     let mut call_ids = 0usize;
     let max_turns = config.max_turns.max(1);
@@ -417,6 +415,21 @@ pub fn run(
 
 fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
+}
+
+/// Prepare the engine's KV cache for the part of the prompt every session shares
+/// (system prompt and tool definitions). Engines that persist it (built-in
+/// llama.cpp) compute it once and restore it from disk afterwards, so calling this
+/// ahead of time (`colgrep --install-agent`) makes the first question fast too.
+pub fn warm_prefix(
+    template: &ChatTemplate,
+    config: &SessionConfig,
+    llm: &mut dyn Generator,
+) -> Result<(), crate::llm::LlmError> {
+    match static_prefix(template, config) {
+        Some(prefix) => llm.warm_prefix(&prefix),
+        None => Ok(()),
+    }
 }
 
 /// The rendered text every session starts with: what two renders differing only in the
