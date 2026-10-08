@@ -1,7 +1,11 @@
 //! A private `llama-server` process for one agent session.
 //!
-//! Started on a free localhost port with GPU offload requested (`-ngl 999`): llama.cpp
-//! uses the GPU when its backend finds one and the CPU otherwise. The session talks to
+//! Started on a free localhost port with GPU offload requested (`-ngl 999`) on a single
+//! GPU — the one with the most free memory (a 2B model gains nothing from being split,
+//! and the split costs ~30% of the generation speed on 8 H100s). llama.cpp uses the CPU
+//! when its backend finds no GPU. On Linux, a GPU whose driver is installed but that
+//! Vulkan cannot see because the distribution left out the Vulkan loader is reached
+//! through a pinned loader downloaded on demand ([`crate::runtime::vulkan_loader`]). The session talks to
 //! it through [`OpenAiCompletions`]; the process is tied to colgrep's lifetime and killed
 //! when the engine drops.
 
@@ -22,6 +26,8 @@ pub struct ServerOptions {
     pub threads: Option<usize>,
     /// Layers offloaded to the GPU (0 = CPU only).
     pub gpu_layers: u32,
+    /// Show a progress bar if the Vulkan loader has to be downloaded.
+    pub progress: bool,
 }
 
 /// What the server reports about the loaded model.
@@ -56,7 +62,13 @@ impl LlamaServer {
         let log_file =
             std::fs::File::create(&log).map_err(|e| format!("{}: {e}", log.display()))?;
 
-        let mut cmd = runtime_command(server);
+        let (gpu, lib_dir, gpu_note) = if opts.gpu_layers > 0 {
+            find_gpu(server, opts.progress)
+        } else {
+            (None, None, None)
+        };
+
+        let mut cmd = runtime_command(server, lib_dir.as_deref());
         cmd.arg("--model")
             .arg(model)
             .args(["--host", "127.0.0.1", "--port", &port.to_string()])
@@ -80,6 +92,9 @@ impl LlamaServer {
         if let Some(t) = opts.threads {
             cmd.args(["--threads", &t.to_string()]);
         }
+        if let Some(gpu) = &gpu {
+            cmd.args(["--device", &gpu.id]);
+        }
         if opts.gpu_layers == 0 {
             // CPU weights are repacked; mmap would keep a second resident copy.
             cmd.args(no_mmap_args(server));
@@ -96,12 +111,6 @@ impl LlamaServer {
                 });
             }
         }
-        let gpu = if opts.gpu_layers > 0 {
-            first_gpu(server)
-        } else {
-            None
-        };
-
         let child = cmd
             .spawn()
             .map_err(|e| format!("starting {}: {e}", server.display()))?;
@@ -122,11 +131,18 @@ impl LlamaServer {
         this.props = fetch_props(&base);
         this.client = OpenAiCompletions::new(&format!("{base}/v1"), "local", &this.props.bos_token);
         this.device = match gpu {
-            Some(name) => format!("GPU: {name}"),
-            None => match opts.threads {
-                Some(t) => format!("CPU, {t} threads"),
-                None => "CPU".into(),
-            },
+            Some(gpu) => format!("GPU: {}", gpu.name),
+            None => {
+                let mut d = match opts.threads {
+                    Some(t) => format!("CPU, {t} threads"),
+                    None => "CPU".into(),
+                };
+                if let Some(note) = gpu_note {
+                    d.push_str("; ");
+                    d.push_str(&note);
+                }
+                d
+            }
         };
         Ok(this)
     }
@@ -249,13 +265,18 @@ fn tail(log: &str, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
-/// A command for the runtime binary, with its bundled shared libraries on the path.
-fn runtime_command(server: &Path) -> Command {
+/// A command for the runtime binary, with its bundled shared libraries (and `extra_lib`,
+/// the downloaded Vulkan loader, when one is needed) on the path.
+fn runtime_command(server: &Path, extra_lib: Option<&Path>) -> Command {
     let mut cmd = Command::new(server);
     let bin_dir = server.parent().unwrap_or(Path::new("."));
     #[cfg(target_os = "linux")]
     {
         let mut ld = std::ffi::OsString::from(bin_dir);
+        if let Some(extra) = extra_lib {
+            ld.push(":");
+            ld.push(extra);
+        }
         if let Some(old) = std::env::var_os("LD_LIBRARY_PATH") {
             ld.push(":");
             ld.push(old);
@@ -266,13 +287,15 @@ fn runtime_command(server: &Path) -> Command {
     cmd.env("DYLD_LIBRARY_PATH", bin_dir);
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let _ = bin_dir;
+    #[cfg(not(target_os = "linux"))]
+    let _ = extra_lib;
     cmd
 }
 
 /// The flag that disables mmap: `--load-mode none` in current llama.cpp, `--no-mmap` in
 /// older builds a user may point the agent at.
 fn no_mmap_args(server: &Path) -> Vec<&'static str> {
-    let help = runtime_command(server)
+    let help = runtime_command(server, None)
         .arg("--help")
         .stdin(Stdio::null())
         .output()
@@ -287,36 +310,144 @@ fn no_mmap_args(server: &Path) -> Vec<&'static str> {
     }
 }
 
-/// The first GPU llama.cpp can use (`--list-devices`), if any.
-fn first_gpu(server: &Path) -> Option<String> {
-    let out = runtime_command(server)
+/// A device llama.cpp can offload to, as `--list-devices` reports it.
+#[derive(Debug, Clone, PartialEq)]
+struct Gpu {
+    /// Backend id to pass to `--device` (`Vulkan0`, `MTL0`, …).
+    id: String,
+    name: String,
+    free_mib: u64,
+}
+
+/// The GPU to run on, the extra library directory needed to reach it (the downloaded
+/// Vulkan loader), and, when no GPU is usable although one is installed, why.
+fn find_gpu(server: &Path, progress: bool) -> (Option<Gpu>, Option<PathBuf>, Option<String>) {
+    let gpus = list_gpus(server, None);
+    if !gpus.is_empty() {
+        return (best_gpu(gpus), None, None);
+    }
+    #[cfg(target_os = "linux")]
+    if gpu_device_present() {
+        if system_has_vulkan_loader() {
+            return (
+                None,
+                None,
+                Some("a GPU is installed but its driver has no Vulkan support".into()),
+            );
+        }
+        return match crate::runtime::vulkan_loader(progress) {
+            Ok(dir) => {
+                let gpus = list_gpus(server, Some(&dir));
+                if gpus.is_empty() {
+                    (
+                        None,
+                        None,
+                        Some("a GPU is installed but its driver has no Vulkan support".into()),
+                    )
+                } else {
+                    (best_gpu(gpus), Some(dir), None)
+                }
+            }
+            Err(e) => (
+                None,
+                None,
+                Some(format!(
+                    "a GPU is installed but the Vulkan loader is missing ({e})"
+                )),
+            ),
+        };
+    }
+    let _ = progress;
+    (None, None, None)
+}
+
+/// The GPUs llama.cpp can use (`--list-devices`).
+fn list_gpus(server: &Path, extra_lib: Option<&Path>) -> Vec<Gpu> {
+    let Ok(out) = runtime_command(server, extra_lib)
         .arg("--list-devices")
         .stdin(Stdio::null())
         .output()
-        .ok()?;
+    else {
+        return Vec::new();
+    };
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    parse_first_gpu(&text)
+    parse_gpus(&text)
 }
 
-/// `  Vulkan0: NVIDIA GeForce RTX 4090 (24564 MiB, 23000 MiB free)` → the description of
-/// the first device that is not the CPU, BLAS or RPC.
-fn parse_first_gpu(list: &str) -> Option<String> {
+/// `  Vulkan0: NVIDIA GeForce RTX 4090 (24564 MiB, 23000 MiB free)` → every device that
+/// is not the CPU, BLAS or RPC.
+fn parse_gpus(list: &str) -> Vec<Gpu> {
     list.lines()
         .skip_while(|l| !l.contains("Available devices"))
         .skip(1)
         .filter_map(|l| l.trim().split_once(':'))
-        .find(|(id, _)| {
+        .filter(|(id, _)| {
             let id = id.to_ascii_uppercase();
-            !(id.starts_with("CPU") || id.starts_with("BLAS") || id.starts_with("RPC"))
+            !(id.is_empty()
+                || id.starts_with("CPU")
+                || id.starts_with("BLAS")
+                || id.starts_with("RPC"))
         })
-        .map(|(_, desc)| {
+        .map(|(id, desc)| {
             let desc = desc.trim();
-            desc.split(" (").next().unwrap_or(desc).to_string()
+            // The memory figures are the last parenthesis; names may contain others.
+            let (name, mem) = desc.rsplit_once(" (").unwrap_or((desc, ""));
+            let free_mib = mem
+                .split(',')
+                .nth(1)
+                .and_then(|f| f.split_whitespace().next())
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0);
+            Gpu {
+                id: id.trim().to_string(),
+                name: name.to_string(),
+                free_mib,
+            }
         })
+        .collect()
+}
+
+/// The GPU with the most free memory (the first one on ties): one device is plenty for
+/// the agent's model, and on a shared machine this avoids the busy ones.
+fn best_gpu(gpus: Vec<Gpu>) -> Option<Gpu> {
+    gpus.into_iter()
+        .fold(None, |best: Option<Gpu>, g| match best {
+            Some(b) if b.free_mib >= g.free_mib => Some(b),
+            _ => Some(g),
+        })
+}
+
+/// A GPU device node: NVIDIA's, or a DRM render node (AMD, Intel, NVIDIA open driver).
+#[cfg(target_os = "linux")]
+fn gpu_device_present() -> bool {
+    Path::new("/dev/nvidia0").exists()
+        || std::fs::read_dir("/dev/dri").is_ok_and(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .any(|e| e.file_name().to_string_lossy().starts_with("renderD"))
+        })
+}
+
+/// Whether the system provides a Vulkan loader of its own.
+#[cfg(target_os = "linux")]
+fn system_has_vulkan_loader() -> bool {
+    // SAFETY: dlopen with a NUL-terminated name; the handle is closed right away.
+    unsafe {
+        let handle = libc::dlopen(
+            c"libvulkan.so.1".as_ptr(),
+            libc::RTLD_LAZY | libc::RTLD_LOCAL,
+        );
+        if handle.is_null() {
+            false
+        } else {
+            libc::dlclose(handle);
+            true
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -379,18 +510,34 @@ mod tests {
     }
 
     #[test]
-    fn first_gpu_from_device_list() {
+    fn gpus_from_device_list() {
         let mac = "Available devices:\n  MTL0: Apple M3 Pro (27648 MiB, 27647 MiB free)\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n";
-        assert_eq!(parse_first_gpu(mac).as_deref(), Some("Apple M3 Pro"));
+        let gpus = parse_gpus(mac);
+        assert_eq!(gpus.len(), 1);
+        assert_eq!(
+            (gpus[0].id.as_str(), gpus[0].name.as_str()),
+            ("MTL0", "Apple M3 Pro")
+        );
         let pc = "ggml_vulkan: Found 1 Vulkan devices:\nAvailable devices:\n  Vulkan0: AMD Radeon RX 7900 XTX (RADV NAVI31) (24560 MiB, 24000 MiB free)\n";
         assert_eq!(
-            parse_first_gpu(pc).as_deref(),
-            Some("AMD Radeon RX 7900 XTX")
+            parse_gpus(pc),
+            vec![Gpu {
+                id: "Vulkan0".into(),
+                name: "AMD Radeon RX 7900 XTX (RADV NAVI31)".into(),
+                free_mib: 24000,
+            }]
         );
-        assert_eq!(
-            parse_first_gpu("Available devices:\n  CPU: Intel Xeon (0 MiB, 0 MiB free)\n"),
-            None
+        assert!(
+            parse_gpus("Available devices:\n  CPU: Intel Xeon (0 MiB, 0 MiB free)\n").is_empty()
         );
-        assert_eq!(parse_first_gpu("Available devices:\n"), None);
+        assert!(parse_gpus("Available devices:\n  (none)\n").is_empty());
+        assert!(parse_gpus("Available devices:\n").is_empty());
+    }
+
+    #[test]
+    fn runs_on_the_gpu_with_the_most_free_memory() {
+        let list = "Available devices:\n  Vulkan0: NVIDIA H100 80GB HBM3 (81559 MiB, 2000 MiB free)\n  Vulkan1: NVIDIA H100 80GB HBM3 (81559 MiB, 81078 MiB free)\n  Vulkan2: NVIDIA H100 80GB HBM3 (81559 MiB, 81078 MiB free)\n";
+        assert_eq!(best_gpu(parse_gpus(list)).unwrap().id, "Vulkan1");
+        assert_eq!(best_gpu(Vec::new()), None);
     }
 }

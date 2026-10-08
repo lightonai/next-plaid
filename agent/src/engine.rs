@@ -185,6 +185,7 @@ fn load_server(
             context_size: settings.context_size(),
             threads: Some(settings.threads.unwrap_or_else(server_threads)),
             gpu_layers,
+            progress,
         },
     )?;
     let props = server.props.clone();
