@@ -48,6 +48,14 @@ Search:
 colgrep "database connection pooling"
 ```
 
+Or ask the agent: it searches with colgrep, reads the candidates, and returns the exact lines that answer the question (after `colgrep --install-agent`):
+
+```bash
+colgrep --agent "where is the database connection pool configured"
+```
+
+Coding agents that use colgrep's hooks learn about it automatically. See [Agent mode](colgrep/README.md#agent-mode---agent).
+
 That's it. No server, no API, no dependencies. ColGREP is a single Rust binary with everything baked in. `colgrep init` builds the index for the first time. After that, every search detects file changes and updates the index automatically before returning results.
 
 Regex meets semantics:
@@ -55,14 +63,6 @@ Regex meets semantics:
 ```bash
 colgrep -e "async.*await" "error handling"
 ```
-
-Ask a question, and let the agent find the code (after `colgrep --install-agent`):
-
-```bash
-colgrep --agent "where are sessions expired after logout"
-```
-
-It searches with colgrep, reads the candidates, and prints the relevant file and line ranges like any colgrep result. Coding agents that use colgrep's hooks learn about it automatically. See [Agent mode](colgrep/README.md#agent-mode---agent).
 
 ### Change the model
 
