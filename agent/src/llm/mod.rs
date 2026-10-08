@@ -54,7 +54,8 @@ pub struct Generation {
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
-    /// `prompt` and `ctx` are 0 when the engine did not report them.
+    /// `prompt` is the tokens the request needs (the prompt, plus the room for the answer
+    /// when the server counts it); both are 0 when the engine did not report them.
     #[error("{} (raise the agent context size)", overflow_message(*.prompt, *.ctx))]
     ContextOverflow { prompt: usize, ctx: usize },
     #[error("{0}")]
@@ -63,9 +64,9 @@ pub enum LlmError {
 
 fn overflow_message(prompt: usize, ctx: usize) -> String {
     if prompt > 0 && ctx > 0 {
-        format!("prompt of {prompt} tokens does not fit the {ctx}-token context")
+        format!("request of {prompt} tokens does not fit the {ctx}-token context")
     } else {
-        "the prompt does not fit the context".to_string()
+        "the request does not fit the context".to_string()
     }
 }
 

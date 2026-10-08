@@ -173,12 +173,12 @@ impl Generator for OpenAiCompletions {
     }
 }
 
-/// Bytes at the end of `text` that could be the beginning of an end-of-turn marker.
 /// A context-size rejection, with its token counts when the message gives them.
 ///
 /// llama-server: `request (N tokens) exceeds the available context size (M tokens)`
 /// (`exceed_context_size_error`); vLLM / OpenAI: `maximum context length is M tokens.
-/// However, you requested N tokens`.
+/// However, you requested N tokens` or, in current vLLM, `... for a total of N tokens`
+/// (prompt plus the room asked for the answer).
 fn context_overflow(body: &str) -> Option<LlmError> {
     // The integers directly followed by " tokens", in order.
     let counts: Vec<usize> = body
@@ -207,6 +207,7 @@ fn context_overflow(body: &str) -> Option<LlmError> {
     })
 }
 
+/// Bytes at the end of `text` that could be the beginning of an end-of-turn marker.
 fn held_back(text: &str) -> usize {
     STOP_TEXTS
         .iter()
@@ -245,12 +246,20 @@ mod tests {
                 ctx: 16384
             })
         ));
+        let vllm_now = r#"{"object":"error","message":"This model's maximum context length is 16384 tokens. However, you requested 2048 output tokens and your prompt contains 15000 input tokens, for a total of 17048 tokens. Please reduce the length of the input prompt or the number of requested output tokens.","type":"BadRequestError","code":400}"#;
+        assert!(matches!(
+            context_overflow(vllm_now),
+            Some(LlmError::ContextOverflow {
+                prompt: 17048,
+                ctx: 16384
+            })
+        ));
         let other = r#"{"error":{"message":"invalid grammar"}}"#;
         assert!(context_overflow(other).is_none());
         let unknown = LlmError::ContextOverflow { prompt: 0, ctx: 0 }.to_string();
         assert_eq!(
             unknown,
-            "the prompt does not fit the context (raise the agent context size)"
+            "the request does not fit the context (raise the agent context size)"
         );
     }
 

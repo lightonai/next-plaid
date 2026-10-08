@@ -286,7 +286,12 @@ fn runtime_command(server: &Path, extra_lib: Option<&Path>) -> Command {
     // llama.cpp reads LLAMA_ARG_* (any flag) and LLAMA_API_KEY from the environment: a
     // user's settings for their own llama-server must not reconfigure this one.
     for (name, _) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("LLAMA_") {
+        // Windows environment names are case-insensitive.
+        if name
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("LLAMA_")
+        {
             cmd.env_remove(name);
         }
     }
