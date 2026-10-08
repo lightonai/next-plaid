@@ -141,7 +141,7 @@ colgrep settings --no-hybrid-search
 
 ## Agent Mode (`--agent`)
 
-`colgrep --agent` hands your question to a small local model trained to localize code with colgrep ([`lightonai/colgrep-default-minicpm5-2B`](https://huggingface.co/lightonai/colgrep-default-minicpm5-2B)). It searches the repository, reads the candidates, and returns the files and line ranges to look at, like a sub-agent that only does code search:
+`colgrep --agent` hands your question to a small local model trained to localize code with colgrep ([`lightonai/colgrep-agent-2B`](https://huggingface.co/lightonai/colgrep-agent-2B), run locally from its [GGUF](https://huggingface.co/lightonai/colgrep-agent-2B-GGUF)). It searches the repository, reads the candidates, and returns the files and line ranges to look at, like a sub-agent that only does code search:
 
 ```bash
 colgrep --agent "sessions never expire after logout"
@@ -200,7 +200,7 @@ colgrep settings --agent-llama-server ~/llama.cpp/build/bin/llama-server  # e.g.
 
 | Setting | Default |
 |---|---|
-| `--agent-model` / `--agent-model-file` | `lightonai/colgrep-default-minicpm5-2B` / `colgrep-default-minicpm5-2B-Q8_0.gguf` |
+| `--agent-model` / `--agent-model-file` | `lightonai/colgrep-agent-2B-GGUF` / `colgrep-agent-2B-Q8_0.gguf` |
 | `--agent-max-turns` | 10 (the last turn only accepts `finish`) |
 | `--agent-search-k` | 10 hits per search (the model may ask for up to 25) |
 | `--agent-temperature` / `--agent-top-p` / `--agent-top-k` | 0.6 / 0.95 / 20 (evaluation sampling) |
@@ -215,11 +215,11 @@ Point the agent at any OpenAI-compatible server; prompts go through `/v1/complet
 
 ```bash
 # vLLM
-vllm serve lightonai/colgrep-default-minicpm5-2B --port 8000
+vllm serve lightonai/colgrep-agent-2B --served-model-name lightonai/colgrep-agent-2B-GGUF --port 8000
 colgrep settings --agent-endpoint http://localhost:8000/v1
 
 # llama-server (--special keeps the tool-call tokens in the output)
-llama-server -m colgrep-default-minicpm5-2B-Q8_0.gguf --port 8000 --special
+llama-server -m colgrep-agent-2B-Q8_0.gguf --port 8000 --special
 colgrep settings --agent-endpoint http://localhost:8000/v1
 ```
 

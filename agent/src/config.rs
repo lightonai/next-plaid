@@ -13,9 +13,9 @@ use crate::protocol;
 use crate::session::SessionConfig;
 
 /// Default model repository on the HuggingFace Hub.
-pub const DEFAULT_MODEL: &str = "lightonai/colgrep-default-minicpm5-2B";
+pub const DEFAULT_MODEL: &str = "lightonai/colgrep-agent-2B-GGUF";
 /// Default GGUF file inside [`DEFAULT_MODEL`] (8-bit: near-lossless, CPU-friendly).
-pub const DEFAULT_MODEL_FILE: &str = "colgrep-default-minicpm5-2B-Q8_0.gguf";
+pub const DEFAULT_MODEL_FILE: &str = "colgrep-agent-2B-Q8_0.gguf";
 /// Default sampling seed. Fixed so that the same query on the same repository state
 /// reproduces the same trajectory and answer; change it to draw another sample.
 pub const DEFAULT_SEED: u64 = 0;
