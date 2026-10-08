@@ -82,7 +82,9 @@ pub fn llama_server(explicit: Option<&str>, progress: bool) -> Result<PathBuf, S
 /// Pinned Khronos Vulkan loader (`libvulkan.so.1`), for Linux machines whose GPU driver
 /// ships a Vulkan ICD but whose distribution did not install the loader that finds it
 /// (stock Ubuntu + NVIDIA servers: `libnvidia-gl` is there, `libvulkan1` is not). Built
-/// against glibc 2.17 without window-system support, so it runs on any distribution.
+/// against glibc 2.17 without window-system support, so it runs on any distribution, by
+/// scripts/build-vulkan-loader.sh; .github/workflows/vulkan-loader.yml publishes a new
+/// version and prints the SHA-256s to pin below.
 pub const VULKAN_LOADER_RELEASE: &str = "v1.4.361";
 
 /// `(asset name, sha256)` of the Vulkan loader build for this platform.

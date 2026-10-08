@@ -1,0 +1,74 @@
+# Builds and publishes the Vulkan loader that `colgrep --agent` downloads on Linux
+# machines whose distribution left it out (agent/src/runtime.rs, `vulkan_loader`).
+#
+# Not part of a colgrep release: the loader is pinned by version and SHA-256, so this
+# only runs when moving to a new loader version. Then update VULKAN_LOADER_RELEASE and
+# the SHA-256s printed in this run's summary in agent/src/runtime.rs.
+name: Vulkan loader
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Vulkan-Loader tag (e.g. v1.4.361)"
+        required: true
+      publish:
+        description: "Publish the release vulkan-loader-<version> (otherwise build only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build
+        run: scripts/build-vulkan-loader.sh "${{ inputs.version }}" ${{ matrix.arch }} out | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-loader-${{ matrix.arch }}
+          path: out/*.tar.gz
+
+  publish:
+    if: ${{ inputs.publish }}
+    needs: build
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vulkan-loader-*
+          merge-multiple: true
+          path: out
+      - name: Publish
+        run: |
+          TAG="vulkan-loader-${{ inputs.version }}"
+          # A published loader is pinned by SHA-256 in released colgrep binaries:
+          # never replace its files.
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists; its assets are pinned and must not change"
+            exit 1
+          fi
+          {
+            echo "Khronos Vulkan loader (libvulkan.so.1, Vulkan-Loader ${{ inputs.version }}, Apache-2.0) for \`colgrep --agent\`, built by scripts/build-vulkan-loader.sh (glibc 2.17, no window-system support). Not a colgrep release."
+            echo
+            echo '| asset | sha256 |'
+            echo '|---|---|'
+            (cd out && sha256sum -- *.tar.gz) | awk '{print "| " $2 " | `" $1 "` |"}'
+          } > notes.md
+          gh release create "$TAG" out/*.tar.gz --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" --title "Vulkan loader ${{ inputs.version }} (colgrep --agent runtime)" \
+            --notes-file notes.md --latest=false
