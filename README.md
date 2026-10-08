@@ -54,8 +54,6 @@ Or ask the agent: it searches with colgrep, reads the candidates, and returns th
 colgrep --agent "where is the database connection pool configured"
 ```
 
-Coding agents that use colgrep's hooks learn about it automatically. See [Agent mode](colgrep/README.md#agent-mode---agent).
-
 That's it. No server, no API, no dependencies. ColGREP is a single Rust binary with everything baked in. `colgrep init` builds the index for the first time. After that, every search detects file changes and updates the index automatically before returning results.
 
 Regex meets semantics:
