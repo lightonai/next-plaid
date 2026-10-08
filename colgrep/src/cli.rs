@@ -447,6 +447,10 @@ pub struct Cli {
     #[arg(long = "uninstall-kimi")]
     pub uninstall_kimi: bool,
 
+    /// Download the local model behind `colgrep --agent` (~2.5 GB, once) and check it loads
+    #[arg(long = "install-agent")]
+    pub install_agent: bool,
+
     /// Completely uninstall colgrep: remove from all AI tools, clear all indexes, and remove all data
     #[arg(long = "uninstall")]
     pub uninstall: bool,

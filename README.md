@@ -33,6 +33,12 @@ brew install lightonai/tap/colgrep
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh
 ```
 
+Optional, and recommended: enable agent mode, a small local model that explores your codebase like a sub-agent and returns the code locations that answer a question (one-time 2.5 GB download):
+
+```bash
+colgrep --install-agent
+```
+
 Build the index:
 
 ```bash
@@ -53,6 +59,14 @@ Regex meets semantics:
 ```bash
 colgrep -e "async.*await" "error handling"
 ```
+
+Ask a question, and let the agent find the code (after `colgrep --install-agent`):
+
+```bash
+colgrep --agent "where are sessions expired after logout"
+```
+
+It searches with colgrep, reads the candidates, and prints the relevant file and line ranges like any colgrep result. Coding agents that use colgrep's hooks learn about it automatically. See [Agent mode](colgrep/README.md#agent-mode---agent).
 
 ### Change the model
 

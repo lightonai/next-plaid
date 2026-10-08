@@ -83,8 +83,31 @@ impl Drop for CriticalSectionGuard {
 /// Set up the Ctrl+C signal handler.
 /// Should be called once at the start of indexing operations.
 /// Returns an error if the handler cannot be set.
+/// Set by [`exit_immediately_on_interrupt`].
+static IMMEDIATE_EXIT: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
+/// From now on, Ctrl-C runs `cleanup` and exits at once (code 130) instead of
+/// stopping at the next indexing checkpoint. For phases that write nothing worth
+/// finishing, such as an agent session.
+pub fn exit_immediately_on_interrupt(cleanup: fn()) {
+    let _ = IMMEDIATE_EXIT.set(cleanup);
+}
+
 pub fn setup_signal_handler() -> Result<(), ctrlc::Error> {
     ctrlc::set_handler(move || {
+        if let Some(cleanup) = IMMEDIATE_EXIT.get() {
+            cleanup();
+            eprintln!();
+            // `_exit` skips C/C++ atexit handlers: llama.cpp's Metal device asserts in
+            // them while a model is still loaded.
+            #[cfg(unix)]
+            // SAFETY: terminates the process; nothing runs afterwards.
+            unsafe {
+                libc::_exit(130)
+            };
+            #[cfg(not(unix))]
+            std::process::exit(130);
+        }
         // Acknowledge the first interrupt immediately so the user gets feedback.
         // Indexing stops at the next safe checkpoint; finished batches are persisted
         // and the build resumes on the next run. (Previously this message only

@@ -105,6 +105,7 @@ impl LlamaServer {
         let child = cmd
             .spawn()
             .map_err(|e| format!("starting {}: {e}", server.display()))?;
+        crate::shutdown::register_child(child.id());
         #[cfg(windows)]
         let job = job::Job::kill_on_close(&child)?;
         let base = format!("http://127.0.0.1:{port}");
@@ -179,6 +180,7 @@ impl Generator for LlamaServer {
 
 impl Drop for LlamaServer {
     fn drop(&mut self) {
+        crate::shutdown::unregister_child(self.child.id());
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_file(&self.log);

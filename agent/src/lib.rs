@@ -21,5 +21,6 @@ pub mod runtime;
 pub mod sandbox;
 pub mod search;
 pub mod session;
+pub mod shutdown;
 pub mod template;
 pub mod toolcall;

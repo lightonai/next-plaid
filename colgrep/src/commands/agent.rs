@@ -139,11 +139,7 @@ pub fn cmd_agent(
 
     // Initialize llama.cpp while the index loads. On Metal this compiles the GPU kernels:
     // ~20 s when macOS's shader cache misses, milliseconds otherwise.
-    // Pre-compiled Metal kernels live next to the indices (`<data>/colgrep/agent/metal`).
-    let kernels_dir = colgrep::get_colgrep_data_dir()
-        .ok()
-        .and_then(|indices| indices.parent().map(|d| d.join("agent").join("metal")));
-    colgrep_agent::engine::prewarm(&settings, kernels_dir.as_deref());
+    colgrep_agent::engine::prewarm(&settings, metal_kernels_dir().as_deref());
 
     // The index (and encoder) is loaded once and reused for every agent search.
     let index = load_index(
@@ -158,6 +154,9 @@ pub fn cmd_agent(
         no_update,
     )?;
     let index_s = started.elapsed().as_secs_f64();
+    // Indexing is done; from here on nothing is written that must be finished, so
+    // Ctrl-C stops the agent at once (and any llama-server it started).
+    colgrep::exit_immediately_on_interrupt(colgrep_agent::shutdown::kill_children);
 
     // First run: download the model (and, off Apple Silicon, the llama.cpp runtime) with
     // a progress bar, before the spinner takes over the line.
@@ -328,6 +327,30 @@ pub fn cmd_agent(
             top_k: results.len(),
         },
     )
+}
+
+/// `colgrep --install-agent`: download what `colgrep --agent` needs (the model, and
+/// off Apple Silicon the llama.cpp runtime), then load the model once to check it.
+pub fn cmd_install_agent(force_cpu: bool) -> Result<()> {
+    let settings = Config::load().unwrap_or_default().agent;
+    if let Some(endpoint) = &settings.endpoint {
+        println!("colgrep --agent uses the model served at {endpoint}: nothing to download.");
+        return Ok(());
+    }
+    let progress = std::io::stderr().is_terminal();
+    colgrep_agent::engine::prewarm(&settings, metal_kernels_dir().as_deref());
+    colgrep_agent::engine::prepare(&settings, progress).map_err(anyhow::Error::msg)?;
+    let engine = load_engine(&settings, force_cpu, progress).map_err(anyhow::Error::msg)?;
+    println!("✓ colgrep --agent is ready · {}", engine.description);
+    println!("  Try: colgrep --agent \"where is the configuration loaded\"");
+    Ok(())
+}
+
+/// Where pre-compiled Metal kernels live: next to the indices (`<data>/colgrep/agent/metal`).
+fn metal_kernels_dir() -> Option<PathBuf> {
+    colgrep::get_colgrep_data_dir()
+        .ok()
+        .and_then(|indices| indices.parent().map(|d| d.join("agent").join("metal")))
 }
 
 /// Agent locations as search results, so they print like any colgrep hit.

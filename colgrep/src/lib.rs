@@ -44,6 +44,6 @@ pub use install::{
 
 // Signal handling
 pub use signal::{
-    check_interrupted, is_interrupted, is_interrupted_outside_critical, setup_signal_handler,
-    CriticalSectionGuard,
+    check_interrupted, exit_immediately_on_interrupt, is_interrupted,
+    is_interrupted_outside_critical, setup_signal_handler, CriticalSectionGuard,
 };

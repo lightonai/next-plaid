@@ -59,6 +59,11 @@ Windows (PowerShell)
 powershell -c "irm https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.ps1 | iex"
 ```
 
+Optional, and recommended: enable [agent mode](#agent-mode---agent), a small local model that explores your codebase like a sub-agent and returns the code locations that answer a question (one-time 2.5 GB download)
+```bash
+colgrep --install-agent
+```
+
 > **macOS** binaries ship with **Apple Accelerate + CoreML** enabled — full hardware acceleration out of the box.
 >
 > **Linux & Windows** binaries work immediately but run on CPU only. For hardware acceleration, install via Cargo — see [Installation](#installation).
@@ -157,6 +162,8 @@ pylate/losses/contrastive.py:224-228
 ```
 
 Progress lines go to stderr (only on a terminal); stdout carries just the locations.
+
+The model downloads on first use; `colgrep --install-agent` fetches it ahead of time and checks that it loads.
 
 Once the model is downloaded (or an endpoint is configured), colgrep's Claude Code hooks also tell the coding agent about `colgrep --agent`, so it can delegate open-ended "where is X handled?" questions to it. Until then the hooks don't mention it.
 

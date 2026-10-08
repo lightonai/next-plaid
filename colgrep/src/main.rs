@@ -19,8 +19,8 @@ use colgrep::{
 
 use cli::{Cli, Commands};
 use commands::{
-    cmd_agent, cmd_clear, cmd_config, cmd_init, cmd_reset_stats, cmd_search, cmd_session_hook,
-    cmd_set_model, cmd_stats, cmd_status, cmd_task_hook, cmd_update, InitOptions,
+    cmd_agent, cmd_clear, cmd_config, cmd_init, cmd_install_agent, cmd_reset_stats, cmd_search,
+    cmd_session_hook, cmd_set_model, cmd_stats, cmd_status, cmd_task_hook, cmd_update, InitOptions,
 };
 
 /// Apply the persisted CoreML model cache directory (issue #129).
@@ -90,6 +90,10 @@ fn main() -> Result<()> {
     apply_coreml_cache_dir();
 
     // Handle global flags before subcommands
+    if cli.install_agent {
+        return cmd_install_agent(cli.force_cpu);
+    }
+
     if cli.install_claude_code {
         return install_claude_code();
     }
