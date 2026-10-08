@@ -1,0 +1,97 @@
+[package]
+name = "llama-cpp-sys-2"
+description = "Low Level Bindings to llama.cpp"
+version = "0.1.158"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/utilityai/llama-cpp-rs"
+links = "llama"
+
+include = [
+    # Our files
+    "README.md",
+    "wrapper.h",
+    "wrapper_common.h",
+    "wrapper_common.cpp",
+    "wrapper_utils.h",
+    "wrapper_mtmd.h",
+    "build.rs",
+    "/src",
+
+    # Everything needed for building GGML (CMake, include and src)
+    #
+    # `llama.cpp` already only includes the most important stuff
+    # from https://github.com/ggml-org/ggml.
+    "/llama.cpp/ggml",
+
+    # lLama.cpp's own sources.
+    "/llama.cpp/include",
+    "/llama.cpp/common",
+    "/llama.cpp/src",
+
+    # mtmd sources. Contains tests files that we don't want, so those
+    # are filtered out.
+    "/llama.cpp/tools/mtmd/**/*.h",
+    "/llama.cpp/tools/mtmd/**/*.cpp",
+    "/llama.cpp/tools/mtmd/**/CMakeLists.txt",
+
+    # Vendored sources.
+    "/llama.cpp/vendor",
+
+    # Various build files.
+    "/llama.cpp/convert_hf_to_gguf.py", # Yes, it's required
+    "/llama.cpp/pocs",
+    "/llama.cpp/CMakeLists.txt",
+    "/llama.cpp/cmake",
+    "/llama.cpp/tools/CMakeLists.txt",
+
+    # License.
+    "/llama.cpp/LICENSE",
+]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+[build-dependencies]
+bindgen = { workspace = true }
+cc = { workspace = true, features = ["parallel"] }
+cmake = "0.1"
+find_cuda_helper = "0.2.0"
+glob = "0.3.3"
+walkdir = "2"
+
+[features]
+default = ["common"]
+# Build the JSON-schema-to-grammar helper backed by llama.cpp's `common/` static
+# library. Disabling this drops `libcommon.a` (~14 MB) and the
+# `wrapper_common.cpp` bindings from the link line, which matters for
+# size-constrained downstream binaries that only need the core inference API.
+# Enabled by default to preserve backwards compatibility.
+common = []
+cuda = []
+# Disables the need to dynamically link against libcuda.so / cuda.dll
+cuda-no-vmm = ["cuda"]
+metal = []
+dynamic-link = []
+vulkan = []
+# OpenCL backend (GGML_OPENCL=ON) — the Qualcomm-supported path for Adreno GPUs.
+# The build needs OpenCL headers + a libOpenCL.so to link; on a cross-compile
+# (e.g. Android) point CMake at them via the OPENCL_INCLUDE_DIR / OPENCL_LIBRARY
+# env vars (build.rs forwards them), since FindOpenCL can't locate an SDK.
+opencl = []
+# Build the BLAS backend with Intel MKL (x86_64-only; requires MKLROOT set).
+mkl = []
+openmp = []
+# Link GNU OpenMP (`libgomp`) statically on GNU targets. This is useful for
+# downstreams that ship self-contained binaries while keeping OpenMP enabled.
+static-openmp = ["openmp"]
+rocm = []
+# Link the C++ standard library statically where the target toolchain supports
+# it. Currently used by Android and Linux GNU/musl targets.
+static-stdcxx = []
+shared-stdcxx = []
+system-ggml = []
+system-ggml-static = ["system-ggml"]
+mtmd = []
+dynamic-backends = ["dynamic-link"]

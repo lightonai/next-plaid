@@ -20,6 +20,7 @@ use next_plaid::{
 use next_plaid_onnx::{pool_document_embeddings, Colbert, ExecutionProvider};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "_cuda")]
 use crate::acceleration::apply_acceleration_mode;
@@ -982,9 +983,10 @@ fn run_chunk_pipeline(
 
         let prepared = prepare_deduplicated_chunk(unit_chunk);
 
-        tokenize_tx
-            .send(prepared)
-            .context("Failed to send prepared chunk to tokenize stage")?;
+        // A closed channel means a stage stopped: its own result says why.
+        if tokenize_tx.send(prepared).is_err() {
+            break;
+        }
     }
 
     // Signal pipeline shutdown: dropping the sender closes the channel,
@@ -992,23 +994,25 @@ fn run_chunk_pipeline(
     // all downstream stages.
     drop(tokenize_tx);
 
-    tokenize_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Tokenize stage thread panicked"))??;
-    encode_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Encode stage thread panicked"))??;
-    pool_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Pool stage thread panicked"))??;
-    index_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Index stage thread panicked"))??;
-    metadata_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Metadata stage thread panicked"))??;
+    let results = [
+        ("Tokenize", tokenize_handle.join()),
+        ("Encode", encode_handle.join()),
+        ("Pool", pool_handle.join()),
+        ("Index", index_handle.join()),
+        ("Metadata", metadata_handle.join()),
+    ];
+    // On Ctrl-C the encode stage stops early and drops its channel, so the stages
+    // feeding it fail to send: report the interruption, not those side effects.
+    if was_interrupted || is_interrupted() {
+        return Ok(true);
+    }
+    // From the last stage back: a stage that fails closes its input, so the stages
+    // before it then fail to send; the last failure is the cause.
+    for (stage, result) in results.into_iter().rev() {
+        result.map_err(|_| anyhow::anyhow!("{stage} stage thread panicked"))??;
+    }
 
-    Ok(was_interrupted)
+    Ok(false)
 }
 
 fn parse_files_parallel(
@@ -1320,8 +1324,6 @@ impl IndexBuilder {
             };
 
             // Print model info after ONNX runtime is initialized (and any potential re-exec)
-            eprintln!("🤖 Model: {} ({})", self.model_id, execution_provider);
-            eprintln!("📂 Building index...");
 
             // Use runtime default for batch size (respects cuDNN availability)
             let batch = self
@@ -1940,12 +1942,7 @@ impl IndexBuilder {
 
         // Progress bar for parsing
         let pb = ProgressBar::new(files_to_index.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
-                .unwrap()
-                .progress_chars("█▓░"),
-        );
+        pb.set_style(index_progress_style());
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
         pb.set_message("Parsing files...");
 
@@ -1980,12 +1977,7 @@ impl IndexBuilder {
         self.ensure_model_created(new_units.len())?;
 
         let pb = ProgressBar::new(new_units.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                .unwrap()
-                .progress_chars("█▓░"),
-        );
+        pb.set_style(index_progress_style());
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
         pb.set_message("Encoding...");
 
@@ -2210,12 +2202,7 @@ impl IndexBuilder {
         // Parse the remaining files (cheap relative to embedding) and build the call graph
         // over them so `called_by` is populated for this build's units.
         let pb = ProgressBar::new(todo.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
-                .unwrap()
-                .progress_chars("█▓░"),
-        );
+        pb.set_style(index_progress_style());
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
         pb.set_message("Parsing files...");
 
@@ -2304,12 +2291,7 @@ impl IndexBuilder {
             BUILD_CHECKPOINT_UNITS
         };
         let encode_pb = ProgressBar::new(total_units as u64);
-        encode_pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                .unwrap()
-                .progress_chars("█▓░"),
-        );
+        encode_pb.set_style(index_progress_style());
         encode_pb.enable_steady_tick(std::time::Duration::from_millis(100));
         encode_pb.set_message("Encoding...");
 
@@ -2448,12 +2430,7 @@ impl IndexBuilder {
 
         // Progress bar for parsing files
         let pb = ProgressBar::new(files.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
-                .unwrap()
-                .progress_chars("█▓░"),
-        );
+        pb.set_style(index_progress_style());
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
         pb.set_message("Parsing files...");
 
@@ -2684,12 +2661,7 @@ impl IndexBuilder {
         // Progress bar for parsing (only if there are files to index)
         let pb = if !files_to_index.is_empty() {
             let pb = ProgressBar::new(files_to_index.len() as u64);
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
-                    .unwrap()
-                    .progress_chars("█▓░"),
-            );
+            pb.set_style(index_progress_style());
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb.set_message("Parsing files...");
             Some(pb)
@@ -2753,12 +2725,7 @@ impl IndexBuilder {
 
             // Progress bar for encoding
             let pb = ProgressBar::new(new_units.len() as u64);
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                    .unwrap()
-                    .progress_chars("█▓░"),
-            );
+            pb.set_style(index_progress_style());
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb.set_message("Encoding...");
 
@@ -2841,11 +2808,95 @@ fn scan_project_files(
 ) -> (Vec<PathBuf>, usize) {
     let mut files = Vec::new();
     let mut skipped = 0;
+    for walker in project_walks(
+        project_root,
+        extra_ignore,
+        force_include,
+        force_include_dirs,
+    ) {
+        for entry in walker.filter_map(|e| e.ok()) {
+            match indexable_file(project_root, &entry) {
+                Scanned::File(rel, lang) => {
+                    if languages.map(|ls| ls.contains(&lang)).unwrap_or(true) {
+                        files.push(rel);
+                    }
+                }
+                Scanned::Skipped => skipped += 1,
+                Scanned::NotIndexable => {}
+            }
+        }
+    }
 
+    // A covered subtree the main walk later reaches again (e.g. its .gitignore
+    // entry was removed) would otherwise be collected twice.
+    let mut seen = HashSet::new();
+    files.retain(|f| seen.insert(f.clone()));
+
+    (files, skipped)
+}
+
+/// How many code units indexing `project_root` would produce, counted up to `limit`
+/// within `budget`: `Some(n)` with `n <= limit`, or `None` when the budget ran out
+/// first (callers should treat that as "large").
+///
+/// Files are walked and parsed exactly as indexing does them, in parallel batches,
+/// stopping as soon as `limit` units are counted: the cost is bounded by `limit` and
+/// `budget`, never by the size of the repository.
+pub fn count_units_up_to(project_root: &Path, limit: usize, budget: Duration) -> Option<usize> {
+    const BATCH: usize = 128;
+    let deadline = Instant::now() + budget;
+    let config = crate::config::Config::load().unwrap_or_default();
+    let mut seen = HashSet::new();
+    let mut batch: Vec<(PathBuf, Language)> = Vec::with_capacity(BATCH);
+    let mut units = 0usize;
+    let count = |batch: &[(PathBuf, Language)]| -> usize {
+        batch
+            .par_iter()
+            .filter_map(|(rel, lang)| {
+                let source = std::fs::read_to_string(project_root.join(rel)).ok()?;
+                Some(extract_units(rel, &source, *lang).len())
+            })
+            .sum()
+    };
+    let walks = project_walks(
+        project_root,
+        &config.extra_ignore,
+        &config.force_include,
+        &config.force_include_dirs_for(project_root),
+    );
+    for entry in walks.into_iter().flatten().filter_map(Result::ok) {
+        if Instant::now() > deadline {
+            return None;
+        }
+        if let Scanned::File(rel, lang) = indexable_file(project_root, &entry) {
+            if seen.insert(rel.clone()) {
+                batch.push((rel, lang));
+            }
+        }
+        if batch.len() == BATCH {
+            units += count(&batch);
+            batch.clear();
+            if units >= limit {
+                return Some(limit);
+            }
+        }
+    }
+    units += count(&batch);
+    (Instant::now() <= deadline).then_some(units.min(limit))
+}
+
+/// The walks that make up a project scan: the project root, then each covered
+/// subtree (`colgrep init` on a directory the main walk's rules exclude).
+fn project_walks(
+    project_root: &Path,
+    extra_ignore: &[String],
+    force_include: &[String],
+    force_include_dirs: &[PathBuf],
+) -> Vec<ignore::Walk> {
     let root = project_root.to_path_buf();
     let extra = extra_ignore.to_vec();
     let force = force_include.to_vec();
-    let walker = WalkBuilder::new(project_root)
+    let mut walks = vec![WalkBuilder::new(project_root)
         .hidden(false) // Handle hidden files manually in should_ignore (with .github exception)
         .git_ignore(true)
         .follow_links(false) // Explicitly prevent symlink traversal outside project
@@ -2859,8 +2910,7 @@ fn scan_project_files(
                 Err(_) => !should_ignore(entry.path(), &extra, &force), // fallback (shouldn't happen)
             }
         })
-        .build();
-    collect_scanned_files(project_root, walker, languages, &mut files, &mut skipped);
+        .build()];
 
     for covered in force_include_dirs {
         let sub_root = project_root.join(covered);
@@ -2876,61 +2926,41 @@ fn scan_project_files(
             Ok(rel) => !should_ignore(rel, &extra, &force),
             Err(_) => false,
         });
-        collect_scanned_files(
-            project_root,
-            builder.build(),
-            languages,
-            &mut files,
-            &mut skipped,
-        );
+        walks.push(builder.build());
     }
-
-    // A covered subtree the main walk later reaches again (e.g. its .gitignore
-    // entry was removed) would otherwise be collected twice.
-    let mut seen = HashSet::new();
-    files.retain(|f| seen.insert(f.clone()));
-
-    (files, skipped)
+    walks
 }
 
-/// Collect indexable files yielded by `walker` into `files` as paths relative
-/// to `project_root` (which for covered-subtree walks is an ancestor of the
-/// walker's own root).
-fn collect_scanned_files(
-    project_root: &Path,
-    walker: ignore::Walk,
-    languages: Option<&[Language]>,
-    files: &mut Vec<PathBuf>,
-    skipped: &mut usize,
-) {
-    for entry in walker.filter_map(|e| e.ok()) {
-        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            continue;
+/// What a scan makes of one walked entry.
+enum Scanned {
+    /// An indexable file: its path relative to the project root, and its language.
+    File(PathBuf, Language),
+    /// A file left out on purpose (too large, or escaping the project root).
+    Skipped,
+    /// A directory, or a file colgrep does not index.
+    NotIndexable,
+}
+
+/// Classify a walked entry. `project_root` may be an ancestor of the walk's own
+/// root (covered-subtree walks).
+fn indexable_file(project_root: &Path, entry: &ignore::DirEntry) -> Scanned {
+    if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+        return Scanned::NotIndexable;
+    }
+    let path = entry.path();
+    if is_file_too_large(path) {
+        return Scanned::Skipped;
+    }
+    let Some(lang) = detect_language(path) else {
+        return Scanned::NotIndexable;
+    };
+    match path.strip_prefix(project_root) {
+        // Verify the file is truly within the project root (handles symlink escapes)
+        Ok(rel) if is_within_project_root(project_root, rel) => {
+            Scanned::File(rel.to_path_buf(), lang)
         }
-
-        let path = entry.path();
-
-        // Skip files that are too large
-        if is_file_too_large(path) {
-            *skipped += 1;
-            continue;
-        }
-
-        let lang = match detect_language(path) {
-            Some(l) => l,
-            None => continue,
-        };
-
-        if languages.map(|ls| ls.contains(&lang)).unwrap_or(true) {
-            if let Ok(rel_path) = path.strip_prefix(project_root) {
-                // Verify the file is truly within the project root (handles symlink escapes)
-                if is_within_project_root(project_root, rel_path) {
-                    files.push(rel_path.to_path_buf());
-                } else {
-                    *skipped += 1;
-                }
-            }
-        }
+        Ok(_) => Scanned::Skipped,
+        Err(_) => Scanned::NotIndexable,
     }
 }
 
@@ -3359,12 +3389,7 @@ impl IndexBuilder {
         // Progress bar for encoding
         let pb = if show_progress {
             let pb = ProgressBar::new(units.len() as u64);
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
-                    .unwrap()
-                    .progress_chars("█▓░"),
-            );
+            pb.set_style(index_progress_style());
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
             pb.set_message("Encoding...");
             Some(pb)
@@ -4701,6 +4726,13 @@ fn collapse_by_file(results: Vec<SearchResult>, top_k: usize) -> Vec<SearchResul
         }
     }
     out
+}
+
+/// The indexing progress bar: just the bar and the count, cleared when indexing is done.
+fn index_progress_style() -> ProgressStyle {
+    ProgressStyle::with_template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len}")
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .progress_chars("█▓░")
 }
 
 /// SQLite stores booleans as integers and arrays as JSON strings. Normalize
@@ -6382,5 +6414,43 @@ mod tests {
             &[],
             &[]
         ));
+    }
+}
+
+#[cfg(test)]
+mod count_units_tests {
+    use super::count_units_up_to;
+    use std::time::Duration;
+
+    fn project(functions_per_file: usize, files: usize) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let body: String = (0..functions_per_file)
+            .map(|i| format!("def f{i}(x):\n    return x + {i}\n\n"))
+            .collect();
+        for f in 0..files {
+            std::fs::write(dir.path().join(format!("m{f}.py")), &body).unwrap();
+        }
+        std::fs::write(dir.path().join("notes.bin"), [0u8; 16]).unwrap();
+        dir
+    }
+
+    #[test]
+    fn counts_units_like_indexing() {
+        let dir = project(3, 2);
+        let n = count_units_up_to(dir.path(), 1000, Duration::from_secs(30));
+        assert_eq!(n, Some(6));
+    }
+
+    #[test]
+    fn stops_at_the_limit() {
+        let dir = project(50, 40);
+        let n = count_units_up_to(dir.path(), 100, Duration::from_secs(30));
+        assert_eq!(n, Some(100));
+    }
+
+    #[test]
+    fn gives_up_when_the_budget_runs_out() {
+        let dir = project(3, 2);
+        assert_eq!(count_units_up_to(dir.path(), 1000, Duration::ZERO), None);
     }
 }

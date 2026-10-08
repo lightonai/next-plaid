@@ -168,6 +168,11 @@ jobs:
             *x86_64-unknown-linux*)
               FEATURES='features = ["mkl", "cuda"]'
               ;;
+            *aarch64-unknown-linux*)
+              # No MKL on ARM and no CUDA build of ONNX Runtime for linux-aarch64:
+              # default features. The agent still uses the GPU (llama-server, Vulkan).
+              FEATURES=""
+              ;;
             *x86_64-pc-windows*)
               FEATURES='features = ["directml"]'
               ;;
@@ -342,6 +347,11 @@ jobs:
         run: sleep 30
       - name: Publish next-plaid-onnx
         run: cargo publish -p next-plaid-onnx --no-verify
+        continue-on-error: true # May already be published
+      - name: Wait for crates.io index
+        run: sleep 30
+      - name: Publish colgrep-agent
+        run: cargo publish -p colgrep-agent --no-verify
         continue-on-error: true # May already be published
       - name: Wait for crates.io index
         run: sleep 30

@@ -12,7 +12,7 @@
 </div>
 
 <p align="center">
-  <img width="680" src="docs/colgrep-demo.gif" alt="ColGREP demo"/>
+  <img width="820" src="docs/colgrep-demo.gif" alt="ColGREP demo"/>
 </p>
 
 ---
@@ -27,11 +27,13 @@ Install:
 
 ```bash
 # Homebrew (macOS / Linux)
-brew install lightonai/tap/colgrep
+brew install lightonai/tap/colgrep && colgrep --install-agent
 
 # Shell installer
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh && "${CARGO_HOME:-$HOME/.cargo}/bin/colgrep" --install-agent
 ```
+
+`colgrep --install-agent` downloads the local model behind agent mode (one-time, 2.5 GB): a small model that explores your codebase like a sub-agent and returns the code locations that answer a question. To install colgrep alone, drop the `&& …` part; you can run `colgrep --install-agent` later.
 
 Build the index:
 
@@ -44,6 +46,12 @@ Search:
 
 ```bash
 colgrep "database connection pooling"
+```
+
+Or ask the agent: it searches with colgrep, reads the candidates, and returns the exact lines that answer the question (after `colgrep --install-agent`):
+
+```bash
+colgrep --agent "where is the database connection pool configured"
 ```
 
 That's it. No server, no API, no dependencies. ColGREP is a single Rust binary with everything baked in. `colgrep init` builds the index for the first time. After that, every search detects file changes and updates the index automatically before returning results.
@@ -115,6 +123,38 @@ flowchart TD
     style F1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
 ```
 
+**Agent mode.** Your coding agent (Claude, GPT, Gemini, …) can call `colgrep` itself, or hand the whole question to `colgrep --agent`: a small search model that runs on your machine, calls colgrep as many times as it needs, reads the candidates, and returns only the lines that answer. The large model gets the answer without spending its context on the search.
+
+```mermaid
+flowchart TD
+    L["Coding agent · Claude, GPT, Gemini, …"]
+    A["colgrep --agent · 2B search model"]
+    S["colgrep"]
+    M["LateOn-Code-edge · 17M"]
+    I["NextPlaid index"]
+
+    L -->|"delegates a question"| A
+    L -->|"or searches directly"| S
+    A -->|"many searches and reads"| S
+    S --> M
+    M --> I
+    A -. "file:line locations" .-> L
+
+    L -.- L1["Plans, edits, reviews · large model, any provider"]
+    A -.- A1["Searches, reads files read-only, picks the exact lines
+runs locally on GPU or CPU"]
+    M -.- M1["Multi-vector embedding per code unit · runs on CPU"]
+
+    style L fill:#4a90d9,stroke:#357abd,color:#fff
+    style A fill:#9b59b6,stroke:#8445a0,color:#fff
+    style S fill:#50b86c,stroke:#3d9956,color:#fff
+    style M fill:#e8913a,stroke:#d07a2e,color:#fff
+    style I fill:#e8913a,stroke:#d07a2e,color:#fff
+    style L1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+    style A1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+    style M1 fill:none,stroke:#888,stroke-dasharray:5 5,color:#888
+```
+
 **What the model sees.** Each code unit is converted to structured text before embedding:
 
 ```python
@@ -182,18 +222,18 @@ A local-first multi-vector database with a REST API. It's what powers ColGREP un
 
 ```bash
 # CPU
-docker pull ghcr.io/lightonai/next-plaid:cpu-1.7.0
+docker pull ghcr.io/lightonai/next-plaid:cpu-1.8.0
 docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cpu-1.7.0 \
+  ghcr.io/lightonai/next-plaid:cpu-1.8.0 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/answerai-colbert-small-v1-onnx --int8
 ```
 
 ```bash
 # GPU
-docker pull ghcr.io/lightonai/next-plaid:cuda-1.7.0
+docker pull ghcr.io/lightonai/next-plaid:cuda-1.8.0
 docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cuda-1.7.0 \
+  ghcr.io/lightonai/next-plaid:cuda-1.8.0 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/GTE-ModernColBERT-v1 --cuda
 ```

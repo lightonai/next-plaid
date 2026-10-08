@@ -403,6 +403,16 @@ fn print_install_success() {
     println!("    • Subsequent searches use the cached index");
     println!("    • Index updates automatically when files change");
     println!();
+    let agent = crate::Config::load().map(|c| c.agent).unwrap_or_default();
+    if !colgrep_agent::engine::agent_ready(&agent) {
+        println!("  {}", "Optional:".cyan().bold());
+        println!(
+            "    {}  lets Claude delegate open-ended searches to colgrep's local agent",
+            "colgrep --install-agent".green()
+        );
+        println!("    (one-time 2.5 GB model download)");
+        println!();
+    }
     println!("  {}", "To uninstall:".cyan().bold());
     println!("    {}", "colgrep --uninstall-claude-code".green());
     println!();

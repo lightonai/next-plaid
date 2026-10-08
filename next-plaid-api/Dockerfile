@@ -89,6 +89,9 @@ COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
 COPY colgrep ./colgrep
+# Workspace members cargo must resolve, though next-plaid-api does not build them.
+COPY agent ./agent
+COPY vendor ./vendor
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -102,6 +105,8 @@ RUN if [ "$(uname -m)" = "x86_64" ]; then echo "mkl" > /tmp/blas_feature; else e
 
 # Build dependencies first (this layer is cached if recipe.json doesn't change)
 COPY --from=planner-cpu /app/recipe.json recipe.json
+# [patch.crates-io] points here; cargo chef's skeleton does not include it.
+COPY vendor ./vendor
 RUN cargo chef cook --release --recipe-path recipe.json --package next-plaid-api --features "$(cat /tmp/blas_feature),model"
 
 # Now build the actual application
@@ -110,6 +115,9 @@ COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
 COPY colgrep ./colgrep
+# Workspace members cargo must resolve, though next-plaid-api does not build them.
+COPY agent ./agent
+COPY vendor ./vendor
 
 RUN cargo build --release --package next-plaid-api --features "$(cat /tmp/blas_feature),model"
 
@@ -155,6 +163,9 @@ COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
 COPY colgrep ./colgrep
+# Workspace members cargo must resolve, though next-plaid-api does not build them.
+COPY agent ./agent
+COPY vendor ./vendor
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -165,6 +176,8 @@ FROM chef-cuda AS builder-cuda
 
 # Build dependencies first (this layer is cached if recipe.json doesn't change)
 COPY --from=planner-cuda /app/recipe.json recipe.json
+# [patch.crates-io] points here; cargo chef's skeleton does not include it.
+COPY vendor ./vendor
 RUN cargo chef cook --release --recipe-path recipe.json --package next-plaid-api --features "openblas,cuda"
 
 # Now build the actual application
@@ -173,6 +186,9 @@ COPY next-plaid ./next-plaid
 COPY next-plaid-api ./next-plaid-api
 COPY next-plaid-onnx ./next-plaid-onnx
 COPY colgrep ./colgrep
+# Workspace members cargo must resolve, though next-plaid-api does not build them.
+COPY agent ./agent
+COPY vendor ./vendor
 
 RUN cargo build --release --package next-plaid-api --features "openblas,cuda"
 

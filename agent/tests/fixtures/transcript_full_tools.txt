@@ -1,0 +1,93 @@
+<s><|im_start|>system
+You are a code-search agent. Given a software problem statement, find the exact code locations — files and line ranges — a developer must read and edit to solve it. This is a RETRIEVAL task: locate the relevant context; do NOT write a fix.
+
+Follow this method:
+• Start broad: use semantic search to survey the codebase and identify candidate files related to the problem.
+• Narrow down: refine searches with path scopes, file-type filters, or regex pre-filters to isolate the most relevant code.
+• Read and verify: open promising files and read the exact lines to confirm they are the right locations.
+• Iterate: if results are too broad or off-target, reformulate your query from a different angle and search again.
+
+You MUST search the repository before answering. Never answer from prior knowledge.
+
+### Finishing
+When you have identified the relevant locations, you MUST use the `finish` tool to submit your answer. Do NOT simply reply with text — call the tool.
+The `finish` tool expects a `locations` list; each entry is a string:
+- `path/to/file:START-END` (repository-relative path; inclusive, 1-based lines)
+START must be positive and no greater than END. Use START-END even for one line.
+Submit the exact relevant lines you verified, with separate ranges for disjoint regions. Every entry must include a line range.
+Call `finish` once when done. Do not keep searching after you know the answer.
+
+# Tools
+
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{"type": "function", "function": {"name": "colgrep", "description": "Search repository code with query alone (semantic search), pattern alone (lexical regex search), or query + pattern (semantic search with regex filtering).", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Optional natural-language query, e.g. \"where session token expiry is validated\"."}, "k": {"type": "integer", "description": "Number of results to return (default 10, max 25)."}, "path": {"type": "string", "description": "Optional subdirectory or file to scope the search."}, "include": {"type": "string", "description": "Optional file glob, e.g. \"*.py\"."}, "pattern": {"type": "string", "description": "Optional grep-style regex (colgrep -e). Use with `query` for semantic search with regex filtering, or without `query` for lexical search only. Use for exact names, numbers, or rare terms, e.g. \"Art Deco|South Beach\". Case-insensitive; if it matches nothing, retry without it."}, "command": {"type": "string", "description": "Alternative: a full colgrep CLI string."}}, "required": []}}}
+{"type": "function", "function": {"name": "terminal", "description": "Run one read-only shell command (ls/cd/cat/head/tail/pwd/grep/find/…). Use colgrep for semantic search.", "parameters": {"type": "object", "properties": {"command": {"type": "string", "description": "One shell command."}}, "required": ["command"]}}}
+{"type": "function", "function": {"name": "finish", "description": "Submit your final answer: the code locations a developer must read and edit. Call this once, when you are done searching. Each location is a string 'path/to/file:START-END': a repository-relative file path and inclusive, 1-based line range (START <= END). Use the exact relevant lines you verified; list separate ranges for disjoint regions.", "parameters": {"type": "object", "properties": {"locations": {"type": "array", "items": {"type": "string", "pattern": "^[^:\\n]+:[1-9][0-9]*-[1-9][0-9]*$"}, "description": "Relevant file:START-END ranges, most important first."}}, "required": ["locations"]}}}
+</tools>
+
+Tool usage guidelines:
+- You may call zero or more functions. If no function calls are needed, just answer normally and do not include any <function ... </function>.
+- When calling a function, return an XML object within <function ... </function> using:
+<function name="function-name"><param name="param-name">param-value</param></function>
+- param-value may be multi-line. If it contains <, & or newline characters, wrap it in a CDATA block: <param name="param-name"><![CDATA[...multi-line value...]]></param><|im_end|>
+<|im_start|>user
+Problem statement:
+Sessions never expire — café ünïcode
+
+You are at the repository root. Top-level contents:
+src/  README.md
+
+Find the code locations relevant to this problem.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+<function name="colgrep"><param name="query">session token expiry check</param><param name="k">10</param></function>
+<function name="colgrep"><param name="query">expire</param><param name="pattern">expir(e|y)</param><param name="include">*.py</param></function><|im_end|>
+<|im_start|>user
+<tool_response>
+$ colgrep 'session token expiry check' -k 10
+[1] src/auth.py:1-2  (function check)
+      def check():
+          pass
+
+[This is the output of turn 1 (10 turn limit).]
+</tool_response>
+<tool_response>
+$ colgrep expire --include '*.py' -e 'expir(e|y)'
+(no results — try a broader or differently-worded query)
+
+[This is the output of turn 1 (10 turn limit).]
+</tool_response><|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+Let me read it.
+<function name="terminal"><param name="command"><![CDATA[sed -n '1,5p' src/auth.py && grep -n "x<y" src/a.py]]></param></function><|im_end|>
+<|im_start|>user
+<tool_response>
+$ sed -n '1,5p' src/auth.py
+def check():
+
+[This is the output of turn 2 (10 turn limit).]
+</tool_response><|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+src/auth.py:1-2<|im_end|>
+<|im_start|>user
+That was not a valid action. Either call a tool with a command, or submit via finish / <answer>.
+(Attempt 1/3)<|im_end|>
+<|im_start|>user
+This is your final turn. Call finish now with your best file:START-END locations based on the evidence already gathered. Do not search further.<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+

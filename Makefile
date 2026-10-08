@@ -50,22 +50,47 @@ ci: ci-index ci-api ci-onnx ci-cli lint-python
 	@echo "All CI checks passed!"
 
 # Run quick CI checks (no integration tests) - used by pre-commit hook
-ci-quick:
+# Quick checks, one target per crate (the pre-commit hook runs only the ones the
+# staged files can affect, see scripts/pre-commit)
+QUICK_CHECKS = check-next-plaid check-next-plaid-api check-next-plaid-onnx check-onnx-python \
+	check-agent check-colgrep check-docs-python check-colgrep-python
+.PHONY: ci-quick $(QUICK_CHECKS)
+
+ci-quick: $(QUICK_CHECKS)
+	@echo "All quick CI checks passed!"
+
+check-next-plaid:
 	cd next-plaid && cargo fmt --all -- --check
 	cd next-plaid && cargo clippy --all-targets -- -D warnings
 	cd next-plaid && cargo test --lib
+
+check-next-plaid-api:
 	cd next-plaid-api && cargo fmt --all -- --check
 	cd next-plaid-api && cargo clippy --all-targets -- -D warnings
+
+check-next-plaid-onnx:
 	cd next-plaid-onnx && cargo fmt --all -- --check
 	cd next-plaid-onnx && cargo clippy --all-targets -- -D warnings
 	cd next-plaid-onnx && cargo test --lib
+
+check-onnx-python:
 	cd next-plaid-onnx/python && uv run --extra dev ruff check .
+
+check-agent:
+	cd agent && cargo fmt -- --check
+	cd agent && cargo clippy --all-targets -- -D warnings
+	cd agent && cargo test --lib
+
+check-colgrep:
 	cd colgrep && cargo fmt --all -- --check
 	cd colgrep && cargo clippy --all-targets -- -D warnings
 	cd colgrep && cargo test --lib
+
+check-docs-python:
 	cd docs/benchmarks && uv run --extra dev ruff check .
+
+check-colgrep-python:
 	cd colgrep/python-sdk && uv run --extra dev ruff check python/
-	@echo "All quick CI checks passed!"
 
 # Kill any existing API process on port 8080
 kill-api:
@@ -232,6 +257,9 @@ endif
 	@# Update path dependency versions in colgrep/Cargo.toml
 	@sed -i 's/next-plaid = { path = "..\/next-plaid", version = "[^"]*"/next-plaid = { path = "..\/next-plaid", version = "$(VERSION)"/' colgrep/Cargo.toml
 	@sed -i 's/next-plaid-onnx = { path = "..\/next-plaid-onnx", version = "[^"]*"/next-plaid-onnx = { path = "..\/next-plaid-onnx", version = "$(VERSION)"/' colgrep/Cargo.toml
+	@# The agent crate (agent/) inherits the workspace version; colgrep's pin on it follows
+	@sed -i 's/colgrep-agent = { path = "..\/agent", version = "[^"]*"/colgrep-agent = { path = "..\/agent", version = "$(VERSION)"/' colgrep/Cargo.toml
+	@grep -q 'version.workspace = true' agent/Cargo.toml || { echo "agent/Cargo.toml must use version.workspace = true"; exit 1; }
 	@echo "  ✓ Updated path dependencies in colgrep/Cargo.toml"
 	@# Update Claude plugin versions
 	@sed -i 's/"version": "[^"]*"/"version": "$(VERSION)"/' colgrep/src/install/plugin.json
@@ -280,7 +308,8 @@ endif
 	@echo ""
 	@echo "Version bumped to $(VERSION). Files updated:"
 	@echo "  - Cargo.toml (workspace version)"
-	@echo "  - colgrep/Cargo.toml (path dependencies)"
+	@echo "  - colgrep/Cargo.toml (path dependencies, incl. colgrep-agent)"
+	@echo "  - agent/Cargo.toml (inherits the workspace version)"
 	@echo "  - colgrep/src/install/{plugin,marketplace}.json"
 	@echo "  - colgrep/python-sdk/{Cargo.toml,pyproject.toml,__init__.py}"
 	@echo "  - .claude-plugin/marketplace.json"

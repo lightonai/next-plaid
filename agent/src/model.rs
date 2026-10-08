@@ -1,0 +1,96 @@
+//! Locate the agent's model weights: a local file, a local directory, or a HuggingFace
+//! repository (downloaded once into the shared HF cache).
+
+use std::path::{Path, PathBuf};
+
+use hf_hub::api::sync::ApiBuilder;
+
+use crate::config::{expand_home, AgentSettings};
+
+/// The GGUF file the settings point at, downloading it when it lives on the Hub (with a
+/// progress bar on stderr when `progress` is set).
+///
+/// `model` may be a `.gguf` file, a directory holding `model_file`, or a repo id.
+/// Private repos use the same token lookup as colgrep's encoder download:
+/// `HF_TOKEN` > `HUGGING_FACE_HUB_TOKEN` > the HF token file.
+pub fn resolve_model_file(settings: &AgentSettings, progress: bool) -> Result<PathBuf, String> {
+    let model = settings.model();
+    let file = settings.model_file();
+    let local = expand_home(model);
+    if local.is_file() {
+        return Ok(local);
+    }
+    if local.is_dir() {
+        let p = local.join(file);
+        return if p.is_file() {
+            Ok(p)
+        } else {
+            Err(format!(
+                "{} not found in {} (set it with `colgrep settings --agent-model-file NAME`)",
+                file,
+                local.display()
+            ))
+        };
+    }
+    if looks_like_local_path(model) {
+        return Err(format!("agent model path does not exist: {model}"));
+    }
+    if let Some(path) = installed_model_file(settings) {
+        return Ok(path);
+    }
+    let api = hub_api_builder()
+        .with_progress(false)
+        .build()
+        .map_err(|e| format!("HuggingFace client: {e}"))?;
+    let repo = api.model(model.to_string());
+    repo.download_with_progress(file, crate::progress::HubProgress::new(progress))
+        .map_err(|e| {
+            format!(
+                "could not fetch {file} from {model}: {e}\n\
+             For a private repo, set HF_TOKEN. To use another file or model: \
+             `colgrep settings --agent-model-file NAME` / `--agent-model REPO_OR_PATH`."
+            )
+        })
+}
+
+/// The model file when it is already on disk (a local path, or the Hugging Face
+/// cache), without touching the network: cheap enough for a session-start hook.
+pub fn installed_model_file(settings: &AgentSettings) -> Option<PathBuf> {
+    let model = settings.model();
+    let file = settings.model_file();
+    let local = expand_home(model);
+    if local.is_file() {
+        return Some(local);
+    }
+    if local.is_dir() {
+        return Some(local.join(file)).filter(|p| p.is_file());
+    }
+    if looks_like_local_path(model) {
+        return None;
+    }
+    hf_hub::Cache::from_env().model(model.to_string()).get(file)
+}
+
+/// A Hugging Face client configured from the environment, with the token from
+/// `HF_TOKEN`, then `HUGGING_FACE_HUB_TOKEN`, then the HF token file (`$HF_HOME/token`).
+/// Shared by the agent model and colgrep's encoder download.
+pub fn hub_api_builder() -> ApiBuilder {
+    let builder = ApiBuilder::from_env(); // reads the token file
+    let token = std::env::var("HF_TOKEN")
+        .or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
+        .ok()
+        .map(|t| t.trim_matches('"').trim_matches('\'').to_string());
+    match token {
+        Some(t) => builder.with_token(Some(t)),
+        None => builder,
+    }
+}
+
+/// Whether `s` names a local path (as opposed to a Hugging Face repo id).
+pub fn looks_like_local_path(s: &str) -> bool {
+    s.starts_with('.')
+        || s.starts_with('/')
+        || s.starts_with('~')
+        || s.ends_with(".gguf")
+        || Path::new(s).components().count() > 2
+}

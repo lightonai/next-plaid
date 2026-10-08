@@ -928,10 +928,9 @@ pub fn decode_b64_embeddings(b64: &str, shape: [usize; 2]) -> Result<Vec<f32>, S
             bytes.len()
         ));
     }
-    let floats: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
+    // The length was checked above, so there is no remainder.
+    let (chunks, _) = bytes.as_chunks::<4>();
+    let floats: Vec<f32> = chunks.iter().map(|c| f32::from_le_bytes(*c)).collect();
     if let Some((index, value)) = floats
         .iter()
         .copied()

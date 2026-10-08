@@ -25,7 +25,7 @@ pub use index::paths::{
 };
 pub use index::state::IndexState;
 pub use index::{
-    bre_to_ere, escape_literal_braces, index_exists, path_contains_ignored_dir,
+    bre_to_ere, count_units_up_to, escape_literal_braces, index_exists, path_contains_ignored_dir,
     scan_reaches_subdir, IndexBuilder, SearchResult, Searcher, UpdatePlan, UpdateStats,
     CONFIRMATION_THRESHOLD,
 };
@@ -44,6 +44,6 @@ pub use install::{
 
 // Signal handling
 pub use signal::{
-    check_interrupted, is_interrupted, is_interrupted_outside_critical, setup_signal_handler,
-    CriticalSectionGuard,
+    check_interrupted, exit_immediately_on_interrupt, is_interrupted,
+    is_interrupted_outside_critical, setup_signal_handler, CriticalSectionGuard,
 };

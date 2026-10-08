@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use crate::cli::AgentSettingsArgs;
 use colgrep::{
     ensure_model, ensure_onnx_runtime, Config, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MODEL,
     DEFAULT_POOL_FACTOR,
@@ -125,8 +126,17 @@ pub fn cmd_config(
     remove_force_include: Vec<String>,
     clear_ignore: bool,
     clear_force_include: bool,
+    agent: AgentSettingsArgs,
 ) -> Result<()> {
     let mut config = Config::load()?;
+
+    if !agent.is_empty() {
+        super::agent::apply_agent_settings(&mut config.agent, &agent)?;
+        config.save()?;
+        println!("✅ Agent settings updated");
+        println!();
+        super::agent::print_agent_settings(&config.agent);
+    }
 
     let has_ignore_changes = !add_ignore.is_empty()
         || !remove_ignore.is_empty()
@@ -158,6 +168,9 @@ pub fn cmd_config(
         && !no_binary
         && !has_ignore_changes
     {
+        if !agent.is_empty() {
+            return Ok(());
+        }
         println!("Current configuration:");
         println!();
 
@@ -281,6 +294,9 @@ pub fn cmd_config(
                 }
             }
         }
+
+        println!();
+        super::agent::print_agent_settings(&config.agent);
 
         println!();
         println!("Use --k or --n to set values. Use 0 to reset to default.");

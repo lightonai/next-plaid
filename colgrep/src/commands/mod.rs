@@ -1,3 +1,5 @@
+mod agent;
+mod agent_ui;
 mod clear;
 mod config;
 mod hooks;
@@ -7,6 +9,7 @@ mod stats;
 mod status;
 mod update;
 
+pub use agent::{cmd_agent, cmd_install_agent};
 pub use clear::cmd_clear;
 pub use config::{cmd_config, cmd_set_model};
 pub use hooks::{cmd_session_hook, cmd_task_hook};

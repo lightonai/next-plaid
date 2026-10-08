@@ -1,9 +1,10 @@
 [workspace]
-members = ["next-plaid", "next-plaid-api", "next-plaid-onnx", "colgrep"]
+members = ["next-plaid", "next-plaid-api", "next-plaid-onnx", "colgrep", "agent"]
+exclude = ["vendor"]
 resolver = "2"
 
 [workspace.package]
-version = "1.7.0"
+version = "1.8.0"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/lightonai/next-plaid"
@@ -55,18 +56,18 @@ Multi-vector database with REST API. Run with Docker:
 
 **CPU:**
 ```bash
-docker pull ghcr.io/lightonai/next-plaid:cpu-1.7.0
+docker pull ghcr.io/lightonai/next-plaid:cpu-1.8.0
 docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cpu-1.7.0 \
+  ghcr.io/lightonai/next-plaid:cpu-1.8.0 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/answerai-colbert-small-v1-onnx --int8
 ```
 
 **GPU (CUDA):**
 ```bash
-docker pull ghcr.io/lightonai/next-plaid:cuda-1.7.0
+docker pull ghcr.io/lightonai/next-plaid:cuda-1.8.0
 docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cuda-1.7.0 \
+  ghcr.io/lightonai/next-plaid:cuda-1.8.0 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/GTE-ModernColBERT-v1 --cuda
 ```
@@ -82,16 +83,32 @@ targets = [
   "aarch64-apple-darwin",
   "x86_64-apple-darwin",
   "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
   "x86_64-pc-windows-msvc",
 ]
 # Whether to install an updater program
 install-updater = false
+# Build every target on pull requests too (nothing is published), so a broken
+# platform shows up in review rather than on release day.
+pr-run-mode = "upload"
 
 # Custom runners for different targets
 [workspace.metadata.dist.github-custom-runners]
 aarch64-apple-darwin = "macos-14"
 x86_64-apple-darwin = "macos-15"
+aarch64-unknown-linux-gnu = "ubuntu-22.04-arm"
+
+# hf-hub uses native-tls: make sure every Linux runner (including the ARM one)
+# has the OpenSSL headers.
+[workspace.metadata.dist.dependencies.apt]
+libssl-dev = "*"
+pkg-config = "*"
 
 # Per-target features (coreml, accelerate) are injected in .github/workflows/release.yml
 # because cargo-dist doesn't support per-target features yet:
 # https://github.com/axodotdev/cargo-dist/issues/772
+
+# llama.cpp bindings with one ggml change: load pre-compiled Metal kernels from
+# GGML_METAL_LIB_DIR (see vendor/README.md). Remove once it is upstream.
+[patch.crates-io]
+llama-cpp-sys-2 = { path = "vendor/llama-cpp-sys-2" }

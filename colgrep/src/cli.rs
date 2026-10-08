@@ -39,6 +39,12 @@ EXAMPLES:
     # Output as JSON for scripting
     colgrep --json \"authentication\" | jq '.[] | .unit.file'
 
+    # Let the agent find the code to change: a small local model searches with
+    # colgrep and reads files (read-only), then returns file:line ranges
+    colgrep --agent \"sessions never expire after logout\"
+    colgrep --agent \"crash when the config file is empty\" ./backend -c
+    colgrep --agent --json \"where are retries configured\"
+
     # Build or update index (without searching)
     colgrep init
     colgrep init ~/projects/myapp
@@ -262,6 +268,16 @@ EXAMPLES:
     # Show relative paths in search output (default, saves tokens for LLM usage)
     colgrep settings --relative-paths
 
+    # Agent (colgrep --agent): switch model, prompt, template or sampling
+    colgrep settings --agent-model lightonai/colgrep-default-minicpm5-2B
+    colgrep settings --agent-model ~/models/my-agent.gguf
+    colgrep settings --agent-prompt ./prompt.txt --agent-tools ./tools.json
+    colgrep settings --agent-temperature 0 --agent-max-turns 6
+    colgrep settings --agent-gpu-layers 0          # CPU only
+    colgrep settings --agent-endpoint http://localhost:8000/v1   # vLLM / llama-server
+    colgrep settings --agent-temperature default   # back to the default value
+    colgrep settings --agent-reset                 # every agent setting back to default
+
 NOTES:
     • Values are stored in ~/.config/colgrep/config.json
     • Use 0 to reset a value to its default
@@ -276,7 +292,8 @@ NOTES:
     • Force-include patterns override both built-in and extra ignore rules
     • Patterns match directory/file names (e.g., \".vscode\") or path prefixes (e.g., \"vendor/internal\")
     • Suffix patterns with * are supported (e.g., \"*.pb.go\")
-    • Use --relative-paths to display paths relative to the current directory (saves ~35% tokens for LLM usage)";
+    • Use --relative-paths to display paths relative to the current directory (saves ~35% tokens for LLM usage)
+    • Agent settings take `default` to unset a value; the defaults reproduce the trained harness exactly";
 
 #[derive(Parser)]
 #[command(
@@ -430,6 +447,10 @@ pub struct Cli {
     #[arg(long = "uninstall-kimi")]
     pub uninstall_kimi: bool,
 
+    /// Download the local model behind `colgrep --agent` (~2.5 GB, once) and check it loads
+    #[arg(long = "install-agent")]
+    pub install_agent: bool,
+
     /// Completely uninstall colgrep: remove from all AI tools, clear all indexes, and remove all data
     #[arg(long = "uninstall")]
     pub uninstall: bool,
@@ -458,6 +479,35 @@ pub struct Cli {
     #[arg(long = "no-update")]
     pub no_update: bool,
 
+    /// Answer QUERY with the code-localization agent: a small local model searches the
+    /// repository with colgrep and reads files (read-only), then returns the relevant
+    /// locations. Configure it with `colgrep settings --agent-*`.
+    ///
+    /// The agent picks its own searches: search-only options are rejected rather than
+    /// silently ignored.
+    #[arg(
+        long = "agent",
+        conflicts_with_all = [
+            "top_k",
+            "include_patterns",
+            "exclude_patterns",
+            "exclude_dirs",
+            "text_pattern",
+            "extended_regexp",
+            "fixed_strings",
+            "word_regexp",
+            "case_sensitive",
+            "code_only",
+            "no_fts",
+            "alpha",
+            "no_pool",
+            "pool_factor",
+            "stats",
+            "reset_stats",
+        ]
+    )]
+    pub agent: bool,
+
     /// When to colorize output and syntax highlighting: auto, always, or never.
     /// `never` emits plain text with no ANSI escape sequences (useful for agents/pipes).
     #[arg(
@@ -478,6 +528,8 @@ pub struct Cli {
 }
 
 #[derive(Subcommand)]
+// `Settings` carries every settings flag; the enum is parsed once per run.
+#[allow(clippy::large_enum_variant)]
 pub enum Commands {
     /// Search for code semantically (auto-indexes if needed)
     #[command(after_help = SEARCH_HELP)]
@@ -777,7 +829,112 @@ pub enum Commands {
         /// Clear all force-include patterns and directory registrations
         #[arg(long = "clear-force-include")]
         clear_force_include: bool,
+
+        #[command(flatten)]
+        agent: AgentSettingsArgs,
     },
+}
+
+/// `colgrep settings --agent-*`: configure the `--agent` model and harness.
+///
+/// Every value accepts `default` to go back to the built-in default.
+#[derive(clap::Args, Debug, Default, Clone, PartialEq)]
+pub struct AgentSettingsArgs {
+    /// Agent model: HuggingFace repo id, local .gguf file, or directory
+    #[arg(long = "agent-model", value_name = "REPO_OR_PATH")]
+    pub model: Option<String>,
+
+    /// GGUF file to use inside the agent model repo or directory
+    #[arg(long = "agent-model-file", value_name = "FILE")]
+    pub model_file: Option<String>,
+
+    /// Use an OpenAI-compatible server (vLLM, llama-server, ...) instead of local
+    /// inference, e.g. http://localhost:8000/v1
+    #[arg(long = "agent-endpoint", value_name = "URL")]
+    pub endpoint: Option<String>,
+
+    /// Model name to request from the agent endpoint (default: --agent-model)
+    #[arg(long = "agent-endpoint-model", value_name = "NAME")]
+    pub endpoint_model: Option<String>,
+
+    /// File with a custom agent system prompt
+    #[arg(long = "agent-prompt", value_name = "FILE")]
+    pub system_prompt_file: Option<String>,
+
+    /// JSON file with custom agent tool schemas (OpenAI function format)
+    #[arg(long = "agent-tools", value_name = "FILE")]
+    pub tools_file: Option<String>,
+
+    /// Jinja file replacing the model's chat template
+    #[arg(long = "agent-chat-template", value_name = "FILE")]
+    pub chat_template_file: Option<String>,
+
+    /// Turn budget per agent session (default 10)
+    #[arg(long = "agent-max-turns", value_name = "N")]
+    pub max_turns: Option<String>,
+
+    /// Hits per agent search when the model does not ask for a number (default 10)
+    #[arg(long = "agent-search-k", value_name = "N")]
+    pub search_k: Option<String>,
+
+    /// Max tokens generated per agent turn (default 2048)
+    #[arg(long = "agent-max-tokens", value_name = "N")]
+    pub max_tokens: Option<String>,
+
+    /// Sampling temperature (default 0.6; 0 = greedy)
+    #[arg(long = "agent-temperature", value_name = "FLOAT")]
+    pub temperature: Option<String>,
+
+    /// Nucleus sampling top-p (default 0.95)
+    #[arg(long = "agent-top-p", value_name = "FLOAT")]
+    pub top_p: Option<String>,
+
+    /// Top-k sampling (default 20; 0 disables)
+    #[arg(long = "agent-top-k", value_name = "N")]
+    pub top_k: Option<String>,
+
+    /// Sampling seed (default 0; runs are reproducible, change it for another sample)
+    #[arg(long = "agent-seed", value_name = "N")]
+    pub seed: Option<String>,
+
+    /// Context window in tokens (default 16384)
+    #[arg(long = "agent-context", value_name = "TOKENS")]
+    pub context_size: Option<String>,
+
+    /// CPU threads for local inference (default: auto)
+    #[arg(long = "agent-threads", value_name = "N")]
+    pub threads: Option<String>,
+
+    /// Model layers offloaded to the GPU (0 = CPU only; default: all when available)
+    #[arg(long = "agent-gpu-layers", value_name = "N")]
+    pub gpu_layers: Option<String>,
+
+    /// Local inference engine: auto, builtin (llama.cpp in colgrep, Apple Silicon) or
+    /// server (managed llama-server: CPU kernels for this machine, GPU when available)
+    #[arg(long = "agent-runtime", value_name = "auto|builtin|server")]
+    pub runtime: Option<String>,
+
+    /// Use your own llama-server binary (e.g. a CUDA build) instead of the downloaded one
+    #[arg(long = "agent-llama-server", value_name = "PATH")]
+    pub llama_server: Option<String>,
+
+    /// Let the model think before acting (on/off; the default model was trained off)
+    #[arg(long = "agent-thinking", value_name = "on|off")]
+    pub thinking: Option<String>,
+
+    /// Serve only `finish` on the last turn (on/off; default on, as trained)
+    #[arg(long = "agent-final-finish", value_name = "on|off")]
+    pub force_final_finish: Option<String>,
+
+    /// Reset every agent setting to its default
+    #[arg(long = "agent-reset")]
+    pub reset: bool,
+}
+
+impl AgentSettingsArgs {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 #[cfg(test)]

@@ -1,14 +1,50 @@
 #!/bin/sh
 #
-# Pre-commit hook that runs quick checks (no integration tests)
+# Pre-commit hook: quick checks (no integration tests) for what the staged changes
+# can affect, i.e. each changed crate plus the crates that depend on it.
 # To skip this hook, use: git commit --no-verify
-# To run full CI, use: make ci
+# To run every quick check, use: make ci-quick (full CI: make ci)
 #
 # Install this hook by running: make install-hooks
 
 set -e
 
-echo "Running pre-commit checks..."
-make ci-quick
+ALL="check-next-plaid check-next-plaid-api check-next-plaid-onnx check-onnx-python \
+check-agent check-colgrep check-docs-python check-colgrep-python"
 
-echo "All pre-commit checks passed!"
+targets=""
+add() {
+    for t in "$@"; do
+        case " $targets " in
+            *" $t "*) ;;
+            *) targets="$targets $t" ;;
+        esac
+    done
+}
+
+# Dependencies: next-plaid and next-plaid-onnx feed next-plaid-api and colgrep;
+# agent (built from vendor/) feeds colgrep.
+git diff --cached --name-only --diff-filter=ACMRD | {
+    while IFS= read -r f; do
+        case "$f" in
+            *.md) ;; # documentation only
+            next-plaid-onnx/python/*) add check-onnx-python ;;
+            next-plaid-onnx/*) add check-next-plaid-onnx check-next-plaid-api check-colgrep ;;
+            next-plaid-api/*) add check-next-plaid-api ;;
+            next-plaid/*) add check-next-plaid check-next-plaid-api check-colgrep ;;
+            agent/* | vendor/*) add check-agent check-colgrep ;;
+            colgrep/python-sdk/*) add check-colgrep-python ;;
+            colgrep/*) add check-colgrep ;;
+            docs/benchmarks/*) add check-docs-python ;;
+            Cargo.toml | Cargo.lock | Makefile | scripts/pre-commit | rust-toolchain*) add $ALL ;;
+        esac
+    done
+
+    if [ -z "$targets" ]; then
+        echo "Pre-commit: no code changes to check."
+        exit 0
+    fi
+    echo "Running pre-commit checks:$targets"
+    make $targets
+    echo "All pre-commit checks passed!"
+}

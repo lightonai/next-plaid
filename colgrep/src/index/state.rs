@@ -48,7 +48,7 @@ fn replace_state_file(tmp_path: &Path, state_path: &Path) -> std::io::Result<()>
 /// metadata schema). Bump ONLY for incompatible changes: a mismatch discards
 /// the index and re-embeds the entire project on the next run. Routine CLI
 /// releases must NOT bump this.
-pub const INDEX_FORMAT_VERSION: u32 = 2;
+pub const INDEX_FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IndexState {
