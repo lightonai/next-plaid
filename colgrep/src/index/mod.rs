@@ -360,6 +360,9 @@ struct ParsedFileResult {
     path: PathBuf,
     units: Vec<CodeUnit>,
     file_info: Option<FileInfo>,
+    /// The file is recorded as ignored; `skip_reason` says why when that is worth
+    /// telling (not for binary or non-UTF-8 files, which are expected and skipped quietly).
+    skipped: bool,
     skip_reason: Option<String>,
 }
 
@@ -1030,6 +1033,7 @@ fn parse_files_parallel(
                     path: path.clone(),
                     units: Vec::new(),
                     file_info: None,
+                    skipped: false,
                     skip_reason: None,
                 };
             }
@@ -1045,12 +1049,14 @@ fn parse_files_parallel(
                                     path: path.clone(),
                                     units,
                                     file_info: Some(file_info),
+                                    skipped: false,
                                     skip_reason: None,
                                 },
                                 Err(e) => ParsedFileResult {
                                     path: path.clone(),
                                     units: Vec::new(),
                                     file_info: None,
+                                    skipped: true,
                                     skip_reason: Some(format!(
                                         "Skipping {} ({})",
                                         full_path.display(),
@@ -1062,6 +1068,7 @@ fn parse_files_parallel(
                                 path: path.clone(),
                                 units: Vec::new(),
                                 file_info: None,
+                                skipped: true,
                                 skip_reason: Some(format!(
                                     "Skipping {} ({})",
                                     full_path.display(),
@@ -1074,13 +1081,18 @@ fn parse_files_parallel(
                         path: path.clone(),
                         units: Vec::new(),
                         file_info: None,
-                        skip_reason: Some(format!("Skipping {} ({})", full_path.display(), e)),
+                        skipped: true,
+                        // Binary or non-UTF-8 content under a source extension: expected,
+                        // skip quietly. Other read errors are worth a line.
+                        skip_reason: (e.kind() != std::io::ErrorKind::InvalidData)
+                            .then(|| format!("Skipping {} ({})", full_path.display(), e)),
                     },
                 },
                 None => ParsedFileResult {
                     path: path.clone(),
                     units: Vec::new(),
                     file_info: None,
+                    skipped: false,
                     skip_reason: None,
                 },
             };
@@ -1947,8 +1959,10 @@ impl IndexBuilder {
         pb.set_message("Parsing files...");
 
         for parsed in parse_files_parallel(&self.project_root, &files_to_index, Some(&pb)) {
-            if let Some(reason) = parsed.skip_reason {
-                eprintln!("⚠️  {}", reason);
+            if parsed.skipped {
+                if let Some(reason) = parsed.skip_reason {
+                    pb.suspend(|| eprintln!("⚠️  {}", reason));
+                }
                 new_state.ignored_files.insert(parsed.path);
                 continue;
             }
@@ -2209,8 +2223,10 @@ impl IndexBuilder {
         let mut all_units: Vec<CodeUnit> = Vec::new();
         let mut file_info: HashMap<PathBuf, FileInfo> = HashMap::new();
         for parsed in parse_files_parallel(&self.project_root, &todo, Some(&pb)) {
-            if let Some(reason) = parsed.skip_reason {
-                eprintln!("⚠️  {}", reason);
+            if parsed.skipped {
+                if let Some(reason) = parsed.skip_reason {
+                    pb.suspend(|| eprintln!("⚠️  {}", reason));
+                }
                 state.ignored_files.insert(parsed.path);
                 continue;
             }
@@ -2436,8 +2452,10 @@ impl IndexBuilder {
 
         // Extract units from all files
         for parsed in parse_files_parallel(&self.project_root, &files, Some(&pb)) {
-            if let Some(reason) = parsed.skip_reason {
-                eprintln!("⚠️  {}", reason);
+            if parsed.skipped {
+                if let Some(reason) = parsed.skip_reason {
+                    pb.suspend(|| eprintln!("⚠️  {}", reason));
+                }
                 state.ignored_files.insert(parsed.path);
                 continue;
             }

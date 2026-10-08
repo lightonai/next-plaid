@@ -377,7 +377,7 @@ dependencies = [
 
 [[package]]
 name = "colgrep"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "anyhow",
  "atty",
@@ -451,12 +451,15 @@ dependencies = [
 
 [[package]]
 name = "colgrep-agent"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "dirs 5.0.1",
  "flate2",
+ "getrandom 0.2.17",
  "globset",
  "hf-hub",
+ "ignore",
+ "indicatif",
  "libc",
  "llama-cpp-2",
  "minijinja",
@@ -478,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "colgrep-parser"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "colgrep",
  "pyo3",
@@ -1990,7 +1993,7 @@ dependencies = [
 
 [[package]]
 name = "next-plaid"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "byteorder",
  "fancy-regex",
@@ -2014,7 +2017,7 @@ dependencies = [
 
 [[package]]
 name = "next-plaid-onnx"
-version = "1.8.0"
+version = "1.8.1"
 dependencies = [
  "anyhow",
  "glob",

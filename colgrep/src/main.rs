@@ -88,6 +88,8 @@ fn main() -> Result<()> {
     };
     apply_acceleration_mode(acceleration_mode);
     apply_coreml_cache_dir();
+    // Before any work or prompt: this may re-exec the process (CUDA builds on Linux).
+    colgrep::prepare_cuda_library_path()?;
 
     // Handle global flags before subcommands
     if cli.install_agent {

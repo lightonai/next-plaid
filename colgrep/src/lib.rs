@@ -30,7 +30,7 @@ pub use index::{
     CONFIRMATION_THRESHOLD,
 };
 pub use model::{ensure_model, resolve_quantized, DEFAULT_MODEL};
-pub use onnx_runtime::{ensure_onnx_runtime, is_cudnn_available};
+pub use onnx_runtime::{ensure_onnx_runtime, is_cudnn_available, prepare_cuda_library_path};
 pub use parser::{
     build_call_graph, detect_language, extract_units, is_text_format, CodeUnit, Language, UnitType,
 };

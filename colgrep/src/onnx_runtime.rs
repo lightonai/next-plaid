@@ -47,21 +47,12 @@ const ORT_CACHE_SUBDIR: &str = "gpu";
 #[cfg(not(any(feature = "_cuda", feature = "directml")))]
 const ORT_CACHE_SUBDIR: &str = "cpu";
 
-/// Ensure ONNX Runtime is available.
-/// Sets ORT_DYLIB_PATH if found or downloaded.
-/// When `cuda` feature is enabled, ensures GPU version is used and checks for cuDNN.
-///
-/// NOTE: To force CPU-only mode and avoid CUDA initialization overhead, set
-/// COLGREP_FORCE_CPU="1" before calling this function. This makes the GPU
-/// ONNX Runtime fall back to CPU immediately without CUDA driver initialization.
-///
-/// IMPORTANT: On Linux, if cuDNN is found and wasn't already in LD_LIBRARY_PATH,
-/// this function will re-exec the current process with the updated LD_LIBRARY_PATH.
-/// This is necessary because Linux caches LD_LIBRARY_PATH at process startup.
-pub fn ensure_onnx_runtime() -> Result<PathBuf> {
-    // For CUDA builds on Linux, check if we need to re-exec with cuDNN in LD_LIBRARY_PATH
-    // This is only needed on Linux because it caches LD_LIBRARY_PATH at process startup
-    // Skip CUDA setup if COLGREP_FORCE_CPU is set (CPU-only mode)
+/// On Linux CUDA builds, put cuDNN (and the GPU ONNX Runtime) on `LD_LIBRARY_PATH`,
+/// re-executing the process once if they were not on it: the dynamic linker reads
+/// LD_LIBRARY_PATH only at startup. `main` calls this first thing, before any work or
+/// prompt; a re-exec later (when the model loads) would redo the scan and parse and ask
+/// the large-codebase question a second time. Does nothing in CPU mode or once done.
+pub fn prepare_cuda_library_path() -> Result<()> {
     #[cfg(all(target_os = "linux", feature = "_cuda"))]
     if crate::acceleration::env_acceleration_mode_lossy()
         != crate::acceleration::AccelerationMode::ForceCpu
@@ -122,6 +113,22 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
             env::set_var("_COLGREP_CUDA_SETUP", "1");
         }
     }
+    Ok(())
+}
+
+/// Ensure ONNX Runtime is available.
+/// Sets ORT_DYLIB_PATH if found or downloaded.
+/// When `cuda` feature is enabled, ensures GPU version is used and checks for cuDNN.
+///
+/// NOTE: To force CPU-only mode and avoid CUDA initialization overhead, set
+/// COLGREP_FORCE_CPU="1" before calling this function. This makes the GPU
+/// ONNX Runtime fall back to CPU immediately without CUDA driver initialization.
+///
+/// IMPORTANT: may re-exec the process via [`prepare_cuda_library_path`] if `main` has
+/// not already done so.
+pub fn ensure_onnx_runtime() -> Result<PathBuf> {
+    // Normally already done by `main` at startup.
+    prepare_cuda_library_path()?;
 
     // 1. Check if already set
     if let Ok(path) = env::var("ORT_DYLIB_PATH") {
