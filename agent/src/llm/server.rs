@@ -68,8 +68,16 @@ impl LlamaServer {
             (None, None, None)
         };
 
+        // Only this session may use the server: other local users, and web pages that
+        // find the port, get 401. Passed through the environment, which other users
+        // cannot read (unlike the command line); runtime_command clears the user's own
+        // LLAMA_* variables first.
+        let key = session_key()?;
+        let help = server_help(server);
         let mut cmd = runtime_command(server, lib_dir.as_deref());
-        cmd.arg("--model")
+        cmd.env("LLAMA_API_KEY", &key)
+            .args(cors_args(&help, port))
+            .arg("--model")
             .arg(model)
             .args(["--host", "127.0.0.1", "--port", &port.to_string()])
             // The tool-call markup is made of special tokens: keep them in the output.
@@ -97,7 +105,7 @@ impl LlamaServer {
         }
         if opts.gpu_layers == 0 {
             // CPU weights are repacked; mmap would keep a second resident copy.
-            cmd.args(no_mmap_args(server));
+            cmd.args(no_mmap_args(&help));
         }
         #[cfg(target_os = "linux")]
         {
@@ -120,7 +128,7 @@ impl LlamaServer {
         let base = format!("http://127.0.0.1:{port}");
         let mut this = Self {
             child,
-            client: OpenAiCompletions::new(&format!("{base}/v1"), "local", ""),
+            client: OpenAiCompletions::new(&format!("{base}/v1"), "local", "", Some(key.clone())),
             log,
             device: String::new(),
             props: ServerProps::default(),
@@ -128,8 +136,13 @@ impl LlamaServer {
             _job: job,
         };
         this.wait_ready(&base)?;
-        this.props = fetch_props(&base);
-        this.client = OpenAiCompletions::new(&format!("{base}/v1"), "local", &this.props.bos_token);
+        this.props = fetch_props(&base, &key);
+        this.client = OpenAiCompletions::new(
+            &format!("{base}/v1"),
+            "local",
+            &this.props.bos_token,
+            Some(key),
+        );
         this.device = match gpu {
             Some(gpu) => format!("GPU: {}", gpu.name),
             None => {
@@ -206,8 +219,9 @@ impl Drop for LlamaServer {
     }
 }
 
-fn fetch_props(base: &str) -> ServerProps {
+fn fetch_props(base: &str, key: &str) -> ServerProps {
     let v: serde_json::Value = match ureq::get(&format!("{base}/props"))
+        .set("Authorization", &format!("Bearer {key}"))
         .timeout(Duration::from_secs(10))
         .call()
         .ok()
@@ -269,6 +283,13 @@ fn tail(log: &str, n: usize) -> String {
 /// the downloaded Vulkan loader, when one is needed) on the path.
 fn runtime_command(server: &Path, extra_lib: Option<&Path>) -> Command {
     let mut cmd = Command::new(server);
+    // llama.cpp reads LLAMA_ARG_* (any flag) and LLAMA_API_KEY from the environment: a
+    // user's settings for their own llama-server must not reconfigure this one.
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with("LLAMA_") {
+            cmd.env_remove(name);
+        }
+    }
     let bin_dir = server.parent().unwrap_or(Path::new("."));
     #[cfg(target_os = "linux")]
     {
@@ -292,15 +313,20 @@ fn runtime_command(server: &Path, extra_lib: Option<&Path>) -> Command {
     cmd
 }
 
-/// The flag that disables mmap: `--load-mode none` in current llama.cpp, `--no-mmap` in
-/// older builds a user may point the agent at.
-fn no_mmap_args(server: &Path) -> Vec<&'static str> {
-    let help = runtime_command(server, None)
+/// `--help` of the runtime, to pick the flags it supports (a user may point the agent at
+/// an older llama-server).
+fn server_help(server: &Path) -> String {
+    runtime_command(server, None)
         .arg("--help")
         .stdin(Stdio::null())
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// The flag that disables mmap: `--load-mode none` in current llama.cpp, `--no-mmap` in
+/// older builds a user may point the agent at.
+fn no_mmap_args(help: &str) -> Vec<&'static str> {
     if help.contains("--load-mode") {
         vec!["--load-mode", "none"]
     } else if help.contains("--no-mmap") {
@@ -308,6 +334,22 @@ fn no_mmap_args(server: &Path) -> Vec<&'static str> {
     } else {
         Vec::new()
     }
+}
+
+/// CORS limited to the server's own origin (llama.cpp allows every origin by default).
+fn cors_args(help: &str, port: u16) -> Vec<String> {
+    if help.contains("--cors-origins") {
+        vec!["--cors-origins".into(), format!("http://127.0.0.1:{port}")]
+    } else {
+        Vec::new()
+    }
+}
+
+/// A random per-session API key (256 bits, hex).
+fn session_key() -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|e| format!("random session key: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// A device llama.cpp can offload to, as `--list-devices` reports it.

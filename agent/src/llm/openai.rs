@@ -22,11 +22,7 @@ pub struct OpenAiCompletions {
 }
 
 impl OpenAiCompletions {
-    pub fn new(base_url: &str, model: &str, bos_text: &str) -> Self {
-        let api_key = std::env::var("COLGREP_AGENT_API_KEY")
-            .or_else(|_| std::env::var("OPENAI_API_KEY"))
-            .ok()
-            .filter(|k| !k.is_empty());
+    pub fn new(base_url: &str, model: &str, bos_text: &str, api_key: Option<String>) -> Self {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             model: model.to_string(),
@@ -37,6 +33,14 @@ impl OpenAiCompletions {
                 .build(),
         }
     }
+}
+
+/// The key for a user-configured endpoint: `COLGREP_AGENT_API_KEY`, else `OPENAI_API_KEY`.
+pub fn api_key_from_env() -> Option<String> {
+    std::env::var("COLGREP_AGENT_API_KEY")
+        .or_else(|_| std::env::var("OPENAI_API_KEY"))
+        .ok()
+        .filter(|k| !k.is_empty())
 }
 
 /// End-of-turn markers a server may echo at the end of the completion.

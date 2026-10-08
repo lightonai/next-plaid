@@ -35,7 +35,12 @@ pub fn load_engine(
             .clone()
             .unwrap_or_else(|| settings.model().to_string());
         return Ok(Engine {
-            generator: Box::new(OpenAiCompletions::new(endpoint, &model, "<s>")),
+            generator: Box::new(OpenAiCompletions::new(
+                endpoint,
+                &model,
+                "<s>",
+                crate::llm::openai::api_key_from_env(),
+            )),
             template,
             description: format!("{model} @ {endpoint}"),
         });

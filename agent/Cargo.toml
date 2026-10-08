@@ -25,6 +25,8 @@ num_cpus = "1"
 dirs = "5"
 sha2 = "0.10"
 libc = "0.2"
+# The private llama-server's per-session API key (already built for rustls/ring).
+getrandom = "0.2"
 
 # Apple Silicon: llama.cpp is built in and runs on Metal (CPU with --force-cpu or
 # --agent-gpu-layers 0). Other platforms run ggml-org's prebuilt llama-server, which
