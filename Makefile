@@ -265,6 +265,7 @@ endif
 	@sed -i 's/"version": "[^"]*"/"version": "$(VERSION)"/' colgrep/src/install/plugin.json
 	@sed -i 's/"version": "[^"]*"/"version": "$(VERSION)"/' colgrep/src/install/marketplace.json
 	@sed -i 's/"version": "[^"]*"/"version": "$(VERSION)"/' .claude-plugin/marketplace.json
+	@sed -i 's/"version": "[^"]*"/"version": "$(VERSION)"/' .claude-plugin/plugin.json
 	@test -f plugins/colgrep/.claude-plugin/plugin.json && sed -i 's/"version": "[^"]*"/"version": "$(VERSION)"/' plugins/colgrep/.claude-plugin/plugin.json || true
 	@echo "  ✓ Updated Claude plugin versions"
 	@# Update OpenAPI version in next-plaid-api/src/main.rs
@@ -312,7 +313,7 @@ endif
 	@echo "  - agent/Cargo.toml (inherits the workspace version)"
 	@echo "  - colgrep/src/install/{plugin,marketplace}.json"
 	@echo "  - colgrep/python-sdk/{Cargo.toml,pyproject.toml,__init__.py}"
-	@echo "  - .claude-plugin/marketplace.json"
+	@echo "  - .claude-plugin/{marketplace,plugin}.json"
 	@echo "  - plugins/colgrep/.claude-plugin/plugin.json"
 	@echo "  - next-plaid-api/src/main.rs (OpenAPI)"
 	@echo "  - next-plaid-api/python-sdk/{pyproject.toml,__init__.py}"

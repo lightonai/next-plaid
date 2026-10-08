@@ -3,18 +3,10 @@ use colored::Colorize;
 use std::fs;
 use std::path::PathBuf;
 
-use super::SKILL_MD;
-
-/// YAML frontmatter required by Kimi Code skills (directory-form SKILL.md
-/// must declare `name` and `description` explicitly).
-const KIMI_FRONTMATTER: &str = r#"---
-name: colgrep
-description: Semantic code search with colgrep - use colgrep as the primary search tool instead of Grep/Glob
-type: prompt
-whenToUse: When searching, exploring, or trying to understand code in this repository
----
-
-"#;
+/// YAML frontmatter keys only Kimi Code's directory-form `SKILL.md` declares,
+/// on top of the shared name and description. `pub(super)` so the frontmatter
+/// check in `install` covers them.
+pub(super) const KIMI_EXTRA_KEYS: &str = "type: prompt\nwhenToUse: When searching, exploring, or trying to understand code in this repository\n";
 
 /// Get the Kimi Code home directory ($KIMI_CODE_HOME or ~/.kimi-code)
 fn get_kimi_code_home() -> Result<PathBuf> {
@@ -43,10 +35,7 @@ fn write_skill_md() -> Result<()> {
     fs::create_dir_all(&skill_dir)?;
 
     let skill_path = get_skill_md_path()?;
-    // Normalize to LF: on Windows checkouts SKILL.md may be CRLF, which would
-    // otherwise produce a file with mixed line endings.
-    let content = format!("{}{}", KIMI_FRONTMATTER, SKILL_MD.replace("\r\n", "\n"));
-    fs::write(&skill_path, content)?;
+    fs::write(&skill_path, super::standalone_skill_md(KIMI_EXTRA_KEYS))?;
     Ok(())
 }
 

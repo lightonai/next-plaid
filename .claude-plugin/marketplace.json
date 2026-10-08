@@ -1,6 +1,6 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "LightOn Tools",
+  "name": "lighton-tools",
   "description": "Semantic code search and multi-vector search tools by LightOn AI.",
   "owner": {
     "name": "LightOn AI",
