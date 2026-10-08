@@ -52,10 +52,12 @@ jobs:
           AARCH64_DARWIN_SHA=$(gh release download "${TAG}" --repo "${REPO}" -p "colgrep-aarch64-apple-darwin.tar.xz.sha256" -O - | awk '{print $1}')
           X86_64_DARWIN_SHA=$(gh release download "${TAG}" --repo "${REPO}" -p "colgrep-x86_64-apple-darwin.tar.xz.sha256" -O - | awk '{print $1}')
           X86_64_LINUX_SHA=$(gh release download "${TAG}" --repo "${REPO}" -p "colgrep-x86_64-unknown-linux-gnu.tar.xz.sha256" -O - | awk '{print $1}')
+          AARCH64_LINUX_SHA=$(gh release download "${TAG}" --repo "${REPO}" -p "colgrep-aarch64-unknown-linux-gnu.tar.xz.sha256" -O - | awk '{print $1}')
 
           echo "aarch64_darwin=${AARCH64_DARWIN_SHA}" >> "$GITHUB_OUTPUT"
           echo "x86_64_darwin=${X86_64_DARWIN_SHA}" >> "$GITHUB_OUTPUT"
           echo "x86_64_linux=${X86_64_LINUX_SHA}" >> "$GITHUB_OUTPUT"
+          echo "aarch64_linux=${AARCH64_LINUX_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
@@ -69,6 +71,7 @@ jobs:
           AARCH64_DARWIN_SHA: ${{ steps.shas.outputs.aarch64_darwin }}
           X86_64_DARWIN_SHA: ${{ steps.shas.outputs.x86_64_darwin }}
           X86_64_LINUX_SHA: ${{ steps.shas.outputs.x86_64_linux }}
+          AARCH64_LINUX_SHA: ${{ steps.shas.outputs.aarch64_linux }}
         run: |
           REPO="lightonai/next-plaid"
           cat > Formula/colgrep.rb <<RUBY
@@ -94,6 +97,11 @@ jobs:
               on_intel do
                 url "https://github.com/${REPO}/releases/download/v${VERSION}/colgrep-x86_64-unknown-linux-gnu.tar.xz"
                 sha256 "${X86_64_LINUX_SHA}"
+              end
+
+              on_arm do
+                url "https://github.com/${REPO}/releases/download/v${VERSION}/colgrep-aarch64-unknown-linux-gnu.tar.xz"
+                sha256 "${AARCH64_LINUX_SHA}"
               end
             end
 

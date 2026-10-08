@@ -168,6 +168,11 @@ jobs:
             *x86_64-unknown-linux*)
               FEATURES='features = ["mkl", "cuda"]'
               ;;
+            *aarch64-unknown-linux*)
+              # No MKL on ARM and no CUDA build of ONNX Runtime for linux-aarch64:
+              # default features. The agent still uses the GPU (llama-server, Vulkan).
+              FEATURES=""
+              ;;
             *x86_64-pc-windows*)
               FEATURES='features = ["directml"]'
               ;;
