@@ -2252,12 +2252,24 @@ fn floor_char_boundary(s: &str, mut i: usize) -> usize {
 }
 
 /// Text of a file and whether it was cut, or None for binary content (a NUL in the
-/// first 8 KiB) and unreadable files.
+/// first 8 KiB) and unreadable files. Binary files are recognised from those 8 KiB alone,
+/// so `grep -r` does not read 16 MiB of every image or model file to skip it.
 fn read_text_file(p: &Path) -> Option<(String, bool)> {
-    let (bytes, cut) = read_capped(p).ok()?;
-    if bytes[..bytes.len().min(8192)].contains(&0) {
+    use std::io::Read;
+    if !fs::metadata(p).ok()?.is_file() {
         return None;
     }
+    let mut file = fs::File::open(p).ok()?;
+    let mut bytes = Vec::new();
+    file.by_ref().take(8192).read_to_end(&mut bytes).ok()?;
+    if bytes.contains(&0) {
+        return None;
+    }
+    file.take((MAX_READ_BYTES + 1 - bytes.len()) as u64)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let cut = bytes.len() > MAX_READ_BYTES;
+    bytes.truncate(MAX_READ_BYTES);
     Some((String::from_utf8_lossy(&bytes).into_owned(), cut))
 }
 
