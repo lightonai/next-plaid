@@ -82,8 +82,8 @@ impl Generator for OpenAiCompletions {
             Ok(r) => r,
             Err(ureq::Error::Status(code, r)) => {
                 let text = r.into_string().unwrap_or_default();
-                if text.contains("maximum context length") || text.contains("context length") {
-                    return Err(LlmError::ContextOverflow { prompt: 0, ctx: 0 });
+                if let Some(overflow) = context_overflow(&text) {
+                    return Err(overflow);
                 }
                 return Err(LlmError::Engine(format!("{url}: HTTP {code}: {text}")));
             }
@@ -170,6 +170,39 @@ impl Generator for OpenAiCompletions {
 }
 
 /// Bytes at the end of `text` that could be the beginning of an end-of-turn marker.
+/// A context-size rejection, with its token counts when the message gives them.
+///
+/// llama-server: `request (N tokens) exceeds the available context size (M tokens)`
+/// (`exceed_context_size_error`); vLLM / OpenAI: `maximum context length is M tokens.
+/// However, you requested N tokens`.
+fn context_overflow(body: &str) -> Option<LlmError> {
+    // The integers directly followed by " tokens", in order.
+    let counts: Vec<usize> = body
+        .match_indices(" tokens")
+        .filter_map(|(at, _)| {
+            let digits = body[..at]
+                .bytes()
+                .rev()
+                .take_while(u8::is_ascii_digit)
+                .count();
+            body[at - digits..at].parse().ok()
+        })
+        .collect();
+    let (prompt, ctx) = if body.contains("exceed_context_size_error")
+        || body.contains("exceeds the available context size")
+    {
+        (counts.first(), counts.get(1))
+    } else if body.contains("context length") {
+        (counts.get(1), counts.first())
+    } else {
+        return None;
+    };
+    Some(LlmError::ContextOverflow {
+        prompt: prompt.copied().unwrap_or(0),
+        ctx: ctx.copied().unwrap_or(0),
+    })
+}
+
 fn held_back(text: &str) -> usize {
     STOP_TEXTS
         .iter()
@@ -188,7 +221,34 @@ fn stripped_tool_markup(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{held_back, stripped_tool_markup};
+    use super::{context_overflow, held_back, stripped_tool_markup, LlmError};
+
+    #[test]
+    fn context_overflow_is_recognised_with_its_token_counts() {
+        let llama = r#"{"error":{"code":400,"message":"request (2861 tokens) exceeds the available context size (2816 tokens), try increasing it","type":"exceed_context_size_error"}}"#;
+        assert!(matches!(
+            context_overflow(llama),
+            Some(LlmError::ContextOverflow {
+                prompt: 2861,
+                ctx: 2816
+            })
+        ));
+        let vllm = r#"{"object":"error","message":"This model's maximum context length is 16384 tokens. However, you requested 17000 tokens (16000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.","type":"BadRequestError","code":400}"#;
+        assert!(matches!(
+            context_overflow(vllm),
+            Some(LlmError::ContextOverflow {
+                prompt: 17000,
+                ctx: 16384
+            })
+        ));
+        let other = r#"{"error":{"message":"invalid grammar"}}"#;
+        assert!(context_overflow(other).is_none());
+        let unknown = LlmError::ContextOverflow { prompt: 0, ctx: 0 }.to_string();
+        assert_eq!(
+            unknown,
+            "the prompt does not fit the context (raise the agent context size)"
+        );
+    }
 
     #[test]
     fn end_of_turn_prefixes_are_held_back() {
