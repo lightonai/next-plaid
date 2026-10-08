@@ -36,8 +36,8 @@ Example usage:
     print(merged[0].description())
 
 Supported languages:
-    Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, C#,
-    Kotlin, Swift, Scala, PHP, Lua, Elixir, Haskell, OCaml, R, Zig,
+    Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, CUDA, Ruby,
+    C#, Kotlin, Swift, Scala, PHP, Lua, Elixir, Haskell, OCaml, R, Zig,
     Julia, SQL, Vue, Svelte, HTML, Markdown, YAML, TOML, JSON, Shell
 """
 

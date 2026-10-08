@@ -64,9 +64,9 @@ EXAMPLES:
     colgrep update
 
 SUPPORTED LANGUAGES:
-    Python, Rust, TypeScript, JavaScript, Go, Java, C, C++, C#, Ruby,
-    PHP, Swift, Kotlin, Scala, Lua, Elixir, Haskell, OCaml, QML, R, Zig,
-    Julia, Shell/Bash, SQL, Markdown, Plain text
+    Python, Rust, TypeScript, JavaScript, Go, Java, C, C++, CUDA, C#,
+    Ruby, PHP, Swift, Kotlin, Scala, Lua, Elixir, Haskell, OCaml, QML, R,
+    Zig, Julia, Shell/Bash, SQL, Markdown, Plain text
 
 ENVIRONMENT:
     Indexes are stored in ~/.local/share/colgrep/ (or $XDG_DATA_HOME/colgrep)

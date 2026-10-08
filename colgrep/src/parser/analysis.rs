@@ -267,7 +267,7 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
                 Some(doc_lines.join(" "))
             }
         }
-        Language::C | Language::Cpp => {
+        Language::C | Language::Cpp | Language::Cuda => {
             // Look for /* */ block comments or /// doc comments
             let start_row = node.start_position().row;
             if start_row > 0 {
@@ -472,7 +472,7 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
         Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => node
             .child_by_field_name("parameters")
             .or_else(|| node.child_by_field_name("formal_parameters")),
-        Language::C | Language::Cpp => node
+        Language::C | Language::Cpp | Language::Cuda => node
             .child_by_field_name("declarator")
             .and_then(|d| d.child_by_field_name("parameters")),
         Language::Ruby => node.child_by_field_name("parameters"),
@@ -558,7 +558,7 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
                     child
                         .child_by_field_name("pattern")
                         .filter(|c| c.kind() == "identifier")
-                } else if matches!(lang, Language::C | Language::Cpp) {
+                } else if matches!(lang, Language::C | Language::Cpp | Language::Cuda) {
                     // For C/C++, parameter_declaration has a "declarator" field
                     // This can be: identifier, pointer_declarator, array_declarator, function_declarator
                     child.child_by_field_name("declarator").and_then(|d| {
@@ -641,7 +641,7 @@ pub fn extract_return_type(node: Node, bytes: &[u8], lang: Language) -> Option<S
         }
         Language::Go => node.child_by_field_name("result"),
         Language::Java | Language::CSharp => node.child_by_field_name("type"),
-        Language::Cpp | Language::C => node.child_by_field_name("type"),
+        Language::Cpp | Language::Cuda | Language::C => node.child_by_field_name("type"),
         Language::Dart => {
             let signature = find_first_by_kinds(
                 node,
@@ -766,7 +766,7 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
         }
         Language::Go => &["call_expression"],
         Language::Java | Language::CSharp => &["method_invocation", "object_creation_expression"],
-        Language::C | Language::Cpp => &["call_expression"],
+        Language::C | Language::Cpp | Language::Cuda => &["call_expression"],
         Language::Ruby => &["call", "method_call"],
         Language::Kotlin => &["call_expression", "navigation_expression"],
         Language::Swift => &["call_expression"],
@@ -876,7 +876,7 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
             "declared_identifier",
         ],
         Language::Java | Language::CSharp => &["variable_declarator", "local_variable_declaration"],
-        Language::C | Language::Cpp => &["declaration", "init_declarator"],
+        Language::C | Language::Cpp | Language::Cuda => &["declaration", "init_declarator"],
         Language::Ruby => &["assignment"],
         Language::Kotlin => &["property_declaration", "variable_declaration"],
         Language::Swift => &["property_declaration", "constant_declaration"],
@@ -893,7 +893,7 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
     walk_tree(node, |current| {
         if var_types.contains(&current.kind()) {
             // For C/C++, get the declarator field which contains the variable name
-            let name_node = if matches!(lang, Language::C | Language::Cpp) {
+            let name_node = if matches!(lang, Language::C | Language::Cpp | Language::Cuda) {
                 // For init_declarator: get declarator field
                 if current.kind() == "init_declarator" {
                     current.child_by_field_name("declarator").and_then(|d| {
@@ -1022,7 +1022,7 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         Language::Go => &["import_spec"], // Individual import specs, not the whole declaration
         Language::Java => &["import_declaration"],
         Language::CSharp => &["using_directive"],
-        Language::C | Language::Cpp => &["preproc_include"],
+        Language::C | Language::Cpp | Language::Cuda => &["preproc_include"],
         Language::Ruby => &["call"],
         Language::Kotlin => &["import"], // Kotlin uses "import" node type
         Language::Swift => &["import_declaration"],
@@ -1319,7 +1319,7 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         ],
         Language::Scala => &["field_expression"],
         Language::Kotlin => &["navigation_expression"],
-        Language::C | Language::Cpp => &["field_expression"],
+        Language::C | Language::Cpp | Language::Cuda => &["field_expression"],
         Language::Ruby => &["call"],
         Language::Swift => &["navigation_expression"],
         Language::Php => &[
@@ -1594,7 +1594,7 @@ pub fn extract_parent_class(
         }
 
         // C++: class Dog : public Animal -> base_class_clause -> type_identifier
-        Language::Cpp => {
+        Language::Cpp | Language::Cuda => {
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "base_class_clause" {
                     if let Some(id) = find_first_by_kind(child, "type_identifier", max_depth) {

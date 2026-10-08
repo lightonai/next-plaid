@@ -16,7 +16,7 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         }
         Language::Go => kind == "function_declaration" || kind == "method_declaration",
         Language::Java => kind == "method_declaration" || kind == "constructor_declaration",
-        Language::C | Language::Cpp => kind == "function_definition",
+        Language::C | Language::Cpp | Language::Cuda => kind == "function_definition",
         Language::Ruby => kind == "method" || kind == "singleton_method",
         Language::CSharp => kind == "method_declaration" || kind == "constructor_declaration",
         Language::Dart => matches!(
@@ -74,7 +74,7 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
             kind,
             "class_declaration" | "interface_declaration" | "enum_declaration"
         ),
-        Language::Cpp => matches!(
+        Language::Cpp | Language::Cuda => matches!(
             kind,
             "class_specifier" | "struct_specifier" | "enum_specifier"
         ),
@@ -198,7 +198,7 @@ pub fn is_constant_node(kind: &str, lang: Language) -> bool {
             kind,
             "static_final_declaration_list" | "initialized_identifier_list" | "identifier_list"
         ),
-        Language::C | Language::Cpp => kind == "declaration",
+        Language::C | Language::Cpp | Language::Cuda => kind == "declaration",
         Language::Python => {
             // Python doesn't have const, but we capture module-level assignments
             // We'll filter for UPPER_CASE names in extract_constant
@@ -244,7 +244,7 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
             })
         }),
         Language::Go => node.child_by_field_name("type"),
-        Language::Cpp => {
+        Language::Cpp | Language::Cuda => {
             // Look for field_declaration_list in class_specifier
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "field_declaration_list" {
@@ -424,7 +424,7 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("property")),
         Language::Dart => return get_dart_node_name(node, bytes),
-        Language::C | Language::Cpp => {
+        Language::C | Language::Cpp | Language::Cuda => {
             // For classes/structs/unions/enums, look for name field or type_identifier
             if matches!(
                 node.kind(),

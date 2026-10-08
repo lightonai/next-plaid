@@ -33,6 +33,7 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "java" => Some(Language::Java),
         "c" | "h" => Some(Language::C),
         "cpp" | "cc" | "cxx" | "hpp" | "hxx" => Some(Language::Cpp),
+        "cu" | "cuh" => Some(Language::Cuda),
         "rb" | "rake" | "gemspec" => Some(Language::Ruby),
         "cs" => Some(Language::CSharp),
         "dart" => Some(Language::Dart),
@@ -110,6 +111,7 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Java => tree_sitter_java::LANGUAGE.into(),
         Language::C => tree_sitter_c::LANGUAGE.into(),
         Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+        Language::Cuda => tree_sitter_cuda::LANGUAGE.into(),
         Language::Ruby => tree_sitter_ruby::LANGUAGE.into(),
         Language::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
         Language::Dart => tree_sitter_dart::LANGUAGE.into(),
@@ -250,6 +252,23 @@ mod tests {
             detect_language(Path::new("header.hxx")),
             Some(Language::Cpp)
         );
+    }
+
+    #[test]
+    fn test_detect_language_cuda() {
+        assert_eq!(
+            detect_language(Path::new("kernels.cu")),
+            Some(Language::Cuda)
+        );
+        assert_eq!(
+            detect_language(Path::new("kernels.cuh")),
+            Some(Language::Cuda)
+        );
+        assert_eq!(
+            detect_language(Path::new("KERNELS.CU")),
+            Some(Language::Cuda)
+        );
+        assert!(!is_text_format(Language::Cuda));
     }
 
     #[test]

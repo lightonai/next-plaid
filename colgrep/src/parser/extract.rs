@@ -221,7 +221,7 @@ fn extract_class_type_parameters(node: Node, bytes: &[u8], lang: Language) -> Ve
             node.children(&mut node.walk())
                 .find(|c| c.kind() == "generic_parameter_clause")
         }
-        Language::Cpp => {
+        Language::Cpp | Language::Cuda => {
             // C++ templates: look for template_parameter_list in parent template_declaration
             if let Some(parent) = node.parent() {
                 if parent.kind() == "template_declaration" {
@@ -440,7 +440,7 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             }
             None
         }
-        Language::C | Language::Cpp => {
+        Language::C | Language::Cpp | Language::Cuda => {
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "init_declarator" || child.kind() == "declarator" {
                     if let Some(name_node) = child.child_by_field_name("declarator") {

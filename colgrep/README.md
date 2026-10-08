@@ -712,6 +712,7 @@ ColGREP automatically detects and repairs index/metadata desync from interrupted
 | Java             | `.java`                                                 |
 | C                | `.c`, `.h`                                              |
 | C++              | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`                   |
+| CUDA             | `.cu`, `.cuh`                                           |
 | C#               | `.cs`                                                   |
 | Dart             | `.dart`                                                 |
 | Ruby             | `.rb`, `.rake`, `.gemspec`, `Rakefile`, `Gemfile`, `Vagrantfile` |

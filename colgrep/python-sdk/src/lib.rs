@@ -383,6 +383,7 @@ fn parse_code(code: &str, filename: &str, merge: bool) -> PyResult<Vec<PyCodeUni
 /// - java
 /// - c
 /// - cpp, c++
+/// - cuda, cu
 /// - ruby, rb
 /// - csharp, c#, cs
 /// - kotlin, kt
@@ -482,6 +483,7 @@ fn supported_languages() -> Vec<&'static str> {
         "java",
         "c",
         "cpp",
+        "cuda",
         "ruby",
         "csharp",
         "kotlin",

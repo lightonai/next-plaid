@@ -159,6 +159,7 @@ Each `CodeUnit` object has the following attributes:
 - **Java** (.java)
 - **C** (.c, .h)
 - **C++** (.cpp, .cc, .cxx, .hpp, .hxx)
+- **CUDA** (.cu, .cuh)
 - **Ruby** (.rb)
 - **C#** (.cs)
 - **Kotlin** (.kt, .kts)

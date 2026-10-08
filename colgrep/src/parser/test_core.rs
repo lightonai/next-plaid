@@ -788,6 +788,8 @@ fn test_language_from_str() {
     assert_eq!(Language::from_str("c"), Ok(Language::C));
     assert_eq!(Language::from_str("cpp"), Ok(Language::Cpp));
     assert_eq!(Language::from_str("c++"), Ok(Language::Cpp));
+    assert_eq!(Language::from_str("cuda"), Ok(Language::Cuda));
+    assert_eq!(Language::from_str("cu"), Ok(Language::Cuda));
 
     assert_eq!(Language::from_str("csharp"), Ok(Language::CSharp));
     assert_eq!(Language::from_str("c#"), Ok(Language::CSharp));

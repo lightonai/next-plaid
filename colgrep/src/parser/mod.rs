@@ -65,7 +65,7 @@ fn is_abstract_type_container(kind: &str, lang: Language) -> bool {
             kind,
             "interface_declaration" | "trait_declaration" | "enum_declaration"
         ),
-        Language::Cpp => kind == "enum_specifier",
+        Language::Cpp | Language::Cuda => kind == "enum_specifier",
         Language::Dart => kind == "type_alias",
         _ => false,
     }
