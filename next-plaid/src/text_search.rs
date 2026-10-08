@@ -752,21 +752,15 @@ pub fn delete(index_path: &str, doc_ids: &[i64]) -> Result<()> {
         // METADATA rows still exist, then delete by rowid (O(deleted)).
         // If filtering::delete already ran it removed both the METADATA rows
         // and the FTS rows, so the subquery matches nothing — a no-op.
-        let (in_clause, in_params, temp_table) = build_in_clause(&conn, doc_ids)?;
+        let (in_clause, ids_json) = build_in_clause(doc_ids);
         let sql = format!(
             "DELETE FROM \"{}\" WHERE rowid IN (\
                 SELECT \"{}\" FROM METADATA WHERE \"{}\" {}\
             )",
             FTS_TABLE, CONTENT_ID_COLUMN, SUBSET_COLUMN, in_clause
         );
-        let param_refs: Vec<&dyn ToSql> = in_params.iter().map(|v| v.as_ref()).collect();
-        let result = conn
-            .execute(&sql, params_from_iter(param_refs))
-            .map_err(|e| Error::Filtering(format!("Failed to delete FTS5 rows: {}", e)));
-        if let Some(ref name) = temp_table {
-            drop_temp_table(&conn, name);
-        }
-        result?;
+        conn.execute(&sql, [ids_json])
+            .map_err(|e| Error::Filtering(format!("Failed to delete FTS5 rows: {}", e)))?;
         return Ok(());
     }
 
@@ -1513,73 +1507,26 @@ pub fn fuse_relative_score(
     (ids, s)
 }
 
-/// Generate a unique temp table name for concurrent-safe operations.
-///
-/// Uses PID + atomic counter to ensure no collisions across threads.
-fn make_temp_table_name(prefix: &str) -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    format!(
-        "_tmp_{}_{}_{}",
-        prefix,
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    )
-}
-
-/// Threshold above which we use a temp table instead of `IN (?, ?, ...)`.
+/// Chunk size for `IN (?, ...)` lists, below SQLite's bound-parameter limit.
 const SQLITE_PARAM_LIMIT: usize = 900;
 
-/// Build an `IN` clause for a list of i64 IDs, safe for any size.
+/// An `IN` clause over `ids`, bound as a single parameter: the ids travel as one JSON
+/// array that SQLite unpacks with `json_each`. Any number of ids fits (no 999-variable
+/// limit, no temp table), so it also works on read-only connections.
 ///
-/// For small lists (<=900), returns `IN (?, ?, ...)` with params.
-/// For large lists, creates a temp table and returns `IN (SELECT id FROM ...)`.
-/// The caller must call [`drop_temp_subset`] when done if a table name is returned.
-///
-/// Result type: `(sql_fragment, params, temp_table_name)`.
-type InClause = (String, Vec<Box<dyn ToSql>>, Option<String>);
-
-/// Returns `(sql_fragment, params, temp_table_name)`.
-pub fn build_in_clause(conn: &Connection, ids: &[i64]) -> Result<InClause> {
-    if ids.len() <= SQLITE_PARAM_LIMIT {
-        let placeholders: Vec<&str> = std::iter::repeat_n("?", ids.len()).collect();
-        let sql = format!("IN ({})", placeholders.join(", "));
-        let params: Vec<Box<dyn ToSql>> = ids
-            .iter()
-            .map(|&id| Box::new(id) as Box<dyn ToSql>)
-            .collect();
-        Ok((sql, params, None))
-    } else {
-        let table_name = make_temp_table_name("in");
-        conn.execute(
-            &format!(
-                "CREATE TEMP TABLE \"{}\" (id INTEGER PRIMARY KEY)",
-                table_name
-            ),
-            [],
-        )
-        .map_err(|e| Error::Filtering(format!("Failed to create temp table: {}", e)))?;
-
-        let mut ins = conn
-            .prepare(&format!(
-                "INSERT OR IGNORE INTO \"{}\"(id) VALUES (?)",
-                table_name
-            ))
-            .map_err(|e| Error::Filtering(format!("Failed to prepare temp insert: {}", e)))?;
-        for &id in ids {
-            ins.execute([id]).map_err(|e| {
-                Error::Filtering(format!("Failed to insert into temp table: {}", e))
-            })?;
+/// Returns `(sql_fragment, parameter)`: `IN (SELECT value FROM json_each(?))` and the
+/// JSON text to bind to its `?`.
+pub fn build_in_clause(ids: &[i64]) -> (&'static str, String) {
+    let mut json = String::with_capacity(ids.len() * 8 + 2);
+    json.push('[');
+    for (i, id) in ids.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
         }
-
-        let sql = format!("IN (SELECT id FROM \"{}\")", table_name);
-        Ok((sql, Vec::new(), Some(table_name)))
+        json.push_str(&id.to_string());
     }
-}
-
-/// Drop a temp table created by [`build_in_clause`].
-pub fn drop_temp_table(conn: &Connection, table_name: &str) {
-    let _ = conn.execute(&format!("DROP TABLE IF EXISTS \"{}\"", table_name), []);
+    json.push(']');
+    ("IN (SELECT value FROM json_each(?))", json)
 }
 
 /// Check whether an FTS5 index exists for the given next-plaid index.

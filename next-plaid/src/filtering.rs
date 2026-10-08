@@ -1684,16 +1684,12 @@ pub fn delete(index_path: &str, subset: &[i64]) -> Result<usize> {
         + 1;
 
     // Delete specified rows
-    let (in_clause, in_params, temp_table) = crate::text_search::build_in_clause(&conn, subset)?;
+    let (in_clause, ids_json) = crate::text_search::build_in_clause(subset);
     let delete_sql = format!(
         "DELETE FROM METADATA WHERE \"{}\" {}",
         SUBSET_COLUMN, in_clause
     );
-    let param_refs: Vec<&dyn ToSql> = in_params.iter().map(|v| v.as_ref()).collect();
-    let deleted = conn.execute(&delete_sql, params_from_iter(param_refs))?;
-    if let Some(ref name) = temp_table {
-        crate::text_search::drop_temp_table(&conn, name);
-    }
+    let deleted = conn.execute(&delete_sql, [ids_json])?;
 
     // Re-sequence _subset_ IDs to be contiguous 0-based.
     // Instead of copying the entire table (expensive for large tables with TEXT/BLOB
@@ -1780,16 +1776,12 @@ fn delete_v2(conn: &Connection, subset: &[i64]) -> Result<usize> {
         + 1;
 
     // Delete from thin table
-    let (in_clause, in_params, temp_table) = crate::text_search::build_in_clause(conn, subset)?;
+    let (in_clause, ids_json) = crate::text_search::build_in_clause(subset);
     let delete_sql = format!(
         "DELETE FROM METADATA WHERE \"{}\" {}",
         SUBSET_COLUMN, in_clause
     );
-    let param_refs: Vec<&dyn ToSql> = in_params.iter().map(|v| v.as_ref()).collect();
-    let deleted = conn.execute(&delete_sql, params_from_iter(param_refs))?;
-    if let Some(ref name) = temp_table {
-        crate::text_search::drop_temp_table(conn, name);
-    }
+    let deleted = conn.execute(&delete_sql, [ids_json])?;
 
     // A content-id keyed FTS is maintained here, inside the same transaction:
     // its rowids are the stable _content_id_ values, so removing the rows for
