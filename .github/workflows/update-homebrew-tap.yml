@@ -34,8 +34,9 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.tag }}"
           else
-            # Get the latest release tag
-            TAG=$(gh release view --repo lightonai/next-plaid --json tagName -q '.tagName')
+            # The tag whose Release run triggered this one (not "latest release", which
+            # another release could have become in the meantime).
+            TAG="${{ github.event.workflow_run.head_branch }}"
           fi
           VERSION="${TAG#v}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -58,6 +59,14 @@ jobs:
           echo "x86_64_darwin=${X86_64_DARWIN_SHA}" >> "$GITHUB_OUTPUT"
           echo "x86_64_linux=${X86_64_LINUX_SHA}" >> "$GITHUB_OUTPUT"
           echo "aarch64_linux=${AARCH64_LINUX_SHA}" >> "$GITHUB_OUTPUT"
+
+          # A missing .sha256 would otherwise give a formula with an empty checksum.
+          for sha in "$AARCH64_DARWIN_SHA" "$X86_64_DARWIN_SHA" "$X86_64_LINUX_SHA" "$AARCH64_LINUX_SHA"; do
+            if ! [[ "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::missing or invalid SHA-256 for ${TAG}: '${sha}'"
+              exit 1
+            fi
+          done
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4

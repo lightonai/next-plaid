@@ -3,7 +3,8 @@ name: Publish Python SDK to PyPI
 on:
   push:
     tags:
-      - "v*"
+      # Version tags only: "v*" also matched release tags such as vulkan-loader-v1.4.361.
+      - "v[0-9]*"
 
 jobs:
   publish:
