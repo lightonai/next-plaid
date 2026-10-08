@@ -73,19 +73,73 @@ pub fn llama_server(explicit: Option<&str>, progress: bool) -> Result<PathBuf, S
          `colgrep settings --agent-llama-server PATH`"
             .to_string()
     })?;
-    let cache = dirs::cache_dir()
-        .ok_or("cannot locate the cache directory")?
-        .join("colgrep")
-        .join("llama.cpp");
-    let dir = cache.join(asset.trim_end_matches(".tar.gz").trim_end_matches(".zip"));
-    if let Some(bin) = find_file(&dir, server_exe()) {
-        return Ok(bin);
-    }
-    std::fs::create_dir_all(&cache).map_err(|e| format!("{}: {e}", cache.display()))?;
     let url = format!(
         "https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_CPP_RELEASE}/{asset}"
     );
-    let bytes = download(&url, progress)?;
+    install(&url, asset, sha256, "llama.cpp", server_exe(), progress)
+}
+
+/// Pinned Khronos Vulkan loader (`libvulkan.so.1`), for Linux machines whose GPU driver
+/// ships a Vulkan ICD but whose distribution did not install the loader that finds it
+/// (stock Ubuntu + NVIDIA servers: `libnvidia-gl` is there, `libvulkan1` is not). Built
+/// against glibc 2.17 without window-system support, so it runs on any distribution.
+pub const VULKAN_LOADER_RELEASE: &str = "v1.4.361";
+
+/// `(asset name, sha256)` of the Vulkan loader build for this platform.
+fn vulkan_loader_asset() -> Option<(&'static str, &'static str)> {
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some((
+            "vulkan-loader-v1.4.361-linux-x64.tar.gz",
+            "3e3383d201c92dad3b8aebdd3bf35903a36f97f44634114236c465b0a2f908c2",
+        ))
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Some((
+            "vulkan-loader-v1.4.361-linux-arm64.tar.gz",
+            "704f2557727c455a96d918c728a565601ada122a1da11b06b95dd2884393082c",
+        ))
+    } else {
+        None
+    }
+}
+
+/// The directory holding the pinned `libvulkan.so.1`, downloaded on first use.
+pub fn vulkan_loader(progress: bool) -> Result<PathBuf, String> {
+    let (asset, sha256) =
+        vulkan_loader_asset().ok_or("no prebuilt Vulkan loader for this platform")?;
+    let url = format!(
+        "https://github.com/lightonai/next-plaid/releases/download/vulkan-loader-{VULKAN_LOADER_RELEASE}/{asset}"
+    );
+    let lib = install(
+        &url,
+        asset,
+        sha256,
+        "vulkan-loader",
+        "libvulkan.so.1",
+        progress,
+    )?;
+    Ok(lib.parent().unwrap_or(Path::new(".")).to_path_buf())
+}
+
+/// `file` from the archive `asset` (pinned to `sha256`), extracted once under
+/// `<cache>/colgrep/<subdir>`.
+fn install(
+    url: &str,
+    asset: &str,
+    sha256: &str,
+    subdir: &str,
+    file: &str,
+    progress: bool,
+) -> Result<PathBuf, String> {
+    let cache = dirs::cache_dir()
+        .ok_or("cannot locate the cache directory")?
+        .join("colgrep")
+        .join(subdir);
+    let dir = cache.join(asset.trim_end_matches(".tar.gz").trim_end_matches(".zip"));
+    if let Some(found) = find_file(&dir, file) {
+        return Ok(found);
+    }
+    std::fs::create_dir_all(&cache).map_err(|e| format!("{}: {e}", cache.display()))?;
+    let bytes = download(url, progress)?;
     let digest = crate::hash::sha256_hex(&bytes);
     if digest != sha256 {
         return Err(format!(
@@ -93,7 +147,7 @@ pub fn llama_server(explicit: Option<&str>, progress: bool) -> Result<PathBuf, S
         ));
     }
     // Extract next to the final location, then rename: a concurrent or interrupted run
-    // never sees a half-extracted runtime.
+    // never sees a half-extracted archive.
     let staging = cache.join(format!(".staging-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
@@ -102,15 +156,17 @@ pub fn llama_server(explicit: Option<&str>, progress: bool) -> Result<PathBuf, S
         // Another process won the race; use its copy.
         let _ = std::fs::remove_dir_all(&staging);
     }
-    find_file(&dir, server_exe())
-        .ok_or_else(|| format!("{asset} does not contain {}", server_exe()))
+    find_file(&dir, file).ok_or_else(|| format!("{asset} does not contain {file}"))
 }
 
 fn download(url: &str, progress: bool) -> Result<Vec<u8>, String> {
     let resp = ureq::get(url)
         .timeout(std::time::Duration::from_secs(600))
         .call()
-        .map_err(|e| format!("downloading {url}: {e}"))?;
+        .map_err(|e| match e {
+            ureq::Error::Status(code, _) => format!("downloading {url}: HTTP {code}"),
+            other => format!("downloading {url}: {other}"),
+        })?;
     let total = resp
         .header("Content-Length")
         .and_then(|v| v.parse::<u64>().ok());
@@ -159,6 +215,15 @@ mod tests {
         let (asset, sha) = platform_asset().expect("this platform has a runtime");
         assert!(asset.contains(LLAMA_CPP_RELEASE));
         assert_eq!(sha.len(), 64);
+    }
+
+    #[test]
+    fn linux_has_a_pinned_vulkan_loader() {
+        if cfg!(target_os = "linux") {
+            let (asset, sha) = vulkan_loader_asset().expect("pinned loader");
+            assert!(asset.contains(VULKAN_LOADER_RELEASE));
+            assert_eq!(sha.len(), 64);
+        }
     }
 
     #[test]

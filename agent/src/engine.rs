@@ -183,8 +183,9 @@ fn load_server(
         path,
         &ServerOptions {
             context_size: settings.context_size(),
-            threads: settings.threads,
+            threads: Some(settings.threads.unwrap_or_else(server_threads)),
             gpu_layers,
+            progress,
         },
     )?;
     let props = server.props.clone();
@@ -214,6 +215,19 @@ fn load_server(
         template,
         description,
     })
+}
+
+/// CPU threads for llama-server. Left to itself it takes every core, and its threads
+/// spin-wait on each other: one preempted thread stalls the rest, so on a busy 64-core
+/// server generation fell from ~63 tok/s (24-56 threads) to 0.5 tok/s (64 threads).
+/// Prefill (most of an agent turn) keeps scaling with cores, so take as many as is safe:
+/// keep a quarter of the cores free (honouring cgroup / affinity limits) and cap the count
+/// (48 threads: 30 s per question vs 40 s at 32 and 58 s at 16 on that machine).
+#[cfg(feature = "local")]
+fn server_threads() -> usize {
+    let available = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let cores = num_cpus::get_physical().min(available).max(1);
+    (cores - cores / 4).clamp(1, 48)
 }
 
 #[cfg(builtin_llama)]
