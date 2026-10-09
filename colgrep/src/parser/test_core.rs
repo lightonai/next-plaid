@@ -790,6 +790,18 @@ fn test_language_from_str() {
     assert_eq!(Language::from_str("c++"), Ok(Language::Cpp));
     assert_eq!(Language::from_str("cuda"), Ok(Language::Cuda));
     assert_eq!(Language::from_str("cu"), Ok(Language::Cuda));
+    assert_eq!(Language::from_str("d"), Ok(Language::D));
+    assert_eq!(Language::from_str("dlang"), Ok(Language::D));
+    assert_eq!(Language::from_str("perl"), Ok(Language::Perl));
+    assert_eq!(Language::from_str("pl"), Ok(Language::Perl));
+    assert_eq!(Language::from_str("odin"), Ok(Language::Odin));
+    assert_eq!(Language::from_str("pascal"), Ok(Language::Pascal));
+    assert_eq!(Language::from_str("Delphi"), Ok(Language::Pascal));
+    assert_eq!(Language::from_str("freepascal"), Ok(Language::Pascal));
+    assert_eq!(Language::from_str("pas"), Ok(Language::Pascal));
+    assert_eq!(Language::from_str("assembly"), Ok(Language::Assembly));
+    assert_eq!(Language::from_str("asm"), Ok(Language::Assembly));
+    assert_eq!(Language::from_str("nasm"), Ok(Language::Assembly));
 
     assert_eq!(Language::from_str("csharp"), Ok(Language::CSharp));
     assert_eq!(Language::from_str("c#"), Ok(Language::CSharp));

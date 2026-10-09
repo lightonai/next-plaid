@@ -17,7 +17,23 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         Language::Go => kind == "function_declaration" || kind == "method_declaration",
         Language::Java => kind == "method_declaration" || kind == "constructor_declaration",
         Language::C | Language::Cpp | Language::Cuda => kind == "function_definition",
+        // D: functions and methods, constructors / destructors / postblits,
+        // and `unittest` blocks (D's inline tests, often the best usage
+        // example of the function above them).
+        Language::D => matches!(
+            kind,
+            "function_declaration"
+                | "constructor"
+                | "destructor"
+                | "postblit"
+                | "unittest_declaration"
+        ),
         Language::Ruby => kind == "method" || kind == "singleton_method",
+        // Perl: `sub name {...}` and the 5.38 `method name {...}`.
+        Language::Perl => matches!(
+            kind,
+            "subroutine_declaration_statement" | "method_declaration_statement"
+        ),
         Language::CSharp => kind == "method_declaration" || kind == "constructor_declaration",
         Language::Dart => matches!(
             kind,
@@ -38,6 +54,15 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         Language::Ocaml => matches!(kind, "let_binding" | "value_definition"),
         Language::R => kind == "function_definition",
         Language::Zig => kind == "FnProto" || kind == "fn_decl",
+        // Odin: `name :: proc(...) {...}` and procedure groups
+        // `name :: proc{a, b}`.
+        Language::Odin => matches!(
+            kind,
+            "procedure_declaration" | "overloaded_procedure_declaration"
+        ),
+        // Pascal: a routine with its body (`defProc`); the bodiless headers in
+        // an `interface` section or a class declaration (`declProc`) are not.
+        Language::Pascal => kind == "defProc",
         Language::Julia => matches!(kind, "function_definition" | "short_function_definition"),
         Language::Sql => matches!(kind, "create_function_statement" | "create_procedure"),
         // Both `function foo() {...}` and `foo() {...}` forms produce
@@ -79,6 +104,19 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
             "class_specifier" | "struct_specifier" | "enum_specifier"
         ),
         Language::Ruby => kind == "class" || kind == "module",
+        // Perl: `package Name {...}` / `class Name {...}` blocks. The
+        // statement form (`package Name;`) is handled in `perl_packages`.
+        Language::Perl => matches!(kind, "package_statement" | "class_statement"),
+        Language::D => matches!(
+            kind,
+            "class_declaration"
+                | "struct_declaration"
+                | "interface_declaration"
+                | "union_declaration"
+                | "enum_declaration"
+                | "template_declaration"
+                | "mixin_template_declaration"
+        ),
         Language::CSharp => matches!(
             kind,
             "class_declaration"
@@ -125,6 +163,17 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
         Language::Ocaml => matches!(kind, "type_definition" | "module_definition"),
         Language::R => false, // R doesn't have traditional classes
         Language::Zig => kind == "ContainerDecl", // struct, enum, union
+        Language::Odin => matches!(
+            kind,
+            "struct_declaration"
+                | "union_declaration"
+                | "enum_declaration"
+                | "bit_field_declaration"
+        ),
+        // Pascal `TName = class / record / interface / (enum) ...` type
+        // declarations; plain aliases (`TSize = Integer`) get no name in
+        // get_node_name and are left to the gap filler.
+        Language::Pascal => kind == "declType",
         Language::Julia => matches!(kind, "struct_definition" | "abstract_definition"),
         Language::Sql => matches!(
             kind,
@@ -199,6 +248,14 @@ pub fn is_constant_node(kind: &str, lang: Language) -> bool {
             "static_final_declaration_list" | "initialized_identifier_list" | "identifier_list"
         ),
         Language::C | Language::Cpp | Language::Cuda => kind == "declaration",
+        // D manifest constants (`enum MAX = 10;`).
+        Language::D => kind == "manifest_constant",
+        // Perl `use constant NAME => value;` (other `use` lines get no name).
+        Language::Perl => kind == "use_statement",
+        // Odin `NAME :: value` constants.
+        Language::Odin => matches!(kind, "const_declaration" | "const_type_declaration"),
+        // Pascal `const` section entries.
+        Language::Pascal => kind == "declConst",
         Language::Python => {
             // Python doesn't have const, but we capture module-level assignments
             // We'll filter for UPPER_CASE names in extract_constant
@@ -254,6 +311,24 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
             None
         }
         Language::Ruby => node.child_by_field_name("body"),
+        Language::Perl => node
+            .children(&mut node.walk())
+            .find(|c| c.kind() == "block"),
+        // D aggregates keep their members in `aggregate_body`; a template's
+        // declarations are direct children of the template itself.
+        Language::D => node
+            .children(&mut node.walk())
+            .find(|c| c.kind() == "aggregate_body")
+            .or_else(|| {
+                matches!(
+                    node.kind(),
+                    "template_declaration" | "mixin_template_declaration"
+                )
+                .then_some(node)
+            }),
+        // Odin types carry no methods; Pascal methods are defined in the
+        // `implementation` section, outside the class declaration.
+        Language::Odin | Language::Pascal => None,
         // Additional languages
         Language::Kotlin | Language::Swift | Language::Scala | Language::Php => {
             node.child_by_field_name("body")
@@ -411,6 +486,57 @@ fn get_dart_node_name(node: Node, bytes: &[u8]) -> Option<String> {
     }
 }
 
+/// D declarations name themselves with a direct `identifier` child (the
+/// grammar has no `name` field); special members are named by their keyword.
+fn get_d_node_name(node: Node, bytes: &[u8]) -> Option<String> {
+    let fixed = match node.kind() {
+        "constructor" => Some("this"),
+        "destructor" => Some("~this"),
+        "postblit" => Some("this(this)"),
+        "unittest_declaration" => Some("unittest"),
+        _ => None,
+    };
+    if let Some(fixed) = fixed {
+        return Some(fixed.to_string());
+    }
+    node.children(&mut node.walk())
+        .find(|c| c.kind() == "identifier")
+        .and_then(|n| n.utf8_text(bytes).ok())
+        .map(str::to_string)
+}
+
+/// Pascal routine definitions are named in their header (`declProc`), where a
+/// method's name is qualified by its class (`TShape.Create` → `Create`; the
+/// class becomes the parent in `determine_function_type`). Type declarations
+/// are named only when they declare a class, record, interface, helper or
+/// enum, and generic parameters are dropped (`TList<T>` → `TList`).
+fn get_pascal_node_name(node: Node, bytes: &[u8]) -> Option<String> {
+    let name = match node.kind() {
+        "defProc" => node
+            .child_by_field_name("header")?
+            .child_by_field_name("name")?,
+        "declType" => {
+            let mut ty = node.child_by_field_name("type")?;
+            // Enums come wrapped: `type > declEnum`.
+            if ty.kind() == "type" {
+                ty = ty.named_child(0)?;
+            }
+            if !matches!(
+                ty.kind(),
+                "declClass" | "declIntf" | "declHelper" | "declEnum"
+            ) {
+                return None;
+            }
+            node.child_by_field_name("name")?
+        }
+        _ => node.child_by_field_name("name")?,
+    };
+    let text = name.utf8_text(bytes).ok()?;
+    let short = text.rsplit('.').next().unwrap_or(text);
+    let short = short.split('<').next().unwrap_or(short).trim();
+    (!short.is_empty()).then(|| short.to_string())
+}
+
 /// Get the name of a node (function, class, etc.).
 pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String> {
     let name_node = match lang {
@@ -424,6 +550,20 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("property")),
         Language::Dart => return get_dart_node_name(node, bytes),
+        // A statement-form `package Name;` is no container of its own (see
+        // perl::extra_units); only block packages and classes are named here.
+        Language::Perl
+            if matches!(node.kind(), "package_statement" | "class_statement")
+                && !node.children(&mut node.walk()).any(|c| c.kind() == "block") =>
+        {
+            None
+        }
+        Language::Perl => node.child_by_field_name("name"),
+        Language::D => return get_d_node_name(node, bytes),
+        Language::Odin => node
+            .children(&mut node.walk())
+            .find(|c| c.kind() == "identifier"),
+        Language::Pascal => return get_pascal_node_name(node, bytes),
         Language::C | Language::Cpp | Language::Cuda => {
             // For classes/structs/unions/enums, look for name field or type_identifier
             if matches!(
@@ -812,4 +952,146 @@ pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: 
     }
 
     start
+}
+
+/// Comment node kinds of the grammars whose doc comments are read from the
+/// tree by [`leading_doc_comments`] rather than line by line.
+fn is_doc_comment_kind(kind: &str, lang: Language) -> bool {
+    match lang {
+        Language::Perl => matches!(kind, "comment" | "pod"),
+        Language::Odin => matches!(kind, "comment" | "block_comment"),
+        Language::D | Language::Pascal => kind == "comment",
+        _ => false,
+    }
+}
+
+/// The comments documenting a declaration, in source order: the run of
+/// comment siblings directly above it (`///` / `/** */` / `/++ +/` in D, `//`
+/// in Odin, `//` / `{ }` / `(* *)` in Pascal, `#` lines in Perl). A blank line
+/// or a trailing comment of the previous statement ends the run. Perl POD
+/// blocks are separated from the sub they document by a blank line, so one is
+/// taken across blank lines, but only when it names the sub (`=head2 name`,
+/// `=item name`): a module's leading `=head1 DESCRIPTION` is not the doc of
+/// whichever sub happens to follow it.
+///
+/// Comments are siblings of the outermost node starting on the declaration's
+/// line, so `private void f()` (D attributes wrap the function) still finds
+/// the comment above `private`.
+pub fn leading_doc_comments<'a>(
+    node: Node<'a>,
+    bytes: &[u8],
+    lang: Language,
+    name: &str,
+) -> Vec<Node<'a>> {
+    let mut anchor = node;
+    while let Some(parent) = anchor.parent() {
+        if parent.parent().is_none()
+            || parent.start_position().row != anchor.start_position().row
+            || is_doc_comment_kind(parent.kind(), lang)
+        {
+            break;
+        }
+        anchor = parent;
+    }
+
+    let mut comments = Vec::new();
+    let mut top_row = anchor.start_position().row;
+    let mut prev = anchor.prev_sibling();
+    while let Some(comment) = prev {
+        if !is_doc_comment_kind(comment.kind(), lang) {
+            break;
+        }
+        // tree-sitter puts a node's end at the start of the next row when the
+        // node swallows its trailing newline (POD does).
+        let end = comment.end_position();
+        let end_row = if end.column == 0 && end.row > comment.start_position().row {
+            end.row - 1
+        } else {
+            end.row
+        };
+        if comment.kind() == "pod" {
+            let text = comment.utf8_text(bytes).unwrap_or("");
+            if end_row + 3 < top_row || !pod_documents(text, name) {
+                break;
+            }
+        } else if end_row + 1 < top_row {
+            break;
+        }
+        // A comment sharing its first row with the previous statement trails
+        // that statement (`x = 1; // note`); it documents nothing below it.
+        if let Some(before) = comment.prev_sibling() {
+            if before.end_position().row == comment.start_position().row
+                && !is_doc_comment_kind(before.kind(), lang)
+            {
+                break;
+            }
+        }
+        comments.push(comment);
+        top_row = comment.start_position().row;
+        prev = comment.prev_sibling();
+    }
+    comments.reverse();
+    comments
+}
+
+/// True if a POD block has a `=head` / `=item` heading naming `name`.
+fn pod_documents(pod: &str, name: &str) -> bool {
+    pod.lines().any(|line| {
+        let Some(rest) = line.strip_prefix('=') else {
+            return false;
+        };
+        let mut words = rest.split_whitespace();
+        let directive = words.next().unwrap_or("");
+        (directive.starts_with("head") || directive == "item")
+            && words.any(|w| {
+                w.trim_start_matches(['$', '@', '%', '*', '&'])
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+                    .any(|part| part == name || part.rsplit("::").next() == Some(name))
+            })
+    })
+}
+
+/// Plain text of doc comments: comment markers stripped, POD commands
+/// reduced to their text, everything joined on one line.
+pub fn doc_comment_text(comments: &[Node], bytes: &[u8]) -> Option<String> {
+    let mut words: Vec<&str> = Vec::new();
+    for comment in comments {
+        let text = comment.utf8_text(bytes).unwrap_or("");
+        for line in text.lines() {
+            let mut line = line.trim();
+            if comment.kind() == "pod" {
+                let Some(rest) = line.strip_prefix('=') else {
+                    if !line.is_empty() {
+                        words.push(line);
+                    }
+                    continue;
+                };
+                let mut parts = rest.splitn(2, char::is_whitespace);
+                let directive = parts.next().unwrap_or("");
+                if !(directive.starts_with("head") || directive == "item") {
+                    continue;
+                }
+                line = parts.next().unwrap_or("");
+            } else {
+                for prefix in ["///", "//", "/**", "/++", "/*", "/+", "(*", "#", "{"] {
+                    if let Some(rest) = line.strip_prefix(prefix) {
+                        line = rest;
+                        break;
+                    }
+                }
+                for suffix in ["*/", "+/", "*)", "}"] {
+                    if let Some(rest) = line.strip_suffix(suffix) {
+                        line = rest;
+                        break;
+                    }
+                }
+                line = line.trim_start_matches(['*', '+', '#']);
+            }
+            let line = line.trim();
+            if !line.is_empty() {
+                words.push(line);
+            }
+        }
+    }
+    (!words.is_empty()).then(|| words.join(" "))
 }

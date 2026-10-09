@@ -15,7 +15,9 @@ pub enum Language {
     C,
     Cpp,
     Cuda,
+    D,
     Ruby,
+    Perl,
     CSharp,
     Dart,
     // Additional languages with tree-sitter
@@ -29,6 +31,9 @@ pub enum Language {
     Ocaml,
     R,
     Zig,
+    Odin,
+    Pascal,
+    Assembly,
     Julia,
     Sql,
     Vue,
@@ -73,7 +78,9 @@ impl FromStr for Language {
             "c" => Ok(Language::C),
             "cpp" | "c++" => Ok(Language::Cpp),
             "cuda" | "cu" => Ok(Language::Cuda),
+            "d" | "dlang" => Ok(Language::D),
             "ruby" | "rb" => Ok(Language::Ruby),
+            "perl" | "pl" => Ok(Language::Perl),
             "csharp" | "c#" | "cs" => Ok(Language::CSharp),
             "dart" => Ok(Language::Dart),
             // Additional languages
@@ -87,6 +94,11 @@ impl FromStr for Language {
             "ocaml" | "ml" => Ok(Language::Ocaml),
             "r" => Ok(Language::R),
             "zig" => Ok(Language::Zig),
+            "odin" => Ok(Language::Odin),
+            "pascal" | "delphi" | "freepascal" | "fpc" | "pas" | "objectpascal" => {
+                Ok(Language::Pascal)
+            }
+            "assembly" | "asm" | "nasm" | "gas" => Ok(Language::Assembly),
             "julia" | "jl" => Ok(Language::Julia),
             "sql" => Ok(Language::Sql),
             "vue" => Ok(Language::Vue),

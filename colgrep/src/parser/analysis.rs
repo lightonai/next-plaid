@@ -459,10 +459,253 @@ fn extract_dart_parameters(node: Node, bytes: &[u8]) -> Vec<String> {
     result
 }
 
+fn node_text<'a>(node: Node, bytes: &'a [u8]) -> &'a str {
+    node.utf8_text(bytes).unwrap_or("").trim()
+}
+
+fn named_child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+    node.named_children(&mut node.walk())
+        .find(|c| c.kind() == kind)
+}
+
+/// Parameter names of D, Odin and Pascal routines. D: `(int a, T b)`, the
+/// name is the parameter's last direct identifier (its type is a `type`
+/// node). Odin: `(a, b: int, using v: Vec2)`, every direct identifier is a
+/// name. Pascal: `(const A, B: Integer; var S: string)` via the `name` fields.
+fn extract_named_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    let mut result = Vec::new();
+    match lang {
+        Language::D => {
+            let Some(params) = named_child_of_kind(node, "parameters") else {
+                return result;
+            };
+            for param in params.named_children(&mut params.walk()) {
+                if param.kind() != "parameter" {
+                    continue;
+                }
+                if let Some(name) = param
+                    .named_children(&mut param.walk())
+                    .filter(|c| c.kind() == "identifier")
+                    .last()
+                {
+                    result.push(node_text(name, bytes).to_string());
+                }
+            }
+        }
+        Language::Odin => {
+            let Some(params) = named_child_of_kind(node, "procedure")
+                .and_then(|p| named_child_of_kind(p, "parameters"))
+            else {
+                return result;
+            };
+            for param in params.named_children(&mut params.walk()) {
+                for name in param.named_children(&mut param.walk()) {
+                    if name.kind() == "identifier" {
+                        result.push(node_text(name, bytes).to_string());
+                    }
+                }
+            }
+        }
+        Language::Pascal => {
+            let Some(args) = node
+                .child_by_field_name("header")
+                .and_then(|h| h.child_by_field_name("args"))
+            else {
+                return result;
+            };
+            for arg in args.named_children(&mut args.walk()) {
+                let mut cursor = arg.walk();
+                for name in arg.children_by_field_name("name", &mut cursor) {
+                    if name.kind() == "identifier" {
+                        result.push(node_text(name, bytes).to_string());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    result.retain(|p| !p.is_empty());
+    result
+}
+
+/// Callee of a D call: `f(x)`, `obj.method(x)` (→ `method`), `to!string(x)`
+/// (→ `to`), and the class of `new Foo(x)`.
+fn d_callee_name<'a>(node: Node, bytes: &'a [u8]) -> Option<&'a str> {
+    let callee = match node.kind() {
+        "call_expression" => node.named_child(0)?,
+        "new_expression" => named_child_of_kind(node, "type")?,
+        _ => return None,
+    };
+    let name_node = match callee.kind() {
+        "template_instance" => named_child_of_kind(callee, "identifier")?,
+        "type" | "property_expression" => {
+            let last = callee.named_child(callee.named_child_count().checked_sub(1)?)?;
+            if last.kind() == "template_instance" {
+                named_child_of_kind(last, "identifier")?
+            } else {
+                last
+            }
+        }
+        _ => callee,
+    };
+    let name = node_text(name_node, bytes);
+    let name = name.rsplit('.').next().unwrap_or(name);
+    let name = name.split('!').next().unwrap_or(name);
+    is_identifier_like(name).then_some(name)
+}
+
+fn is_identifier_like(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Callee of a Pascal call: `WriteLn(x)`, `List.Add(x)` (→ `Add`), a bare
+/// `Refresh;` statement (Pascal calls a routine without arguments with no
+/// parentheses), and `inherited Create`.
+fn pascal_callee_name<'a>(node: Node, bytes: &'a [u8]) -> Option<&'a str> {
+    let callee = match node.kind() {
+        "exprCall" => node.child_by_field_name("entity")?,
+        "statement" => {
+            let only = node
+                .named_child(0)
+                .filter(|_| node.named_child_count() == 1)?;
+            match only.kind() {
+                "identifier" | "exprDot" => only,
+                _ => return None,
+            }
+        }
+        "inherited" => named_child_of_kind(node, "identifier")?,
+        _ => return None,
+    };
+    let callee = if callee.kind() == "exprDot" {
+        callee.child_by_field_name("rhs")?
+    } else {
+        callee
+    };
+    let callee = if callee.kind() == "exprTpl" {
+        callee.named_child(0)?
+    } else {
+        callee
+    };
+    let name = node_text(callee, bytes);
+    is_identifier_like(name).then_some(name)
+}
+
+fn extract_named_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    let mut calls = Vec::new();
+    walk_tree(node, |current| {
+        let name = match lang {
+            Language::D => d_callee_name(current, bytes),
+            Language::Pascal => pascal_callee_name(current, bytes),
+            _ => None,
+        };
+        if let Some(name) = name {
+            calls.push(name.to_string());
+        }
+    });
+    calls.sort();
+    calls.dedup();
+    calls
+}
+
+/// Variables declared in D (`int x, y;`, `auto p = ...;`), Odin (`x := 1`,
+/// `x: int`) and Pascal (`var i, j: Integer;`) code.
+fn extract_declared_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    let mut vars = Vec::new();
+    walk_tree(node, |current| match (lang, current.kind()) {
+        (Language::D, "variable_declaration") => {
+            for declarator in current.named_children(&mut current.walk()) {
+                if declarator.kind() == "declarator" {
+                    if let Some(name) = named_child_of_kind(declarator, "identifier") {
+                        vars.push(node_text(name, bytes).to_string());
+                    }
+                }
+            }
+        }
+        (Language::D, "auto_declaration") => {
+            let mut cursor = current.walk();
+            for name in current.children_by_field_name("variable", &mut cursor) {
+                vars.push(node_text(name, bytes).to_string());
+            }
+        }
+        (Language::Odin, "variable_declaration" | "var_declaration" | "assignment_statement") => {
+            // `a, b := f()` / `x: int = 0`: the names precede the operator.
+            let declares = current.kind() != "assignment_statement"
+                || current
+                    .children(&mut current.walk())
+                    .any(|c| c.kind() == ":=");
+            if declares {
+                for child in current.children(&mut current.walk()) {
+                    match child.kind() {
+                        "identifier" => vars.push(node_text(child, bytes).to_string()),
+                        "," => {}
+                        _ => break,
+                    }
+                }
+            }
+        }
+        (Language::Pascal, "declVar") => {
+            let mut cursor = current.walk();
+            for name in current.children_by_field_name("name", &mut cursor) {
+                if name.kind() == "identifier" {
+                    vars.push(node_text(name, bytes).to_string());
+                }
+            }
+        }
+        _ => {}
+    });
+    vars.retain(|v| is_identifier_like(v) && v.len() < 50);
+    vars.sort();
+    vars.dedup();
+    vars
+}
+
+/// Imports of D (`import std.algorithm : map;` → `std.algorithm`), Odin
+/// (`import "core:fmt"` → `fmt`, `import rl "vendor:raylib"` → `rl`) and
+/// Pascal (`uses Classes, System.SysUtils;`).
+fn extract_module_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    let mut imports = Vec::new();
+    walk_tree(node, |current| match (lang, current.kind()) {
+        (Language::D, "imported") => {
+            if let Some(fqn) = named_child_of_kind(current, "module_fqn") {
+                imports.push(node_text(fqn, bytes).to_string());
+            }
+        }
+        (Language::Odin, "import_declaration") => {
+            if let Some(alias) = current.child_by_field_name("alias") {
+                imports.push(node_text(alias, bytes).to_string());
+            } else if let Some(path) = find_first_by_kind(current, "string_content", 4) {
+                let path = node_text(path, bytes);
+                let name = path.rsplit([':', '/']).next().unwrap_or(path);
+                imports.push(name.to_string());
+            }
+        }
+        (Language::Pascal, "declUses") => {
+            for module in current.named_children(&mut current.walk()) {
+                if module.kind() == "moduleName" {
+                    imports.push(node_text(module, bytes).to_string());
+                }
+            }
+        }
+        _ => {}
+    });
+    imports.retain(|i| !i.is_empty());
+    imports.sort();
+    imports.dedup();
+    imports
+}
+
 /// Extract parameter names from a function node.
 pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
-    if lang == Language::Dart {
-        return extract_dart_parameters(node, bytes);
+    match lang {
+        Language::Dart => return extract_dart_parameters(node, bytes),
+        Language::Perl => return super::perl::parameters(node, bytes),
+        Language::D | Language::Odin | Language::Pascal => {
+            return extract_named_parameters(node, bytes, lang)
+        }
+        _ => {}
     }
 
     let params_node = match lang {
@@ -642,6 +885,18 @@ pub fn extract_return_type(node: Node, bytes: &[u8], lang: Language) -> Option<S
         Language::Go => node.child_by_field_name("result"),
         Language::Java | Language::CSharp => node.child_by_field_name("type"),
         Language::Cpp | Language::Cuda | Language::C => node.child_by_field_name("type"),
+        Language::D => named_child_of_kind(node, "type"),
+        // Odin: `proc(...) -> T`; the result type follows the arrow.
+        Language::Odin => {
+            let procedure = named_child_of_kind(node, "procedure")?;
+            let mut cursor = procedure.walk();
+            let mut children = procedure.children(&mut cursor);
+            children.find(|c| c.kind() == "->")?;
+            children.find(|c| c.is_named())
+        }
+        Language::Pascal => node
+            .child_by_field_name("header")
+            .and_then(|h| h.child_by_field_name("type")),
         Language::Dart => {
             let signature = find_first_by_kinds(
                 node,
@@ -753,8 +1008,11 @@ fn extract_dart_function_calls(node: Node, bytes: &[u8]) -> Vec<String> {
 
 /// Extract function calls from a node.
 pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
-    if lang == Language::Dart {
-        return extract_dart_function_calls(node, bytes);
+    match lang {
+        Language::Dart => return extract_dart_function_calls(node, bytes),
+        Language::Perl => return super::perl::calls(node, bytes),
+        Language::D | Language::Pascal => return extract_named_calls(node, bytes, lang),
+        _ => {}
     }
 
     let mut calls = Vec::new();
@@ -770,6 +1028,7 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
         Language::Ruby => &["call", "method_call"],
         Language::Kotlin => &["call_expression", "navigation_expression"],
         Language::Swift => &["call_expression"],
+        Language::Odin => &["call_expression"],
         Language::Scala => &["call_expression"],
         Language::Php => &["function_call_expression", "method_call_expression"],
         Language::Lua => &["function_call"],
@@ -853,6 +1112,30 @@ pub fn extract_control_flow(node: Node, lang: Language) -> (usize, bool, bool, b
             "?" | "try_operator" if lang == Language::Rust => {
                 has_error_handling = true;
             }
+            // Perl and Pascal name their statements differently.
+            "conditional_statement" | "postfix_conditional_expression"
+                if lang == Language::Perl =>
+            {
+                complexity += 1;
+                has_branches = true;
+            }
+            "loop_statement" | "cstyle_for_statement" | "postfix_loop_expression"
+                if lang == Language::Perl =>
+            {
+                complexity += 1;
+                has_loops = true;
+            }
+            "eval_expression" if lang == Language::Perl => {
+                has_error_handling = true;
+            }
+            "ifElse" | "case" if lang == Language::Pascal => {
+                complexity += 1;
+                has_branches = true;
+            }
+            "repeat" | "foreach" if lang == Language::Pascal => {
+                complexity += 1;
+                has_loops = true;
+            }
             _ => {}
         }
     });
@@ -861,6 +1144,13 @@ pub fn extract_control_flow(node: Node, lang: Language) -> (usize, bool, bool, b
 
 /// Extract variable declarations from a node.
 pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    match lang {
+        Language::Perl => return super::perl::variables(node, bytes),
+        Language::D | Language::Odin | Language::Pascal => {
+            return extract_declared_variables(node, bytes, lang)
+        }
+        _ => {}
+    }
     let mut vars = Vec::new();
     let var_types: &[&str] = match lang {
         Language::Python => &["assignment", "named_expression", "augmented_assignment"],
@@ -1008,8 +1298,13 @@ fn extract_dart_imports(node: Node, bytes: &[u8]) -> Vec<String> {
 
 /// Extract import statements from a file.
 pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
-    if lang == Language::Dart {
-        return extract_dart_imports(node, bytes);
+    match lang {
+        Language::Dart => return extract_dart_imports(node, bytes),
+        Language::Perl => return super::perl::file_imports(node, bytes),
+        Language::D | Language::Odin | Language::Pascal => {
+            return extract_module_imports(node, bytes, lang)
+        }
+        _ => {}
     }
 
     let mut imports = Vec::new();
@@ -1300,8 +1595,10 @@ fn extract_dart_used_modules(node: Node, bytes: &[u8]) -> Vec<String> {
 /// Extract module/receiver names from attribute access patterns (e.g., `json` from `json.loads()`).
 /// These are identifiers that are used as the base of attribute access or method calls.
 pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
-    if lang == Language::Dart {
-        return extract_dart_used_modules(node, bytes);
+    match lang {
+        Language::Dart => return extract_dart_used_modules(node, bytes),
+        Language::Perl => return super::perl::used_modules(node, bytes),
+        _ => {}
     }
 
     let mut modules = Vec::new();
@@ -1328,6 +1625,10 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
             "object_creation_expression",
         ],
         Language::Lua => &["dot_index_expression", "method_index_expression"],
+        // Odin `fmt.println(...)`, Pascal `SysUtils.IntToStr(...)`: the
+        // receiver is the first child.
+        Language::Odin => &["member_expression"],
+        Language::Pascal => &["exprDot"],
         Language::Ocaml => &["field_get_expression", "value_path"],
         _ => return modules,
     };
@@ -1558,6 +1859,9 @@ pub fn extract_parent_class(
             None
         }
 
+        // Perl: `package Dog { use parent 'Animal'; ... }`
+        Language::Perl => super::perl::block_parent_class(node, bytes),
+
         // Ruby: class Dog < Animal -> superclass -> superclass node -> constant
         Language::Ruby => {
             let superclass = node.child_by_field_name("superclass")?;
@@ -1603,6 +1907,23 @@ pub fn extract_parent_class(
                 }
             }
             None
+        }
+
+        // D: class Dog : Animal, Speaker -> base_class -> identifier
+        Language::D => {
+            let base = named_child_of_kind(node, "base_class")?;
+            find_first_by_kind(base, "identifier", max_depth)
+                .map(|id| node_text(id, bytes).to_string())
+        }
+
+        // Pascal: TDog = class(TAnimal, IBarks) -> declClass parent: typeref
+        Language::Pascal => {
+            let class = node.child_by_field_name("type")?;
+            let mut cursor = class.walk();
+            let parent = class
+                .children_by_field_name("parent", &mut cursor)
+                .find(|p| p.kind() == "typeref")?;
+            Some(node_text(parent, bytes).to_string())
         }
 
         // Scala: class Dog extends Animal -> extends_clause -> type_identifier

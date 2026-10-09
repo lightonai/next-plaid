@@ -3,6 +3,7 @@
 //! Each language has its own test module to keep tests organized and maintainable.
 
 mod common;
+mod test_assembly;
 mod test_bash;
 mod test_c;
 mod test_cmake;
@@ -10,6 +11,7 @@ mod test_cpp;
 mod test_csharp;
 mod test_css;
 mod test_cuda;
+mod test_d;
 mod test_dart;
 mod test_elixir;
 mod test_go;
@@ -23,6 +25,9 @@ mod test_julia;
 mod test_kotlin;
 mod test_lua;
 mod test_ocaml;
+mod test_odin;
+mod test_pascal;
+mod test_perl;
 mod test_php;
 mod test_powershell;
 mod test_proto;

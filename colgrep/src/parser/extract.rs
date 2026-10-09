@@ -4,7 +4,9 @@ use super::analysis::{
     extract_control_flow, extract_docstring, extract_function_calls, extract_parameters,
     extract_parent_class, extract_return_type, extract_used_modules, extract_variables,
 };
-use super::ast::{find_start_with_attributes, get_node_name};
+use super::ast::{
+    doc_comment_text, find_start_with_attributes, get_node_name, leading_doc_comments,
+};
 use super::types::{CodeUnit, Language, UnitType};
 use std::path::Path;
 use tree_sitter::Node;
@@ -57,7 +59,11 @@ pub fn extract_function(
         .min(lines.len().saturating_sub(1));
 
     // Include preceding attributes/decorators in the line range
-    let code_start = find_start_with_attributes(ast_start_line, lines, lang);
+    let doc_comments = tree_doc_comments(node, bytes, lang, &name);
+    let code_start = doc_comments.first().map_or_else(
+        || find_start_with_attributes(ast_start_line, lines, lang),
+        |c| c.start_position().row,
+    );
     let start_line = code_start;
 
     // Determine if this is a method based on parent class or language-specific patterns
@@ -74,11 +80,21 @@ pub fn extract_function(
     );
 
     // Layer 1: AST
+    // Odin attributes (`@(private)`) sit on their own line inside the
+    // declaration; the signature is the line naming the procedure.
+    let signature_line = match lang {
+        Language::Odin => node
+            .children(&mut node.walk())
+            .find(|c| c.kind() == "identifier")
+            .map_or(ast_start_line, |n| n.start_position().row),
+        _ => ast_start_line,
+    };
     unit.signature = lines
-        .get(ast_start_line)
+        .get(signature_line)
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    unit.docstring = extract_docstring(node, lines, lang);
+    unit.docstring =
+        doc_comment_text(&doc_comments, bytes).or_else(|| extract_docstring(node, lines, lang));
     unit.parameters = extract_parameters(node, bytes, lang);
     unit.return_type = extract_return_type(node, bytes, lang);
 
@@ -130,6 +146,23 @@ pub fn extract_function(
     Some(unit)
 }
 
+/// Doc comments read from the tree (comment / POD siblings above the
+/// declaration) for the grammars that keep them as nodes; empty otherwise,
+/// and the line-based `find_start_with_attributes` / `extract_docstring` apply.
+fn tree_doc_comments<'a>(
+    node: Node<'a>,
+    bytes: &[u8],
+    lang: Language,
+    name: &str,
+) -> Vec<Node<'a>> {
+    match lang {
+        Language::Perl | Language::D | Language::Odin | Language::Pascal => {
+            leading_doc_comments(node, bytes, lang, name)
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Extract a class, struct, or similar type definition from an AST node.
 pub fn extract_class(
     node: Node,
@@ -147,7 +180,11 @@ pub fn extract_class(
     let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
 
     // Include preceding attributes/decorators in the line range
-    let code_start = find_start_with_attributes(ast_start_line, lines, lang);
+    let doc_comments = tree_doc_comments(node, bytes, lang, &name);
+    let code_start = doc_comments.first().map_or_else(
+        || find_start_with_attributes(ast_start_line, lines, lang),
+        |c| c.start_position().row,
+    );
     let start_line = code_start;
 
     let mut unit = CodeUnit::new(
@@ -165,7 +202,8 @@ pub fn extract_class(
         .get(ast_start_line)
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    unit.docstring = extract_docstring(node, lines, lang);
+    unit.docstring =
+        doc_comment_text(&doc_comments, bytes).or_else(|| extract_docstring(node, lines, lang));
     unit.extends = extract_parent_class(node, bytes, lang, super::max_recursion_depth());
 
     // Layer 1: Type parameters (generics like <T, U>)
@@ -220,6 +258,26 @@ fn extract_class_type_parameters(node: Node, bytes: &[u8], lang: Language) -> Ve
             // Swift uses generic_parameter_clause
             node.children(&mut node.walk())
                 .find(|c| c.kind() == "generic_parameter_clause")
+        }
+        // D: `struct Box(T, size_t n)`, `template Foo(T)`: each template
+        // parameter's first identifier is its name.
+        Language::D => {
+            let params = node
+                .named_children(&mut node.walk())
+                .find(|c| c.kind() == "template_parameters");
+            let mut result = Vec::new();
+            if let Some(params) = params {
+                for param in params.named_children(&mut params.walk()) {
+                    if let Some(name) = param
+                        .named_children(&mut param.walk())
+                        .find(|c| c.kind() == "identifier")
+                        .and_then(|n| n.utf8_text(bytes).ok())
+                    {
+                        result.push(name.trim().to_string());
+                    }
+                }
+            }
+            return result;
         }
         Language::Cpp | Language::Cuda => {
             // C++ templates: look for template_parameter_list in parent template_declaration
@@ -568,6 +626,37 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .or_else(|| node.child_by_field_name("pattern"))
             .and_then(|n| n.utf8_text(bytes).ok())
             .map(|s| s.to_string()),
+        Language::Perl => super::perl::constant_name(node, bytes),
+        // D `enum MAX = 10;`, Odin `MAX :: 10`, Pascal `MaxSize = 10;`: the
+        // first identifier names the constant. Local constants inside a
+        // routine body are left to the routine's unit.
+        Language::D | Language::Odin | Language::Pascal => {
+            let mut ancestor = node.parent();
+            while let Some(a) = ancestor {
+                if matches!(a.kind(), "function_body" | "procedure" | "defProc") {
+                    return None;
+                }
+                ancestor = a.parent();
+            }
+            let holder = if lang == Language::D {
+                node.named_children(&mut node.walk())
+                    .find(|c| c.kind() == "manifest_declarator")?
+            } else {
+                node
+            };
+            let name = holder
+                .child_by_field_name("name")
+                .or_else(|| {
+                    holder
+                        .named_children(&mut holder.walk())
+                        .find(|c| c.kind() == "identifier")
+                })?
+                .utf8_text(bytes)
+                .ok()?
+                .trim()
+                .to_string();
+            (!name.is_empty()).then_some(name)
+        }
         // CSS at-rules ( @import / @charset / @namespace ): the unit name
         // is the at-keyword, produced by the same helper that names
         // rule_set / @media / @keyframes elsewhere in the parser.
@@ -770,6 +859,26 @@ fn determine_function_type(
             }
             (UnitType::Function, None)
         }
+        // Pascal: a method is defined with its class-qualified name,
+        // `procedure TShape.Draw;` (nested types: `TOuter.TInner.Draw`).
+        Language::Pascal => {
+            let qualified = node
+                .child_by_field_name("header")
+                .and_then(|h| h.child_by_field_name("name"))
+                .filter(|n| n.kind() == "genericDot")
+                .and_then(|n| n.utf8_text(bytes).ok());
+            match qualified.and_then(|q| q.rsplit_once('.')) {
+                Some((class, _)) if !class.trim().is_empty() => {
+                    (UnitType::Method, Some(class.trim().to_string()))
+                }
+                _ => (UnitType::Function, None),
+            }
+        }
+        // Perl: a sub after `package Name;` belongs to that package.
+        Language::Perl => match super::perl::enclosing_package(node, bytes) {
+            Some(package) if package != "main" => (UnitType::Method, Some(package)),
+            _ => (UnitType::Function, None),
+        },
         _ => (UnitType::Function, None),
     }
 }
