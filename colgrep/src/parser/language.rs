@@ -82,6 +82,7 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
         "pl" | "pm" | "t" => Some(Language::Perl),
         "cs" => Some(Language::CSharp),
         "dart" => Some(Language::Dart),
+        "gd" => Some(Language::Gdscript),
         // Additional languages
         "kt" | "kts" => Some(Language::Kotlin),
         "swift" => Some(Language::Swift),
@@ -89,6 +90,7 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
         "php" => Some(Language::Php),
         "lua" => Some(Language::Lua),
         "clj" | "cljs" | "cljc" | "edn" => Some(Language::Clojure),
+        "luau" => Some(Language::Luau),
         "ex" | "exs" => Some(Language::Elixir),
         "erl" | "hrl" => Some(Language::Erlang),
         "gleam" => Some(Language::Gleam),
@@ -115,6 +117,8 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
         "vue" => Some(Language::Vue),
         "svelte" => Some(Language::Svelte),
         "css" => Some(Language::Css),
+        "scss" | "sass" => Some(Language::Scss),
+        "less" => Some(Language::Less),
         // Terraform / HashiCorp Configuration Language
         "tf" | "tfvars" | "hcl" => Some(Language::Terraform),
         "nix" => Some(Language::Nix),
@@ -139,11 +143,17 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
         "md" | "markdown" | "mdx" => Some(Language::Markdown),
         "txt" | "text" | "rst" => Some(Language::Text),
         "adoc" | "asciidoc" => Some(Language::AsciiDoc),
+        "tex" | "ltx" | "sty" | "cls" | "bib" => Some(Language::Latex),
         "org" => Some(Language::Org),
         // Config formats
         "yaml" | "yml" => Some(Language::Yaml),
         "toml" => Some(Language::Toml),
         "json" | "jsonc" | "json5" => Some(Language::Json),
+        // XML documents, schemas and stylesheets, XAML, MSBuild projects,
+        // NuGet specs and Apple property lists. `.svg` is left out: it is
+        // an image format and its path data would only add noise.
+        "xml" | "xsd" | "xsl" | "xslt" | "xaml" | "axaml" | "csproj" | "vbproj" | "fsproj"
+        | "vcxproj" | "props" | "targets" | "nuspec" | "plist" => Some(Language::Xml),
         "mk" => Some(Language::Makefile),
         // Shell scripts
         "sh" | "bash" | "zsh" => Some(Language::Shell),
@@ -467,6 +477,8 @@ pub fn is_text_format(lang: Language) -> bool {
             | Language::Dockerfile
             | Language::Makefile
             | Language::AsciiDoc
+            | Language::Latex
+            | Language::Xml
             | Language::Org
     )
 }
@@ -492,6 +504,7 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Perl => ts_parser_perl::LANGUAGE.into(),
         Language::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
         Language::Dart => tree_sitter_dart::LANGUAGE.into(),
+        Language::Gdscript => tree_sitter_gdscript::LANGUAGE.into(),
         // Additional languages
         Language::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
         Language::Swift => tree_sitter_swift::LANGUAGE.into(),
@@ -499,6 +512,7 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Php => tree_sitter_php::LANGUAGE_PHP.into(),
         Language::Lua => tree_sitter_lua::LANGUAGE.into(),
         Language::Clojure => tree_sitter_clojure_orchard::LANGUAGE.into(),
+        Language::Luau => tree_sitter_luau::LANGUAGE.into(),
         Language::Elixir => tree_sitter_elixir::LANGUAGE.into(),
         Language::Erlang => tree_sitter_erlang::LANGUAGE.into(),
         Language::Gleam => tree_sitter_gleam::LANGUAGE.into(),
@@ -530,6 +544,10 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Notebook => tree_sitter_python::LANGUAGE.into(),
         // CSS uses tree-sitter-css
         Language::Css => tree_sitter_css::LANGUAGE.into(),
+        // SCSS and Less are split by the brace scanner in style.rs, not by
+        // a grammar; CSS is the closest tree-sitter grammar for callers that
+        // only need some parser for them.
+        Language::Scss | Language::Less => tree_sitter_css::LANGUAGE.into(),
         // Terraform / HCL uses tree-sitter-hcl
         Language::Terraform => tree_sitter_hcl::LANGUAGE.into(),
         Language::Nix => tree_sitter_nix::LANGUAGE.into(),
@@ -554,6 +572,8 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         | Language::Dockerfile
         | Language::Makefile
         | Language::AsciiDoc
+        | Language::Latex
+        | Language::Xml
         | Language::Org => unreachable!("Text/config formats don't use tree-sitter"),
         // Assembly is split line by line (asm.rs); see that module for why.
         Language::Assembly => unreachable!("Assembly doesn't use tree-sitter"),
@@ -1232,6 +1252,85 @@ __kernel void blur(__global const float *in, __global float *out, const int w)
         }
         // Code cells are code: `--code-only` keeps them.
         assert!(!is_text_format(Language::Notebook));
+    }
+
+    #[test]
+    fn test_detect_language_gdscript_and_luau() {
+        for (file, lang) in [
+            ("player.gd", Language::Gdscript),
+            ("PLAYER.GD", Language::Gdscript),
+            ("init.luau", Language::Luau),
+            ("Init.LUAU", Language::Luau),
+        ] {
+            assert_eq!(detect_language(Path::new(file)), Some(lang), "{file}");
+            assert!(!is_text_format(lang));
+        }
+        // `.lua` stays Lua even in Roblox projects that write Luau in it.
+        assert_eq!(detect_language(Path::new("init.lua")), Some(Language::Lua));
+    }
+
+    #[test]
+    fn test_detect_language_xml() {
+        for file in [
+            "pom.xml",
+            "schema.xsd",
+            "page.xsl",
+            "page.xslt",
+            "MainWindow.xaml",
+            "App.axaml",
+            "App.csproj",
+            "App.vbproj",
+            "App.fsproj",
+            "App.vcxproj",
+            "Directory.Build.props",
+            "Directory.Build.targets",
+            "Package.nuspec",
+            "Info.plist",
+            "ANDROIDMANIFEST.XML",
+        ] {
+            assert_eq!(
+                detect_language(Path::new(file)),
+                Some(Language::Xml),
+                "{file}"
+            );
+        }
+        // SVG is an image format: not indexed.
+        assert_eq!(detect_language(Path::new("logo.svg")), None);
+        assert!(is_text_format(Language::Xml));
+    }
+
+    #[test]
+    fn test_detect_language_latex() {
+        for file in [
+            "paper.tex",
+            "macros.sty",
+            "thesis.cls",
+            "refs.bib",
+            "doc.ltx",
+            "PAPER.TEX",
+        ] {
+            assert_eq!(
+                detect_language(Path::new(file)),
+                Some(Language::Latex),
+                "{file}"
+            );
+        }
+        assert!(is_text_format(Language::Latex));
+    }
+
+    #[test]
+    fn test_detect_language_stylesheets() {
+        for (file, lang) in [
+            ("_buttons.scss", Language::Scss),
+            ("_card.sass", Language::Scss),
+            ("BUTTONS.SCSS", Language::Scss),
+            ("buttons.less", Language::Less),
+            ("BUTTONS.LESS", Language::Less),
+        ] {
+            assert_eq!(detect_language(Path::new(file)), Some(lang), "{file}");
+            assert!(!is_text_format(lang));
+        }
+        assert_eq!(detect_language(Path::new("a.css")), Some(Language::Css));
     }
 
     #[test]

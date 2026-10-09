@@ -27,6 +27,7 @@ mod fsharp;
 mod hdl;
 mod html;
 mod language;
+mod latex;
 mod lisp;
 mod matlab;
 mod metal;
@@ -38,12 +39,98 @@ mod pascal;
 mod perl;
 mod qml;
 mod shader;
+mod style;
 mod svelte;
 mod text;
 pub mod types;
 mod vue;
+mod xml;
 
 // New per-language tests
+/// A GDScript file is itself a class: `class_name Player` names it and
+/// `extends CharacterBody2D` gives its base. Its top-level functions are that
+/// class's methods, so they get the script class as their parent (when it is
+/// named) and the base class as `extends`, which tells the embedding what
+/// kind of node a `_physics_process` belongs to.
+fn attach_gdscript_script_class(root: Node, bytes: &[u8], units: &mut [CodeUnit]) {
+    let mut class_name = None;
+    let mut base = None;
+    for child in root.children(&mut root.walk()) {
+        match child.kind() {
+            "class_name_statement" => {
+                class_name = child
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(bytes).ok())
+                    .map(str::to_string);
+                // `class_name Foo extends Bar` on one line.
+                if let Some(ext) = child.child_by_field_name("extends") {
+                    base = analysis::gdscript_extends_target(ext, bytes);
+                }
+            }
+            "extends_statement" => base = analysis::gdscript_extends_target(child, bytes),
+            _ => {}
+        }
+    }
+    for unit in units.iter_mut() {
+        if unit.unit_type != UnitType::Function || unit.parent_class.is_some() {
+            continue;
+        }
+        if let Some(class_name) = &class_name {
+            unit.unit_type = UnitType::Method;
+            unit.parent_class = Some(class_name.clone());
+            unit.qualified_name = format!("{}::{}::{}", unit.file.display(), class_name, unit.name);
+        }
+        if unit.extends.is_none() {
+            unit.extends = base.clone();
+        }
+    }
+}
+
+/// Replace raw-code units longer than 60 lines / 4000 characters with chunks
+/// cut at blank lines.
+fn split_long_raw_units(
+    units: &mut Vec<CodeUnit>,
+    path: &Path,
+    lines: &[&str],
+    lang: Language,
+    file_imports: &[String],
+) {
+    const MAX_LINES: usize = 60;
+    const MAX_CHARS: usize = 4000;
+    let mut out = Vec::with_capacity(units.len());
+    for unit in units.drain(..) {
+        if unit.unit_type != UnitType::RawCode
+            || (unit.end_line + 1 - unit.line <= MAX_LINES && unit.code.len() <= MAX_CHARS)
+        {
+            out.push(unit);
+            continue;
+        }
+        for (s, e) in text::chunk_ranges(
+            lines,
+            unit.line - 1,
+            unit.end_line - 1,
+            MAX_LINES,
+            MAX_CHARS,
+        ) {
+            if let Some(chunk) =
+                extract::create_raw_code_unit(path, lines, s + 1, e + 1, lang, file_imports)
+            {
+                out.push(chunk);
+            }
+        }
+    }
+    *units = out;
+}
+
+/// A script- or class-level GDScript `var` with a `get:` / `set(value):` body.
+fn is_gdscript_property(node: Node) -> bool {
+    node.kind() == "variable_statement"
+        && node.child_by_field_name("setget").is_some()
+        && node
+            .parent()
+            .is_some_and(|p| matches!(p.kind(), "source" | "class_body"))
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -100,6 +187,7 @@ fn is_abstract_type_container(kind: &str, lang: Language) -> bool {
         Language::D => matches!(kind, "interface_declaration" | "enum_declaration"),
         Language::Solidity => matches!(kind, "interface_declaration" | "enum_declaration"),
         Language::Dart => kind == "type_alias",
+        Language::Luau => kind == "type_definition",
         _ => false,
     }
 }
@@ -163,6 +251,8 @@ fn tree_error_bytes(tree: &tree_sitter::Tree) -> usize {
     }
     total
 }
+/// Parse-time budget for a Luau file (see `extract_units`).
+const LUAU_PARSE_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Extract all code units from a file with 5-layer analysis.
 ///
@@ -221,6 +311,11 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         return nix::extract_nix_units(path, source);
     }
 
+    // SCSS / Sass / Less are split by a brace (or indentation) scanner
+    if matches!(lang, Language::Scss | Language::Less) {
+        return style::extract_style_units(path, source, lang);
+    }
+
     // Handle HTML files with special extraction logic
     if lang == Language::Html {
         return html::extract_html_units(path, source);
@@ -249,9 +344,33 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
     // Cython). The view keeps every
     // line in place, so rows map 1:1 onto `lines`; node text is read from it.
     let parse_source = parse_view(path, source, lang);
-    let tree = match parser.parse(parse_source.as_ref(), None) {
-        Some(t) => t,
-        None => return Vec::new(),
+    let tree = if lang == Language::Luau {
+        // tree-sitter-luau's error recovery can go quadratic on syntax it
+        // does not know (a 7,600-line `declare class` definition file took
+        // over three minutes). Give up after a time budget and index the
+        // file as raw-code chunks instead of stalling the whole index.
+        let started = std::time::Instant::now();
+        let mut over_budget = |_: &tree_sitter::ParseState| started.elapsed() > LUAU_PARSE_BUDGET;
+        let options = tree_sitter::ParseOptions::new().progress_callback(&mut over_budget);
+        let bytes = source.as_bytes();
+        match parser.parse_with_options(
+            &mut |offset, _| bytes.get(offset..).unwrap_or_default(),
+            None,
+            Some(options),
+        ) {
+            Some(t) => t,
+            None => {
+                let lines: Vec<&str> = source.lines().collect();
+                let mut units = Vec::new();
+                text::fill_gaps_chunked(&mut units, path, &lines, lang, 60, 4000);
+                return units;
+            }
+        }
+    } else {
+        match parser.parse(parse_source.as_ref(), None) {
+            Some(t) => t,
+            None => return Vec::new(),
+        }
     };
 
     // Pascal: retry a file that does not parse cleanly with its inactive
@@ -378,8 +497,17 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         );
     }
 
+    if lang == Language::Gdscript {
+        attach_gdscript_script_class(tree.root_node(), bytes, &mut units);
+    }
+
     // Fill gaps with raw code units to achieve 100% file coverage
     fill_raw_code_gaps(&mut units, path, &lines, lang, &file_imports);
+    // Luau and GDScript scripts can be hundreds of lines of top-level
+    // statements: cut long raw-code gaps into bounded chunks.
+    if matches!(lang, Language::Luau | Language::Gdscript) {
+        split_long_raw_units(&mut units, path, &lines, lang, &file_imports);
+    }
 
     units
 }
@@ -463,6 +591,17 @@ fn extract_from_node(
         node.kind()
     };
 
+    // GDScript properties with `get:` / `set(value):` bodies hold code like a
+    // method does; a script can be hundreds of lines of them.
+    if lang == Language::Gdscript && is_gdscript_property(node) {
+        if let Some(unit) =
+            extract_function(node, path, lines, bytes, lang, parent_class, file_imports)
+        {
+            units.push(unit);
+        }
+        return;
+    }
+
     // Check if this is a function/method definition
     if is_function_node(kind, lang) {
         if let Some(unit) =
@@ -533,7 +672,11 @@ fn extract_from_node(
         }
     }
     // Check if this is a top-level constant/static declaration (only at module level)
-    else if parent_class.is_none() && is_constant_node(kind, lang) {
+    else if parent_class.is_none()
+        && is_constant_node(kind, lang)
+        // GDScript: script-level declarations only, not a function's locals.
+        && (lang != Language::Gdscript || node.parent().is_some_and(|p| p.kind() == "source"))
+    {
         if let Some(unit) = extract_constant(node, path, lines, bytes, lang, file_imports) {
             units.push(unit);
         }

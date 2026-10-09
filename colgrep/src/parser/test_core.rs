@@ -401,6 +401,8 @@ fn test_is_text_format_true() {
     assert!(is_text_format(Language::Makefile));
     assert!(is_text_format(Language::AsciiDoc));
     assert!(is_text_format(Language::Org));
+    assert!(is_text_format(Language::Xml));
+    assert!(is_text_format(Language::Latex));
 }
 
 #[test]
@@ -844,6 +846,16 @@ fn test_language_from_str() {
     assert_eq!(Language::from_str("notebook"), Ok(Language::Notebook));
     assert_eq!(Language::from_str("ipynb"), Ok(Language::Notebook));
     assert_eq!(Language::from_str("Jupyter"), Ok(Language::Notebook));
+    assert_eq!(Language::from_str("gdscript"), Ok(Language::Gdscript));
+    assert_eq!(Language::from_str("gd"), Ok(Language::Gdscript));
+    assert_eq!(Language::from_str("luau"), Ok(Language::Luau));
+    assert_eq!(Language::from_str("xml"), Ok(Language::Xml));
+    assert_eq!(Language::from_str("latex"), Ok(Language::Latex));
+    assert_eq!(Language::from_str("tex"), Ok(Language::Latex));
+    assert_eq!(Language::from_str("bibtex"), Ok(Language::Latex));
+    assert_eq!(Language::from_str("scss"), Ok(Language::Scss));
+    assert_eq!(Language::from_str("sass"), Ok(Language::Scss));
+    assert_eq!(Language::from_str("less"), Ok(Language::Less));
 
     assert_eq!(Language::from_str("csharp"), Ok(Language::CSharp));
     assert_eq!(Language::from_str("c#"), Ok(Language::CSharp));

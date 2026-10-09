@@ -58,12 +58,17 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
                 | "method_signature"
                 | "declaration"
         ),
+        // A script's `func` and its `_init` constructor (which has no name field).
+        Language::Gdscript => matches!(kind, "function_definition" | "constructor_definition"),
         // Additional languages
         Language::Kotlin => matches!(kind, "function_declaration" | "anonymous_function"),
         Language::Swift => matches!(kind, "function_declaration" | "init_declaration"),
         Language::Scala => matches!(kind, "function_definition" | "function_declaration"),
         Language::Php => matches!(kind, "function_definition" | "method_declaration"),
         Language::Lua => kind == "function_declaration",
+        // Luau also names test blocks: `describe("Some", function() ... end)`
+        // (see get_luau_test_block_name); other calls get no name.
+        Language::Luau => matches!(kind, "function_declaration" | "function_call"),
         Language::Elixir => matches!(kind, "call" | "anonymous_function"), // def/defp are calls in elixir
         // Gleam: `pub fn` / `fn`, including bodyless `@external` functions.
         Language::Gleam => kind == "function",
@@ -217,7 +222,11 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
                 | "trait_declaration"
                 | "enum_declaration"
         ),
-        Language::Lua => false,             // Lua doesn't have classes
+        Language::Lua => false, // Lua doesn't have classes
+        // Luau `type` / `export type` aliases are its type definitions.
+        Language::Luau => kind == "type_definition",
+        // GDScript inner classes; the script itself is the outer class.
+        Language::Gdscript => kind == "class_definition",
         Language::Elixir => kind == "call", // defmodule is a call
         // Gleam custom types (`pub type User { ... }`) and aliases.
         Language::Gleam => matches!(kind, "type_definition" | "type_alias"),
@@ -354,6 +363,11 @@ pub fn is_constant_node(kind: &str, lang: Language) -> bool {
             kind == "expression_statement"
         }
         Language::Kotlin => kind == "property_declaration",
+        // Script-level `const`, named `enum` and `signal` declarations.
+        Language::Gdscript => matches!(
+            kind,
+            "const_statement" | "enum_definition" | "signal_statement"
+        ),
         Language::Swift => matches!(kind, "constant_declaration" | "variable_declaration"),
         Language::Scala => matches!(kind, "val_definition" | "var_definition"),
         Language::Php => kind == "const_declaration",
@@ -448,6 +462,7 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
         Language::Elixir => node.child_by_field_name("body"),
         // Gleam types hold constructors, not functions.
         Language::Gleam => None,
+        Language::Gdscript => node.child_by_field_name("body"),
         Language::Haskell | Language::Ocaml => node.child_by_field_name("body"),
         Language::R => None, // R doesn't have class bodies
         Language::Zig => node.child_by_field_name("body"),
@@ -713,6 +728,23 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             }
             _ => node.child_by_field_name("name"),
         },
+        Language::Gdscript => {
+            if node.kind() == "constructor_definition" {
+                return Some("_init".to_string());
+            }
+            node.child_by_field_name("name")
+        }
+        Language::Luau if node.kind() == "function_call" => {
+            return get_luau_test_block_name(node, bytes);
+        }
+        // `type Callback<T> = ...` names a generic_type: keep the identifier.
+        Language::Luau => node.child_by_field_name("name").map(|n| {
+            if n.kind() == "generic_type" {
+                n.named_child(0).unwrap_or(n)
+            } else {
+                n
+            }
+        }),
         Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
             // For classes/structs/unions/enums, look for name field or type_identifier
             if matches!(
@@ -1105,6 +1137,8 @@ pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: 
             Language::Gleam => {
                 line.starts_with('@') || (line.starts_with("///") && !line.starts_with("////"))
             }
+            // GDScript: `@rpc` / `@export` annotation lines and `##` doc comments
+            Language::Gdscript => is_gdscript_annotation_line(line) || line.starts_with("##"),
             // C#: [Attribute]
             Language::CSharp => line.starts_with('[') && line.ends_with(']'),
             // TypeScript/JavaScript/Vue/Svelte: @decorator (when using decorators), or /** JSDoc */
@@ -1282,4 +1316,68 @@ pub fn doc_comment_text(comments: &[Node], bytes: &[u8]) -> Option<String> {
         }
     }
     (!words.is_empty()).then(|| words.join(" "))
+}
+
+/// Name of a Luau test block: a multi-line call whose first argument is a
+/// string and which passes an anonymous function, as in jest-roblox's
+/// `describe("Some", function() ... end)` or TestEZ-style
+/// `ctx:Test("creates an option", function() ... end)` →
+/// `Test "creates an option"`. Spec files are made of nothing else, so
+/// without this they would only produce raw code.
+fn get_luau_test_block_name(node: Node, bytes: &[u8]) -> Option<String> {
+    if node.end_position().row < node.start_position().row + 2 {
+        return None;
+    }
+    let args = node.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    let mut named = args.named_children(&mut cursor);
+    let first = named.next()?;
+    if first.kind() != "string" {
+        return None;
+    }
+    if !named.any(|a| a.kind() == "function_definition") {
+        return None;
+    }
+    let callee = node.child_by_field_name("name")?.utf8_text(bytes).ok()?;
+    #[allow(clippy::double_ended_iterator_last)]
+    let callee = callee.rsplit([':', '.']).next().unwrap_or(callee).trim();
+    let label = first.utf8_text(bytes).ok()?.trim();
+    if callee.is_empty() || label.len() > 200 || label.contains('\n') {
+        return None;
+    }
+    Some(format!("{callee} {label}"))
+}
+
+/// A GDScript line holding only annotations (`@rpc("any_peer")`, `@tool`),
+/// as opposed to an annotated declaration (`@export var speed := 1.0`).
+fn is_gdscript_annotation_line(line: &str) -> bool {
+    let mut rest = line.trim();
+    if !rest.starts_with('@') {
+        return false;
+    }
+    while let Some(after) = rest.strip_prefix('@') {
+        let name_len = after
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(after.len());
+        rest = after[name_len..].trim_start();
+        if rest.starts_with('(') {
+            let mut depth = 0usize;
+            let mut end = rest.len();
+            for (i, c) in rest.char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            rest = rest[end..].trim_start();
+        }
+    }
+    rest.is_empty()
 }

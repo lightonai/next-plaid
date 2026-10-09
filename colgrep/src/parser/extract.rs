@@ -603,6 +603,12 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             }
             None
         }
+        // `const SPEED := 300.0`, `enum State {...}`, `signal died`. An
+        // anonymous `enum { A, B }` has no name and stays raw code.
+        Language::Gdscript => node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map(|s| s.to_string()),
         Language::Kotlin => node
             .child_by_field_name("name")
             .or_else(|| {
@@ -754,6 +760,11 @@ fn get_constant_type(node: Node, bytes: &[u8], lang: Language) -> Option<String>
         }
         Language::Gleam => node
             .child_by_field_name("type")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map(|s| s.to_string()),
+        Language::Gdscript => node
+            .child_by_field_name("type")
+            .filter(|t| t.kind() == "type")
             .and_then(|n| n.utf8_text(bytes).ok())
             .map(|s| s.to_string()),
         Language::Python => {
@@ -1104,7 +1115,7 @@ pub fn split_long_raw_code(units: &mut Vec<CodeUnit>, lines: &[&str], max_lines:
 }
 
 /// Create a RawCode unit for a range of lines.
-fn create_raw_code_unit(
+pub(super) fn create_raw_code_unit(
     path: &Path,
     lines: &[&str],
     start_line: usize,
