@@ -785,17 +785,15 @@ fn collect_imports(ctx: &Ctx, node: Node, out: &mut Vec<String>, depth: usize) {
                     }
                 }
             }
-            "binding" => {
-                if attrpath_text(ctx, current).as_deref() == Some("imports") {
-                    if let Some(list) = current
-                        .child_by_field_name("expression")
-                        .map(unwrap_expr)
-                        .filter(|l| l.kind() == "list_expression")
-                    {
-                        for el in list.named_children(&mut list.walk()) {
-                            if matches!(el.kind(), "path_expression" | "spath_expression") {
-                                push_unique(out, ctx.text(el).to_string());
-                            }
+            "binding" if attrpath_text(ctx, current).as_deref() == Some("imports") => {
+                if let Some(list) = current
+                    .child_by_field_name("expression")
+                    .map(unwrap_expr)
+                    .filter(|l| l.kind() == "list_expression")
+                {
+                    for el in list.named_children(&mut list.walk()) {
+                        if matches!(el.kind(), "path_expression" | "spath_expression") {
+                            push_unique(out, ctx.text(el).to_string());
                         }
                     }
                 }

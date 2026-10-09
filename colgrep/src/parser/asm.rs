@@ -278,10 +278,10 @@ fn classify(code: &str, dialect: Dialect) -> Option<Marker> {
                 return Some(Marker::FunctionStart(name, true));
             }
         }
-        "ENDPROC" | "END" | "ENDPIPROC" | "END_CFI" | "PSEUDO_END" | "ASM_END" => {
-            if paren_arg(rest).is_some() {
-                return Some(Marker::FunctionEnd);
-            }
+        "ENDPROC" | "END" | "ENDPIPROC" | "END_CFI" | "PSEUDO_END" | "ASM_END"
+            if paren_arg(rest).is_some() =>
+        {
+            return Some(Marker::FunctionEnd);
         }
         _ => {}
     }
@@ -629,12 +629,10 @@ pub fn extract_asm_units(path: &Path, source: &str) -> Vec<CodeUnit> {
                     break;
                 }
             }
-            if let Some(top) = stack.last() {
-                // A macro opening inside a delimited function stays inside it.
-                if !(top.is_macro || is_macro && top.explicit_end) {
-                    let open = stack.pop().unwrap();
-                    close(open, start.saturating_sub(1), &mut units);
-                }
+            // A macro opening inside a delimited function stays inside it.
+            if let Some(open) = stack.pop_if(|top| !(top.is_macro || is_macro && top.explicit_end))
+            {
+                close(open, start.saturating_sub(1), &mut units);
             }
             stack.push(Open {
                 name,
@@ -647,8 +645,7 @@ pub fn extract_asm_units(path: &Path, source: &str) -> Vec<CodeUnit> {
         }
         match marker {
             Marker::DataLabel => {
-                if stack.last().is_some_and(|o| !o.is_macro && !o.explicit_end) {
-                    let open = stack.pop().unwrap();
+                if let Some(open) = stack.pop_if(|o| !o.is_macro && !o.explicit_end) {
                     close(open, i.saturating_sub(1), &mut units);
                     floor = i;
                 }

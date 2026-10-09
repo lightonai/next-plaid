@@ -340,13 +340,11 @@ fn libspec(spec: Node, bytes: &[u8], prefix: Option<&str>, req: &mut Requires) {
                         req.aliases
                             .insert(text(vals[i + 1], bytes).to_string(), ns.clone());
                     }
-                    ":refer" => {
-                        if vals[i + 1].kind() == "vec_lit" {
-                            for s in values(vals[i + 1]) {
-                                if s.kind() == "sym_lit" {
-                                    req.referred
-                                        .insert(sym_name(s, bytes).to_string(), ns.clone());
-                                }
+                    ":refer" if vals[i + 1].kind() == "vec_lit" => {
+                        for s in values(vals[i + 1]) {
+                            if s.kind() == "sym_lit" {
+                                req.referred
+                                    .insert(sym_name(s, bytes).to_string(), ns.clone());
                             }
                         }
                     }
