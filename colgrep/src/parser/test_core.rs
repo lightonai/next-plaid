@@ -789,6 +789,17 @@ fn test_language_from_str() {
     assert_eq!(Language::from_str("cpp"), Ok(Language::Cpp));
     assert_eq!(Language::from_str("c++"), Ok(Language::Cpp));
     assert_eq!(Language::from_str("cuda"), Ok(Language::Cuda));
+    assert_eq!(Language::from_str("solidity"), Ok(Language::Solidity));
+    assert_eq!(Language::from_str("sol"), Ok(Language::Solidity));
+    assert_eq!(Language::from_str("scheme"), Ok(Language::Scheme));
+    assert_eq!(Language::from_str("scm"), Ok(Language::Scheme));
+    assert_eq!(Language::from_str("racket"), Ok(Language::Racket));
+    assert_eq!(Language::from_str("rkt"), Ok(Language::Racket));
+    assert_eq!(Language::from_str("commonlisp"), Ok(Language::CommonLisp));
+    assert_eq!(Language::from_str("common-lisp"), Ok(Language::CommonLisp));
+    assert_eq!(Language::from_str("lisp"), Ok(Language::CommonLisp));
+    assert_eq!(Language::from_str("cl"), Ok(Language::CommonLisp));
+    assert_eq!(Language::from_str("nix"), Ok(Language::Nix));
     assert_eq!(Language::from_str("cu"), Ok(Language::Cuda));
     assert_eq!(Language::from_str("glsl"), Ok(Language::Glsl));
     assert_eq!(Language::from_str("HLSL"), Ok(Language::Hlsl));

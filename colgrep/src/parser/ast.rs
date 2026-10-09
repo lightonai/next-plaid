@@ -32,6 +32,17 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
                 | "postblit"
                 | "unittest_declaration"
         ),
+        // Events and custom errors are declared like functions (a name and a
+        // parameter list) and are searched for like them.
+        Language::Solidity => matches!(
+            kind,
+            "function_definition"
+                | "modifier_definition"
+                | "constructor_definition"
+                | "fallback_receive_definition"
+                | "event_definition"
+                | "error_declaration"
+        ),
         Language::Ruby => kind == "method" || kind == "singleton_method",
         // Perl: `sub name {...}` and the 5.38 `method name {...}`.
         Language::Perl => matches!(
@@ -143,6 +154,14 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
                 | "struct_specifier"
                 | "union_specifier"
                 | "enum_specifier"
+        ),
+        Language::Solidity => matches!(
+            kind,
+            "contract_declaration"
+                | "interface_declaration"
+                | "library_declaration"
+                | "struct_declaration"
+                | "enum_declaration"
         ),
         Language::Ruby => kind == "class" || kind == "module",
         // Perl: `package Name {...}` / `class Name {...}` blocks. The
@@ -323,6 +342,12 @@ pub fn is_constant_node(kind: &str, lang: Language) -> bool {
         Language::Odin => matches!(kind, "const_declaration" | "const_type_declaration"),
         // Pascal `const` section entries.
         Language::Pascal => kind == "declConst",
+        // File-level constants and user-defined value types
+        // (`type Currency is address;`); state variables live in contracts.
+        Language::Solidity => matches!(
+            kind,
+            "constant_variable_declaration" | "user_defined_type_definition"
+        ),
         Language::Python => {
             // Python doesn't have const, but we capture module-level assignments
             // We'll filter for UPPER_CASE names in extract_constant
@@ -377,6 +402,7 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
             })
         }),
         Language::Go => node.child_by_field_name("type"),
+        Language::Solidity => node.child_by_field_name("body"),
         Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
             // Look for field_declaration_list in class_specifier
             for child in node.children(&mut node.walk()) {
@@ -673,6 +699,20 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .children(&mut node.walk())
             .find(|c| c.kind() == "identifier"),
         Language::Pascal => return get_pascal_node_name(node, bytes),
+        // Constructors, `receive()` and `fallback()` have no name field: the
+        // keyword is the name.
+        Language::Solidity => match node.kind() {
+            "constructor_definition" => return Some("constructor".to_string()),
+            "fallback_receive_definition" => {
+                return node
+                    .children(&mut node.walk())
+                    .map(|c| c.kind())
+                    .find(|k| matches!(*k, "receive" | "fallback"))
+                    .map(str::to_string)
+                    .or_else(|| Some("fallback".to_string()));
+            }
+            _ => node.child_by_field_name("name"),
+        },
         Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
             // For classes/structs/unions/enums, look for name field or type_identifier
             if matches!(
@@ -1074,6 +1114,10 @@ pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: 
             // Objective-C: /// and /** */ doc comments above a method or class
             Language::ObjectiveC => {
                 line.starts_with("///") || line.starts_with("/*") || line.starts_with('*')
+            }
+            // Solidity: NatSpec /// lines and /** */ blocks
+            Language::Solidity => {
+                line.starts_with("///") || line.starts_with("/**") || line.starts_with('*')
             }
             // Go: // doc comments (by convention, comments immediately preceding a declaration)
             Language::Go => line.starts_with("//"),

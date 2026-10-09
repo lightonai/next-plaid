@@ -26,7 +26,9 @@ mod fsharp;
 mod hdl;
 mod html;
 mod language;
+mod lisp;
 mod matlab;
+mod nix;
 mod objc;
 mod odin;
 mod pascal;
@@ -93,6 +95,7 @@ fn is_abstract_type_container(kind: &str, lang: Language) -> bool {
         // Interface blocks declare procedures defined elsewhere.
         Language::Fortran => kind == "interface",
         Language::D => matches!(kind, "interface_declaration" | "enum_declaration"),
+        Language::Solidity => matches!(kind, "interface_declaration" | "enum_declaration"),
         Language::Dart => kind == "type_alias",
         _ => false,
     }
@@ -175,6 +178,10 @@ fn tree_error_bytes(tree: &tree_sitter::Tree) -> usize {
 /// # Returns
 /// A vector of `CodeUnit` instances covering the entire file
 pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit> {
+    // Extensions shared by unrelated languages (`.cl`, `.sls`) are settled
+    // from the content.
+    let lang = language::refine_language(path, source, lang);
+
     // Handle text formats separately (no tree-sitter parsing)
     if is_text_format(lang) {
         return extract_text_units(path, source, lang);
@@ -197,6 +204,18 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
 
     if lang == Language::Qml {
         return qml::extract_qml_units(path, source);
+    }
+
+    // S-expression languages are split by head symbol, not node kind
+    if matches!(
+        lang,
+        Language::Scheme | Language::Racket | Language::CommonLisp
+    ) {
+        return lisp::extract_lisp_units(path, source, lang);
+    }
+
+    if lang == Language::Nix {
+        return nix::extract_nix_units(path, source);
     }
 
     // Handle HTML files with special extraction logic
