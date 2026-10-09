@@ -790,6 +790,9 @@ fn test_language_from_str() {
     assert_eq!(Language::from_str("c++"), Ok(Language::Cpp));
     assert_eq!(Language::from_str("cuda"), Ok(Language::Cuda));
     assert_eq!(Language::from_str("cu"), Ok(Language::Cuda));
+    assert_eq!(Language::from_str("notebook"), Ok(Language::Notebook));
+    assert_eq!(Language::from_str("ipynb"), Ok(Language::Notebook));
+    assert_eq!(Language::from_str("Jupyter"), Ok(Language::Notebook));
 
     assert_eq!(Language::from_str("csharp"), Ok(Language::CSharp));
     assert_eq!(Language::from_str("c#"), Ok(Language::CSharp));
@@ -1643,4 +1646,28 @@ if __name__ == "__main__":
     );
 
     verify_coverage_and_no_duplicates(source, Language::Python, "test.py");
+}
+
+/// `.jsonc`/`.json5` index like JSON and `.mdx` like Markdown: one document.
+#[test]
+fn test_jsonc_json5_mdx_are_documents() {
+    for (file, source, lang) in [
+        (
+            "tsconfig.jsonc",
+            "{\n  // comment\n  \"strict\": true,\n}",
+            Language::Json,
+        ),
+        ("config.json5", "{\n  unquoted: 'value',\n}", Language::Json),
+        (
+            "intro.mdx",
+            "# Intro\n\nimport X from './x'\n\n<X />",
+            Language::Markdown,
+        ),
+    ] {
+        assert_eq!(detect_language(Path::new(file)), Some(lang), "{file}");
+        let units = extract_units(Path::new(file), source, lang);
+        assert_eq!(units.len(), 1, "{file}");
+        assert_eq!(units[0].unit_type, UnitType::Document, "{file}");
+        assert_eq!(units[0].code, source, "{file}");
+    }
 }

@@ -42,6 +42,11 @@ use state::{file_stat, hash_file, FileInfo, IndexState, INDEX_FORMAT_VERSION};
 /// - Indexing non-source files (binaries, data files)
 const MAX_FILE_SIZE: u64 = 512 * 1024;
 
+/// Maximum size of a Jupyter notebook to index (32 MB). Notebooks are mostly
+/// cell outputs (base64 plots, dataframes), which the notebook parser skips
+/// without reading, so a large notebook usually holds little source.
+const MAX_NOTEBOOK_SIZE: u64 = 32 * 1024 * 1024;
+
 /// Number of documents to process before writing to the index.
 /// Larger values reduce I/O overhead but use more memory.
 const INDEX_CHUNK_SIZE: usize = 1024;
@@ -3083,8 +3088,16 @@ fn walk_yields(
 
 /// Check if a file exceeds the maximum size limit
 fn is_file_too_large(path: &Path) -> bool {
+    let is_notebook = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("ipynb"));
+    let limit = if is_notebook {
+        MAX_NOTEBOOK_SIZE
+    } else {
+        MAX_FILE_SIZE
+    };
     match std::fs::metadata(path) {
-        Ok(meta) => meta.len() > MAX_FILE_SIZE,
+        Ok(meta) => meta.len() > limit,
         Err(_) => false, // If we can't read metadata, let it fail later
     }
 }
@@ -5501,6 +5514,37 @@ mod tests {
             empty,
             empty
         ));
+    }
+
+    #[test]
+    fn test_should_ignore_notebook_checkpoints() {
+        let empty: &[String] = &[];
+        // Jupyter's autosave copies would duplicate every notebook.
+        assert!(should_ignore(
+            Path::new("nbs/.ipynb_checkpoints/train-checkpoint.ipynb"),
+            empty,
+            empty
+        ));
+        assert!(!should_ignore(Path::new("nbs/train.ipynb"), empty, empty));
+    }
+
+    /// Notebooks are mostly outputs, which the parser skips, so they get a
+    /// larger size limit than source files.
+    #[test]
+    fn test_notebook_size_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let size = MAX_FILE_SIZE + 1024;
+        for name in ["big.ipynb", "big.py"] {
+            let f = std::fs::File::create(temp.path().join(name)).unwrap();
+            f.set_len(size).unwrap();
+        }
+        assert!(!is_file_too_large(&temp.path().join("big.ipynb")));
+        assert!(is_file_too_large(&temp.path().join("big.py")));
+
+        let huge = temp.path().join("huge.IPYNB");
+        let f = std::fs::File::create(&huge).unwrap();
+        f.set_len(MAX_NOTEBOOK_SIZE + 1).unwrap();
+        assert!(is_file_too_large(&huge));
     }
 
     #[test]

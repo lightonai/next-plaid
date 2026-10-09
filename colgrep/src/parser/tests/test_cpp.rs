@@ -468,3 +468,51 @@ void print_values(const std::vector<int>& values) {
 }"#;
     assert_eq!(text, expected);
 }
+
+/// C++ header/implementation spellings and Arduino sketches split exactly like
+/// a `.cpp` file.
+#[test]
+fn test_cpp_extension_variants() {
+    let source = r#"#include <Arduino.h>
+
+template <typename T>
+T Matrix<T>::trace() const {
+    T sum = 0;
+    for (int i = 0; i < n; ++i) sum += at(i, i);
+    return sum;
+}
+
+void setup() {
+    pinMode(LED_BUILTIN, OUTPUT);
+}
+
+void loop() {
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(1000);
+}"#;
+    let shape = |file: &str| {
+        let lang = crate::parser::detect_language(std::path::Path::new(file)).unwrap();
+        assert_eq!(lang, Language::Cpp, "{file}");
+        parse(source, lang, file)
+            .into_iter()
+            .map(|u| (format!("{:?}", u.unit_type), u.name, u.line, u.end_line))
+            .collect::<Vec<_>>()
+    };
+    let reference = shape("matrix.cpp");
+    assert!(reference
+        .iter()
+        .any(|u| u.1 == "setup" && u.0 == "Function"));
+    assert!(reference.iter().any(|u| u.1 == "loop"));
+    for file in [
+        "matrix.hh",
+        "matrix.h++",
+        "matrix.c++",
+        "matrix.inl",
+        "matrix.ipp",
+        "matrix.tpp",
+        "matrix.txx",
+        "Blink.ino",
+    ] {
+        assert_eq!(shape(file), reference, "{file}");
+    }
+}

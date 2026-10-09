@@ -112,3 +112,32 @@ T identity(T x) {
         shape(Language::Cpp, "math.cpp")
     );
 }
+
+/// AMD HIP sources (`.hip`) use CUDA's syntax and parse with the CUDA grammar.
+#[test]
+fn test_hip_kernel() {
+    let source = r#"#include <hip/hip_runtime.h>
+
+__global__ void saxpy(float a, const float* x, float* y, unsigned int n) {
+    const unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = a * x[i] + y[i];
+}
+
+int main() {
+    saxpy<<<dim3(64), dim3(256), 0, hipStreamDefault>>>(2.f, d_x, d_y, n);
+    HIP_CHECK(hipDeviceSynchronize());
+}
+"#;
+    let lang = crate::parser::detect_language(std::path::Path::new("saxpy/main.hip")).unwrap();
+    assert_eq!(lang, Language::Cuda);
+    let units = parse(source, lang, "main.hip");
+    let saxpy = get_unit_by_name(&units, "saxpy").unwrap();
+    assert_eq!((saxpy.line, saxpy.end_line), (3, 6));
+    assert_eq!(saxpy.parameters, vec!["a", "x", "y", "n"]);
+    let main = get_unit_by_name(&units, "main").unwrap();
+    assert!(
+        main.calls.contains(&"saxpy".to_string()),
+        "{:?}",
+        main.calls
+    );
+}

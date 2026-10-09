@@ -59,7 +59,7 @@ fn extract_plain_text_units(path: &Path, lines: &[&str], lang: Language) -> Vec<
 }
 
 /// Create a CodeUnit for text content.
-fn create_text_unit(
+pub(super) fn create_text_unit(
     path: &Path,
     name: &str,
     line: usize,

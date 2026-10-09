@@ -14,9 +14,12 @@
 mod analysis;
 mod ast;
 mod call_graph;
+mod cython;
 mod extract;
 mod html;
 mod language;
+mod metal;
+mod notebook;
 mod qml;
 mod svelte;
 mod text;
@@ -156,6 +159,11 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         return html::extract_html_units(path, source);
     }
 
+    // Jupyter notebooks: cells are pulled out of the JSON and parsed one by one
+    if lang == Language::Notebook {
+        return notebook::extract_notebook_units(path, source);
+    }
+
     let mut parser = Parser::new();
     if parser
         .set_language(&get_tree_sitter_language(lang))
@@ -164,13 +172,26 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         return Vec::new();
     }
 
-    let tree = match parser.parse(source, None) {
+    // Metal shaders parse with the C++ grammar once their MSL-only keywords
+    // and attributes are blanked, Cython with the Python grammar once its
+    // `cdef`/`cpdef` headers read as Python; unit code still comes from
+    // `source`.
+    let masked = if lang == Language::Cpp && metal::is_metal_path(path) {
+        Some(metal::mask_metal(source))
+    } else if lang == Language::Python && cython::is_cython_path(path) {
+        Some(cython::mask_cython(source))
+    } else {
+        None
+    };
+    let parse_source = masked.as_deref().unwrap_or(source);
+
+    let tree = match parser.parse(parse_source, None) {
         Some(t) => t,
         None => return Vec::new(),
     };
 
     let lines: Vec<&str> = source.lines().collect();
-    let bytes = source.as_bytes();
+    let bytes = parse_source.as_bytes();
     let file_imports = extract_file_imports(tree.root_node(), bytes, lang);
 
     let max_depth = max_recursion_depth();
