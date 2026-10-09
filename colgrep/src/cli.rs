@@ -271,7 +271,7 @@ EXAMPLES:
     colgrep settings --relative-paths
 
     # Agent (colgrep --agent): switch model, prompt, template or sampling
-    colgrep settings --agent-model lightonai/colgrep-default-minicpm5-2B
+    colgrep settings --agent-model lightonai/colgrep-agent-2B-GGUF
     colgrep settings --agent-model ~/models/my-agent.gguf
     colgrep settings --agent-prompt ./prompt.txt --agent-tools ./tools.json
     colgrep settings --agent-temperature 0 --agent-max-turns 6
