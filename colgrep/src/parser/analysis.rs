@@ -282,7 +282,9 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
         Language::Vhdl => {
             comment_block_above(node.start_position().row, lines, DASHES).map(|(_, doc)| doc)
         }
-        Language::C | Language::Cpp | Language::Cuda => {
+        Language::Matlab => super::matlab::docstring(node, lines),
+        Language::Fortran => super::fortran::docstring(node, lines),
+        Language::C | Language::Cpp | Language::Cuda | Language::ObjectiveC => {
             // Look for /* */ block comments or /// doc comments
             let start_row = node.start_position().row;
             if start_row > 0 {
@@ -312,10 +314,10 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
                                 .iter()
                                 .map(|l| {
                                     l.trim()
+                                        .trim_end_matches("*/")
                                         .trim_start_matches("/**")
                                         .trim_start_matches("/*")
                                         .trim_start_matches('*')
-                                        .trim_end_matches("*/")
                                         .trim()
                                 })
                                 .filter(|l| !l.is_empty())
@@ -482,6 +484,15 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
         Language::Vhdl => return hdl::vhdl_parameters(node, bytes),
         _ => {}
     }
+    if lang == Language::ObjectiveC && super::objc::is_method(node) {
+        return super::objc::method_parameters(node, bytes);
+    }
+    if lang == Language::Matlab {
+        return super::matlab::parameters(node, bytes);
+    }
+    if lang == Language::Fortran {
+        return super::fortran::parameters(node, bytes);
+    }
 
     let params_node = match lang {
         Language::Python | Language::Rust | Language::Go | Language::Java | Language::CSharp => {
@@ -490,9 +501,20 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
         Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => node
             .child_by_field_name("parameters")
             .or_else(|| node.child_by_field_name("formal_parameters")),
-        Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => node
-            .child_by_field_name("declarator")
-            .and_then(|d| d.child_by_field_name("parameters")),
+        Language::C
+        | Language::Cpp
+        | Language::Cuda
+        | Language::Glsl
+        | Language::Hlsl
+        | Language::ObjectiveC => {
+            let mut declarator = node.child_by_field_name("declarator");
+            // `NSString *name(void)`: the function declarator sits under the
+            // pointer declarator.
+            while let Some(d) = declarator.filter(|d| d.kind() == "pointer_declarator") {
+                declarator = d.child_by_field_name("declarator");
+            }
+            declarator.and_then(|d| d.child_by_field_name("parameters"))
+        }
         Language::Ruby => node.child_by_field_name("parameters"),
         Language::Kotlin => node.child_by_field_name("parameters").or_else(|| {
             // Kotlin uses function_value_parameters
@@ -578,7 +600,12 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
                         .filter(|c| c.kind() == "identifier")
                 } else if matches!(
                     lang,
-                    Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl
+                    Language::C
+                        | Language::Cpp
+                        | Language::Cuda
+                        | Language::Glsl
+                        | Language::Hlsl
+                        | Language::ObjectiveC
                 ) {
                     // For C/C++, parameter_declaration has a "declarator" field
                     // This can be: identifier, pointer_declarator, array_declarator, function_declarator
@@ -667,6 +694,12 @@ pub fn extract_return_type(node: Node, bytes: &[u8], lang: Language) -> Option<S
         }
         Language::Verilog => return hdl::verilog_return_type(node, bytes),
         Language::Vhdl => return hdl::vhdl_return_type(node, bytes),
+        Language::ObjectiveC if super::objc::is_method(node) => {
+            return super::objc::method_return_type(node, bytes);
+        }
+        Language::ObjectiveC => node.child_by_field_name("type"),
+        Language::Matlab => return super::matlab::return_type(node, bytes),
+        Language::Fortran => return super::fortran::return_type(node, bytes),
         Language::Dart => {
             let signature = find_first_by_kinds(
                 node,
@@ -784,6 +817,15 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
         Language::Vhdl => return hdl::vhdl_calls(node, bytes),
         _ => {}
     }
+    if lang == Language::ObjectiveC {
+        return super::objc::calls(node, bytes);
+    }
+    if lang == Language::Matlab {
+        return super::matlab::calls(node, bytes);
+    }
+    if lang == Language::Fortran {
+        return super::fortran::calls(node, bytes);
+    }
 
     let mut calls = Vec::new();
     let call_types: &[&str] = match lang {
@@ -897,6 +939,12 @@ pub fn extract_control_flow(node: Node, lang: Language) -> (usize, bool, bool, b
 
 /// Extract variable declarations from a node.
 pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    if lang == Language::Matlab {
+        return super::matlab::variables(node, bytes);
+    }
+    if lang == Language::Fortran {
+        return super::fortran::variables(node, bytes);
+    }
     match lang {
         Language::Verilog => return hdl::verilog_variables(node, bytes),
         Language::Vhdl => return hdl::vhdl_variables(node, bytes),
@@ -917,9 +965,12 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
             "declared_identifier",
         ],
         Language::Java | Language::CSharp => &["variable_declarator", "local_variable_declaration"],
-        Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
-            &["declaration", "init_declarator"]
-        }
+        Language::C
+        | Language::Cpp
+        | Language::Cuda
+        | Language::Glsl
+        | Language::Hlsl
+        | Language::ObjectiveC => &["declaration", "init_declarator"],
         Language::Ruby => &["assignment"],
         Language::Kotlin => &["property_declaration", "variable_declaration"],
         Language::Swift => &["property_declaration", "constant_declaration"],
@@ -938,7 +989,12 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
             // For C/C++, get the declarator field which contains the variable name
             let name_node = if matches!(
                 lang,
-                Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl
+                Language::C
+                    | Language::Cpp
+                    | Language::Cuda
+                    | Language::Glsl
+                    | Language::Hlsl
+                    | Language::ObjectiveC
             ) {
                 // For init_declarator: get declarator field
                 if current.kind() == "init_declarator" {
@@ -1060,6 +1116,15 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         Language::Verilog => return hdl::verilog_file_imports(node, bytes),
         Language::Vhdl => return hdl::vhdl_file_imports(node, bytes),
         _ => {}
+    }
+    if lang == Language::ObjectiveC {
+        return super::objc::file_imports(node, bytes);
+    }
+    if lang == Language::Matlab {
+        return super::matlab::file_imports(node, bytes);
+    }
+    if lang == Language::Fortran {
+        return super::fortran::file_imports(node, bytes);
     }
 
     let mut imports = Vec::new();
@@ -1356,6 +1421,9 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         Language::Vhdl => return hdl::vhdl_used_modules(node, bytes),
         _ => {}
     }
+    if lang == Language::Fortran {
+        return super::fortran::used_modules(node, bytes);
+    }
 
     let mut modules = Vec::new();
     let attr_types: &[&str] = match lang {
@@ -1372,9 +1440,12 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         ],
         Language::Scala => &["field_expression"],
         Language::Kotlin => &["navigation_expression"],
-        Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
-            &["field_expression"]
-        }
+        Language::C
+        | Language::Cpp
+        | Language::Cuda
+        | Language::Glsl
+        | Language::Hlsl
+        | Language::ObjectiveC => &["field_expression"],
         Language::Ruby => &["call"],
         Language::Swift => &["navigation_expression"],
         Language::Php => &[
@@ -1661,6 +1732,22 @@ pub fn extract_parent_class(
                 }
             }
             None
+        }
+
+        // Objective-C: @interface Dog : Animal -> superclass field
+        Language::ObjectiveC => super::objc::superclass(node, bytes),
+
+        // MATLAB: classdef Dog < Animal
+        Language::Matlab => super::matlab::superclass(node, bytes),
+
+        // Fortran: type, extends(Animal) :: Dog
+        Language::Fortran => {
+            let header = node
+                .children(&mut node.walk())
+                .find(|c| c.kind() == "derived_type_statement")?;
+            let base = find_first_by_kind(header, "base_type_specifier", max_depth)?;
+            find_first_by_kind(base, "identifier", max_depth)
+                .and_then(|n| n.utf8_text(bytes).ok().map(|s| s.to_string()))
         }
 
         // Scala: class Dog extends Animal -> extends_clause -> type_identifier

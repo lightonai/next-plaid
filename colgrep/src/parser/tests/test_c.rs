@@ -39,7 +39,7 @@ int add(int a, int b) {
     let text = build_embedding_text(func);
     let expected = r#"Function: add
 Signature: int add(int a, int b) {
-Description: Calculates the sum of two integers. Returns the result. /
+Description: Calculates the sum of two integers. Returns the result.
 Parameters: a, b
 Returns: int
 File: test test.c

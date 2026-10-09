@@ -660,6 +660,7 @@ dependencies = [
  "tree-sitter-cuda",
  "tree-sitter-dart",
  "tree-sitter-elixir",
+ "tree-sitter-fortran",
  "tree-sitter-glsl",
  "tree-sitter-go",
  "tree-sitter-graphql",
@@ -674,6 +675,8 @@ dependencies = [
  "tree-sitter-julia",
  "tree-sitter-kotlin-ng",
  "tree-sitter-lua",
+ "tree-sitter-matlab",
+ "tree-sitter-objc",
  "tree-sitter-ocaml",
  "tree-sitter-php",
  "tree-sitter-powershell",
@@ -4914,6 +4917,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-fortran"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea5fea41363a9b59666001dc26c4b356d4e164da27c6ce31145e00aba6bf9b16"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-glsl"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5054,6 +5067,26 @@ name = "tree-sitter-lua"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea992f4164d83f371ef1239ae178c4d4596c296c09055e9a48bb02a2760403af"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-matlab"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97962a0daf32492453fbea1984d34c4d8460b66b95c6c04feecc4cbf1b00a984"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-objc"
+version = "3.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ca8bb556423fc176f0535e79d525f783a6684d3c9da81bf9d905303c129e1d2"
 dependencies = [
  "cc",
  "tree-sitter-language",

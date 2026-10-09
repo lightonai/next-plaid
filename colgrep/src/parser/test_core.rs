@@ -798,6 +798,17 @@ fn test_language_from_str() {
     assert_eq!(Language::from_str("sv"), Ok(Language::Verilog));
     assert_eq!(Language::from_str("vhdl"), Ok(Language::Vhdl));
     assert_eq!(Language::from_str("vhd"), Ok(Language::Vhdl));
+    assert_eq!(Language::from_str("objc"), Ok(Language::ObjectiveC));
+    assert_eq!(Language::from_str("Objective-C"), Ok(Language::ObjectiveC));
+    assert_eq!(Language::from_str("objectivec"), Ok(Language::ObjectiveC));
+    assert_eq!(
+        Language::from_str("objective-c++"),
+        Ok(Language::ObjectiveC)
+    );
+    assert_eq!(Language::from_str("matlab"), Ok(Language::Matlab));
+    assert_eq!(Language::from_str("MATLAB"), Ok(Language::Matlab));
+    assert_eq!(Language::from_str("fortran"), Ok(Language::Fortran));
+    assert_eq!(Language::from_str("f90"), Ok(Language::Fortran));
 
     assert_eq!(Language::from_str("csharp"), Ok(Language::CSharp));
     assert_eq!(Language::from_str("c#"), Ok(Language::CSharp));

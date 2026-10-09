@@ -17,6 +17,7 @@ pub enum Language {
     Cuda,
     Glsl,
     Hlsl,
+    ObjectiveC,
     Ruby,
     CSharp,
     Dart,
@@ -32,6 +33,8 @@ pub enum Language {
     R,
     Zig,
     Julia,
+    Matlab,
+    Fortran,
     Sql,
     Vue,
     Svelte,
@@ -80,6 +83,9 @@ impl FromStr for Language {
             "cuda" | "cu" => Ok(Language::Cuda),
             "glsl" => Ok(Language::Glsl),
             "hlsl" => Ok(Language::Hlsl),
+            "objectivec" | "objective-c" | "objc" | "objective-c++" | "objc++" => {
+                Ok(Language::ObjectiveC)
+            }
             "ruby" | "rb" => Ok(Language::Ruby),
             "csharp" | "c#" | "cs" => Ok(Language::CSharp),
             "dart" => Ok(Language::Dart),
@@ -95,6 +101,8 @@ impl FromStr for Language {
             "r" => Ok(Language::R),
             "zig" => Ok(Language::Zig),
             "julia" | "jl" => Ok(Language::Julia),
+            "matlab" => Ok(Language::Matlab),
+            "fortran" | "f90" | "f" => Ok(Language::Fortran),
             "sql" => Ok(Language::Sql),
             "vue" => Ok(Language::Vue),
             "svelte" => Ok(Language::Svelte),
