@@ -24,6 +24,24 @@ fn dart_function_body(node: Node) -> Option<Node> {
     }
 }
 
+/// Last row of a node. tree-sitter-systemverilog and tree-sitter-vhdl end
+/// directives and comments after their newline, at column 0 of the next row;
+/// that row holds none of the node's text, so it is not part of the unit.
+fn end_row(node: Node, lang: Language) -> usize {
+    let end = node.end_position();
+    if end.column == 0
+        && end.row > node.start_position().row
+        && matches!(
+            lang,
+            Language::Verilog | Language::Vhdl | Language::Glsl | Language::Hlsl
+        )
+    {
+        end.row - 1
+    } else {
+        end.row
+    }
+}
+
 fn extend_unique(target: &mut Vec<String>, values: Vec<String>) {
     for value in values {
         if !target.contains(&value) {
@@ -51,10 +69,7 @@ pub fn extract_function(
     // tree-sitter can report an end row one past EOF for a construct left
     // unterminated at end-of-file (e.g. a block missing its closing brace);
     // clamp so a unit's end_line never points outside the file.
-    let end_line = content_node
-        .end_position()
-        .row
-        .min(lines.len().saturating_sub(1));
+    let end_line = end_row(content_node, lang).min(lines.len().saturating_sub(1));
 
     // Include preceding attributes/decorators in the line range
     let code_start = find_start_with_attributes(ast_start_line, lines, lang);
@@ -74,8 +89,16 @@ pub fn extract_function(
     );
 
     // Layer 1: AST
+    // An HLSL entry point starts with its `[numthreads(...)]` attribute; the
+    // signature is the declaration line after it.
+    let signature_line = match lang {
+        Language::Hlsl => node
+            .child_by_field_name("type")
+            .map_or(ast_start_line, |t| t.start_position().row),
+        _ => ast_start_line,
+    };
     unit.signature = lines
-        .get(ast_start_line)
+        .get(signature_line)
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     unit.docstring = extract_docstring(node, lines, lang);
@@ -141,10 +164,16 @@ pub fn extract_class(
 ) -> Option<CodeUnit> {
     let name = get_node_name(node, bytes, lang)?;
     let ast_start_line = node.start_position().row;
+    // `cbuffer Name : register(b0) { ... };` parses as a declaration whose
+    // body is left as its next siblings.
+    let last_node = match lang {
+        Language::Hlsl => super::shader::hlsl_buffer_end(node).unwrap_or(node),
+        _ => node,
+    };
     // tree-sitter can report an end row one past EOF for a construct left
     // unterminated at end-of-file (e.g. a block missing its closing brace);
     // clamp so a unit's end_line never points outside the file.
-    let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
+    let end_line = end_row(last_node, lang).min(lines.len().saturating_sub(1));
 
     // Include preceding attributes/decorators in the line range
     let code_start = find_start_with_attributes(ast_start_line, lines, lang);
@@ -176,6 +205,16 @@ pub fn extract_class(
 
     // Layer 4: Data Flow - extract class attributes/variables (deduplicated)
     unit.variables = extract_variables(node, bytes, lang);
+    if matches!(lang, Language::Glsl | Language::Hlsl) {
+        // Struct and resource-block members: what a uniform search names.
+        extend_unique(
+            &mut unit.variables,
+            super::shader::block_members(node, bytes),
+        );
+        // A declaration-shaped cbuffer declares its own name.
+        let name = unit.name.clone();
+        unit.variables.retain(|v| *v != name);
+    }
 
     // Layer 5: Dependencies
     // Get modules used via attribute access (e.g., `json` from `json.loads()`)
@@ -221,6 +260,9 @@ fn extract_class_type_parameters(node: Node, bytes: &[u8], lang: Language) -> Ve
             node.children(&mut node.walk())
                 .find(|c| c.kind() == "generic_parameter_clause")
         }
+        // Ports of a module / entity (generics stay in the code).
+        Language::Verilog => return super::hdl::verilog_ports(node, bytes),
+        Language::Vhdl => return super::hdl::vhdl_parameters(node, bytes),
         Language::Cpp | Language::Cuda => {
             // C++ templates: look for template_parameter_list in parent template_declaration
             if let Some(parent) = node.parent() {
@@ -338,7 +380,7 @@ pub fn extract_constant(
     // tree-sitter can report an end row one past EOF for a construct left
     // unterminated at end-of-file (e.g. a block missing its closing brace);
     // clamp so a unit's end_line never points outside the file.
-    let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
+    let end_line = end_row(node, lang).min(lines.len().saturating_sub(1));
 
     // Get constant name based on language
     let name = get_constant_name(node, bytes, lang)?;
@@ -572,6 +614,7 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
         // is the at-keyword, produced by the same helper that names
         // rule_set / @media / @keyframes elsewhere in the parser.
         Language::Css => super::ast::get_node_name(node, bytes, lang),
+        Language::Verilog => super::hdl::verilog_constant_name(node, bytes),
         _ => None,
     }
 }
@@ -770,6 +813,12 @@ fn determine_function_type(
             }
             (UnitType::Function, None)
         }
+        // SystemVerilog: `function void drv::build_phase(...)` defines a
+        // method of `drv` outside the class body.
+        Language::Verilog => match super::hdl::verilog_method_scope(node, bytes) {
+            Some(class) => (UnitType::Method, Some(class)),
+            None => (UnitType::Function, None),
+        },
         _ => (UnitType::Function, None),
     }
 }
