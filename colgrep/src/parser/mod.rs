@@ -14,10 +14,13 @@
 mod analysis;
 mod ast;
 mod call_graph;
+mod doc_comment;
 mod extract;
+mod hdl;
 mod html;
 mod language;
 mod qml;
+mod shader;
 mod svelte;
 mod text;
 pub mod types;
@@ -66,6 +69,9 @@ fn is_abstract_type_container(kind: &str, lang: Language) -> bool {
             "interface_declaration" | "trait_declaration" | "enum_declaration"
         ),
         Language::Cpp | Language::Cuda => kind == "enum_specifier",
+        Language::Hlsl => kind == "enum_specifier",
+        Language::Verilog => kind == "interface_class_declaration",
+        Language::Vhdl => kind == "protected_type_declaration",
         Language::Dart => kind == "type_alias",
         _ => false,
     }
@@ -156,6 +162,11 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         return html::extract_html_units(path, source);
     }
 
+    // `.v` is shared by Verilog and Coq/Rocq; Coq proofs are indexed as text
+    if lang == Language::Verilog && hdl::is_coq_source(source) {
+        return extract_text_units(path, source, Language::Text);
+    }
+
     let mut parser = Parser::new();
     if parser
         .set_language(&get_tree_sitter_language(lang))
@@ -233,7 +244,13 @@ fn extract_from_node(
         return;
     }
 
-    let kind = node.kind();
+    // A file-scope HLSL cbuffer parses as a function definition or a
+    // declaration; treat it as the resource block it is.
+    let kind = if lang == Language::Hlsl && shader::is_hlsl_buffer(node, bytes) {
+        "cbuffer_specifier"
+    } else {
+        node.kind()
+    };
 
     // Check if this is a function/method definition
     if is_function_node(kind, lang) {

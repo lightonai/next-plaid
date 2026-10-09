@@ -790,6 +790,14 @@ fn test_language_from_str() {
     assert_eq!(Language::from_str("c++"), Ok(Language::Cpp));
     assert_eq!(Language::from_str("cuda"), Ok(Language::Cuda));
     assert_eq!(Language::from_str("cu"), Ok(Language::Cuda));
+    assert_eq!(Language::from_str("glsl"), Ok(Language::Glsl));
+    assert_eq!(Language::from_str("HLSL"), Ok(Language::Hlsl));
+    assert_eq!(Language::from_str("verilog"), Ok(Language::Verilog));
+    assert_eq!(Language::from_str("v"), Ok(Language::Verilog));
+    assert_eq!(Language::from_str("systemverilog"), Ok(Language::Verilog));
+    assert_eq!(Language::from_str("sv"), Ok(Language::Verilog));
+    assert_eq!(Language::from_str("vhdl"), Ok(Language::Vhdl));
+    assert_eq!(Language::from_str("vhd"), Ok(Language::Vhdl));
 
     assert_eq!(Language::from_str("csharp"), Ok(Language::CSharp));
     assert_eq!(Language::from_str("c#"), Ok(Language::CSharp));

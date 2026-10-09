@@ -1,6 +1,8 @@
 //! Code analysis functions for extracting metadata from AST nodes.
 
+use super::doc_comment::{comment_block_above, DASHES, SLASHES};
 use super::types::Language;
+use super::{hdl, shader};
 use tree_sitter::Node;
 
 /// Iterate over all nodes in a subtree using an explicit stack (no recursion).
@@ -267,6 +269,19 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
                 Some(doc_lines.join(" "))
             }
         }
+        // `//` / `--` lines or a `/* */` block right above the declaration.
+        Language::Verilog | Language::Glsl => {
+            comment_block_above(node.start_position().row, lines, SLASHES).map(|(_, doc)| doc)
+        }
+        Language::Hlsl => comment_block_above(
+            shader::attribute_lines_start(node.start_position().row, lines),
+            lines,
+            SLASHES,
+        )
+        .map(|(_, doc)| doc),
+        Language::Vhdl => {
+            comment_block_above(node.start_position().row, lines, DASHES).map(|(_, doc)| doc)
+        }
         Language::C | Language::Cpp | Language::Cuda => {
             // Look for /* */ block comments or /// doc comments
             let start_row = node.start_position().row;
@@ -461,8 +476,11 @@ fn extract_dart_parameters(node: Node, bytes: &[u8]) -> Vec<String> {
 
 /// Extract parameter names from a function node.
 pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
-    if lang == Language::Dart {
-        return extract_dart_parameters(node, bytes);
+    match lang {
+        Language::Dart => return extract_dart_parameters(node, bytes),
+        Language::Verilog => return hdl::verilog_parameters(node, bytes),
+        Language::Vhdl => return hdl::vhdl_parameters(node, bytes),
+        _ => {}
     }
 
     let params_node = match lang {
@@ -472,7 +490,7 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
         Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => node
             .child_by_field_name("parameters")
             .or_else(|| node.child_by_field_name("formal_parameters")),
-        Language::C | Language::Cpp | Language::Cuda => node
+        Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => node
             .child_by_field_name("declarator")
             .and_then(|d| d.child_by_field_name("parameters")),
         Language::Ruby => node.child_by_field_name("parameters"),
@@ -558,7 +576,10 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
                     child
                         .child_by_field_name("pattern")
                         .filter(|c| c.kind() == "identifier")
-                } else if matches!(lang, Language::C | Language::Cpp | Language::Cuda) {
+                } else if matches!(
+                    lang,
+                    Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl
+                ) {
                     // For C/C++, parameter_declaration has a "declarator" field
                     // This can be: identifier, pointer_declarator, array_declarator, function_declarator
                     child.child_by_field_name("declarator").and_then(|d| {
@@ -641,7 +662,11 @@ pub fn extract_return_type(node: Node, bytes: &[u8], lang: Language) -> Option<S
         }
         Language::Go => node.child_by_field_name("result"),
         Language::Java | Language::CSharp => node.child_by_field_name("type"),
-        Language::Cpp | Language::Cuda | Language::C => node.child_by_field_name("type"),
+        Language::Cpp | Language::Cuda | Language::C | Language::Glsl | Language::Hlsl => {
+            node.child_by_field_name("type")
+        }
+        Language::Verilog => return hdl::verilog_return_type(node, bytes),
+        Language::Vhdl => return hdl::vhdl_return_type(node, bytes),
         Language::Dart => {
             let signature = find_first_by_kinds(
                 node,
@@ -753,8 +778,11 @@ fn extract_dart_function_calls(node: Node, bytes: &[u8]) -> Vec<String> {
 
 /// Extract function calls from a node.
 pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
-    if lang == Language::Dart {
-        return extract_dart_function_calls(node, bytes);
+    match lang {
+        Language::Dart => return extract_dart_function_calls(node, bytes),
+        Language::Verilog => return hdl::verilog_calls(node, bytes),
+        Language::Vhdl => return hdl::vhdl_calls(node, bytes),
+        _ => {}
     }
 
     let mut calls = Vec::new();
@@ -766,7 +794,9 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
         }
         Language::Go => &["call_expression"],
         Language::Java | Language::CSharp => &["method_invocation", "object_creation_expression"],
-        Language::C | Language::Cpp | Language::Cuda => &["call_expression"],
+        Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
+            &["call_expression"]
+        }
         Language::Ruby => &["call", "method_call"],
         Language::Kotlin => &["call_expression", "navigation_expression"],
         Language::Swift => &["call_expression"],
@@ -806,6 +836,12 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
             }
         }
     });
+    if matches!(lang, Language::Glsl | Language::Hlsl) {
+        // `register(b0)` / `packoffset(c0)` are binding annotations.
+        calls.retain(|call| {
+            !shader::is_type_constructor(call) && call != "register" && call != "packoffset"
+        });
+    }
     calls.sort();
     calls.dedup();
     calls
@@ -861,6 +897,11 @@ pub fn extract_control_flow(node: Node, lang: Language) -> (usize, bool, bool, b
 
 /// Extract variable declarations from a node.
 pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    match lang {
+        Language::Verilog => return hdl::verilog_variables(node, bytes),
+        Language::Vhdl => return hdl::vhdl_variables(node, bytes),
+        _ => {}
+    }
     let mut vars = Vec::new();
     let var_types: &[&str] = match lang {
         Language::Python => &["assignment", "named_expression", "augmented_assignment"],
@@ -876,7 +917,9 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
             "declared_identifier",
         ],
         Language::Java | Language::CSharp => &["variable_declarator", "local_variable_declaration"],
-        Language::C | Language::Cpp | Language::Cuda => &["declaration", "init_declarator"],
+        Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
+            &["declaration", "init_declarator"]
+        }
         Language::Ruby => &["assignment"],
         Language::Kotlin => &["property_declaration", "variable_declaration"],
         Language::Swift => &["property_declaration", "constant_declaration"],
@@ -893,7 +936,10 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
     walk_tree(node, |current| {
         if var_types.contains(&current.kind()) {
             // For C/C++, get the declarator field which contains the variable name
-            let name_node = if matches!(lang, Language::C | Language::Cpp | Language::Cuda) {
+            let name_node = if matches!(
+                lang,
+                Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl
+            ) {
                 // For init_declarator: get declarator field
                 if current.kind() == "init_declarator" {
                     current.child_by_field_name("declarator").and_then(|d| {
@@ -1008,8 +1054,12 @@ fn extract_dart_imports(node: Node, bytes: &[u8]) -> Vec<String> {
 
 /// Extract import statements from a file.
 pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
-    if lang == Language::Dart {
-        return extract_dart_imports(node, bytes);
+    match lang {
+        Language::Dart => return extract_dart_imports(node, bytes),
+        Language::Glsl | Language::Hlsl => return shader::file_imports(node, bytes),
+        Language::Verilog => return hdl::verilog_file_imports(node, bytes),
+        Language::Vhdl => return hdl::vhdl_file_imports(node, bytes),
+        _ => {}
     }
 
     let mut imports = Vec::new();
@@ -1300,8 +1350,11 @@ fn extract_dart_used_modules(node: Node, bytes: &[u8]) -> Vec<String> {
 /// Extract module/receiver names from attribute access patterns (e.g., `json` from `json.loads()`).
 /// These are identifiers that are used as the base of attribute access or method calls.
 pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
-    if lang == Language::Dart {
-        return extract_dart_used_modules(node, bytes);
+    match lang {
+        Language::Dart => return extract_dart_used_modules(node, bytes),
+        Language::Verilog => return hdl::verilog_used_scopes(node, bytes),
+        Language::Vhdl => return hdl::vhdl_used_modules(node, bytes),
+        _ => {}
     }
 
     let mut modules = Vec::new();
@@ -1319,7 +1372,9 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         ],
         Language::Scala => &["field_expression"],
         Language::Kotlin => &["navigation_expression"],
-        Language::C | Language::Cpp | Language::Cuda => &["field_expression"],
+        Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
+            &["field_expression"]
+        }
         Language::Ruby => &["call"],
         Language::Swift => &["navigation_expression"],
         Language::Php => &[
@@ -1593,8 +1648,11 @@ pub fn extract_parent_class(
             None
         }
 
+        // SystemVerilog: class drv extends uvm_driver #(item)
+        Language::Verilog => hdl::verilog_parent_class(node, bytes),
+
         // C++: class Dog : public Animal -> base_class_clause -> type_identifier
-        Language::Cpp | Language::Cuda => {
+        Language::Cpp | Language::Cuda | Language::Hlsl => {
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "base_class_clause" {
                     if let Some(id) = find_first_by_kind(child, "type_identifier", max_depth) {

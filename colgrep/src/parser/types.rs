@@ -15,6 +15,8 @@ pub enum Language {
     C,
     Cpp,
     Cuda,
+    Glsl,
+    Hlsl,
     Ruby,
     CSharp,
     Dart,
@@ -42,6 +44,9 @@ pub enum Language {
     Cmake,
     Groovy,
     Ini,
+    // Hardware description languages
+    Verilog,
+    Vhdl,
     // Shell and Powershell are parsed with tree-sitter (function-level chunks)
     Shell,
     Powershell,
@@ -73,6 +78,8 @@ impl FromStr for Language {
             "c" => Ok(Language::C),
             "cpp" | "c++" => Ok(Language::Cpp),
             "cuda" | "cu" => Ok(Language::Cuda),
+            "glsl" => Ok(Language::Glsl),
+            "hlsl" => Ok(Language::Hlsl),
             "ruby" | "rb" => Ok(Language::Ruby),
             "csharp" | "c#" | "cs" => Ok(Language::CSharp),
             "dart" => Ok(Language::Dart),
@@ -99,6 +106,8 @@ impl FromStr for Language {
             "cmake" => Ok(Language::Cmake),
             "groovy" | "gradle" => Ok(Language::Groovy),
             "ini" => Ok(Language::Ini),
+            "verilog" | "v" | "systemverilog" | "sv" => Ok(Language::Verilog),
+            "vhdl" | "vhd" => Ok(Language::Vhdl),
             // Text/config formats
             "qml" => Ok(Language::Qml),
             "html" | "htm" => Ok(Language::Html),

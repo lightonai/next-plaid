@@ -1,5 +1,6 @@
 //! AST navigation helpers and node type detection.
 
+use super::doc_comment::{comment_block_above, DASHES, SLASHES};
 use super::types::Language;
 use tree_sitter::Node;
 
@@ -16,7 +17,9 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         }
         Language::Go => kind == "function_declaration" || kind == "method_declaration",
         Language::Java => kind == "method_declaration" || kind == "constructor_declaration",
-        Language::C | Language::Cpp | Language::Cuda => kind == "function_definition",
+        Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
+            kind == "function_definition"
+        }
         Language::Ruby => kind == "method" || kind == "singleton_method",
         Language::CSharp => kind == "method_declaration" || kind == "constructor_declaration",
         Language::Dart => matches!(
@@ -48,6 +51,18 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         Language::Starlark => kind == "function_definition",
         Language::Cmake => matches!(kind, "function_def" | "macro_def"),
         Language::Groovy => matches!(kind, "function_definition" | "method_declaration"),
+        // Subroutines, plus procedural blocks long enough to be worth a unit
+        // of their own (see hdl::verilog_name / hdl::vhdl_name).
+        Language::Verilog => matches!(
+            kind,
+            "function_declaration"
+                | "task_declaration"
+                | "class_constructor_declaration"
+                | "always_construct"
+                | "initial_construct"
+                | "final_construct"
+        ),
+        Language::Vhdl => matches!(kind, "subprogram_definition" | "process_statement"),
         // Text/config formats - handled separately
         _ => false,
     }
@@ -77,6 +92,18 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
         Language::Cpp | Language::Cuda => matches!(
             kind,
             "class_specifier" | "struct_specifier" | "enum_specifier"
+        ),
+        // Structs and resource blocks. A `declaration` is a unit only when it
+        // is an interface block / cbuffer (shader::block_name names it);
+        // plain uniform and varying declarations stay raw code together.
+        Language::Glsl => matches!(kind, "struct_specifier" | "declaration"),
+        Language::Hlsl => matches!(
+            kind,
+            "struct_specifier"
+                | "class_specifier"
+                | "enum_specifier"
+                | "declaration"
+                | "cbuffer_specifier"
         ),
         Language::Ruby => kind == "class" || kind == "module",
         Language::CSharp => matches!(
@@ -176,6 +203,26 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
         // recursion so nested calls (glob(...), select(...)) are not units.
         Language::Starlark => kind == "call",
         Language::Groovy => kind == "class_declaration",
+        Language::Verilog => matches!(
+            kind,
+            "module_declaration"
+                | "interface_declaration"
+                | "program_declaration"
+                | "package_declaration"
+                | "class_declaration"
+                | "interface_class_declaration"
+                | "checker_declaration"
+                | "udp_declaration"
+        ),
+        Language::Vhdl => matches!(
+            kind,
+            "entity_declaration"
+                | "architecture_definition"
+                | "package_declaration"
+                | "package_definition"
+                | "protected_type_declaration"
+                | "protected_type_body"
+        ),
         // INI `[section]` with its settings, one unit per section.
         Language::Ini => kind == "section",
         Language::Powershell => kind == "class_statement",
@@ -214,6 +261,14 @@ pub fn is_constant_node(kind: &str, lang: Language) -> bool {
         Language::R => kind == "left_assignment" || kind == "equals_assignment", // x <- value or x = value
         Language::Zig => kind == "VarDecl", // const/var declarations
         Language::Julia => kind == "const_statement",
+        // File-scope `define macros, parameters and typedefs (header files).
+        Language::Verilog => matches!(
+            kind,
+            "text_macro_definition"
+                | "local_parameter_declaration"
+                | "parameter_declaration"
+                | "type_declaration"
+        ),
         Language::Sql => false, // SQL doesn't have constants in this sense
         // CSS single-line at-rules: @import / @charset / @namespace. They
         // don't open a block but their text is searchable on its own.
@@ -244,7 +299,7 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
             })
         }),
         Language::Go => node.child_by_field_name("type"),
-        Language::Cpp | Language::Cuda => {
+        Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
             // Look for field_declaration_list in class_specifier
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "field_declaration_list" {
@@ -292,6 +347,8 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
         // Groovy classes expose a `body` field (class_body); recursing into it
         // lets each method_declaration become its own searchable unit.
         Language::Groovy => node.child_by_field_name("body"),
+        // Design units hold their items directly, after the header.
+        Language::Verilog | Language::Vhdl => Some(node),
         // Proto messages/services, GraphQL definitions, Starlark targets, INI
         // sections, and PowerShell classes are indexed as single folded units
         // (no per-member recursion), like Terraform blocks.
@@ -424,7 +481,15 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("property")),
         Language::Dart => return get_dart_node_name(node, bytes),
-        Language::C | Language::Cpp | Language::Cuda => {
+        Language::Verilog => return super::hdl::verilog_name(node, bytes),
+        Language::Vhdl => return super::hdl::vhdl_name(node, bytes),
+        Language::Glsl | Language::Hlsl
+            if matches!(node.kind(), "declaration" | "cbuffer_specifier")
+                || super::shader::is_hlsl_buffer(node, bytes) =>
+        {
+            return super::shader::block_name(node, bytes, lang);
+        }
+        Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
             // For classes/structs/unions/enums, look for name field or type_identifier
             if matches!(
                 node.kind(),
@@ -761,6 +826,24 @@ fn get_cmake_unit_name(node: Node, bytes: &[u8]) -> Option<String> {
 pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: Language) -> usize {
     if node_start_line == 0 {
         return 0;
+    }
+
+    // HDL and shader comment blocks are only documentation when they touch
+    // the declaration (see doc_comment).
+    match lang {
+        Language::Hlsl => {
+            let start = super::shader::attribute_lines_start(node_start_line, lines);
+            return comment_block_above(start, lines, SLASHES).map_or(start, |(start, _)| start);
+        }
+        Language::Verilog | Language::Glsl => {
+            return comment_block_above(node_start_line, lines, SLASHES)
+                .map_or(node_start_line, |(start, _)| start);
+        }
+        Language::Vhdl => {
+            return comment_block_above(node_start_line, lines, DASHES)
+                .map_or(node_start_line, |(start, _)| start);
+        }
+        _ => {}
     }
 
     let mut start = node_start_line;

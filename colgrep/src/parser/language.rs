@@ -34,6 +34,10 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "c" | "h" => Some(Language::C),
         "cpp" | "cc" | "cxx" | "hpp" | "hxx" => Some(Language::Cpp),
         "cu" | "cuh" => Some(Language::Cuda),
+        // Shading languages. `.fs` / `.vs` are left alone: F# owns `.fs`.
+        "glsl" | "vert" | "frag" | "geom" | "comp" | "tesc" | "tese" | "rgen" | "rchit"
+        | "rmiss" | "rahit" | "rint" | "rcall" => Some(Language::Glsl),
+        "hlsl" | "hlsli" | "fx" | "fxh" => Some(Language::Hlsl),
         "rb" | "rake" | "gemspec" => Some(Language::Ruby),
         "cs" => Some(Language::CSharp),
         "dart" => Some(Language::Dart),
@@ -64,6 +68,11 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "groovy" | "gradle" | "gvy" => Some(Language::Groovy),
         // INI-style configs (incl. systemd units)
         "ini" | "cfg" | "properties" | "service" | "timer" | "socket" => Some(Language::Ini),
+        // Hardware description languages. One grammar parses both Verilog and
+        // SystemVerilog (a superset). `.v` is also Coq/Rocq: extract_units
+        // indexes a `.v` file that holds Coq vernacular as text.
+        "v" | "vh" | "sv" | "svh" => Some(Language::Verilog),
+        "vhd" | "vhdl" => Some(Language::Vhdl),
         // Text/documentation formats
         "qml" => Some(Language::Qml),
         "html" | "htm" => Some(Language::Html),
@@ -112,6 +121,8 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::C => tree_sitter_c::LANGUAGE.into(),
         Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
         Language::Cuda => tree_sitter_cuda::LANGUAGE.into(),
+        Language::Glsl => tree_sitter_glsl::LANGUAGE_GLSL.into(),
+        Language::Hlsl => tree_sitter_hlsl::LANGUAGE_HLSL.into(),
         Language::Ruby => tree_sitter_ruby::LANGUAGE.into(),
         Language::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
         Language::Dart => tree_sitter_dart::LANGUAGE.into(),
@@ -146,6 +157,9 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Cmake => tree_sitter_cmake::LANGUAGE.into(),
         Language::Groovy => tree_sitter_groovy::LANGUAGE.into(),
         Language::Ini => tree_sitter_ini::LANGUAGE.into(),
+        // SystemVerilog grammar for both Verilog and SystemVerilog
+        Language::Verilog => tree_sitter_systemverilog::LANGUAGE.into(),
+        Language::Vhdl => tree_sitter_vhdl::LANGUAGE.into(),
         // Text/config formats don't use tree-sitter - this should never be called
         Language::Markdown
         | Language::Text
@@ -269,6 +283,60 @@ mod tests {
             Some(Language::Cuda)
         );
         assert!(!is_text_format(Language::Cuda));
+    }
+
+    #[test]
+    fn test_detect_language_shaders() {
+        for ext in [
+            "glsl", "vert", "frag", "geom", "comp", "tesc", "tese", "rgen", "rchit", "rmiss",
+            "rahit", "rint", "rcall",
+        ] {
+            assert_eq!(
+                detect_language(Path::new(&format!("shader.{ext}"))),
+                Some(Language::Glsl),
+                "{ext}"
+            );
+            assert_eq!(
+                detect_language(Path::new(&format!("SHADER.{}", ext.to_uppercase()))),
+                Some(Language::Glsl),
+                "{ext}"
+            );
+        }
+        for ext in ["hlsl", "hlsli", "fx", "fxh", "HLSL", "FXH"] {
+            assert_eq!(
+                detect_language(Path::new(&format!("shader.{ext}"))),
+                Some(Language::Hlsl),
+                "{ext}"
+            );
+        }
+        // `.fs` is F#, never a fragment shader; `.vs` is left unclaimed.
+        assert_ne!(
+            detect_language(Path::new("Program.fs")),
+            Some(Language::Glsl)
+        );
+        assert_eq!(detect_language(Path::new("shader.vs")), None);
+        assert!(!is_text_format(Language::Glsl));
+        assert!(!is_text_format(Language::Hlsl));
+    }
+
+    #[test]
+    fn test_detect_language_hdl() {
+        for ext in ["v", "vh", "sv", "svh", "V", "SV", "SVH"] {
+            assert_eq!(
+                detect_language(Path::new(&format!("rtl/core.{ext}"))),
+                Some(Language::Verilog),
+                "{ext}"
+            );
+        }
+        for ext in ["vhd", "vhdl", "VHD", "VHDL"] {
+            assert_eq!(
+                detect_language(Path::new(&format!("rtl/core.{ext}"))),
+                Some(Language::Vhdl),
+                "{ext}"
+            );
+        }
+        assert!(!is_text_format(Language::Verilog));
+        assert!(!is_text_format(Language::Vhdl));
     }
 
     #[test]
