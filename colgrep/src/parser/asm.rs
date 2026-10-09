@@ -629,9 +629,19 @@ pub fn extract_asm_units(path: &Path, source: &str) -> Vec<CodeUnit> {
                     break;
                 }
             }
-            // A macro opening inside a delimited function stays inside it.
-            if let Some(open) = stack.pop_if(|top| !(top.is_macro || is_macro && top.explicit_end))
-            {
+            // A function opening inside a macro, or a macro inside a delimited
+            // function, stays inside it. A macro opening while another macro
+            // is still open closes it: nested macro definitions are rare, and
+            // treating them as nested would make every unclosed `%macro`
+            // reach the end of the file.
+            if let Some(open) = stack.pop_if(|top| {
+                let stays_inside = if top.is_macro {
+                    !is_macro
+                } else {
+                    is_macro && top.explicit_end
+                };
+                !stays_inside
+            }) {
                 close(open, start.saturating_sub(1), &mut units);
             }
             stack.push(Open {

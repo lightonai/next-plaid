@@ -185,14 +185,10 @@ fn strip_trailing_method_macro(line: &str) -> Option<String> {
             }
         }
         let open = open?;
-        let name_start = head[..open]
-            .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
-            .map_or(0, |i| i + 1);
+        let name_start = identifier_start(&head[..open]);
         (&head[..name_start], &head[name_start..open])
     } else {
-        let name_start = head
-            .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
-            .map_or(0, |i| i + 1);
+        let name_start = identifier_start(head);
         (&head[..name_start], &head[name_start..])
     };
     // The macro must follow a complete signature (`)name` or a keyword part),
@@ -437,6 +433,16 @@ pub fn file_imports(root: Node, bytes: &[u8]) -> Vec<String> {
     imports.sort();
     imports.dedup();
     imports
+}
+
+/// Byte offset where the identifier ending `text` starts: just past the last
+/// character that cannot be part of a name. That character may be multi-byte
+/// (`，`, `’`, an emoji), so the offset steps over its full UTF-8 length.
+fn identifier_start(text: &str) -> usize {
+    text.char_indices()
+        .rev()
+        .find(|&(_, c)| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |(i, c)| i + c.len_utf8())
 }
 
 #[cfg(test)]

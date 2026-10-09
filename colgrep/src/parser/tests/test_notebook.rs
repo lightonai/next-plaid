@@ -645,3 +645,24 @@ fn test_malformed_metadata_falls_back_to_python() {
         Language::Python
     );
 }
+
+/// Assembly has no tree-sitter grammar: a `%%writefile boot.s` cell or an
+/// assembly kernel used to reach the grammar lookup and panic, aborting the
+/// whole index. Such cells are indexed as raw code.
+#[test]
+fn test_assembly_cells_are_raw_code() {
+    let writefile = build_notebook(
+        "python",
+        &[(
+            "code",
+            &["%%writefile boot.s", "_start:", "    mov $1, %eax"],
+        )],
+    );
+    let units = notebook("boot.ipynb", &writefile);
+    assert!(!units.is_empty());
+    assert!(units.iter().all(|u| u.unit_type == UnitType::RawCode));
+    for kernel in ["asm", "nasm", "gas", "assembly"] {
+        let source = build_notebook(kernel, &[("code", &["_start:", "    ret"])]);
+        assert!(!notebook("boot.ipynb", &source).is_empty(), "{kernel}");
+    }
+}

@@ -57,8 +57,13 @@ fn walk<'a>(node: Node<'a>, mut f: impl FnMut(Node<'a>) -> bool) {
     }
 }
 
+/// Most names a unit lists (ports, signals, variables). Embedding text only
+/// has room for a few anyway, and the cap keeps a gate-level netlist with
+/// hundreds of thousands of nets linear instead of quadratic.
+const MAX_NAMES: usize = 512;
+
 fn push_unique(target: &mut Vec<String>, value: String) {
-    if !target.contains(&value) {
+    if target.len() < MAX_NAMES && !target.contains(&value) {
         target.push(value);
     }
 }

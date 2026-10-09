@@ -213,3 +213,19 @@ SYM_FUNC_END(encrypt_8way)
     assert_eq!(load.docstring.as_deref(), Some("load 8 blocks"));
     assert!(get_unit_by_name(&units, "encrypt_8way").is_some());
 }
+
+/// Unclosed `%macro`s each close at the next one instead of all reaching the
+/// end of the file (which made the output quadratic in the file length).
+#[test]
+fn test_unclosed_macros_close_at_the_next_one() {
+    let source: String = (0..50)
+        .map(|i| format!("%macro m{i} 0\n    nop\n"))
+        .collect();
+    let units = assert_extractor_invariants(&source, Language::Assembly, "macros.asm");
+    let total_lines: usize = units.iter().map(|u| u.end_line + 1 - u.line).sum();
+    assert!(
+        total_lines <= 2 * source.lines().count(),
+        "units overlap: {total_lines} unit lines for {} file lines",
+        source.lines().count()
+    );
+}

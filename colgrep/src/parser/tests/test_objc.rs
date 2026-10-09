@@ -269,3 +269,17 @@ fn test_objective_cpp_file() {
     assert_eq!(draw.parameters, vec!["point"]);
     assert!(draw.calls.contains(&"CGContextFillRect".to_string()));
 }
+
+/// A method header whose trailing comment ends in a multi-byte character
+/// (Chinese punctuation, a curly quote, an emoji) used to be sliced inside
+/// that character when looking for a trailing macro, and panicked.
+#[test]
+fn test_trailing_comment_with_multibyte_characters() {
+    for source in [
+        "- (void)setupUI // 设置界面。\n{\n}\n",
+        "- (NSString *)title // the ‘title’\n{\n}\n",
+        "- (void)f 😀{\n}\n",
+    ] {
+        assert_extractor_invariants(source, Language::ObjectiveC, "View.m");
+    }
+}

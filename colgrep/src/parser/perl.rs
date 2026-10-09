@@ -33,16 +33,25 @@ fn package_name(node: Node, bytes: &[u8]) -> Option<String> {
 /// The package a declaration belongs to by way of a preceding statement-form
 /// `package Name;` in the same scope or an enclosing one.
 pub fn enclosing_package(node: Node, bytes: &[u8]) -> Option<String> {
-    let mut current = Some(node);
-    while let Some(n) = current {
-        let mut prev = n.prev_sibling();
-        while let Some(p) = prev {
-            if is_statement_package(p) {
-                return package_name(p, bytes);
+    // Walk forward with one cursor per level: `prev_sibling` is linear in the
+    // number of siblings, so walking back from every sub was cubic in a file
+    // of many subs.
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        let mut last_package = None;
+        let mut cursor = parent.walk();
+        for child in parent.children(&mut cursor) {
+            if child.id() == current.id() {
+                break;
             }
-            prev = p.prev_sibling();
+            if is_statement_package(child) {
+                last_package = Some(child);
+            }
         }
-        current = n.parent();
+        if let Some(package) = last_package {
+            return package_name(package, bytes);
+        }
+        current = parent;
     }
     None
 }
@@ -312,10 +321,9 @@ pub fn block_parent_class(node: Node, bytes: &[u8]) -> Option<String> {
     parent_class(statements.into_iter(), bytes)
 }
 
-/// The one-line abstract from a module's `=head1 NAME` POD section
-/// (`Mojo::UserAgent - Non-blocking I/O HTTP and WebSocket user agent`),
-/// when it is about `package`.
-fn pod_abstract(root: Node, bytes: &[u8], package: &str) -> Option<String> {
+/// The one-line abstract of the file's first `=head1 NAME` POD section
+/// (`Mojo::UserAgent - Non-blocking I/O HTTP and WebSocket user agent`).
+fn pod_name_abstract(root: Node, bytes: &[u8]) -> Option<String> {
     for child in root.named_children(&mut root.walk()) {
         if child.kind() != "pod" {
             continue;
@@ -324,15 +332,23 @@ fn pod_abstract(root: Node, bytes: &[u8], package: &str) -> Option<String> {
         let mut lines = pod.lines();
         while let Some(line) = lines.next() {
             if line.trim() == "=head1 NAME" {
-                let abstract_line = lines.find(|l| !l.trim().is_empty())?.trim();
-                let names_package = abstract_line.split_whitespace().next().is_some_and(|w| {
-                    w.trim_matches(|c| c == 'C' || c == '<' || c == '>') == package
-                });
-                return names_package.then(|| abstract_line.to_string());
+                return lines
+                    .find(|l| !l.trim().is_empty())
+                    .map(|l| l.trim().to_string());
             }
         }
     }
     None
+}
+
+/// The `=head1 NAME` abstract, when it is about `package`.
+fn pod_abstract(name_abstract: Option<&str>, package: &str) -> Option<String> {
+    let abstract_line = name_abstract?;
+    abstract_line
+        .split_whitespace()
+        .next()
+        .is_some_and(|w| w.trim_matches(|c| c == 'C' || c == '<' || c == '>') == package)
+        .then(|| abstract_line.to_string())
 }
 
 /// Units the generic walk cannot produce for Perl, appended to `units`:
@@ -351,6 +367,8 @@ pub fn extra_units(
     file_imports: &[String],
     units: &mut Vec<CodeUnit>,
 ) {
+    // Looked up once: every package compares against the same abstract.
+    let name_abstract = pod_name_abstract(root, bytes);
     if lines.is_empty() {
         return;
     }
@@ -410,7 +428,7 @@ pub fn extra_units(
             None,
         );
         unit.signature = lines[start].trim().to_string();
-        unit.docstring = pod_abstract(root, bytes, &name);
+        unit.docstring = pod_abstract(name_abstract.as_deref(), &name);
         unit.extends = parent_class(statements.iter().copied(), bytes);
         let mut unit_calls = Vec::new();
         let mut used = Vec::new();

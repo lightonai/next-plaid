@@ -216,3 +216,22 @@ end
 fn test_empty_file() {
     assert!(parse("", Language::Luau, "empty.luau").is_empty());
 }
+
+/// Code that merely ends in `]]` above a function is not the end of a
+/// `--[[ ]]` doc comment: the license block at the top of the file must not
+/// become the function's docstring together with the code in between.
+#[test]
+fn test_index_expression_is_not_a_block_comment_end() {
+    let source = "--[[ License: MIT ]]\nlocal M = {}\nlocal cache = {}\nlocal x = t[a[1]]\nfunction M.f()\n  return x\nend\n";
+    let units = parse(source, Language::Luau, "m.luau");
+    let f = get_unit_by_name(&units, "M.f")
+        .or_else(|| get_unit_by_name(&units, "f"))
+        .expect("M.f is extracted");
+    assert!(
+        f.docstring
+            .as_deref()
+            .is_none_or(|d| !d.contains("License")),
+        "{:?}",
+        f.docstring
+    );
+}

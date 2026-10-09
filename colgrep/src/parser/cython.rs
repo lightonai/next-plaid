@@ -178,10 +178,13 @@ fn block_header(line: &str, indent: usize, code: &str) -> String {
         let mut s = blank_range(line, indent, indent + name_start);
         s.replace_range(indent..indent + 5, "class");
         s
-    } else {
+    } else if colon >= indent + 4 {
         let mut s = blank_range(line, indent, colon);
         s.replace_range(indent..indent + 4, "if 1");
         s
+    } else {
+        // Too short to hold `if 1` (`x:` in a decl block): leave it as is.
+        line.to_string()
     }
 }
 

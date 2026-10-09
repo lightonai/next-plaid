@@ -74,7 +74,8 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
         "di" => Some(Language::D),
         // `.d` is also the extension of compiler-generated make dependency
         // files (`foo.o: foo.c foo.h \\`); those are skipped, not parsed as D.
-        "d" => (!is_make_dependency_file(path)).then_some(Language::D),
+        "d" => (!content.map_or_else(|| is_make_dependency_file(path), looks_like_make_dependency))
+            .then_some(Language::D),
         "sol" => Some(Language::Solidity),
         // AMD HIP is CUDA's syntax (`__global__`, `<<<grid, block>>>`, ...)
         "hip" => Some(Language::Cuda),
@@ -108,7 +109,9 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
         "odin" => Some(Language::Odin),
         "pas" | "dpr" | "lpr" => Some(Language::Pascal),
         // Puppet manifests use `.pp` too; only Free Pascal sources are parsed.
-        "pp" => is_pascal_pp_file(path).then_some(Language::Pascal),
+        "pp" => content
+            .map_or_else(|| is_pascal_pp_file(path), looks_like_pascal)
+            .then_some(Language::Pascal),
         "asm" | "s" | "nasm" => Some(Language::Assembly),
         "jl" => Some(Language::Julia),
         // Fortran: fixed-form (.f, .for, .ftn, .f77) and free-form sources.
@@ -870,6 +873,35 @@ __kernel void blur(__global const float *in, __global float *out, const int w)
         assert_eq!(
             refine_language(Path::new("init.sls"), salt, Language::Scheme),
             Language::Yaml
+        );
+    }
+
+    #[test]
+    fn test_content_settles_d_and_pp_without_reading_disk() {
+        // No such files exist: the content passed in decides.
+        let dep = "build/foo.o: src/foo.d src/bar.h \\\n  include/baz.h\n";
+        assert_eq!(
+            detect_language_with_content(Path::new("/nonexistent/foo.d"), dep),
+            None
+        );
+        assert_eq!(
+            detect_language_with_content(
+                Path::new("/nonexistent/app.d"),
+                "module app;\nvoid main() {}\n"
+            ),
+            Some(Language::D)
+        );
+        let puppet = "class nginx {\n  package { 'nginx': ensure => installed }\n}\n";
+        assert_eq!(
+            detect_language_with_content(Path::new("/nonexistent/init.pp"), puppet),
+            None
+        );
+        assert_eq!(
+            detect_language_with_content(
+                Path::new("/nonexistent/unit1.pp"),
+                "unit Unit1;\ninterface\n"
+            ),
+            Some(Language::Pascal)
         );
     }
 

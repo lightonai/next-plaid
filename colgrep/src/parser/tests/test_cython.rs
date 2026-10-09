@@ -140,3 +140,17 @@ fn test_plain_python_matches_py() {
     };
     assert_eq!(shape("a.pyx"), shape("a.py"));
 }
+
+/// Lines too short to hold the `if 1` rewrite (`x:` inside a `cdef:` block)
+/// are left as they are instead of panicking.
+#[test]
+fn test_short_block_lines_do_not_panic() {
+    for source in [
+        "cdef:\n    x:\n",
+        "cdef:\n    é:\n",
+        "cdef:\n    a:#é\n",
+        "cdef:\n    dict d = {\n        1:\n            2}\n",
+    ] {
+        parse(source, Language::Python, "mod.pyx");
+    }
+}

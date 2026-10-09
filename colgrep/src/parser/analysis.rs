@@ -463,8 +463,15 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
                 while end > 0 && lines.get(end - 1)?.trim().is_empty() {
                     end -= 1;
                 }
-                if end > 0 && lines.get(end - 1)?.trim_end().ends_with("]]") {
-                    for i in (0..end).rev() {
+                // The line above must close a block comment, not be code that
+                // happens to end in `]]` (`local x = t[a[1]]`): either the
+                // whole comment is on it, or it has no `[` of its own.
+                let closing = lines.get(end.saturating_sub(1))?.trim();
+                let closes_comment = end > 0
+                    && closing.ends_with("]]")
+                    && (closing.starts_with("--[[") || !closing.contains('['));
+                if closes_comment {
+                    for i in (end.saturating_sub(200)..end).rev() {
                         if lines.get(i)?.trim_start().starts_with("--[[") {
                             let text = lines[i..end]
                                 .iter()

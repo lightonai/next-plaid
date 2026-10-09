@@ -13,7 +13,7 @@
 //! line of each source string.
 
 use super::analysis::extract_file_imports;
-use super::detect_language;
+use super::detect_language_with_content;
 use super::extract::fill_raw_code_gaps;
 use super::language::{get_tree_sitter_language, is_text_format};
 use super::text::create_text_unit;
@@ -285,14 +285,33 @@ fn is_cell_language(lang: Language) -> bool {
     !is_text_format(lang)
         && !matches!(
             lang,
-            Language::Html | Language::Vue | Language::Svelte | Language::Qml | Language::Notebook
+            Language::Html
+                | Language::Vue
+                | Language::Svelte
+                | Language::Qml
+                | Language::Notebook
+                // No tree-sitter grammar (line scanners): parsing them here would panic.
+                | Language::Assembly
+                | Language::Scss
+                | Language::Less
+                // Split by dedicated extractors, not by the generic walk this
+                // module uses; their cells are indexed as raw code instead.
+                | Language::Scheme
+                | Language::Racket
+                | Language::CommonLisp
+                | Language::Nix
+                | Language::Erlang
+                | Language::Fsharp
+                | Language::Clojure
+                | Language::Elm
         )
 }
 
 /// Language of an IPython cell magic's body (`%%bash`, `%%writefile x.py`,
 /// `%%time`): `None` when the cell has no cell magic, `Some(None)` when its
 /// body cannot be parsed.
-fn cell_magic_language(first_line: &str) -> Option<Option<Language>> {
+fn cell_magic_language(cell: &str) -> Option<Option<Language>> {
+    let first_line = cell.lines().next().unwrap_or("");
     let rest = first_line.trim_start().strip_prefix("%%")?;
     let mut words = rest.split_whitespace();
     let magic = words.next().unwrap_or("");
@@ -303,7 +322,10 @@ fn cell_magic_language(first_line: &str) -> Option<Option<Language>> {
             Some(Language::Python)
         }
         "writefile" | "file" => last_arg
-            .and_then(|f| detect_language(Path::new(f)))
+            .and_then(|f| {
+                let body = cell.split_once('\n').map_or("", |(_, rest)| rest);
+                detect_language_with_content(Path::new(f), body)
+            })
             .filter(|l| is_cell_language(*l)),
         "bash" | "sh" | "system" => Some(Language::Shell),
         "script" => words.next().and_then(language_from_name),
@@ -345,9 +367,8 @@ struct CodeCell {
 fn code_cell_units(path: &Path, cells: Vec<(Option<Language>, CellSource)>) -> Vec<CodeUnit> {
     let mut prepared: Vec<CodeCell> = Vec::with_capacity(cells.len());
     for (kernel, source) in cells {
-        let first_line = source.text.lines().next().unwrap_or("");
         let (lang, magic_line) = match kernel {
-            Some(Language::Python) => match cell_magic_language(first_line) {
+            Some(Language::Python) => match cell_magic_language(&source.text) {
                 Some(lang) => (lang, true),
                 None => (Some(Language::Python), false),
             },

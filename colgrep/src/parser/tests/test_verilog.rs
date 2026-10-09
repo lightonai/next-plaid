@@ -321,3 +321,18 @@ Qed.
     assert!(units.iter().all(|u| u.language == Language::Verilog));
     assert!(get_unit_by_name(&units, "m").is_some());
 }
+
+/// A gate-level netlist declares tens of thousands of nets; a unit lists at
+/// most a bounded number of them, which keeps the collection linear.
+#[test]
+fn test_netlist_name_lists_are_bounded() {
+    let mut source = String::from("module netlist (input a, output y);\n");
+    for i in 0..2000 {
+        source.push_str(&format!("  wire n{i};\n"));
+    }
+    source.push_str("  assign y = a;\nendmodule\n");
+    let units = parse(&source, Language::Verilog, "netlist.v");
+    for u in &units {
+        assert!(u.variables.len() <= 512, "{} variables", u.variables.len());
+    }
+}
