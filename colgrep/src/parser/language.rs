@@ -62,7 +62,12 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
         // `.m` is Objective-C or MATLAB; `.mm` is always Objective-C++.
         "m" => Some(sniff_ambiguous_extension("m", path, content)),
         "mm" => Some(Language::ObjectiveC),
+        "di" => Some(Language::D),
+        // `.d` is also the extension of compiler-generated make dependency
+        // files (`foo.o: foo.c foo.h \\`); those are skipped, not parsed as D.
+        "d" => (!is_make_dependency_file(path)).then_some(Language::D),
         "rb" | "rake" | "gemspec" => Some(Language::Ruby),
+        "pl" | "pm" | "t" => Some(Language::Perl),
         "cs" => Some(Language::CSharp),
         "dart" => Some(Language::Dart),
         // Additional languages
@@ -81,6 +86,11 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
         "elm" => Some(Language::Elm),
         "r" | "rmd" => Some(Language::R),
         "zig" => Some(Language::Zig),
+        "odin" => Some(Language::Odin),
+        "pas" | "dpr" | "lpr" => Some(Language::Pascal),
+        // Puppet manifests use `.pp` too; only Free Pascal sources are parsed.
+        "pp" => is_pascal_pp_file(path).then_some(Language::Pascal),
+        "asm" | "s" | "nasm" => Some(Language::Assembly),
         "jl" => Some(Language::Julia),
         // Fortran: fixed-form (.f, .for, .ftn, .f77) and free-form sources.
         "f" | "for" | "ftn" | "f77" | "f90" | "f95" | "f03" | "f08" => Some(Language::Fortran),
@@ -220,6 +230,91 @@ fn sniff_objc_or_matlab(head: &str) -> Language {
     }
 }
 
+/// Read at most `max_bytes` from the start of a file, lossily decoded. Used by
+/// the content sniffs of ambiguous extensions; `None` when unreadable.
+fn read_file_head(path: &Path, max_bytes: u64) -> Option<String> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(max_bytes)
+        .read_to_end(&mut head)
+        .ok()?;
+    Some(String::from_utf8_lossy(&head).into_owned())
+}
+
+/// True if a `.d` file is a compiler-generated make dependency file
+/// (`gcc -MD`, `clang -MD`, `ldc2 --makedeps`) rather than D source. Those live
+/// next to object files in build directories and look like
+/// `build/foo.o: src/foo.c include/foo.h \`. An unreadable file is not one.
+fn is_make_dependency_file(path: &Path) -> bool {
+    read_file_head(path, 1024).is_some_and(|head| looks_like_make_dependency(&head))
+}
+
+/// The first non-blank line of a make dependency file is `targets: prerequisites`,
+/// where every target is a path (it has a `.` or `/`) and the colon is followed
+/// by whitespace or the end of the line (so `C:\x.o` drive letters don't count).
+/// D source never starts that way: its first line is a comment, `module`,
+/// `import`, or a declaration, and a leading `private:`-style attribute names
+/// no path.
+fn looks_like_make_dependency(text: &str) -> bool {
+    let Some(line) = text
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+    else {
+        return false;
+    };
+    if ["//", "/*", "/+", "#"].iter().any(|p| line.starts_with(p)) {
+        return false;
+    }
+    let bytes = line.as_bytes();
+    let Some(colon) = (0..bytes.len())
+        .find(|&i| bytes[i] == b':' && bytes.get(i + 1).is_none_or(|b| b.is_ascii_whitespace()))
+    else {
+        return false;
+    };
+    let (targets, prerequisites) = (&line[..colon], &line[colon + 1..]);
+    let is_path_char = |c: char| c.is_alphanumeric() || "._/\\-+~$(){}@%,=:".contains(c);
+    let mut tokens = targets.split_whitespace().peekable();
+    tokens.peek().is_some()
+        && targets
+            .split_whitespace()
+            .all(|t| t.chars().all(is_path_char))
+        && tokens.any(|t| t.contains(['.', '/']))
+        && !prerequisites.contains([';', '"', '{', '='])
+}
+
+/// True if a `.pp` file is Free Pascal source rather than a Puppet manifest
+/// (Puppet uses `.pp` too). Free Pascal files open with a `unit` / `program` /
+/// `library` / `package` header, possibly after comments or `{$mode ...}`
+/// directives; Puppet manifests open with `#` comments, `class`, `define`,
+/// `node`, or resources, and never with a Pascal comment. An unreadable file
+/// counts as Pascal.
+fn is_pascal_pp_file(path: &Path) -> bool {
+    read_file_head(path, 4096).is_none_or(|head| looks_like_pascal(&head))
+}
+
+fn looks_like_pascal(text: &str) -> bool {
+    let rest = text.trim_start_matches('\u{feff}').trim_start();
+    // `{ ... }`, `(* ... *)` and `//` comments (and `{$...}` directives) are
+    // Pascal syntax that a Puppet manifest cannot start with.
+    if rest.starts_with('{') || rest.starts_with("(*") || rest.starts_with("//") {
+        return true;
+    }
+    let word: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    // `unit Name;`, not Puppet's `package { 'nginx': ... }` resource.
+    let names_something = rest[word.len()..]
+        .trim_start()
+        .starts_with(|c: char| c.is_alphabetic() || c == '_');
+    names_something && matches!(word.as_str(), "unit" | "program" | "library" | "package")
+}
+
 /// Check if a language is a text/config format (not code parsed with tree-sitter).
 pub fn is_text_format(lang: Language) -> bool {
     matches!(
@@ -253,6 +348,8 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Hlsl => tree_sitter_hlsl::LANGUAGE_HLSL.into(),
         Language::ObjectiveC => tree_sitter_objc::LANGUAGE.into(),
         Language::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+        Language::D => tree_sitter_d::LANGUAGE.into(),
+        Language::Perl => ts_parser_perl::LANGUAGE.into(),
         Language::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
         Language::Dart => tree_sitter_dart::LANGUAGE.into(),
         // Additional languages
@@ -273,6 +370,8 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Elm => tree_sitter_elm::LANGUAGE.into(),
         Language::R => tree_sitter_r::LANGUAGE.into(),
         Language::Zig => tree_sitter_zig::LANGUAGE.into(),
+        Language::Odin => tree_sitter_odin::LANGUAGE.into(),
+        Language::Pascal => tree_sitter_pascal::LANGUAGE.into(),
         Language::Julia => tree_sitter_julia::LANGUAGE.into(),
         Language::Matlab => tree_sitter_matlab::LANGUAGE.into(),
         Language::Fortran => tree_sitter_fortran::LANGUAGE.into(),
@@ -308,6 +407,8 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         | Language::Makefile
         | Language::AsciiDoc
         | Language::Org => unreachable!("Text/config formats don't use tree-sitter"),
+        // Assembly is split line by line (asm.rs); see that module for why.
+        Language::Assembly => unreachable!("Assembly doesn't use tree-sitter"),
     }
 }
 
@@ -420,6 +521,92 @@ mod tests {
             detect_language(Path::new("header.hxx")),
             Some(Language::Cpp)
         );
+    }
+
+    #[test]
+    fn test_detect_language_group_c() {
+        for (file, lang) in [
+            ("lib/Mojo/Base.pm", Language::Perl),
+            ("script.pl", Language::Perl),
+            ("t/basic.t", Language::Perl),
+            ("SCRIPT.PL", Language::Perl),
+            ("std/algorithm.d", Language::D),
+            ("core.di", Language::D),
+            ("APP.D", Language::D),
+            ("shapes.pas", Language::Pascal),
+            ("project.dpr", Language::Pascal),
+            ("project.lpr", Language::Pascal),
+            ("UNIT1.PAS", Language::Pascal),
+            ("graphics.pp", Language::Pascal),
+            ("main.odin", Language::Odin),
+            ("MAIN.ODIN", Language::Odin),
+            ("memcpy.S", Language::Assembly),
+            ("start.s", Language::Assembly),
+            ("pixel.asm", Language::Assembly),
+            ("boot.nasm", Language::Assembly),
+            ("BOOT.ASM", Language::Assembly),
+        ] {
+            assert_eq!(detect_language(Path::new(file)), Some(lang), "{file}");
+            assert!(!is_text_format(lang));
+        }
+        // `.inc` is shared by Pascal, PHP, NASM, C and more: not claimed.
+        assert_eq!(detect_language(Path::new("defines.inc")), None);
+    }
+
+    fn write_temp(name: &str, content: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, content).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn test_d_extension_skips_make_dependency_files() {
+        for deps in [
+            "build/foo.o: src/foo.c include/foo.h \\\n  include/bar.h\n\ninclude/foo.h:\n",
+            "foo.o foo.d : foo.c\n",
+            "CMakeFiles/app.dir/main.cpp.o: \\\n /usr/include/stdio.h\n",
+            "C:\\build\\foo.obj: C:\\src\\foo.c\n",
+        ] {
+            let (_dir, path) = write_temp("foo.d", deps);
+            assert_eq!(detect_language(&path), None, "{deps:?}");
+        }
+        for source in [
+            "module std.algorithm;\n\nimport std.range;\n",
+            "/// Docs: see foo.d\nmodule app;\n",
+            "// main.d: entry point\nvoid main() {}\n",
+            "private:\nint x;\n",
+            "extern(C):\nvoid f();\n",
+            "#!/usr/bin/env rdmd\nvoid main() {}\n",
+            "",
+        ] {
+            let (_dir, path) = write_temp("app.d", source);
+            assert_eq!(detect_language(&path), Some(Language::D), "{source:?}");
+        }
+    }
+
+    #[test]
+    fn test_pp_extension_pascal_vs_puppet() {
+        for pascal in [
+            "unit Graphics;\n\ninterface\n",
+            "{ Copyright header }\nunit Spin;\n",
+            "{$mode objfpc}{$H+}\nprogram Demo;\n",
+            "(* old style *)\nlibrary Foo;\n",
+            "// comment\nunit Bar;\n",
+            "\u{feff}Unit Baz;\n",
+        ] {
+            let (_dir, path) = write_temp("x.pp", pascal);
+            assert_eq!(detect_language(&path), Some(Language::Pascal), "{pascal:?}");
+        }
+        for puppet in [
+            "# Class: nginx\nclass nginx (\n  $port = 80,\n) {\n}\n",
+            "define apache::vhost($port) {\n}\n",
+            "node 'web01' {\n  include nginx\n}\n",
+            "package { 'nginx': ensure => installed }\n",
+        ] {
+            let (_dir, path) = write_temp("init.pp", puppet);
+            assert_eq!(detect_language(&path), None, "{puppet:?}");
+        }
     }
 
     #[test]

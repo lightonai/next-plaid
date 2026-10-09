@@ -18,7 +18,9 @@ pub enum Language {
     Glsl,
     Hlsl,
     ObjectiveC,
+    D,
     Ruby,
+    Perl,
     CSharp,
     Dart,
     // Additional languages with tree-sitter
@@ -37,6 +39,9 @@ pub enum Language {
     Elm,
     R,
     Zig,
+    Odin,
+    Pascal,
+    Assembly,
     Julia,
     Matlab,
     Fortran,
@@ -91,7 +96,9 @@ impl FromStr for Language {
             "objectivec" | "objective-c" | "objc" | "objective-c++" | "objc++" => {
                 Ok(Language::ObjectiveC)
             }
+            "d" | "dlang" => Ok(Language::D),
             "ruby" | "rb" => Ok(Language::Ruby),
+            "perl" | "pl" => Ok(Language::Perl),
             "csharp" | "c#" | "cs" => Ok(Language::CSharp),
             "dart" => Ok(Language::Dart),
             // Additional languages
@@ -110,6 +117,11 @@ impl FromStr for Language {
             "elm" => Ok(Language::Elm),
             "r" => Ok(Language::R),
             "zig" => Ok(Language::Zig),
+            "odin" => Ok(Language::Odin),
+            "pascal" | "delphi" | "freepascal" | "fpc" | "pas" | "objectpascal" => {
+                Ok(Language::Pascal)
+            }
+            "assembly" | "asm" | "nasm" | "gas" => Ok(Language::Assembly),
             "julia" | "jl" => Ok(Language::Julia),
             "matlab" => Ok(Language::Matlab),
             "fortran" | "f90" | "f" => Ok(Language::Fortran),

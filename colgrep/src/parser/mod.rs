@@ -12,6 +12,7 @@
 
 // Submodules
 mod analysis;
+mod asm;
 mod ast;
 mod builder;
 mod call_graph;
@@ -27,6 +28,9 @@ mod html;
 mod language;
 mod matlab;
 mod objc;
+mod odin;
+mod pascal;
+mod perl;
 mod qml;
 mod shader;
 mod svelte;
@@ -88,6 +92,7 @@ fn is_abstract_type_container(kind: &str, lang: Language) -> bool {
         ),
         // Interface blocks declare procedures defined elsewhere.
         Language::Fortran => kind == "interface",
+        Language::D => matches!(kind, "interface_declaration" | "enum_declaration"),
         Language::Dart => kind == "type_alias",
         _ => false,
     }
@@ -137,6 +142,22 @@ pub(crate) fn max_recursion_depth() -> usize {
     })
 }
 
+/// Bytes of a tree covered by ERROR or MISSING nodes.
+fn tree_error_bytes(tree: &tree_sitter::Tree) -> usize {
+    let mut total = 0;
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.is_error() || node.is_missing() {
+            total += node.end_byte() - node.start_byte();
+            continue;
+        }
+        if node.has_error() {
+            stack.extend(node.children(&mut node.walk()));
+        }
+    }
+    total
+}
+
 /// Extract all code units from a file with 5-layer analysis.
 ///
 /// This is the main entry point for parsing source files. It:
@@ -167,6 +188,11 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
     // Handle Svelte components with special extraction logic
     if lang == Language::Svelte {
         return svelte::extract_svelte_units(path, source);
+    }
+
+    // Assembly is split on its function directives, line by line (asm.rs).
+    if lang == Language::Assembly {
+        return asm::extract_asm_units(path, source);
     }
 
     if lang == Language::Qml {
@@ -200,8 +226,21 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         None => return Vec::new(),
     };
 
+    // Pascal: retry a file that does not parse cleanly with its inactive
+    // `{$ELSE}` branches masked (see pascal.rs). Names are read from the
+    // parsed text; unit code always comes from the original lines.
+    let reparsed = (lang == Language::Pascal && tree.root_node().has_error())
+        .then(|| pascal::masked_source(source))
+        .flatten()
+        .and_then(|masked| Some((parser.parse(&masked, None)?, masked)))
+        .filter(|(masked_tree, _)| tree_error_bytes(masked_tree) < tree_error_bytes(&tree));
+    let (tree, parsed_source) = match reparsed {
+        Some((masked_tree, masked)) => (masked_tree, std::borrow::Cow::Owned(masked)),
+        None => (tree, parse_source),
+    };
+
     let lines: Vec<&str> = source.lines().collect();
-    let bytes = parse_source.as_bytes();
+    let bytes = parsed_source.as_bytes();
 
     // Languages whose definitions are not single AST nodes of a known kind
     // have a dedicated extractor (see builder.rs).
@@ -242,19 +281,54 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
     let max_depth = max_recursion_depth();
     let mut units = Vec::new();
     let mut depth_limit_hit = false;
-    extract_from_node(
-        tree.root_node(),
-        path,
-        &lines,
-        bytes,
-        lang,
-        &mut units,
-        None,
-        &file_imports,
-        0,
-        max_depth,
-        &mut depth_limit_hit,
-    );
+    // Pascal: when the file still has parse errors, parse it section by
+    // section instead, so one construct the grammar misses costs one
+    // section rather than every unit after it (see pascal.rs).
+    // Odin: the same when an unknown construct swallowed most of the file.
+    let sections = match lang {
+        Language::Pascal if tree.root_node().has_error() => pascal::sections(&parsed_source),
+        Language::Odin if tree_error_bytes(&tree) * 3 > bytes.len() => {
+            odin::sections(&parsed_source)
+        }
+        _ => Vec::new(),
+    };
+    if !sections.is_empty() {
+        for section in sections {
+            if parser.set_included_ranges(&[section]).is_err() {
+                continue;
+            }
+            let Some(section_tree) = parser.parse(parsed_source.as_bytes(), None) else {
+                continue;
+            };
+            extract_from_node(
+                section_tree.root_node(),
+                path,
+                &lines,
+                bytes,
+                lang,
+                &mut units,
+                None,
+                &file_imports,
+                0,
+                max_depth,
+                &mut depth_limit_hit,
+            );
+        }
+    } else {
+        extract_from_node(
+            tree.root_node(),
+            path,
+            &lines,
+            bytes,
+            lang,
+            &mut units,
+            None,
+            &file_imports,
+            0,
+            max_depth,
+            &mut depth_limit_hit,
+        );
+    }
 
     if depth_limit_hit {
         eprintln!(
@@ -263,6 +337,17 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
             max_depth
         );
         return Vec::new();
+    }
+
+    if lang == Language::Perl {
+        perl::extra_units(
+            tree.root_node(),
+            path,
+            &lines,
+            bytes,
+            &file_imports,
+            &mut units,
+        );
     }
 
     // Fill gaps with raw code units to achieve 100% file coverage
