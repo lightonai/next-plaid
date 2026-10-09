@@ -141,7 +141,7 @@ colgrep settings --no-hybrid-search
 
 ## Agent Mode (`--agent`)
 
-`colgrep --agent` hands your question to a small local model trained to localize code with colgrep ([`lightonai/colgrep-agent-2B`](https://huggingface.co/lightonai/colgrep-agent-2B), run locally from its [GGUF](https://huggingface.co/lightonai/colgrep-agent-2B-GGUF)). It searches the repository, reads the candidates, and returns the files and line ranges to look at, like a sub-agent that only does code search:
+`colgrep --agent` hands your question to a small local model trained to localize code with colgrep ([`lightonai/colgrep-agent-2B-GGUF`](https://huggingface.co/lightonai/colgrep-agent-2B-GGUF)). It searches the repository, reads the candidates, and returns the files and line ranges to look at, like a sub-agent that only does code search:
 
 ```bash
 colgrep --agent "sessions never expire after logout"
@@ -214,10 +214,6 @@ Private model repos use the same token lookup as the encoder (`HF_TOKEN`, then `
 Point the agent at any OpenAI-compatible server; prompts go through `/v1/completions`, so no server-side tool parser is needed:
 
 ```bash
-# vLLM
-vllm serve lightonai/colgrep-agent-2B --served-model-name lightonai/colgrep-agent-2B-GGUF --port 8000
-colgrep settings --agent-endpoint http://localhost:8000/v1
-
 # llama-server (--special keeps the tool-call tokens in the output)
 llama-server -m colgrep-agent-2B-Q8_0.gguf --port 8000 --special
 colgrep settings --agent-endpoint http://localhost:8000/v1

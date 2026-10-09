@@ -1,8 +1,7 @@
 //! colgrep agent: a small model that localizes code by searching a repository with
 //! colgrep and reading files through a read-only terminal.
 //!
-//! The default model is `lightonai/colgrep-agent-2B` (served from its Q8_0 GGUF in
-//! `lightonai/colgrep-agent-2B-GGUF`), trained with the
+//! The default model is `lightonai/colgrep-agent-2B-GGUF` (Q8_0), trained with the
 //! harness reproduced here (prompt, tool schemas, turn budget and observation format are
 //! byte-identical to training). Every model-facing knob is configurable so another
 //! checkpoint, prompt or template can be swapped in.

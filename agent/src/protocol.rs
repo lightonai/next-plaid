@@ -15,7 +15,7 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../assets/system_prompt.tx
 /// Default tool schemas: `colgrep`, `terminal`, `finish`, in the order the model saw them.
 pub const DEFAULT_TOOLS_JSON: &str = include_str!("../assets/tools.json");
 
-/// Chat template of `lightonai/colgrep-agent-2B`, used when the model file does
+/// Chat template of `lightonai/colgrep-agent-2B-GGUF`, used when the model file does
 /// not carry one (or a custom one is configured).
 pub const DEFAULT_CHAT_TEMPLATE: &str = include_str!("../assets/chat_template.jinja");
 
