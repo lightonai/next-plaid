@@ -1144,7 +1144,7 @@ impl<'a> Shell<'a> {
             "tail" => self.head_tail(args, stdin, false),
             "sed" => self.sed(args, stdin),
             "grep" | "egrep" | "fgrep" | "rg" => self.grep(&name, args, stdin),
-            "find" => self.find(args),
+            "find" => self.find_exec(args),
             "ls" => self.ls(args),
             "wc" => self.wc(args, stdin),
             "sort" => self.sort(args, stdin),
@@ -1777,6 +1777,67 @@ impl<'a> Shell<'a> {
         }
     }
 
+    /// `find … -exec CMD {} ;` / `{} +`: the harness ran these in a read-only bash, so a
+    /// reading command (`grep -l`, `wc -l`, `head`) works there and must work here. CMD
+    /// goes through `exec` like an `xargs` command, so a writing one is still refused.
+    fn find_exec(&mut self, args: &[String]) -> Out {
+        let Some(at) = args.iter().position(|a| a == "-exec" || a == "-execdir") else {
+            return self.find(args);
+        };
+        let flag = &args[at];
+        let Some(len) = args[at + 1..].iter().position(|a| a == ";" || a == "+") else {
+            return Out::err(format!("find: missing argument to `{flag}'\n"), 1);
+        };
+        let cmd = &args[at + 1..at + 1 + len];
+        if cmd.is_empty() {
+            return Out::err(format!("find: missing argument to `{flag}'\n"), 1);
+        }
+        let batch = args[at + 1 + len] == "+";
+        let tests: Vec<String> = args[..at]
+            .iter()
+            .chain(&args[at + 2 + len..])
+            .cloned()
+            .collect();
+        // `head` after the pipe limits CMD's output, not the files find lists.
+        let limit = self.line_limit.take();
+        let listed = self.find(&tests);
+        self.line_limit = limit;
+        let paths: Vec<String> = listed.stdout.lines().map(str::to_string).collect();
+        let mut out = Out {
+            stdout: String::new(),
+            stderr: listed.stderr,
+            status: listed.status,
+        };
+        if batch {
+            if !paths.is_empty() {
+                let mut argv = Vec::new();
+                for a in cmd {
+                    if a == "{}" {
+                        argv.extend(paths.iter().cloned());
+                    } else {
+                        argv.push(a.clone());
+                    }
+                }
+                let o = self.exec(&argv, None);
+                absorb(&mut out, o);
+            }
+        } else {
+            for p in &paths {
+                let argv: Vec<String> = cmd.iter().map(|a| a.replace("{}", p)).collect();
+                let o = self.exec(&argv, None);
+                absorb(&mut out, o);
+                if out.stdout.len() > MAX_SHELL_BYTES
+                    || self.timed_out()
+                    || self.enough_lines(&out.stdout)
+                    || out.stderr.contains("not allowed")
+                {
+                    break;
+                }
+            }
+        }
+        out
+    }
+
     fn ls(&self, args: &[String]) -> Out {
         let flags: String = args
             .iter()
@@ -2242,6 +2303,13 @@ impl<'a> Shell<'a> {
             }
         }
     }
+}
+
+/// Append one command's output to `out`, keeping the worst status.
+fn absorb(out: &mut Out, o: Out) {
+    out.stdout.push_str(&o.stdout);
+    out.stderr.push_str(&o.stderr);
+    out.status = out.status.max(o.status);
 }
 
 fn floor_char_boundary(s: &str, mut i: usize) -> usize {
@@ -3070,6 +3138,54 @@ mod tests {
                 .output
                 .contains("escapes repository root"));
         }
+    }
+
+    #[test]
+    fn find_exec_runs_reading_commands() {
+        let (_d, mut sb) = repo();
+        // The model's own command, as it writes it.
+        assert_eq!(
+            sb.run(r#"find . -name "*.py" -exec grep -l "check_token" {} \;"#)
+                .output,
+            "./src/pkg/token.py"
+        );
+        assert_eq!(
+            sb.run("find src -name '*.py' -exec grep -l expired {} +")
+                .output,
+            "src/pkg/token.py"
+        );
+        assert_eq!(
+            sb.run("find . -name token.py -exec wc -l {} ';'").output,
+            "2 ./src/pkg/token.py"
+        );
+        // One command per file with `;`, one for all files with `+`.
+        assert_eq!(
+            sb.run("find src -type f -exec echo {} \\;").output,
+            "src/auth.py\nsrc/pkg/token.py"
+        );
+        assert_eq!(
+            sb.run("find src -type f -exec echo {} +").output,
+            "src/auth.py src/pkg/token.py"
+        );
+        // Tests after the -exec still apply; `head` limits CMD's output.
+        assert_eq!(
+            sb.run("find src -exec grep -c line {} \\; -name auth.py")
+                .output,
+            "250"
+        );
+        assert_eq!(
+            sb.run("find src -name auth.py -exec cat {} \\; | head -2")
+                .output,
+            "line 1\nline 2"
+        );
+        assert_eq!(
+            sb.run("find . -name nothing -exec grep x {} \\;").output,
+            "(find: ran, no output)"
+        );
+        assert!(sb
+            .run("find . -exec grep x {}")
+            .output
+            .contains("missing argument to `-exec'"));
     }
 
     #[test]
