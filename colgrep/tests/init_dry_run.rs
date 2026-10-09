@@ -4,6 +4,11 @@
 //! command surface #164 asked for (`--dry-run` and its `--list-files` alias) and the promise that
 //! came with it: no model load, no encoding, no index write — including for the uncovered case,
 //! where the real `init` registers a force-included directory in the config.
+//!
+//! Skipped on Windows: the debug binary there aborts before `main` gets anywhere, because a PE
+//! main thread has a 1 MB stack and the startup path needs more in an unoptimized build
+//! (lightonai/next-plaid#191 — pre-existing, unrelated to the dry run, and the release build the
+//! CLI E2E workflow uses is fine). Linux and macOS run it, and so does the local suite.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -45,6 +50,10 @@ fn temp_root(name: &str) -> PathBuf {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "debug colgrep aborts at startup on a 1 MB stack: #191"
+)]
 fn a_dry_run_lists_the_resolved_file_set_and_writes_nothing() {
     let root = temp_root("basic");
     let project = root.join("project");
@@ -104,6 +113,10 @@ fn a_dry_run_lists_the_resolved_file_set_and_writes_nothing() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "debug colgrep aborts at startup on a 1 MB stack: #191"
+)]
 fn a_child_of_an_indexed_project_reports_the_parent_set_without_registering_it() {
     // The real `init` on a directory the parent's rules exclude registers it as force-included
     // (a config write) and then indexes the parent. The dry run must report the same file set
