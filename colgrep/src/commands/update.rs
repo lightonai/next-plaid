@@ -50,8 +50,25 @@ fn get_latest_version() -> Result<Option<String>> {
     Ok(None)
 }
 
+/// Whether `exe` is a Homebrew-installed binary (`…/Cellar/colgrep/<version>/bin/colgrep`).
+fn is_homebrew_install(exe: &std::path::Path) -> bool {
+    exe.components().any(|c| c.as_os_str() == "Cellar")
+}
+
 /// Update colgrep to the latest version.
 pub fn cmd_update() -> Result<()> {
+    // The shell installer writes to ~/.cargo/bin, which Homebrew's copy shadows in
+    // PATH: updating a Homebrew install that way leaves `colgrep` on the old version.
+    let exe = std::env::current_exe().and_then(std::fs::canonicalize);
+    if exe.as_deref().is_ok_and(is_homebrew_install) {
+        println!(
+            "colgrep v{} was installed with Homebrew. Update it with:\n\n    {}",
+            CURRENT_VERSION,
+            "brew update && brew upgrade colgrep".bold()
+        );
+        return Ok(());
+    }
+
     println!("{}", "Checking for updates...".cyan().bold());
 
     // Check latest version on GitHub
@@ -102,4 +119,24 @@ pub fn cmd_update() -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn detects_homebrew_installs() {
+        assert!(is_homebrew_install(Path::new(
+            "/opt/homebrew/Cellar/colgrep/1.8.2/bin/colgrep"
+        )));
+        assert!(is_homebrew_install(Path::new(
+            "/home/linuxbrew/.linuxbrew/Cellar/colgrep/1.8.2/bin/colgrep"
+        )));
+        assert!(!is_homebrew_install(Path::new(
+            "/Users/me/.cargo/bin/colgrep"
+        )));
+        assert!(!is_homebrew_install(Path::new("/usr/local/bin/colgrep")));
+    }
 }
