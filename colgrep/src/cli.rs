@@ -169,6 +169,10 @@ EXAMPLES:
     # Use a specific model
     colgrep init --model lightonai/LateOn-Code-edge
 
+    # List the files that would be parsed and exit, without loading the model
+    colgrep init --dry-run
+    colgrep init --list-files
+
     # Override model/session batch size for this run
     colgrep init --batch-size 2
 
@@ -186,7 +190,9 @@ NOTES:
     • Creates a new index if none exists
     • Incrementally updates the index if files changed
     • Useful for pre-warming the index before searching
-    • Subsequent searches will be fast since the index is already built";
+    • Subsequent searches will be fast since the index is already built
+    • --dry-run (alias --list-files) prints the resolved file set and exits: no model,
+      no encoding, no index write";
 
 pub const CONFIG_HELP: &str = "\
 EXAMPLES:
@@ -672,6 +678,13 @@ pub enum Commands {
         /// Project directory (default: current directory)
         #[arg(default_value = ".")]
         path: PathBuf,
+
+        /// List the files that would be indexed and exit, without loading the model,
+        /// encoding anything or writing an index. The set is the one `init` would use:
+        /// the built-in default exclusions, this project's persistent
+        /// `settings --ignore` patterns and its `.gitignore`, resolved together.
+        #[arg(long = "dry-run", visible_alias = "list-files")]
+        dry_run: bool,
 
         /// ColBERT model HuggingFace ID or local path (uses saved preference if not specified)
         #[arg(long)]

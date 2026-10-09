@@ -2812,12 +2812,15 @@ impl IndexBuilder {
 /// Scan `project_root` for indexable files, returning root-relative paths and
 /// the number of skipped files.
 ///
+/// This is the walk the indexer uses, exposed so `colgrep init --dry-run` can report the
+/// resolved file set without loading a model or writing an index.
+///
 /// Covered subtrees (`colgrep init` on a directory the main walk's rules
 /// exclude) are scanned with their own walk and merged in. Because every scan
 /// consults the registrations, coverage survives incremental updates and full
 /// rebuilds alike — including the rebuilds an index-format bump or a
 /// `colgrep clear` forces.
-fn scan_project_files(
+pub fn scan_project_files(
     project_root: &Path,
     languages: Option<&[Language]>,
     extra_ignore: &[String],
