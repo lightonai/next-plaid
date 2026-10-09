@@ -363,7 +363,29 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
             }
             None
         }
-        Language::Lua => {
+        Language::Gdscript => {
+            // `##` documentation comments above the declaration; annotation
+            // lines (`@export`, `@rpc(...)`) may sit between them.
+            let mut doc_lines = Vec::new();
+            let start_row = node.start_position().row;
+            for i in (0..start_row).rev() {
+                let line = lines.get(i)?.trim();
+                if let Some(text) = line.strip_prefix("##") {
+                    doc_lines.insert(0, text.trim());
+                } else if line.starts_with('@') && doc_lines.is_empty() {
+                    continue;
+                } else {
+                    break;
+                }
+            }
+            let doc = doc_lines
+                .into_iter()
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            (!doc.is_empty()).then_some(doc)
+        }
+        Language::Lua | Language::Luau => {
             // Look for --- or -- comments (LuaDoc style)
             // LuaDoc uses --- for the first line and -- for continuation
             let mut doc_lines = Vec::new();
@@ -385,9 +407,37 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
                     }
                 }
             }
-            // Only return docstring if we found at least one --- line
-            if !found_triple_dash {
+            // Lua: only an LDoc `---` block counts. Luau code (Roblox,
+            // Fusion) documents with plain `--` lines or a `--[[ ]]` block.
+            if !found_triple_dash && lang == Language::Lua {
                 doc_lines.clear();
+            }
+            if doc_lines.is_empty() && lang == Language::Luau && start_row > 0 {
+                let mut end = start_row;
+                while end > 0 && lines.get(end - 1)?.trim().is_empty() {
+                    end -= 1;
+                }
+                if end > 0 && lines.get(end - 1)?.trim_end().ends_with("]]") {
+                    for i in (0..end).rev() {
+                        if lines.get(i)?.trim_start().starts_with("--[[") {
+                            let text = lines[i..end]
+                                .iter()
+                                .map(|l| {
+                                    l.trim()
+                                        .trim_start_matches("--[[")
+                                        .trim_end_matches("]]")
+                                        .trim()
+                                })
+                                .filter(|l| !l.is_empty())
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            if !text.is_empty() {
+                                return Some(text);
+                            }
+                            break;
+                        }
+                    }
+                }
             }
             if doc_lines.is_empty() {
                 None
@@ -492,9 +542,12 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
             node.children(&mut node.walk())
                 .find(|child| child.kind() == "parameters")
         }
-        Language::Php | Language::Lua | Language::Elixir | Language::Haskell => {
-            node.child_by_field_name("parameters")
-        }
+        Language::Php
+        | Language::Lua
+        | Language::Luau
+        | Language::Gdscript
+        | Language::Elixir
+        | Language::Haskell => node.child_by_field_name("parameters"),
         Language::Ocaml => {
             // OCaml parameters are in let_binding children
             // For value_definition, we need to find the let_binding first
@@ -564,8 +617,9 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
                     child.child_by_field_name("declarator").and_then(|d| {
                         find_identifier_in_declarator(d, bytes, 0, super::max_recursion_depth())
                     })
-                } else if lang == Language::Kotlin {
-                    // For Kotlin, the identifier is a direct child of the parameter node
+                } else if matches!(lang, Language::Kotlin | Language::Gdscript | Language::Luau) {
+                    // Kotlin, GDScript (typed / default parameters) and Luau
+                    // (`a: number`): the identifier is the parameter's first child
                     child.child(0).filter(|c| c.kind() == "identifier")
                 } else if lang == Language::Ocaml {
                     // For OCaml, parameter contains value_pattern or typed_pattern
@@ -640,6 +694,27 @@ pub fn extract_return_type(node: Node, bytes: &[u8], lang: Language) -> Option<S
             node.child_by_field_name("return_type")
         }
         Language::Go => node.child_by_field_name("result"),
+        Language::Gdscript => node.child_by_field_name("return_type"),
+        // Luau: `function f(a): T` — the type follows the `:` after the
+        // parameter list (not a named field).
+        Language::Luau => {
+            let mut after_params = false;
+            let mut after_colon = false;
+            let mut found = None;
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "parameters" {
+                    after_params = true;
+                } else if after_params && child.kind() == ":" {
+                    after_colon = true;
+                } else if after_colon {
+                    if child.is_named() && child.kind() != "block" {
+                        found = Some(child);
+                    }
+                    break;
+                }
+            }
+            found
+        }
         Language::Java | Language::CSharp => node.child_by_field_name("type"),
         Language::Cpp | Language::Cuda | Language::C => node.child_by_field_name("type"),
         Language::Dart => {
@@ -772,7 +847,8 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
         Language::Swift => &["call_expression"],
         Language::Scala => &["call_expression"],
         Language::Php => &["function_call_expression", "method_call_expression"],
-        Language::Lua => &["function_call"],
+        Language::Lua | Language::Luau => &["function_call"],
+        Language::Gdscript => &["call", "attribute_call"],
         Language::Elixir => &["call"],
         Language::Haskell => &["function_application"],
         Language::Ocaml => &["application_expression"],
@@ -793,6 +869,13 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
                     #[allow(clippy::double_ended_iterator_last)]
                     let name = name.split("::").last().unwrap_or(name);
                     let name = name.trim_end_matches('!');
+                    // Luau method calls: `game:GetService(...)` → GetService.
+                    #[allow(clippy::double_ended_iterator_last)]
+                    let name = if lang == Language::Luau {
+                        name.split(':').last().unwrap_or(name)
+                    } else {
+                        name
+                    };
                     if !name.is_empty()
                         && name
                             .chars()
@@ -883,6 +966,8 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
         Language::Scala => &["val_definition", "var_definition"],
         Language::Php => &["simple_variable"],
         Language::Lua => &["variable_declaration", "local_variable_declaration"],
+        Language::Luau => &["variable_list"],
+        Language::Gdscript => &["variable_statement"],
         Language::Elixir => &["match"],
         Language::Haskell => &["function_binding"],
         // OCaml: Don't extract let_binding as variable since it's the function definition itself
@@ -1028,7 +1113,8 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         Language::Swift => &["import_declaration"],
         Language::Scala => &["import_declaration"],
         Language::Php => &["namespace_use_declaration"],
-        Language::Lua => &["function_call"],
+        Language::Lua | Language::Luau => &["function_call"],
+        Language::Gdscript => return extract_gdscript_imports(node, bytes),
         Language::Elixir => &["call"],
         Language::Haskell => &["import"],
         Language::Ocaml => &["open_module"],
@@ -1078,8 +1164,16 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                 return;
             }
 
+            // Luau `require(script.Parent.Signal)` / `require("./types")`:
+            // the module is the last path component.
+            if lang == Language::Luau {
+                if let Some(module) = luau_required_module(node, bytes) {
+                    imports.push(module);
+                    return;
+                }
+            }
             // For Lua, check if it's a require() call and extract the module name
-            if lang == Language::Lua {
+            if matches!(lang, Language::Lua | Language::Luau) {
                 // Check if first child is identifier "require"
                 if let Some(first) = node.child(0) {
                     if first.kind() == "identifier" {
@@ -1327,7 +1421,8 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
             "scoped_call_expression",
             "object_creation_expression",
         ],
-        Language::Lua => &["dot_index_expression", "method_index_expression"],
+        Language::Lua | Language::Luau => &["dot_index_expression", "method_index_expression"],
+        Language::Gdscript => &["attribute"],
         Language::Ocaml => &["field_get_expression", "value_path"],
         _ => return modules,
     };
@@ -1605,6 +1700,11 @@ pub fn extract_parent_class(
             None
         }
 
+        // GDScript: class Inner extends Node: -> extends_statement -> type | string
+        Language::Gdscript => node
+            .child_by_field_name("extends")
+            .and_then(|e| gdscript_extends_target(e, bytes)),
+
         // Scala: class Dog extends Animal -> extends_clause -> type_identifier
         Language::Scala => {
             for child in node.children(&mut node.walk()) {
@@ -1619,4 +1719,94 @@ pub fn extract_parent_class(
 
         _ => None,
     }
+}
+
+/// Target of a GDScript `extends` statement: a class name
+/// (`extends CharacterBody2D`) or a script path (`extends "res://base.gd"`).
+pub fn gdscript_extends_target(extends: Node, bytes: &[u8]) -> Option<String> {
+    let target = extends.named_children(&mut extends.walk()).next()?;
+    let text = target.utf8_text(bytes).ok()?.trim();
+    let text = text.trim_matches(|c| c == '"' || c == '\'');
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// Resources a GDScript file loads: `preload("res://bullet.tscn")` /
+/// `load(...)` calls and `extends "res://base.gd"`. A load bound to a
+/// constant or variable (`const Bullet = preload(...)`) is recorded under that
+/// name, since that is how the code refers to it; otherwise under the file
+/// stem (`bullet`).
+fn extract_gdscript_imports(root: Node, bytes: &[u8]) -> Vec<String> {
+    fn stem(path: &str) -> Option<String> {
+        let file = path
+            .trim_matches(|c| c == '"' || c == '\'')
+            .rsplit('/')
+            .next()?;
+        let stem = file.split('.').next().unwrap_or(file);
+        (!stem.is_empty()).then(|| stem.to_string())
+    }
+    let mut imports = Vec::new();
+    walk_tree(root, |node| match node.kind() {
+        "call" => {
+            let Some(callee) = node.child(0) else { return };
+            let Ok(name) = callee.utf8_text(bytes) else {
+                return;
+            };
+            if name != "preload" && name != "load" {
+                return;
+            }
+            let Some(arg) = node
+                .child_by_field_name("arguments")
+                .and_then(|a| a.named_child(0))
+                .filter(|a| a.kind() == "string")
+            else {
+                return;
+            };
+            let bound = node
+                .parent()
+                .filter(|p| matches!(p.kind(), "const_statement" | "variable_statement"))
+                .and_then(|p| p.child_by_field_name("name"))
+                .and_then(|n| n.utf8_text(bytes).ok())
+                .map(str::to_string);
+            if let Some(module) = bound.or_else(|| arg.utf8_text(bytes).ok().and_then(stem)) {
+                imports.push(module);
+            }
+        }
+        "extends_statement" => {
+            if let Some(target) = node.named_child(0).filter(|t| t.kind() == "string") {
+                if let Some(module) = target.utf8_text(bytes).ok().and_then(stem) {
+                    imports.push(module);
+                }
+            }
+        }
+        _ => {}
+    });
+    imports.sort();
+    imports.dedup();
+    imports
+}
+
+/// Module required by a Luau `require(...)` call, or None when `node` is not
+/// one: `require(script.Parent.Signal)` → `Signal`, `require("./types")` →
+/// `types`, `require(Packages.React)` → `React`.
+fn luau_required_module(node: Node, bytes: &[u8]) -> Option<String> {
+    let callee = node.child_by_field_name("name")?;
+    if callee.utf8_text(bytes).ok()? != "require" {
+        return None;
+    }
+    let arg = node
+        .child_by_field_name("arguments")?
+        .named_children(&mut node.walk())
+        .next()?;
+    let text = arg.utf8_text(bytes).ok()?;
+    let text = text
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`');
+    #[allow(clippy::double_ended_iterator_last)]
+    let last = text
+        .rsplit(['/', '.', ':'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(text);
+    // `require(path:WaitForChild("Signal"))`-style calls end in `)`.
+    let last = last.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+    (!last.is_empty() && last != "init").then(|| last.to_string())
 }
