@@ -32,7 +32,14 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
                 return Some(Language::Starlark)
             }
             "rakefile" | "gemfile" | "vagrantfile" => return Some(Language::Ruby),
+            // rebar3's build config is a file of Erlang terms.
+            "rebar.config" => return Some(Language::Erlang),
             _ => {}
+        }
+        // OTP application resource templates (`myapp.app.src`) are Erlang
+        // terms; a bare `.src` extension says nothing about the language.
+        if filename_lower.ends_with(".app.src") {
+            return Some(Language::Erlang);
         }
     }
 
@@ -64,9 +71,14 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
         "scala" | "sc" | "sbt" => Some(Language::Scala),
         "php" => Some(Language::Php),
         "lua" => Some(Language::Lua),
+        "clj" | "cljs" | "cljc" | "edn" => Some(Language::Clojure),
         "ex" | "exs" => Some(Language::Elixir),
+        "erl" | "hrl" => Some(Language::Erlang),
+        "gleam" => Some(Language::Gleam),
         "hs" => Some(Language::Haskell),
         "ml" | "mli" => Some(Language::Ocaml),
+        "fs" | "fsi" | "fsx" => Some(Language::Fsharp),
+        "elm" => Some(Language::Elm),
         "r" | "rmd" => Some(Language::R),
         "zig" => Some(Language::Zig),
         "jl" => Some(Language::Julia),
@@ -249,9 +261,16 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Scala => tree_sitter_scala::LANGUAGE.into(),
         Language::Php => tree_sitter_php::LANGUAGE_PHP.into(),
         Language::Lua => tree_sitter_lua::LANGUAGE.into(),
+        Language::Clojure => tree_sitter_clojure_orchard::LANGUAGE.into(),
         Language::Elixir => tree_sitter_elixir::LANGUAGE.into(),
+        Language::Erlang => tree_sitter_erlang::LANGUAGE.into(),
+        Language::Gleam => tree_sitter_gleam::LANGUAGE.into(),
         Language::Haskell => tree_sitter_haskell::LANGUAGE.into(),
         Language::Ocaml => tree_sitter_ocaml::LANGUAGE_OCAML.into(),
+        // Implementation files (.fs/.fsx); signature files (.fsi) need
+        // LANGUAGE_SIGNATURE, see get_tree_sitter_language_for_path.
+        Language::Fsharp => tree_sitter_fsharp::LANGUAGE_FSHARP.into(),
+        Language::Elm => tree_sitter_elm::LANGUAGE.into(),
         Language::R => tree_sitter_r::LANGUAGE.into(),
         Language::Zig => tree_sitter_zig::LANGUAGE.into(),
         Language::Julia => tree_sitter_julia::LANGUAGE.into(),
@@ -290,6 +309,22 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         | Language::AsciiDoc
         | Language::Org => unreachable!("Text/config formats don't use tree-sitter"),
     }
+}
+
+/// Tree-sitter language for a file. Same as [`get_tree_sitter_language`]
+/// except for languages whose grammar depends on the file kind: F# signature
+/// files (`.fsi`) only contain declarations (`val f : int -> int`) and parse
+/// with the dedicated signature grammar.
+pub fn get_tree_sitter_language_for_path(lang: Language, path: &Path) -> TsLanguage {
+    if lang == Language::Fsharp
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("fsi"))
+    {
+        return tree_sitter_fsharp::LANGUAGE_SIGNATURE.into();
+    }
+    get_tree_sitter_language(lang)
 }
 
 #[cfg(test)]
@@ -558,6 +593,102 @@ mod tests {
         text.push_str("\nfunction y = f(x)\n% a\n% b\nend\n");
         std::fs::write(&late, text).unwrap();
         assert_eq!(detect_language(&late), Some(Language::ObjectiveC));
+    }
+
+    #[test]
+    fn test_detect_language_erlang() {
+        for f in [
+            "kv.erl",
+            "kv.hrl",
+            "KV.ERL",
+            "INCLUDE.HRL",
+            "rebar.config",
+            "myapp.app.src",
+        ] {
+            assert_eq!(detect_language(Path::new(f)), Some(Language::Erlang), "{f}");
+        }
+        assert_eq!(
+            detect_language(Path::new("apps/web/src/web.APP.SRC")),
+            Some(Language::Erlang)
+        );
+        // A bare `.src` / `.config` says nothing about the language.
+        assert_eq!(detect_language(Path::new("main.src")), None);
+        assert_eq!(detect_language(Path::new("sys.config")), None);
+        assert!(!is_text_format(Language::Erlang));
+    }
+
+    #[test]
+    fn test_detect_language_fsharp() {
+        for f in [
+            "Core.fs",
+            "Core.fsi",
+            "build.fsx",
+            "CORE.FS",
+            "CORE.FSI",
+            "BUILD.FSX",
+        ] {
+            assert_eq!(detect_language(Path::new(f)), Some(Language::Fsharp), "{f}");
+        }
+        assert!(!is_text_format(Language::Fsharp));
+    }
+
+    #[test]
+    fn test_fsharp_signature_files_use_signature_grammar() {
+        let sig: TsLanguage = tree_sitter_fsharp::LANGUAGE_SIGNATURE.into();
+        let imp: TsLanguage = tree_sitter_fsharp::LANGUAGE_FSHARP.into();
+        let kinds = |l: &TsLanguage| l.node_kind_count();
+        assert_eq!(
+            kinds(&get_tree_sitter_language_for_path(
+                Language::Fsharp,
+                Path::new("a.FSI")
+            )),
+            kinds(&sig)
+        );
+        assert_eq!(
+            kinds(&get_tree_sitter_language_for_path(
+                Language::Fsharp,
+                Path::new("a.fs")
+            )),
+            kinds(&imp)
+        );
+        assert_ne!(kinds(&sig), kinds(&imp));
+    }
+
+    #[test]
+    fn test_detect_language_clojure() {
+        for f in [
+            "core.clj",
+            "app.cljs",
+            "util.cljc",
+            "deps.edn",
+            "CORE.CLJ",
+            "APP.CLJS",
+            "UTIL.CLJC",
+            "DEPS.EDN",
+        ] {
+            assert_eq!(
+                detect_language(Path::new(f)),
+                Some(Language::Clojure),
+                "{f}"
+            );
+        }
+        assert!(!is_text_format(Language::Clojure));
+    }
+
+    #[test]
+    fn test_detect_language_elm_gleam() {
+        assert_eq!(detect_language(Path::new("Main.elm")), Some(Language::Elm));
+        assert_eq!(detect_language(Path::new("MAIN.ELM")), Some(Language::Elm));
+        assert_eq!(
+            detect_language(Path::new("users.gleam")),
+            Some(Language::Gleam)
+        );
+        assert_eq!(
+            detect_language(Path::new("USERS.GLEAM")),
+            Some(Language::Gleam)
+        );
+        assert!(!is_text_format(Language::Elm));
+        assert!(!is_text_format(Language::Gleam));
     }
 
     #[test]
