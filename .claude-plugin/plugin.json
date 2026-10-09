@@ -1,7 +1,7 @@
 {
   "name": "colgrep",
   "description": "Semantic code search powered by ColBERT. Replaces grep/ripgrep with natural language understanding for smarter code navigation.",
-  "version": "1.8.2",
+  "version": "1.8.3",
   "author": {
     "name": "LightOn AI",
     "email": "contact@lighton.ai"

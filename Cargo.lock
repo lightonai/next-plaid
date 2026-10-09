@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "colgrep"
-version = "1.8.2"
+version = "1.8.3"
 dependencies = [
  "anyhow",
  "atty",
@@ -719,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "colgrep-agent"
-version = "1.8.2"
+version = "1.8.3"
 dependencies = [
  "dirs 5.0.1",
  "flate2",
@@ -2675,7 +2675,7 @@ dependencies = [
 
 [[package]]
 name = "next-plaid"
-version = "1.8.2"
+version = "1.8.3"
 dependencies = [
  "accelerate-src",
  "approx",
@@ -2707,7 +2707,7 @@ dependencies = [
 
 [[package]]
 name = "next-plaid-api"
-version = "1.8.2"
+version = "1.8.3"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2738,7 +2738,7 @@ dependencies = [
 
 [[package]]
 name = "next-plaid-onnx"
-version = "1.8.2"
+version = "1.8.3"
 dependencies = [
  "anyhow",
  "glob",
