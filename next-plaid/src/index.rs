@@ -150,10 +150,46 @@ pub struct IndexConfig {
     /// Documents shrink ~32x versus `f32`; queries stay full precision.
     #[serde(default)]
     pub binary: bool,
+    /// Use the ternary (base-3 dead-zone) residual codec: each dimension is
+    /// stored as one of `{-m, 0, +m}` at ~1.585 bits/dim (five trits per byte),
+    /// a size/quality rung between 1-bit and 2-bit scalar residuals. Reconstructs
+    /// `centroid + weight` and scores with float MaxSim like the scalar codec, so
+    /// it supersedes `nbits`. Mutually exclusive with `binary`.
+    #[serde(default)]
+    pub ternary: bool,
+    /// Width of ternary's dead zone, in units of the residual standard
+    /// deviation: a dimension stores `0` when `|r| < ternary_tau · σ`, else
+    /// `±E[|r| : live]`. Defaults to `Some(0.65)`. `None` selects the
+    /// equal-mass split instead — cutoffs at the 1/3 and 2/3 residual
+    /// quantiles, which zeroes exactly a third of the dimensions regardless of
+    /// how the residuals are shaped.
+    ///
+    /// The dead zone is the codec's one real degree of freedom, and the
+    /// equal-mass split spends it badly: it leaves ternary *below* 2-bit by
+    /// 0.0029 NDCG@10 on average, while `tau = 0.65` puts it *above* 2-bit by
+    /// +0.0028 at 19 % fewer bytes — mean retention equal to 4-bit's, at
+    /// 26 B/token against 64. On roughly Gaussian residuals 0.65 zeroes ~48 %
+    /// of dims, buying a larger magnitude for the ones that survive.
+    ///
+    /// That figure is pooled over 8 model×corpus cells and 4,240 judged
+    /// queries — 6 corpora spanning biomedical, finance, argument, multi-hop,
+    /// citation and code, against 4 encoder families including a dim-48 model —
+    /// and is positive in 8 of 8. `tau = 0.80` is close behind (+0.0027, 6 of 8)
+    /// and in fact edges 0.65 head-to-head by +0.0005; 0.65 ships because it is
+    /// the setting that never loses, not the one with the higher mean. See
+    /// `docs/ternary_codec.md`. Ignored unless `ternary`.
+    #[serde(default = "default_ternary_tau")]
+    pub ternary_tau: Option<f32>,
 }
 
 fn default_start_from_scratch() -> usize {
     crate::default_start_from_scratch()
+}
+
+/// The dead-zone width that measured best across the codec study; see
+/// [`IndexConfig::ternary_tau`].
+fn default_ternary_tau() -> Option<f32> {
+    Some(0.65)
 }
 
 fn default_kmeans_niters() -> usize {
@@ -177,7 +213,27 @@ impl Default for IndexConfig {
             force_cpu: false,
             fts_tokenizer: crate::text_search::FtsTokenizer::default(),
             binary: false,
+            ternary: false,
+            ternary_tau: default_ternary_tau(),
         }
+    }
+}
+
+impl IndexConfig {
+    /// Validate mutually-incompatible storage options before a build.
+    ///
+    /// `binary` (1-bit sign store, asymmetric scoring) and `ternary` (base-3
+    /// residual codec) are different storage schemes; a document is stored under
+    /// exactly one, so requesting both is a configuration error rather than a
+    /// silent precedence.
+    pub fn validate(&self) -> Result<()> {
+        if self.binary && self.ternary {
+            return Err(Error::IndexCreation(
+                "`binary` and `ternary` are mutually exclusive storage modes; enable at most one"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -208,6 +264,11 @@ pub struct Metadata {
     /// binary MaxSim (see [`crate::binary`]) rather than residual quantization.
     #[serde(default)]
     pub binary: bool,
+    /// Whether the residual codec is ternary (base-3 dead-zone, ~1.585 bits/dim)
+    /// rather than the scalar `nbits` codec. Absent in pre-existing indexes, so
+    /// it defaults to false on load. See [`crate::codec::ResidualCodec::ternary`].
+    #[serde(default)]
+    pub ternary: bool,
 }
 
 impl Metadata {
@@ -263,11 +324,48 @@ pub struct PreparedCodecArtifacts {
     pub avg_res_per_dim: Array1<f32>,
 }
 
+/// Ternary buckets from a dead-zone width rather than equal-mass quantiles.
+///
+/// A dimension is *live* when `|r| >= tau * sigma` (sigma over all residuals);
+/// live dims store `±E[|r| : live]`, dead dims store exactly `0`. The
+/// equal-mass default always zeroes a third of the dimensions, while `tau` lets
+/// the dead zone follow the actual residual distribution (`tau = 0.65` zeroes
+/// ~48 % of Gaussian residuals) and spends the surviving levels on a
+/// correspondingly larger magnitude.
+///
+/// Returns `(cutoffs, weights)` shaped as [`ResidualCodec::new_ternary`] wants:
+/// `[-t, +t]` and `[-m, 0, +m]`.
+fn ternary_deadzone_buckets(flat: &Array1<f32>, tau: f32) -> (Array1<f32>, Array1<f32>) {
+    let n = flat.len().max(1) as f32;
+    let mean = flat.iter().sum::<f32>() / n;
+    let var = flat.iter().map(|&x| (x - mean) * (x - mean)).sum::<f32>() / n;
+    let t = tau * var.sqrt();
+    let (sum, count) = flat.iter().fold((0.0f32, 0usize), |(s, c), &x| {
+        if x.abs() >= t {
+            (s + x.abs(), c + 1)
+        } else {
+            (s, c)
+        }
+    });
+    // All-dead (tau past every residual) would give a zero codec; fall back to
+    // the mean magnitude so the index still discriminates.
+    let m = if count > 0 {
+        sum / count as f32
+    } else {
+        flat.iter().map(|x| x.abs()).sum::<f32>() / n
+    };
+    (
+        Array1::from_vec(vec![-t, t]),
+        Array1::from_vec(vec![-m, 0.0, m]),
+    )
+}
+
 pub fn prepare_codec_artifacts(
     embeddings: &[Array2<f32>],
     centroids: Array2<f32>,
     config: &IndexConfig,
 ) -> Result<PreparedCodecArtifacts> {
+    config.validate()?;
     let embedding_dim = centroids.ncols();
     let total_embeddings: usize = embeddings.iter().map(|e| e.nrows()).sum();
     let num_documents = embeddings.len();
@@ -341,7 +439,12 @@ pub fn prepare_codec_artifacts(
         .map(|col| col.iter().map(|x| x.abs()).sum::<f32>() / col.len() as f32)
         .collect();
 
-    let n_options = 1 << config.nbits;
+    // Ternary uses 3 buckets. These quantile positions are the *fallback* the
+    // equal-mass split uses (`ternary_tau: None`): cutoffs at 1/3 & 2/3, weights
+    // at 1/6, 1/2, 5/6, the middle weight ~ 0 being the dead zone. Same generic
+    // formula as the scalar path, just n_options = 3. With a `ternary_tau` set
+    // -- the default -- `ternary_deadzone_buckets` replaces them below.
+    let n_options = if config.ternary { 3 } else { 1 << config.nbits };
     let quantile_values: Vec<f64> = (1..n_options)
         .map(|i| i as f64 / n_options as f64)
         .collect();
@@ -350,16 +453,31 @@ pub fn prepare_codec_artifacts(
         .collect();
 
     let flat_residuals: Array1<f32> = residuals.iter().copied().collect();
-    let bucket_cutoffs = Array1::from_vec(quantiles(&flat_residuals, &quantile_values));
-    let bucket_weights = Array1::from_vec(quantiles(&flat_residuals, &weight_quantile_values));
+    let (bucket_cutoffs, bucket_weights) = match config.ternary.then_some(config.ternary_tau) {
+        Some(Some(tau)) => ternary_deadzone_buckets(&flat_residuals, tau),
+        _ => (
+            Array1::from_vec(quantiles(&flat_residuals, &quantile_values)),
+            Array1::from_vec(quantiles(&flat_residuals, &weight_quantile_values)),
+        ),
+    };
 
-    let codec = ResidualCodec::new(
-        config.nbits,
-        centroids,
-        avg_res_per_dim.clone(),
-        Some(bucket_cutoffs.clone()),
-        Some(bucket_weights.clone()),
-    )?;
+    let codec = if config.ternary {
+        ResidualCodec::new_ternary(
+            config.nbits,
+            centroids,
+            avg_res_per_dim.clone(),
+            Some(bucket_cutoffs.clone()),
+            Some(bucket_weights.clone()),
+        )?
+    } else {
+        ResidualCodec::new(
+            config.nbits,
+            centroids,
+            avg_res_per_dim.clone(),
+            Some(bucket_cutoffs.clone()),
+            Some(bucket_weights.clone()),
+        )?
+    };
 
     Ok(PreparedCodecArtifacts {
         codec,
@@ -380,7 +498,7 @@ pub fn encode_index_chunk(
     let packed_dim = if binary {
         binary::packed_dim(embedding_dim)
     } else {
-        embedding_dim * codec.nbits / 8
+        codec.packed_residual_dim(embedding_dim)
     };
     let doclens: Vec<i64> = embeddings.iter().map(|d| d.nrows() as i64).collect();
     let total_tokens: usize = doclens.iter().sum::<i64>() as usize;
@@ -631,6 +749,7 @@ pub fn write_index_from_encoded_chunks(
         embedding_dim,
         next_plaid_compatible: true,
         binary: config.binary,
+        ternary: config.ternary,
     };
     atomic_write_file(&index_dir.join("metadata.json"), |file| {
         let mut writer = BufWriter::new(file);
@@ -669,6 +788,7 @@ pub fn create_index_files(
     index_path: &str,
     config: &IndexConfig,
 ) -> Result<Metadata> {
+    config.validate()?;
     let index_dir = Path::new(index_path);
     fs::create_dir_all(index_dir)?;
 
@@ -759,7 +879,12 @@ pub fn create_index_files(
         .collect();
 
     // Compute quantization buckets
-    let n_options = 1 << config.nbits;
+    // Ternary uses 3 buckets. These quantile positions are the *fallback* the
+    // equal-mass split uses (`ternary_tau: None`): cutoffs at 1/3 & 2/3, weights
+    // at 1/6, 1/2, 5/6, the middle weight ~ 0 being the dead zone. Same generic
+    // formula as the scalar path, just n_options = 3. With a `ternary_tau` set
+    // -- the default -- `ternary_deadzone_buckets` replaces them below.
+    let n_options = if config.ternary { 3 } else { 1 << config.nbits };
     let quantile_values: Vec<f64> = (1..n_options)
         .map(|i| i as f64 / n_options as f64)
         .collect();
@@ -769,16 +894,31 @@ pub fn create_index_files(
 
     // Flatten residuals for quantile computation
     let flat_residuals: Array1<f32> = residuals.iter().copied().collect();
-    let bucket_cutoffs = Array1::from_vec(quantiles(&flat_residuals, &quantile_values));
-    let bucket_weights = Array1::from_vec(quantiles(&flat_residuals, &weight_quantile_values));
+    let (bucket_cutoffs, bucket_weights) = match config.ternary.then_some(config.ternary_tau) {
+        Some(Some(tau)) => ternary_deadzone_buckets(&flat_residuals, tau),
+        _ => (
+            Array1::from_vec(quantiles(&flat_residuals, &quantile_values)),
+            Array1::from_vec(quantiles(&flat_residuals, &weight_quantile_values)),
+        ),
+    };
 
-    let codec = ResidualCodec::new(
-        config.nbits,
-        centroids.clone(),
-        avg_res_per_dim.clone(),
-        Some(bucket_cutoffs.clone()),
-        Some(bucket_weights.clone()),
-    )?;
+    let codec = if config.ternary {
+        ResidualCodec::new_ternary(
+            config.nbits,
+            centroids.clone(),
+            avg_res_per_dim.clone(),
+            Some(bucket_cutoffs.clone()),
+            Some(bucket_weights.clone()),
+        )?
+    } else {
+        ResidualCodec::new(
+            config.nbits,
+            centroids.clone(),
+            avg_res_per_dim.clone(),
+            Some(bucket_cutoffs.clone()),
+            Some(bucket_weights.clone()),
+        )?
+    };
 
     // Save codec components
     use ndarray_npy::WriteNpyExt;
@@ -1037,6 +1177,7 @@ pub fn create_index_files(
         embedding_dim,
         next_plaid_compatible: true, // Created by next-plaid, always compatible
         binary: config.binary,
+        ternary: config.ternary,
     };
 
     let metadata_path = index_dir.join("metadata.json");
@@ -1069,6 +1210,7 @@ pub fn create_index_with_kmeans_files(
     index_path: &str,
     config: &IndexConfig,
 ) -> Result<Metadata> {
+    config.validate()?;
     if embeddings.is_empty() {
         return Err(Error::IndexCreation("No documents provided".into()));
     }
@@ -1783,8 +1925,9 @@ impl MmapIndex {
                     force_cpu: config.force_cpu,
                     // A rebuild from raw embeddings must keep the index's
                     // storage scheme, or an update would silently convert a
-                    // binary index back to residual.
+                    // binary index back to residual, or a ternary index to scalar.
                     binary: self.metadata.binary,
+                    ternary: self.metadata.ternary,
                     ..Default::default()
                 };
 

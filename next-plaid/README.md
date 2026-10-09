@@ -101,6 +101,25 @@ flowchart TD
 4. **Write** IVF posting lists, codes, and residuals as memory-mapped NPY files
 5. Optionally store document **metadata** in a co-located SQLite database
 
+#### Residual compression profiles
+
+The residual codec trades index size for reconstruction fidelity. Beyond the
+scalar `nbits` rungs, `ternary: true` selects a base-3 dead-zone codec
+(`{-m, 0, +m}` per dimension, five trits per byte) &mdash; a ~1.585-bit rung
+between 1-bit and 2-bit, ~19% smaller than 2-bit residuals:
+
+| profile        | bits/dim | bytes/token (dim=128) | notes |
+|----------------|---------:|----------------------:|-------|
+| scalar 1-bit   |    1.0   |          16           | `nbits: 1` |
+| **ternary**    |   ~1.585 |        **26**         | `ternary: true` |
+| scalar 2-bit   |    2.0   |          32           | `nbits: 2` |
+| scalar 4-bit   |    4.0   |          64           | `nbits: 4` (default) |
+
+Ternary reconstructs and rescores exactly like the scalar codec, so it is
+transparent to search; it is mutually exclusive with `binary` (the 1-bit *sign*
+store, which is scored without reconstruction). Existing indexes are unaffected
+&mdash; the flag defaults to off and is absent from their metadata.
+
 ### Search Pipeline
 
 1. **IVF probing** &mdash; Score query tokens against centroids, select top `n_ivf_probe` centroids per token
@@ -219,7 +238,9 @@ Controls index creation.
 
 ```rust
 IndexConfig {
-    nbits: 4,                    // Quantization bits (2 or 4)
+    nbits: 4,                    // Quantization bits (1, 2, or 4)
+    ternary: false,              // Base-3 residual codec (~1.585 bit; supersedes nbits)
+    ternary_tau: Some(0.65),     // Ternary dead-zone width, in sigma; None = equal-mass
     batch_size: 50_000,          // Documents per indexing chunk
     seed: Some(42),              // Random seed for K-means
     kmeans_niters: 4,            // K-means iterations
@@ -227,6 +248,7 @@ IndexConfig {
     n_samples_kmeans: None,      // Auto: min(1 + 16*sqrt(120*N), N)
     start_from_scratch: 999,     // Rebuild threshold
     force_cpu: false,            // Force CPU K-means (skip CUDA)
+    ..Default::default()
 }
 ```
 

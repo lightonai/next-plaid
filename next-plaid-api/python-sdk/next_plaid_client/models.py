@@ -22,6 +22,11 @@ class IndexConfig:
             ranking-quality cost; intended for embedding dims >= 96. Set at
             creation time; documents can be added only while the index stays
             at or below start_from_scratch.
+        ternary: Use the ternary (base-3 dead-zone) residual codec instead of
+            scalar nbits (default: False). ~1.585 bits/dim, a size/quality rung
+            between 1-bit and 2-bit residuals (~19% smaller than nbits=2);
+            reconstructs and scores like the scalar codec, so it supersedes
+            nbits. Mutually exclusive with binary. Set at creation time.
     """
 
     nbits: int = 4
@@ -31,6 +36,7 @@ class IndexConfig:
     max_documents: Optional[int] = None
     fts_tokenizer: Optional[str] = None
     binary: bool = False
+    ternary: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -46,6 +52,8 @@ class IndexConfig:
             result["fts_tokenizer"] = self.fts_tokenizer
         if self.binary:
             result["binary"] = self.binary
+        if self.ternary:
+            result["ternary"] = self.ternary
         return result
 
 

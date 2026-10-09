@@ -119,8 +119,10 @@ thread_local! {
 /// What asymmetric residual scoring resolved to for this index/CPU.
 #[derive(Clone, Copy)]
 enum AsymDispatch {
-    /// The fused SIMD kernel — the path the flag exists for.
-    Simd,
+    /// The fused SIMD kernel — the path the flag exists for. Carries the
+    /// kernel's name, which only the LUT can answer: the nibble and ternary
+    /// routes have different shape preconditions.
+    Simd(&'static str),
     /// Correct, but only marginally faster than float rescoring.
     Scalar,
     /// The arm never engaged; this index scores in float regardless.
@@ -131,43 +133,58 @@ fn should_report_asym_dispatch(_got: AsymDispatch, report_requested: bool) -> bo
     report_requested
 }
 
-/// Report, once per process, what residual scoring actually dispatched to.
+/// Report what residual scoring actually dispatched to — **once per distinct
+/// outcome**, not once per process.
 ///
 /// Asymmetric scoring is the default, so a fallback is normal operation for
 /// the indexes and CPUs it covers — not a broken request — and stays silent.
-/// Set `NEXT_PLAID_REPORT_KERNEL=1` to print the resolved kernel (fused
-/// SIMD, scalar LUT, or float fallback), so a benchmark or a deployment
-/// checklist can record which kernel produced its numbers.
+/// Set `NEXT_PLAID_REPORT_KERNEL=1` to print the resolved kernel (fused SIMD,
+/// scalar LUT, or float fallback), so a benchmark or a deployment checklist
+/// can record which kernel produced its numbers.
+///
+/// Deduplicating by *message* rather than firing once is what makes the flag
+/// usable for the case it was built for. A codec ladder compares every rung in
+/// one process on purpose — the same benchmark moves ±30 % between machines,
+/// so cross-process deltas are noise — and rungs do not share a kernel: the
+/// scalar rungs nibble-factor onto `tbl`/`pshufb` and ternary takes the
+/// one-hop route. A process-wide `Once` prints the first index's line and
+/// silently drops every other rung's, which is precisely the ladder the flag
+/// is meant to annotate.
 fn report_asym_dispatch(index: &crate::index::MmapIndex, got: AsymDispatch) {
     let report_requested = std::env::var_os("NEXT_PLAID_REPORT_KERNEL").is_some();
-    // A normal SIMD success is silent by default. Do not spend the process-wide
-    // warning slot on that no-op: a later request may hit a real fallback on a
-    // different index or shape and must still be reported.
+    // A normal SIMD success is silent by default.
     if !should_report_asym_dispatch(got, report_requested) {
         return;
     }
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        let dim = index.codec.embedding_dim();
-        match got {
-            AsymDispatch::Simd => eprintln!(
-                "[next-plaid] residual scoring: {} kernel (dim={dim})",
-                crate::residual_lut::active_kernel_name(dim, true)
-            ),
-            AsymDispatch::Scalar => eprintln!(
-                "[next-plaid] residual scoring: no SIMD dispatch (dim={dim}) — running the \
-                 scalar kernel. Scores are correct, but only marginally faster than float \
-                 rescoring. An x86_64 build under Rosetta, an x86_64 container on Apple \
-                 Silicon, or an ARM CPU without `dotprod` lands here."
-            ),
-            AsymDispatch::NotEngaged => eprintln!(
-                "[next-plaid] asymmetric residual scoring not applicable to this index \
-                 (binary={}, dim={dim}, max supported {}) — scoring in float.",
-                index.metadata.binary,
-                crate::residual_lut::MAX_DIM,
-            ),
+    let dim = index.codec.embedding_dim();
+    let line = match got {
+        AsymDispatch::Simd(kernel) => {
+            format!("[next-plaid] residual scoring: {kernel} kernel (dim={dim})")
         }
-    });
+        AsymDispatch::Scalar => format!(
+            "[next-plaid] residual scoring: no SIMD dispatch (dim={dim}) — running the \
+             scalar kernel. Scores are correct, but only marginally faster than float \
+             rescoring. An x86_64 build under Rosetta, an x86_64 container on Apple \
+             Silicon, or an ARM CPU without `dotprod` lands here."
+        ),
+        AsymDispatch::NotEngaged => format!(
+            "[next-plaid] asymmetric residual scoring not applicable to this index \
+             (binary={}, dim={dim}, max supported {}) — scoring in float.",
+            index.metadata.binary,
+            crate::residual_lut::MAX_DIM,
+        ),
+    };
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(Default::default);
+    // A poisoned lock here must not take a search down: this is diagnostics.
+    let mut seen = match seen.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    if seen.insert(line.clone()) {
+        eprintln!("{line}");
+    }
 }
 
 /// Prepare the query for the index's Stage-2 scoring path, once per search.
@@ -191,13 +208,18 @@ fn prepare_score_query<'a>(
         if let Some(lut) = crate::residual_lut::quantize_lut(&index.codec) {
             let dim = index.codec.embedding_dim();
             let q8 = crate::binary::quantize_query_i8(&query.view());
-            let planes = dim
-                .is_multiple_of(8)
+            // Planes are the SIMD kernels' query layout. Which layout depends
+            // on the route: the nibble paths want the permuted plane order,
+            // ternary expands to natural dim order and wants a plain padded
+            // copy. `wants_planes` owns that distinction, and skips the work
+            // entirely for shapes with no SIMD route at all.
+            let planes = lut
+                .wants_planes(dim)
                 .then(|| crate::residual_lut::build_query_planes(&q8, &lut, dim));
             report_asym_dispatch(
                 index,
-                if crate::residual_lut::simd_dispatch_available(dim, lut.nibble.is_some()) {
-                    AsymDispatch::Simd
+                if lut.simd_available(dim) {
+                    AsymDispatch::Simd(lut.kernel_name(dim))
                 } else {
                     AsymDispatch::Scalar
                 },
@@ -1556,13 +1578,19 @@ mod tests {
     fn dispatch_reporting_is_opt_in() {
         // Asym is the default: fallbacks are normal operation, silent unless
         // NEXT_PLAID_REPORT_KERNEL asks for the resolved kernel.
-        assert!(!should_report_asym_dispatch(AsymDispatch::Simd, false));
+        assert!(!should_report_asym_dispatch(
+            AsymDispatch::Simd("neon-sdot"),
+            false
+        ));
         assert!(!should_report_asym_dispatch(AsymDispatch::Scalar, false));
         assert!(!should_report_asym_dispatch(
             AsymDispatch::NotEngaged,
             false
         ));
-        assert!(should_report_asym_dispatch(AsymDispatch::Simd, true));
+        assert!(should_report_asym_dispatch(
+            AsymDispatch::Simd("neon-sdot"),
+            true
+        ));
         assert!(should_report_asym_dispatch(AsymDispatch::Scalar, true));
         assert!(should_report_asym_dispatch(AsymDispatch::NotEngaged, true));
     }

@@ -273,6 +273,7 @@ fn delete_from_index_impl(doc_ids: &[i64], index_path: &str, clean_buffer: bool)
         embedding_dim: metadata.embedding_dim,
         next_plaid_compatible: metadata.next_plaid_compatible,
         binary: metadata.binary,
+        ternary: metadata.ternary,
     };
 
     serde_json::to_writer_pretty(

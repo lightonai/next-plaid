@@ -54,6 +54,10 @@ criterion = { version = "0.8.1", features = ["html_reports"] }
 approx = "0.5"
 tempfile = "3.10"
 
+[[bench]]
+name = "residual_decode"
+harness = false
+
 [features]
 default = []
 accelerate = [

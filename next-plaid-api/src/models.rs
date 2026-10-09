@@ -64,6 +64,14 @@ pub struct IndexConfigRequest {
     #[serde(default)]
     #[schema(example = false)]
     pub binary: Option<bool>,
+    /// Use the ternary (base-3 dead-zone) residual codec instead of scalar
+    /// `nbits` (default: false): ~1.585 bits/dim, a size/quality rung between
+    /// 1-bit and 2-bit residuals (~19% smaller than nbits=2). Reconstructs and
+    /// scores like the scalar codec, so it supersedes `nbits`. Mutually exclusive
+    /// with `binary`. Set at creation time.
+    #[serde(default)]
+    #[schema(example = false)]
+    pub ternary: Option<bool>,
 }
 
 /// Response after declaring an index.
@@ -107,6 +115,11 @@ pub struct IndexConfigStored {
     #[serde(default)]
     #[schema(example = false)]
     pub binary: bool,
+    /// Whether the residual codec is ternary (base-3 dead-zone, ~1.585 bits/dim)
+    /// rather than scalar `nbits`. Mutually exclusive with `binary`.
+    #[serde(default)]
+    #[schema(example = false)]
+    pub ternary: bool,
 }
 
 fn default_start_from_scratch() -> usize {
