@@ -148,7 +148,6 @@ pub use types::{CodeUnit, Language, UnitType};
 use analysis::extract_file_imports;
 use ast::{find_class_body, get_node_name, is_class_node, is_constant_node, is_function_node};
 use extract::{extract_class, extract_constant, extract_function, fill_raw_code_gaps};
-use language::get_tree_sitter_language_for_path;
 use text::extract_text_units;
 
 /// Abstract type-contract nodes (interfaces, traits, protocols, type aliases,
@@ -333,7 +332,7 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
 
     let mut parser = Parser::new();
     if parser
-        .set_language(&get_tree_sitter_language_for_path(lang, path))
+        .set_language(&language::get_tree_sitter_language(lang))
         .is_err()
     {
         return Vec::new();

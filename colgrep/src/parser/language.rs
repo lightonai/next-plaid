@@ -518,8 +518,8 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Gleam => tree_sitter_gleam::LANGUAGE.into(),
         Language::Haskell => tree_sitter_haskell::LANGUAGE.into(),
         Language::Ocaml => tree_sitter_ocaml::LANGUAGE_OCAML.into(),
-        // Implementation files (.fs/.fsx); signature files (.fsi) need
-        // LANGUAGE_SIGNATURE, see get_tree_sitter_language_for_path.
+        // Signature files (.fsi) are split line by line (see fsharp.rs), so
+        // the implementation grammar is the only one shipped.
         Language::Fsharp => tree_sitter_fsharp::LANGUAGE_FSHARP.into(),
         Language::Elm => tree_sitter_elm::LANGUAGE.into(),
         Language::R => tree_sitter_r::LANGUAGE.into(),
@@ -578,22 +578,6 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         // Assembly is split line by line (asm.rs); see that module for why.
         Language::Assembly => unreachable!("Assembly doesn't use tree-sitter"),
     }
-}
-
-/// Tree-sitter language for a file. Same as [`get_tree_sitter_language`]
-/// except for languages whose grammar depends on the file kind: F# signature
-/// files (`.fsi`) only contain declarations (`val f : int -> int`) and parse
-/// with the dedicated signature grammar.
-pub fn get_tree_sitter_language_for_path(lang: Language, path: &Path) -> TsLanguage {
-    if lang == Language::Fsharp
-        && path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("fsi"))
-    {
-        return tree_sitter_fsharp::LANGUAGE_SIGNATURE.into();
-    }
-    get_tree_sitter_language(lang)
 }
 
 #[cfg(test)]
@@ -1097,28 +1081,6 @@ __kernel void blur(__global const float *in, __global float *out, const int w)
             assert_eq!(detect_language(Path::new(f)), Some(Language::Fsharp), "{f}");
         }
         assert!(!is_text_format(Language::Fsharp));
-    }
-
-    #[test]
-    fn test_fsharp_signature_files_use_signature_grammar() {
-        let sig: TsLanguage = tree_sitter_fsharp::LANGUAGE_SIGNATURE.into();
-        let imp: TsLanguage = tree_sitter_fsharp::LANGUAGE_FSHARP.into();
-        let kinds = |l: &TsLanguage| l.node_kind_count();
-        assert_eq!(
-            kinds(&get_tree_sitter_language_for_path(
-                Language::Fsharp,
-                Path::new("a.FSI")
-            )),
-            kinds(&sig)
-        );
-        assert_eq!(
-            kinds(&get_tree_sitter_language_for_path(
-                Language::Fsharp,
-                Path::new("a.fs")
-            )),
-            kinds(&imp)
-        );
-        assert_ne!(kinds(&sig), kinds(&imp));
     }
 
     #[test]
