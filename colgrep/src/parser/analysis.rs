@@ -1,6 +1,8 @@
 //! Code analysis functions for extracting metadata from AST nodes.
 
+use super::doc_comment::{comment_block_above, DASHES, SLASHES};
 use super::types::Language;
+use super::{hdl, shader};
 use tree_sitter::Node;
 
 /// Iterate over all nodes in a subtree using an explicit stack (no recursion).
@@ -222,6 +224,27 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
             }
             None
         }
+        Language::Gleam => {
+            // `///` item docs, possibly above `@external(...)` attributes;
+            // `////` is the module doc.
+            let mut doc_lines = Vec::new();
+            let start_row = node.start_position().row;
+            for i in (0..start_row).rev() {
+                let line = lines.get(i)?.trim();
+                if line.starts_with("///") && !line.starts_with("////") {
+                    doc_lines.insert(0, line.trim_start_matches("///").trim());
+                } else if line.starts_with('@') && doc_lines.is_empty() {
+                    continue;
+                } else {
+                    break;
+                }
+            }
+            if doc_lines.is_empty() {
+                None
+            } else {
+                Some(doc_lines.join(" "))
+            }
+        }
         Language::Swift | Language::Dart => {
             // Swift and Dart use /// doc comments (like Rust)
             let mut doc_lines = Vec::new();
@@ -267,7 +290,30 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
                 Some(doc_lines.join(" "))
             }
         }
-        Language::C | Language::Cpp => {
+        // `//` / `--` lines or a `/* */` block right above the declaration.
+        Language::Verilog | Language::Glsl => {
+            comment_block_above(node.start_position().row, lines, SLASHES).map(|(_, doc)| doc)
+        }
+        Language::Hlsl => comment_block_above(
+            shader::attribute_lines_start(node.start_position().row, lines),
+            lines,
+            SLASHES,
+        )
+        .map(|(_, doc)| doc),
+        Language::Vhdl => {
+            comment_block_above(node.start_position().row, lines, DASHES).map(|(_, doc)| doc)
+        }
+        Language::Matlab => super::matlab::docstring(node, lines),
+        Language::Fortran => super::fortran::docstring(node, lines),
+        // NatSpec comments are C-style; drop the tags that only say where the
+        // text goes (`@notice`, `@dev`, `@title`) and the block's closing `/`.
+        Language::Solidity => extract_docstring(node, lines, Language::C).map(|doc| {
+            let doc = doc.trim_end_matches('/').trim();
+            ["@notice ", "@dev ", "@title "]
+                .iter()
+                .fold(doc.to_string(), |d, tag| d.replace(tag, ""))
+        }),
+        Language::C | Language::Cpp | Language::Cuda | Language::ObjectiveC => {
             // Look for /* */ block comments or /// doc comments
             let start_row = node.start_position().row;
             if start_row > 0 {
@@ -297,10 +343,10 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
                                 .iter()
                                 .map(|l| {
                                     l.trim()
+                                        .trim_end_matches("*/")
                                         .trim_start_matches("/**")
                                         .trim_start_matches("/*")
                                         .trim_start_matches('*')
-                                        .trim_end_matches("*/")
                                         .trim()
                                 })
                                 .filter(|l| !l.is_empty())
@@ -363,7 +409,29 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
             }
             None
         }
-        Language::Lua => {
+        Language::Gdscript => {
+            // `##` documentation comments above the declaration; annotation
+            // lines (`@export`, `@rpc(...)`) may sit between them.
+            let mut doc_lines = Vec::new();
+            let start_row = node.start_position().row;
+            for i in (0..start_row).rev() {
+                let line = lines.get(i)?.trim();
+                if let Some(text) = line.strip_prefix("##") {
+                    doc_lines.insert(0, text.trim());
+                } else if line.starts_with('@') && doc_lines.is_empty() {
+                    continue;
+                } else {
+                    break;
+                }
+            }
+            let doc = doc_lines
+                .into_iter()
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            (!doc.is_empty()).then_some(doc)
+        }
+        Language::Lua | Language::Luau => {
             // Look for --- or -- comments (LuaDoc style)
             // LuaDoc uses --- for the first line and -- for continuation
             let mut doc_lines = Vec::new();
@@ -385,9 +453,44 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
                     }
                 }
             }
-            // Only return docstring if we found at least one --- line
-            if !found_triple_dash {
+            // Lua: only an LDoc `---` block counts. Luau code (Roblox,
+            // Fusion) documents with plain `--` lines or a `--[[ ]]` block.
+            if !found_triple_dash && lang == Language::Lua {
                 doc_lines.clear();
+            }
+            if doc_lines.is_empty() && lang == Language::Luau && start_row > 0 {
+                let mut end = start_row;
+                while end > 0 && lines.get(end - 1)?.trim().is_empty() {
+                    end -= 1;
+                }
+                // The line above must close a block comment, not be code that
+                // happens to end in `]]` (`local x = t[a[1]]`): either the
+                // whole comment is on it, or it has no `[` of its own.
+                let closing = lines.get(end.saturating_sub(1))?.trim();
+                let closes_comment = end > 0
+                    && closing.ends_with("]]")
+                    && (closing.starts_with("--[[") || !closing.contains('['));
+                if closes_comment {
+                    for i in (end.saturating_sub(200)..end).rev() {
+                        if lines.get(i)?.trim_start().starts_with("--[[") {
+                            let text = lines[i..end]
+                                .iter()
+                                .map(|l| {
+                                    l.trim()
+                                        .trim_start_matches("--[[")
+                                        .trim_end_matches("]]")
+                                        .trim()
+                                })
+                                .filter(|l| !l.is_empty())
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            if !text.is_empty() {
+                                return Some(text);
+                            }
+                            break;
+                        }
+                    }
+                }
             }
             if doc_lines.is_empty() {
                 None
@@ -459,10 +562,264 @@ fn extract_dart_parameters(node: Node, bytes: &[u8]) -> Vec<String> {
     result
 }
 
+fn node_text<'a>(node: Node, bytes: &'a [u8]) -> &'a str {
+    node.utf8_text(bytes).unwrap_or("").trim()
+}
+
+fn named_child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+    node.named_children(&mut node.walk())
+        .find(|c| c.kind() == kind)
+}
+
+/// Parameter names of D, Odin and Pascal routines. D: `(int a, T b)`, the
+/// name is the parameter's last direct identifier (its type is a `type`
+/// node). Odin: `(a, b: int, using v: Vec2)`, every direct identifier is a
+/// name. Pascal: `(const A, B: Integer; var S: string)` via the `name` fields.
+fn extract_named_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    let mut result = Vec::new();
+    match lang {
+        Language::D => {
+            let Some(params) = named_child_of_kind(node, "parameters") else {
+                return result;
+            };
+            for param in params.named_children(&mut params.walk()) {
+                if param.kind() != "parameter" {
+                    continue;
+                }
+                if let Some(name) = param
+                    .named_children(&mut param.walk())
+                    .filter(|c| c.kind() == "identifier")
+                    .last()
+                {
+                    result.push(node_text(name, bytes).to_string());
+                }
+            }
+        }
+        Language::Odin => {
+            let Some(params) = named_child_of_kind(node, "procedure")
+                .and_then(|p| named_child_of_kind(p, "parameters"))
+            else {
+                return result;
+            };
+            for param in params.named_children(&mut params.walk()) {
+                for name in param.named_children(&mut param.walk()) {
+                    if name.kind() == "identifier" {
+                        result.push(node_text(name, bytes).to_string());
+                    }
+                }
+            }
+        }
+        Language::Pascal => {
+            let Some(args) = node
+                .child_by_field_name("header")
+                .and_then(|h| h.child_by_field_name("args"))
+            else {
+                return result;
+            };
+            for arg in args.named_children(&mut args.walk()) {
+                let mut cursor = arg.walk();
+                for name in arg.children_by_field_name("name", &mut cursor) {
+                    if name.kind() == "identifier" {
+                        result.push(node_text(name, bytes).to_string());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    result.retain(|p| !p.is_empty());
+    result
+}
+
+/// Callee of a D call: `f(x)`, `obj.method(x)` (→ `method`), `to!string(x)`
+/// (→ `to`), and the class of `new Foo(x)`.
+fn d_callee_name<'a>(node: Node, bytes: &'a [u8]) -> Option<&'a str> {
+    let callee = match node.kind() {
+        "call_expression" => node.named_child(0)?,
+        "new_expression" => named_child_of_kind(node, "type")?,
+        _ => return None,
+    };
+    let name_node = match callee.kind() {
+        "template_instance" => named_child_of_kind(callee, "identifier")?,
+        "type" | "property_expression" => {
+            let last = callee.named_child(callee.named_child_count().checked_sub(1)?)?;
+            if last.kind() == "template_instance" {
+                named_child_of_kind(last, "identifier")?
+            } else {
+                last
+            }
+        }
+        _ => callee,
+    };
+    let name = node_text(name_node, bytes);
+    let name = name.rsplit('.').next().unwrap_or(name);
+    let name = name.split('!').next().unwrap_or(name);
+    is_identifier_like(name).then_some(name)
+}
+
+fn is_identifier_like(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Callee of a Pascal call: `WriteLn(x)`, `List.Add(x)` (→ `Add`), a bare
+/// `Refresh;` statement (Pascal calls a routine without arguments with no
+/// parentheses), and `inherited Create`.
+fn pascal_callee_name<'a>(node: Node, bytes: &'a [u8]) -> Option<&'a str> {
+    let callee = match node.kind() {
+        "exprCall" => node.child_by_field_name("entity")?,
+        "statement" => {
+            let only = node
+                .named_child(0)
+                .filter(|_| node.named_child_count() == 1)?;
+            match only.kind() {
+                "identifier" | "exprDot" => only,
+                _ => return None,
+            }
+        }
+        "inherited" => named_child_of_kind(node, "identifier")?,
+        _ => return None,
+    };
+    let callee = if callee.kind() == "exprDot" {
+        callee.child_by_field_name("rhs")?
+    } else {
+        callee
+    };
+    let callee = if callee.kind() == "exprTpl" {
+        callee.named_child(0)?
+    } else {
+        callee
+    };
+    let name = node_text(callee, bytes);
+    is_identifier_like(name).then_some(name)
+}
+
+fn extract_named_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    let mut calls = Vec::new();
+    walk_tree(node, |current| {
+        let name = match lang {
+            Language::D => d_callee_name(current, bytes),
+            Language::Pascal => pascal_callee_name(current, bytes),
+            _ => None,
+        };
+        if let Some(name) = name {
+            calls.push(name.to_string());
+        }
+    });
+    calls.sort();
+    calls.dedup();
+    calls
+}
+
+/// Variables declared in D (`int x, y;`, `auto p = ...;`), Odin (`x := 1`,
+/// `x: int`) and Pascal (`var i, j: Integer;`) code.
+fn extract_declared_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    let mut vars = Vec::new();
+    walk_tree(node, |current| match (lang, current.kind()) {
+        (Language::D, "variable_declaration") => {
+            for declarator in current.named_children(&mut current.walk()) {
+                if declarator.kind() == "declarator" {
+                    if let Some(name) = named_child_of_kind(declarator, "identifier") {
+                        vars.push(node_text(name, bytes).to_string());
+                    }
+                }
+            }
+        }
+        (Language::D, "auto_declaration") => {
+            let mut cursor = current.walk();
+            for name in current.children_by_field_name("variable", &mut cursor) {
+                vars.push(node_text(name, bytes).to_string());
+            }
+        }
+        (Language::Odin, "variable_declaration" | "var_declaration" | "assignment_statement") => {
+            // `a, b := f()` / `x: int = 0`: the names precede the operator.
+            let declares = current.kind() != "assignment_statement"
+                || current
+                    .children(&mut current.walk())
+                    .any(|c| c.kind() == ":=");
+            if declares {
+                for child in current.children(&mut current.walk()) {
+                    match child.kind() {
+                        "identifier" => vars.push(node_text(child, bytes).to_string()),
+                        "," => {}
+                        _ => break,
+                    }
+                }
+            }
+        }
+        (Language::Pascal, "declVar") => {
+            let mut cursor = current.walk();
+            for name in current.children_by_field_name("name", &mut cursor) {
+                if name.kind() == "identifier" {
+                    vars.push(node_text(name, bytes).to_string());
+                }
+            }
+        }
+        _ => {}
+    });
+    vars.retain(|v| is_identifier_like(v) && v.len() < 50);
+    vars.sort();
+    vars.dedup();
+    vars
+}
+
+/// Imports of D (`import std.algorithm : map;` → `std.algorithm`), Odin
+/// (`import "core:fmt"` → `fmt`, `import rl "vendor:raylib"` → `rl`) and
+/// Pascal (`uses Classes, System.SysUtils;`).
+fn extract_module_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    let mut imports = Vec::new();
+    walk_tree(node, |current| match (lang, current.kind()) {
+        (Language::D, "imported") => {
+            if let Some(fqn) = named_child_of_kind(current, "module_fqn") {
+                imports.push(node_text(fqn, bytes).to_string());
+            }
+        }
+        (Language::Odin, "import_declaration") => {
+            if let Some(alias) = current.child_by_field_name("alias") {
+                imports.push(node_text(alias, bytes).to_string());
+            } else if let Some(path) = find_first_by_kind(current, "string_content", 4) {
+                let path = node_text(path, bytes);
+                let name = path.rsplit([':', '/']).next().unwrap_or(path);
+                imports.push(name.to_string());
+            }
+        }
+        (Language::Pascal, "declUses") => {
+            for module in current.named_children(&mut current.walk()) {
+                if module.kind() == "moduleName" {
+                    imports.push(node_text(module, bytes).to_string());
+                }
+            }
+        }
+        _ => {}
+    });
+    imports.retain(|i| !i.is_empty());
+    imports.sort();
+    imports.dedup();
+    imports
+}
+
 /// Extract parameter names from a function node.
 pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
-    if lang == Language::Dart {
-        return extract_dart_parameters(node, bytes);
+    match lang {
+        Language::Dart => return extract_dart_parameters(node, bytes),
+        Language::Verilog => return hdl::verilog_parameters(node, bytes),
+        Language::Vhdl => return hdl::vhdl_parameters(node, bytes),
+        Language::Perl => return super::perl::parameters(node, bytes),
+        Language::D | Language::Odin | Language::Pascal => {
+            return extract_named_parameters(node, bytes, lang)
+        }
+        _ => {}
+    }
+    if lang == Language::ObjectiveC && super::objc::is_method(node) {
+        return super::objc::method_parameters(node, bytes);
+    }
+    if lang == Language::Matlab {
+        return super::matlab::parameters(node, bytes);
+    }
+    if lang == Language::Fortran {
+        return super::fortran::parameters(node, bytes);
     }
 
     let params_node = match lang {
@@ -472,9 +829,20 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
         Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => node
             .child_by_field_name("parameters")
             .or_else(|| node.child_by_field_name("formal_parameters")),
-        Language::C | Language::Cpp => node
-            .child_by_field_name("declarator")
-            .and_then(|d| d.child_by_field_name("parameters")),
+        Language::C
+        | Language::Cpp
+        | Language::Cuda
+        | Language::Glsl
+        | Language::Hlsl
+        | Language::ObjectiveC => {
+            let mut declarator = node.child_by_field_name("declarator");
+            // `NSString *name(void)`: the function declarator sits under the
+            // pointer declarator.
+            while let Some(d) = declarator.filter(|d| d.kind() == "pointer_declarator") {
+                declarator = d.child_by_field_name("declarator");
+            }
+            declarator.and_then(|d| d.child_by_field_name("parameters"))
+        }
         Language::Ruby => node.child_by_field_name("parameters"),
         Language::Kotlin => node.child_by_field_name("parameters").or_else(|| {
             // Kotlin uses function_value_parameters
@@ -486,15 +854,23 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
             // Return the node itself and handle parameter extraction in the loop below
             Some(node)
         }
+        // Solidity: `parameter` / `event_parameter` / `error_parameter` are
+        // direct children of the definition (the return parameters sit
+        // inside `return_type_definition`).
+        Language::Solidity => Some(node),
         Language::Scala => {
             // Scala has both type_parameters and parameters with the same field name
             // We need to find the actual parameters node (not type_parameters)
             node.children(&mut node.walk())
                 .find(|child| child.kind() == "parameters")
         }
-        Language::Php | Language::Lua | Language::Elixir | Language::Haskell => {
-            node.child_by_field_name("parameters")
-        }
+        Language::Php
+        | Language::Lua
+        | Language::Luau
+        | Language::Gdscript
+        | Language::Elixir
+        | Language::Haskell
+        | Language::Gleam => node.child_by_field_name("parameters"),
         Language::Ocaml => {
             // OCaml parameters are in let_binding children
             // For value_definition, we need to find the let_binding first
@@ -520,7 +896,7 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
         // For OCaml, parameters are direct children with kind "parameter"
         // Also handle "typed" for typed parameters like (a : int)
         if kind.contains("parameter")
-            || kind == "identifier"
+            || (kind == "identifier" && lang != Language::Solidity)
             || (lang == Language::Ocaml && kind == "typed")
         {
             // Go: handle grouped parameters like `a, b int`
@@ -558,14 +934,23 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
                     child
                         .child_by_field_name("pattern")
                         .filter(|c| c.kind() == "identifier")
-                } else if matches!(lang, Language::C | Language::Cpp) {
+                } else if matches!(
+                    lang,
+                    Language::C
+                        | Language::Cpp
+                        | Language::Cuda
+                        | Language::Glsl
+                        | Language::Hlsl
+                        | Language::ObjectiveC
+                ) {
                     // For C/C++, parameter_declaration has a "declarator" field
                     // This can be: identifier, pointer_declarator, array_declarator, function_declarator
                     child.child_by_field_name("declarator").and_then(|d| {
                         find_identifier_in_declarator(d, bytes, 0, super::max_recursion_depth())
                     })
-                } else if lang == Language::Kotlin {
-                    // For Kotlin, the identifier is a direct child of the parameter node
+                } else if matches!(lang, Language::Kotlin | Language::Gdscript | Language::Luau) {
+                    // Kotlin, GDScript (typed / default parameters) and Luau
+                    // (`a: number`): the identifier is the parameter's first child
                     child.child(0).filter(|c| c.kind() == "identifier")
                 } else if lang == Language::Ocaml {
                     // For OCaml, parameter contains value_pattern or typed_pattern
@@ -640,8 +1025,67 @@ pub fn extract_return_type(node: Node, bytes: &[u8], lang: Language) -> Option<S
             node.child_by_field_name("return_type")
         }
         Language::Go => node.child_by_field_name("result"),
+        Language::Gleam => node.child_by_field_name("return_type"),
+        Language::Gdscript => node.child_by_field_name("return_type"),
+        // Luau: `function f(a): T` — the type follows the `:` after the
+        // parameter list (not a named field).
+        Language::Luau => {
+            let mut after_params = false;
+            let mut after_colon = false;
+            let mut found = None;
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "parameters" {
+                    after_params = true;
+                } else if after_params && child.kind() == ":" {
+                    after_colon = true;
+                } else if after_colon {
+                    if child.is_named() && child.kind() != "block" {
+                        found = Some(child);
+                    }
+                    break;
+                }
+            }
+            found
+        }
         Language::Java | Language::CSharp => node.child_by_field_name("type"),
-        Language::Cpp | Language::C => node.child_by_field_name("type"),
+        Language::Cpp | Language::Cuda | Language::C | Language::Glsl | Language::Hlsl => {
+            node.child_by_field_name("type")
+        }
+        Language::Verilog => return hdl::verilog_return_type(node, bytes),
+        Language::Vhdl => return hdl::vhdl_return_type(node, bytes),
+        Language::ObjectiveC if super::objc::is_method(node) => {
+            return super::objc::method_return_type(node, bytes);
+        }
+        Language::ObjectiveC => node.child_by_field_name("type"),
+        Language::Matlab => return super::matlab::return_type(node, bytes),
+        Language::Fortran => return super::fortran::return_type(node, bytes),
+        Language::D => named_child_of_kind(node, "type"),
+        // Odin: `proc(...) -> T`; the result type follows the arrow.
+        Language::Odin => {
+            let procedure = named_child_of_kind(node, "procedure")?;
+            let mut cursor = procedure.walk();
+            let mut children = procedure.children(&mut cursor);
+            children.find(|c| c.kind() == "->")?;
+            children.find(|c| c.is_named())
+        }
+        Language::Pascal => node
+            .child_by_field_name("header")
+            .and_then(|h| h.child_by_field_name("type")),
+        // `returns (uint256 amount0, uint256 amount1)` -> `uint256 amount0, uint256 amount1`
+        Language::Solidity => {
+            let text = node
+                .child_by_field_name("return_type")?
+                .utf8_text(bytes)
+                .ok()?;
+            let inner = text.trim().trim_start_matches("returns").trim();
+            let inner = inner
+                .strip_prefix('(')
+                .and_then(|t| t.strip_suffix(')'))
+                .unwrap_or(inner)
+                .trim();
+            return (!inner.is_empty())
+                .then(|| inner.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
         Language::Dart => {
             let signature = find_first_by_kinds(
                 node,
@@ -753,8 +1197,22 @@ fn extract_dart_function_calls(node: Node, bytes: &[u8]) -> Vec<String> {
 
 /// Extract function calls from a node.
 pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
-    if lang == Language::Dart {
-        return extract_dart_function_calls(node, bytes);
+    match lang {
+        Language::Dart => return extract_dart_function_calls(node, bytes),
+        Language::Verilog => return hdl::verilog_calls(node, bytes),
+        Language::Vhdl => return hdl::vhdl_calls(node, bytes),
+        Language::Perl => return super::perl::calls(node, bytes),
+        Language::D | Language::Pascal => return extract_named_calls(node, bytes, lang),
+        _ => {}
+    }
+    if lang == Language::ObjectiveC {
+        return super::objc::calls(node, bytes);
+    }
+    if lang == Language::Matlab {
+        return super::matlab::calls(node, bytes);
+    }
+    if lang == Language::Fortran {
+        return super::fortran::calls(node, bytes);
     }
 
     let mut calls = Vec::new();
@@ -766,14 +1224,28 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
         }
         Language::Go => &["call_expression"],
         Language::Java | Language::CSharp => &["method_invocation", "object_creation_expression"],
-        Language::C | Language::Cpp => &["call_expression"],
+        Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
+            &["call_expression"]
+        }
+        // Events emitted, errors reverted with and modifiers applied are
+        // recorded as calls, linking them to their declarations.
+        Language::Solidity => &[
+            "call_expression",
+            "emit_statement",
+            "revert_statement",
+            "modifier_invocation",
+            "new_expression",
+        ],
         Language::Ruby => &["call", "method_call"],
         Language::Kotlin => &["call_expression", "navigation_expression"],
         Language::Swift => &["call_expression"],
+        Language::Odin => &["call_expression"],
         Language::Scala => &["call_expression"],
         Language::Php => &["function_call_expression", "method_call_expression"],
-        Language::Lua => &["function_call"],
+        Language::Lua | Language::Luau => &["function_call"],
+        Language::Gdscript => &["call", "attribute_call"],
         Language::Elixir => &["call"],
+        Language::Gleam => &["function_call"],
         Language::Haskell => &["function_application"],
         Language::Ocaml => &["application_expression"],
         _ => return calls,
@@ -785,19 +1257,35 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
                 .child_by_field_name("function")
                 .or_else(|| current.child_by_field_name("name"))
                 .or_else(|| current.child_by_field_name("method"))
+                .or_else(|| current.child_by_field_name("error"))
                 .or_else(|| current.child(0))
             {
                 if let Ok(text) = name_node.utf8_text(bytes) {
+                    // Solidity call options: `addr.call{value: v}("")`
+                    let text = if lang == Language::Solidity {
+                        text.split('{').next().unwrap_or(text).trim()
+                    } else {
+                        text
+                    };
                     #[allow(clippy::double_ended_iterator_last)]
                     let name = text.split('.').last().unwrap_or(text);
                     #[allow(clippy::double_ended_iterator_last)]
                     let name = name.split("::").last().unwrap_or(name);
                     let name = name.trim_end_matches('!');
+                    // Luau method calls: `game:GetService(...)` → GetService.
+                    #[allow(clippy::double_ended_iterator_last)]
+                    let name = if lang == Language::Luau {
+                        name.split(':').last().unwrap_or(name)
+                    } else {
+                        name
+                    };
+                    // Solidity's internal functions are `_`-prefixed by
+                    // convention (`_transfer`, `_mint`).
                     if !name.is_empty()
                         && name
                             .chars()
                             .next()
-                            .map(|c| c.is_alphabetic())
+                            .map(|c| c.is_alphabetic() || (c == '_' && lang == Language::Solidity))
                             .unwrap_or(false)
                     {
                         calls.push(name.to_string());
@@ -806,6 +1294,12 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
             }
         }
     });
+    if matches!(lang, Language::Glsl | Language::Hlsl) {
+        // `register(b0)` / `packoffset(c0)` are binding annotations.
+        calls.retain(|call| {
+            !shader::is_type_constructor(call) && call != "register" && call != "packoffset"
+        });
+    }
     calls.sort();
     calls.dedup();
     calls
@@ -853,6 +1347,30 @@ pub fn extract_control_flow(node: Node, lang: Language) -> (usize, bool, bool, b
             "?" | "try_operator" if lang == Language::Rust => {
                 has_error_handling = true;
             }
+            // Perl and Pascal name their statements differently.
+            "conditional_statement" | "postfix_conditional_expression"
+                if lang == Language::Perl =>
+            {
+                complexity += 1;
+                has_branches = true;
+            }
+            "loop_statement" | "cstyle_for_statement" | "postfix_loop_expression"
+                if lang == Language::Perl =>
+            {
+                complexity += 1;
+                has_loops = true;
+            }
+            "eval_expression" if lang == Language::Perl => {
+                has_error_handling = true;
+            }
+            "ifElse" | "case" if lang == Language::Pascal => {
+                complexity += 1;
+                has_branches = true;
+            }
+            "repeat" | "foreach" if lang == Language::Pascal => {
+                complexity += 1;
+                has_loops = true;
+            }
             _ => {}
         }
     });
@@ -861,6 +1379,21 @@ pub fn extract_control_flow(node: Node, lang: Language) -> (usize, bool, bool, b
 
 /// Extract variable declarations from a node.
 pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
+    if lang == Language::Matlab {
+        return super::matlab::variables(node, bytes);
+    }
+    if lang == Language::Fortran {
+        return super::fortran::variables(node, bytes);
+    }
+    match lang {
+        Language::Verilog => return hdl::verilog_variables(node, bytes),
+        Language::Vhdl => return hdl::vhdl_variables(node, bytes),
+        Language::Perl => return super::perl::variables(node, bytes),
+        Language::D | Language::Odin | Language::Pascal => {
+            return extract_declared_variables(node, bytes, lang)
+        }
+        _ => {}
+    }
     let mut vars = Vec::new();
     let var_types: &[&str] = match lang {
         Language::Python => &["assignment", "named_expression", "augmented_assignment"],
@@ -876,14 +1409,23 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
             "declared_identifier",
         ],
         Language::Java | Language::CSharp => &["variable_declarator", "local_variable_declaration"],
-        Language::C | Language::Cpp => &["declaration", "init_declarator"],
+        Language::C
+        | Language::Cpp
+        | Language::Cuda
+        | Language::Glsl
+        | Language::Hlsl
+        | Language::ObjectiveC => &["declaration", "init_declarator"],
+        Language::Solidity => &["variable_declaration"],
         Language::Ruby => &["assignment"],
         Language::Kotlin => &["property_declaration", "variable_declaration"],
         Language::Swift => &["property_declaration", "constant_declaration"],
         Language::Scala => &["val_definition", "var_definition"],
         Language::Php => &["simple_variable"],
         Language::Lua => &["variable_declaration", "local_variable_declaration"],
+        Language::Luau => &["variable_list"],
+        Language::Gdscript => &["variable_statement"],
         Language::Elixir => &["match"],
+        Language::Gleam => &["let"],
         Language::Haskell => &["function_binding"],
         // OCaml: Don't extract let_binding as variable since it's the function definition itself
         Language::Ocaml => &[],
@@ -893,7 +1435,15 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
     walk_tree(node, |current| {
         if var_types.contains(&current.kind()) {
             // For C/C++, get the declarator field which contains the variable name
-            let name_node = if matches!(lang, Language::C | Language::Cpp) {
+            let name_node = if matches!(
+                lang,
+                Language::C
+                    | Language::Cpp
+                    | Language::Cuda
+                    | Language::Glsl
+                    | Language::Hlsl
+                    | Language::ObjectiveC
+            ) {
                 // For init_declarator: get declarator field
                 if current.kind() == "init_declarator" {
                     current.child_by_field_name("declarator").and_then(|d| {
@@ -1006,10 +1556,82 @@ fn extract_dart_imports(node: Node, bytes: &[u8]) -> Vec<String> {
     imports
 }
 
+/// Solidity imports, as the names they bring into scope:
+/// `import {IERC20, IERC20Metadata} from "./IERC20.sol";` -> IERC20, IERC20Metadata;
+/// `import "./Context.sol";` -> Context; `import * as Math from "./Math.sol";` -> Math.
+fn extract_solidity_imports(node: Node, bytes: &[u8]) -> Vec<String> {
+    let mut imports = Vec::new();
+    for child in node.children(&mut node.walk()) {
+        if child.kind() != "import_directive" {
+            continue;
+        }
+        let mut cursor = child.walk();
+        let mut names: Vec<String> = child
+            .children_by_field_name("alias", &mut cursor)
+            .chain(child.children_by_field_name("import_name", &mut child.walk()))
+            .filter_map(|n| n.utf8_text(bytes).ok().map(str::to_string))
+            .collect();
+        if names.is_empty() {
+            // `import {A} from "x"` exposes no fields in some grammar
+            // versions: take the identifiers directly.
+            names = child
+                .children(&mut child.walk())
+                .filter(|c| c.kind() == "identifier")
+                .filter_map(|n| n.utf8_text(bytes).ok().map(str::to_string))
+                .collect();
+        }
+        if names.is_empty() {
+            if let Some(source) = child
+                .child_by_field_name("source")
+                .or_else(|| {
+                    child
+                        .children(&mut child.walk())
+                        .find(|c| c.kind() == "string")
+                })
+                .and_then(|s| s.utf8_text(bytes).ok())
+            {
+                let file = source.trim_matches(|c| c == '"' || c == '\'');
+                let stem = file
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(file)
+                    .trim_end_matches(".sol");
+                if !stem.is_empty() {
+                    names.push(stem.to_string());
+                }
+            }
+        }
+        imports.extend(names);
+    }
+    imports.sort();
+    imports.dedup();
+    imports
+}
+
 /// Extract import statements from a file.
 pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
-    if lang == Language::Dart {
-        return extract_dart_imports(node, bytes);
+    match lang {
+        Language::Dart => return extract_dart_imports(node, bytes),
+        Language::Glsl | Language::Hlsl => return shader::file_imports(node, bytes),
+        Language::Verilog => return hdl::verilog_file_imports(node, bytes),
+        Language::Vhdl => return hdl::vhdl_file_imports(node, bytes),
+        Language::Perl => return super::perl::file_imports(node, bytes),
+        Language::D | Language::Odin | Language::Pascal => {
+            return extract_module_imports(node, bytes, lang)
+        }
+        _ => {}
+    }
+    if lang == Language::ObjectiveC {
+        return super::objc::file_imports(node, bytes);
+    }
+    if lang == Language::Matlab {
+        return super::matlab::file_imports(node, bytes);
+    }
+    if lang == Language::Fortran {
+        return super::fortran::file_imports(node, bytes);
+    }
+    if lang == Language::Solidity {
+        return extract_solidity_imports(node, bytes);
     }
 
     let mut imports = Vec::new();
@@ -1022,14 +1644,16 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         Language::Go => &["import_spec"], // Individual import specs, not the whole declaration
         Language::Java => &["import_declaration"],
         Language::CSharp => &["using_directive"],
-        Language::C | Language::Cpp => &["preproc_include"],
+        Language::C | Language::Cpp | Language::Cuda => &["preproc_include"],
         Language::Ruby => &["call"],
         Language::Kotlin => &["import"], // Kotlin uses "import" node type
         Language::Swift => &["import_declaration"],
         Language::Scala => &["import_declaration"],
         Language::Php => &["namespace_use_declaration"],
-        Language::Lua => &["function_call"],
+        Language::Lua | Language::Luau => &["function_call"],
+        Language::Gdscript => return extract_gdscript_imports(node, bytes),
         Language::Elixir => &["call"],
+        Language::Gleam => &["import"],
         Language::Haskell => &["import"],
         Language::Ocaml => &["open_module"],
         _ => return imports,
@@ -1078,8 +1702,16 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                 return;
             }
 
+            // Luau `require(script.Parent.Signal)` / `require("./types")`:
+            // the module is the last path component.
+            if lang == Language::Luau {
+                if let Some(module) = luau_required_module(node, bytes) {
+                    imports.push(module);
+                    return;
+                }
+            }
             // For Lua, check if it's a require() call and extract the module name
-            if lang == Language::Lua {
+            if matches!(lang, Language::Lua | Language::Luau) {
                 // Check if first child is identifier "require"
                 if let Some(first) = node.child(0) {
                     if first.kind() == "identifier" {
@@ -1167,6 +1799,25 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                 if let Some(pkg) = find_string_content(node, bytes, 0, max_depth) {
                     if !pkg.is_empty() {
                         imports.push(pkg);
+                    }
+                }
+                return;
+            }
+
+            // Gleam: `import gleam/string as str` -> `string` and `str`, the
+            // names the code qualifies calls with.
+            if lang == Language::Gleam {
+                if let Some(module) = node.child_by_field_name("module") {
+                    if let Ok(text) = module.utf8_text(bytes) {
+                        let last = text.rsplit('/').next().unwrap_or(text);
+                        if !last.is_empty() {
+                            imports.push(last.to_string());
+                        }
+                    }
+                }
+                if let Some(alias) = node.child_by_field_name("alias") {
+                    if let Ok(text) = alias.utf8_text(bytes) {
+                        imports.push(text.to_string());
                     }
                 }
                 return;
@@ -1300,8 +1951,15 @@ fn extract_dart_used_modules(node: Node, bytes: &[u8]) -> Vec<String> {
 /// Extract module/receiver names from attribute access patterns (e.g., `json` from `json.loads()`).
 /// These are identifiers that are used as the base of attribute access or method calls.
 pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
-    if lang == Language::Dart {
-        return extract_dart_used_modules(node, bytes);
+    match lang {
+        Language::Dart => return extract_dart_used_modules(node, bytes),
+        Language::Verilog => return hdl::verilog_used_scopes(node, bytes),
+        Language::Vhdl => return hdl::vhdl_used_modules(node, bytes),
+        Language::Perl => return super::perl::used_modules(node, bytes),
+        _ => {}
+    }
+    if lang == Language::Fortran {
+        return super::fortran::used_modules(node, bytes);
     }
 
     let mut modules = Vec::new();
@@ -1319,7 +1977,13 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         ],
         Language::Scala => &["field_expression"],
         Language::Kotlin => &["navigation_expression"],
-        Language::C | Language::Cpp => &["field_expression"],
+        Language::C
+        | Language::Cpp
+        | Language::Cuda
+        | Language::Glsl
+        | Language::Hlsl
+        | Language::ObjectiveC => &["field_expression"],
+        Language::Solidity => &["member_expression"],
         Language::Ruby => &["call"],
         Language::Swift => &["navigation_expression"],
         Language::Php => &[
@@ -1327,8 +1991,14 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
             "scoped_call_expression",
             "object_creation_expression",
         ],
-        Language::Lua => &["dot_index_expression", "method_index_expression"],
+        Language::Lua | Language::Luau => &["dot_index_expression", "method_index_expression"],
+        // Odin `fmt.println(...)`, Pascal `SysUtils.IntToStr(...)`: the
+        // receiver is the first child.
+        Language::Odin => &["member_expression"],
+        Language::Pascal => &["exprDot"],
+        Language::Gdscript => &["attribute"],
         Language::Ocaml => &["field_get_expression", "value_path"],
+        Language::Gleam => &["field_access"],
         _ => return modules,
     };
 
@@ -1388,7 +2058,8 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                     Language::JavaScript
                     | Language::TypeScript
                     | Language::Vue
-                    | Language::Svelte => node.child_by_field_name("object"),
+                    | Language::Svelte
+                    | Language::Solidity => node.child_by_field_name("object"),
                     Language::Rust => node.child_by_field_name("value"),
                     Language::Go => node.child_by_field_name("operand"),
                     Language::Java | Language::CSharp => node
@@ -1397,6 +2068,7 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                     Language::Scala => node.child_by_field_name("value"),
                     Language::Kotlin => node.named_child(0), // First child of navigation_expression
                     Language::Ruby => node.child_by_field_name("receiver"),
+                    Language::Gleam => node.child_by_field_name("record"),
                     Language::Ocaml => {
                         // OCaml value_path has module_path -> module_name
                         fn find_module_name<'a>(
@@ -1558,6 +2230,9 @@ pub fn extract_parent_class(
             None
         }
 
+        // Perl: `package Dog { use parent 'Animal'; ... }`
+        Language::Perl => super::perl::block_parent_class(node, bytes),
+
         // Ruby: class Dog < Animal -> superclass -> superclass node -> constant
         Language::Ruby => {
             let superclass = node.child_by_field_name("superclass")?;
@@ -1593,8 +2268,24 @@ pub fn extract_parent_class(
             None
         }
 
+        // SystemVerilog: class drv extends uvm_driver #(item)
+        Language::Verilog => hdl::verilog_parent_class(node, bytes),
+        // Solidity: contract ERC20 is Context, IERC20 -> every ancestor
+        Language::Solidity => {
+            let ancestors: Vec<String> = node
+                .children(&mut node.walk())
+                .filter(|c| c.kind() == "inheritance_specifier")
+                .filter_map(|c| {
+                    c.child_by_field_name("ancestor")
+                        .and_then(|a| a.utf8_text(bytes).ok())
+                        .map(str::to_string)
+                })
+                .collect();
+            (!ancestors.is_empty()).then(|| ancestors.join(", "))
+        }
+
         // C++: class Dog : public Animal -> base_class_clause -> type_identifier
-        Language::Cpp => {
+        Language::Cpp | Language::Cuda | Language::Hlsl => {
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "base_class_clause" {
                     if let Some(id) = find_first_by_kind(child, "type_identifier", max_depth) {
@@ -1604,6 +2295,43 @@ pub fn extract_parent_class(
             }
             None
         }
+
+        // Objective-C: @interface Dog : Animal -> superclass field
+        Language::ObjectiveC => super::objc::superclass(node, bytes),
+
+        // MATLAB: classdef Dog < Animal
+        Language::Matlab => super::matlab::superclass(node, bytes),
+
+        // Fortran: type, extends(Animal) :: Dog
+        Language::Fortran => {
+            let header = node
+                .children(&mut node.walk())
+                .find(|c| c.kind() == "derived_type_statement")?;
+            let base = find_first_by_kind(header, "base_type_specifier", max_depth)?;
+            find_first_by_kind(base, "identifier", max_depth)
+                .and_then(|n| n.utf8_text(bytes).ok().map(|s| s.to_string()))
+        }
+
+        // D: class Dog : Animal, Speaker -> base_class -> identifier
+        Language::D => {
+            let base = named_child_of_kind(node, "base_class")?;
+            find_first_by_kind(base, "identifier", max_depth)
+                .map(|id| node_text(id, bytes).to_string())
+        }
+
+        // Pascal: TDog = class(TAnimal, IBarks) -> declClass parent: typeref
+        Language::Pascal => {
+            let class = node.child_by_field_name("type")?;
+            let mut cursor = class.walk();
+            let parent = class
+                .children_by_field_name("parent", &mut cursor)
+                .find(|p| p.kind() == "typeref")?;
+            Some(node_text(parent, bytes).to_string())
+        }
+        // GDScript: class Inner extends Node: -> extends_statement -> type | string
+        Language::Gdscript => node
+            .child_by_field_name("extends")
+            .and_then(|e| gdscript_extends_target(e, bytes)),
 
         // Scala: class Dog extends Animal -> extends_clause -> type_identifier
         Language::Scala => {
@@ -1619,4 +2347,94 @@ pub fn extract_parent_class(
 
         _ => None,
     }
+}
+
+/// Target of a GDScript `extends` statement: a class name
+/// (`extends CharacterBody2D`) or a script path (`extends "res://base.gd"`).
+pub fn gdscript_extends_target(extends: Node, bytes: &[u8]) -> Option<String> {
+    let target = extends.named_children(&mut extends.walk()).next()?;
+    let text = target.utf8_text(bytes).ok()?.trim();
+    let text = text.trim_matches(|c| c == '"' || c == '\'');
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// Resources a GDScript file loads: `preload("res://bullet.tscn")` /
+/// `load(...)` calls and `extends "res://base.gd"`. A load bound to a
+/// constant or variable (`const Bullet = preload(...)`) is recorded under that
+/// name, since that is how the code refers to it; otherwise under the file
+/// stem (`bullet`).
+fn extract_gdscript_imports(root: Node, bytes: &[u8]) -> Vec<String> {
+    fn stem(path: &str) -> Option<String> {
+        let file = path
+            .trim_matches(|c| c == '"' || c == '\'')
+            .rsplit('/')
+            .next()?;
+        let stem = file.split('.').next().unwrap_or(file);
+        (!stem.is_empty()).then(|| stem.to_string())
+    }
+    let mut imports = Vec::new();
+    walk_tree(root, |node| match node.kind() {
+        "call" => {
+            let Some(callee) = node.child(0) else { return };
+            let Ok(name) = callee.utf8_text(bytes) else {
+                return;
+            };
+            if name != "preload" && name != "load" {
+                return;
+            }
+            let Some(arg) = node
+                .child_by_field_name("arguments")
+                .and_then(|a| a.named_child(0))
+                .filter(|a| a.kind() == "string")
+            else {
+                return;
+            };
+            let bound = node
+                .parent()
+                .filter(|p| matches!(p.kind(), "const_statement" | "variable_statement"))
+                .and_then(|p| p.child_by_field_name("name"))
+                .and_then(|n| n.utf8_text(bytes).ok())
+                .map(str::to_string);
+            if let Some(module) = bound.or_else(|| arg.utf8_text(bytes).ok().and_then(stem)) {
+                imports.push(module);
+            }
+        }
+        "extends_statement" => {
+            if let Some(target) = node.named_child(0).filter(|t| t.kind() == "string") {
+                if let Some(module) = target.utf8_text(bytes).ok().and_then(stem) {
+                    imports.push(module);
+                }
+            }
+        }
+        _ => {}
+    });
+    imports.sort();
+    imports.dedup();
+    imports
+}
+
+/// Module required by a Luau `require(...)` call, or None when `node` is not
+/// one: `require(script.Parent.Signal)` → `Signal`, `require("./types")` →
+/// `types`, `require(Packages.React)` → `React`.
+fn luau_required_module(node: Node, bytes: &[u8]) -> Option<String> {
+    let callee = node.child_by_field_name("name")?;
+    if callee.utf8_text(bytes).ok()? != "require" {
+        return None;
+    }
+    let arg = node
+        .child_by_field_name("arguments")?
+        .named_children(&mut node.walk())
+        .next()?;
+    let text = arg.utf8_text(bytes).ok()?;
+    let text = text
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'' || c == '`');
+    #[allow(clippy::double_ended_iterator_last)]
+    let last = text
+        .rsplit(['/', '.', ':'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(text);
+    // `require(path:WaitForChild("Signal"))`-style calls end in `)`.
+    let last = last.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+    (!last.is_empty() && last != "init").then(|| last.to_string())
 }

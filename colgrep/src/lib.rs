@@ -32,7 +32,8 @@ pub use index::{
 pub use model::{ensure_model, resolve_quantized, DEFAULT_MODEL};
 pub use onnx_runtime::{ensure_onnx_runtime, is_cudnn_available, prepare_cuda_library_path};
 pub use parser::{
-    build_call_graph, detect_language, extract_units, is_text_format, CodeUnit, Language, UnitType,
+    build_call_graph, detect_language, detect_language_with_content, extract_units, is_text_format,
+    CodeUnit, Language, UnitType,
 };
 
 // Install commands for AI coding tools

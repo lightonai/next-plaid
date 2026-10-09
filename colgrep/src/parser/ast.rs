@@ -1,5 +1,6 @@
 //! AST navigation helpers and node type detection.
 
+use super::doc_comment::{comment_block_above, DASHES, SLASHES};
 use super::types::Language;
 use tree_sitter::Node;
 
@@ -16,8 +17,38 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         }
         Language::Go => kind == "function_declaration" || kind == "method_declaration",
         Language::Java => kind == "method_declaration" || kind == "constructor_declaration",
-        Language::C | Language::Cpp => kind == "function_definition",
+        Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
+            kind == "function_definition"
+        }
+        Language::ObjectiveC => matches!(kind, "function_definition" | "method_definition"),
+        // D: functions and methods, constructors / destructors / postblits,
+        // and `unittest` blocks (D's inline tests, often the best usage
+        // example of the function above them).
+        Language::D => matches!(
+            kind,
+            "function_declaration"
+                | "constructor"
+                | "destructor"
+                | "postblit"
+                | "unittest_declaration"
+        ),
+        // Events and custom errors are declared like functions (a name and a
+        // parameter list) and are searched for like them.
+        Language::Solidity => matches!(
+            kind,
+            "function_definition"
+                | "modifier_definition"
+                | "constructor_definition"
+                | "fallback_receive_definition"
+                | "event_definition"
+                | "error_declaration"
+        ),
         Language::Ruby => kind == "method" || kind == "singleton_method",
+        // Perl: `sub name {...}` and the 5.38 `method name {...}`.
+        Language::Perl => matches!(
+            kind,
+            "subroutine_declaration_statement" | "method_declaration_statement"
+        ),
         Language::CSharp => kind == "method_declaration" || kind == "constructor_declaration",
         Language::Dart => matches!(
             kind,
@@ -27,18 +58,36 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
                 | "method_signature"
                 | "declaration"
         ),
+        // A script's `func` and its `_init` constructor (which has no name field).
+        Language::Gdscript => matches!(kind, "function_definition" | "constructor_definition"),
         // Additional languages
         Language::Kotlin => matches!(kind, "function_declaration" | "anonymous_function"),
         Language::Swift => matches!(kind, "function_declaration" | "init_declaration"),
         Language::Scala => matches!(kind, "function_definition" | "function_declaration"),
         Language::Php => matches!(kind, "function_definition" | "method_declaration"),
         Language::Lua => kind == "function_declaration",
+        // Luau also names test blocks: `describe("Some", function() ... end)`
+        // (see get_luau_test_block_name); other calls get no name.
+        Language::Luau => matches!(kind, "function_declaration" | "function_call"),
         Language::Elixir => matches!(kind, "call" | "anonymous_function"), // def/defp are calls in elixir
+        // Gleam: `pub fn` / `fn`, including bodyless `@external` functions.
+        Language::Gleam => kind == "function",
         Language::Haskell => kind == "function",
         Language::Ocaml => matches!(kind, "let_binding" | "value_definition"),
         Language::R => kind == "function_definition",
         Language::Zig => kind == "FnProto" || kind == "fn_decl",
+        // Odin: `name :: proc(...) {...}` and procedure groups
+        // `name :: proc{a, b}`.
+        Language::Odin => matches!(
+            kind,
+            "procedure_declaration" | "overloaded_procedure_declaration"
+        ),
+        // Pascal: a routine with its body (`defProc`); the bodiless headers in
+        // an `interface` section or a class declaration (`declProc`) are not.
+        Language::Pascal => kind == "defProc",
         Language::Julia => matches!(kind, "function_definition" | "short_function_definition"),
+        Language::Matlab => kind == "function_definition",
+        Language::Fortran => super::fortran::PROCEDURE_KINDS.contains(&kind),
         Language::Sql => matches!(kind, "create_function_statement" | "create_procedure"),
         // Both `function foo() {...}` and `foo() {...}` forms produce
         // function_definition in tree-sitter-bash.
@@ -48,6 +97,18 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         Language::Starlark => kind == "function_definition",
         Language::Cmake => matches!(kind, "function_def" | "macro_def"),
         Language::Groovy => matches!(kind, "function_definition" | "method_declaration"),
+        // Subroutines, plus procedural blocks long enough to be worth a unit
+        // of their own (see hdl::verilog_name / hdl::vhdl_name).
+        Language::Verilog => matches!(
+            kind,
+            "function_declaration"
+                | "task_declaration"
+                | "class_constructor_declaration"
+                | "always_construct"
+                | "initial_construct"
+                | "final_construct"
+        ),
+        Language::Vhdl => matches!(kind, "subprogram_definition" | "process_statement"),
         // Text/config formats - handled separately
         _ => false,
     }
@@ -74,11 +135,53 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
             kind,
             "class_declaration" | "interface_declaration" | "enum_declaration"
         ),
-        Language::Cpp => matches!(
+        Language::Cpp | Language::Cuda => matches!(
             kind,
             "class_specifier" | "struct_specifier" | "enum_specifier"
         ),
+        // Structs and resource blocks. A `declaration` is a unit only when it
+        // is an interface block / cbuffer (shader::block_name names it);
+        // plain uniform and varying declarations stay raw code together.
+        Language::Glsl => matches!(kind, "struct_specifier" | "declaration"),
+        Language::Hlsl => matches!(
+            kind,
+            "struct_specifier"
+                | "class_specifier"
+                | "enum_specifier"
+                | "declaration"
+                | "cbuffer_specifier"
+        ),
+        Language::ObjectiveC => matches!(
+            kind,
+            "class_interface"
+                | "class_implementation"
+                | "protocol_declaration"
+                | "struct_specifier"
+                | "union_specifier"
+                | "enum_specifier"
+        ),
+        Language::Solidity => matches!(
+            kind,
+            "contract_declaration"
+                | "interface_declaration"
+                | "library_declaration"
+                | "struct_declaration"
+                | "enum_declaration"
+        ),
         Language::Ruby => kind == "class" || kind == "module",
+        // Perl: `package Name {...}` / `class Name {...}` blocks. The
+        // statement form (`package Name;`) is handled in `perl_packages`.
+        Language::Perl => matches!(kind, "package_statement" | "class_statement"),
+        Language::D => matches!(
+            kind,
+            "class_declaration"
+                | "struct_declaration"
+                | "interface_declaration"
+                | "union_declaration"
+                | "enum_declaration"
+                | "template_declaration"
+                | "mixin_template_declaration"
+        ),
         Language::CSharp => matches!(
             kind,
             "class_declaration"
@@ -119,13 +222,32 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
                 | "trait_declaration"
                 | "enum_declaration"
         ),
-        Language::Lua => false,             // Lua doesn't have classes
+        Language::Lua => false, // Lua doesn't have classes
+        // Luau `type` / `export type` aliases are its type definitions.
+        Language::Luau => kind == "type_definition",
+        // GDScript inner classes; the script itself is the outer class.
+        Language::Gdscript => kind == "class_definition",
         Language::Elixir => kind == "call", // defmodule is a call
+        // Gleam custom types (`pub type User { ... }`) and aliases.
+        Language::Gleam => matches!(kind, "type_definition" | "type_alias"),
         Language::Haskell => matches!(kind, "type_alias" | "newtype" | "adt"),
         Language::Ocaml => matches!(kind, "type_definition" | "module_definition"),
         Language::R => false, // R doesn't have traditional classes
         Language::Zig => kind == "ContainerDecl", // struct, enum, union
+        Language::Odin => matches!(
+            kind,
+            "struct_declaration"
+                | "union_declaration"
+                | "enum_declaration"
+                | "bit_field_declaration"
+        ),
+        // Pascal `TName = class / record / interface / (enum) ...` type
+        // declarations; plain aliases (`TSize = Integer`) get no name in
+        // get_node_name and are left to the gap filler.
+        Language::Pascal => kind == "declType",
         Language::Julia => matches!(kind, "struct_definition" | "abstract_definition"),
+        Language::Matlab => kind == "class_definition",
+        Language::Fortran => super::fortran::CONTAINER_KINDS.contains(&kind),
         Language::Sql => matches!(
             kind,
             "create_table_statement" | "create_view_statement" | "create_index_statement"
@@ -176,6 +298,26 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
         // recursion so nested calls (glob(...), select(...)) are not units.
         Language::Starlark => kind == "call",
         Language::Groovy => kind == "class_declaration",
+        Language::Verilog => matches!(
+            kind,
+            "module_declaration"
+                | "interface_declaration"
+                | "program_declaration"
+                | "package_declaration"
+                | "class_declaration"
+                | "interface_class_declaration"
+                | "checker_declaration"
+                | "udp_declaration"
+        ),
+        Language::Vhdl => matches!(
+            kind,
+            "entity_declaration"
+                | "architecture_definition"
+                | "package_declaration"
+                | "package_definition"
+                | "protected_type_declaration"
+                | "protected_type_body"
+        ),
         // INI `[section]` with its settings, one unit per section.
         Language::Ini => kind == "section",
         Language::Powershell => kind == "class_statement",
@@ -198,22 +340,52 @@ pub fn is_constant_node(kind: &str, lang: Language) -> bool {
             kind,
             "static_final_declaration_list" | "initialized_identifier_list" | "identifier_list"
         ),
-        Language::C | Language::Cpp => kind == "declaration",
+        Language::C | Language::Cpp | Language::Cuda | Language::ObjectiveC => {
+            kind == "declaration"
+        }
+        // D manifest constants (`enum MAX = 10;`).
+        Language::D => kind == "manifest_constant",
+        // Perl `use constant NAME => value;` (other `use` lines get no name).
+        Language::Perl => kind == "use_statement",
+        // Odin `NAME :: value` constants.
+        Language::Odin => matches!(kind, "const_declaration" | "const_type_declaration"),
+        // Pascal `const` section entries.
+        Language::Pascal => kind == "declConst",
+        // File-level constants and user-defined value types
+        // (`type Currency is address;`); state variables live in contracts.
+        Language::Solidity => matches!(
+            kind,
+            "constant_variable_declaration" | "user_defined_type_definition"
+        ),
         Language::Python => {
             // Python doesn't have const, but we capture module-level assignments
             // We'll filter for UPPER_CASE names in extract_constant
             kind == "expression_statement"
         }
         Language::Kotlin => kind == "property_declaration",
+        // Script-level `const`, named `enum` and `signal` declarations.
+        Language::Gdscript => matches!(
+            kind,
+            "const_statement" | "enum_definition" | "signal_statement"
+        ),
         Language::Swift => matches!(kind, "constant_declaration" | "variable_declaration"),
         Language::Scala => matches!(kind, "val_definition" | "var_definition"),
         Language::Php => kind == "const_declaration",
         Language::Elixir => kind == "unary_operator", // @ for module attributes
-        Language::Haskell => kind == "function",      // top-level bindings
+        Language::Gleam => kind == "constant",
+        Language::Haskell => kind == "function", // top-level bindings
         Language::Ocaml => kind == "let_binding",
         Language::R => kind == "left_assignment" || kind == "equals_assignment", // x <- value or x = value
         Language::Zig => kind == "VarDecl", // const/var declarations
         Language::Julia => kind == "const_statement",
+        // File-scope `define macros, parameters and typedefs (header files).
+        Language::Verilog => matches!(
+            kind,
+            "text_macro_definition"
+                | "local_parameter_declaration"
+                | "parameter_declaration"
+                | "type_declaration"
+        ),
         Language::Sql => false, // SQL doesn't have constants in this sense
         // CSS single-line at-rules: @import / @charset / @namespace. They
         // don't open a block but their text is searchable on its own.
@@ -244,7 +416,8 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
             })
         }),
         Language::Go => node.child_by_field_name("type"),
-        Language::Cpp => {
+        Language::Solidity => node.child_by_field_name("body"),
+        Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
             // Look for field_declaration_list in class_specifier
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "field_declaration_list" {
@@ -254,11 +427,42 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
             None
         }
         Language::Ruby => node.child_by_field_name("body"),
+        Language::ObjectiveC => match node.kind() {
+            // Methods sit directly in the @implementation.
+            "class_implementation" => Some(node),
+            _ => node
+                .children(&mut node.walk())
+                .find(|child| child.kind() == "field_declaration_list"),
+        },
+        // classdef `methods` blocks and Fortran `contains` sections sit
+        // directly in the class / program unit.
+        Language::Matlab | Language::Fortran => Some(node),
+        Language::Perl => node
+            .children(&mut node.walk())
+            .find(|c| c.kind() == "block"),
+        // D aggregates keep their members in `aggregate_body`; a template's
+        // declarations are direct children of the template itself.
+        Language::D => node
+            .children(&mut node.walk())
+            .find(|c| c.kind() == "aggregate_body")
+            .or_else(|| {
+                matches!(
+                    node.kind(),
+                    "template_declaration" | "mixin_template_declaration"
+                )
+                .then_some(node)
+            }),
+        // Odin types carry no methods; Pascal methods are defined in the
+        // `implementation` section, outside the class declaration.
+        Language::Odin | Language::Pascal => None,
         // Additional languages
         Language::Kotlin | Language::Swift | Language::Scala | Language::Php => {
             node.child_by_field_name("body")
         }
         Language::Elixir => node.child_by_field_name("body"),
+        // Gleam types hold constructors, not functions.
+        Language::Gleam => None,
+        Language::Gdscript => node.child_by_field_name("body"),
         Language::Haskell | Language::Ocaml => node.child_by_field_name("body"),
         Language::R => None, // R doesn't have class bodies
         Language::Zig => node.child_by_field_name("body"),
@@ -292,6 +496,8 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
         // Groovy classes expose a `body` field (class_body); recursing into it
         // lets each method_declaration become its own searchable unit.
         Language::Groovy => node.child_by_field_name("body"),
+        // Design units hold their items directly, after the header.
+        Language::Verilog | Language::Vhdl => Some(node),
         // Proto messages/services, GraphQL definitions, Starlark targets, INI
         // sections, and PowerShell classes are indexed as single folded units
         // (no per-member recursion), like Terraform blocks.
@@ -411,6 +617,57 @@ fn get_dart_node_name(node: Node, bytes: &[u8]) -> Option<String> {
     }
 }
 
+/// D declarations name themselves with a direct `identifier` child (the
+/// grammar has no `name` field); special members are named by their keyword.
+fn get_d_node_name(node: Node, bytes: &[u8]) -> Option<String> {
+    let fixed = match node.kind() {
+        "constructor" => Some("this"),
+        "destructor" => Some("~this"),
+        "postblit" => Some("this(this)"),
+        "unittest_declaration" => Some("unittest"),
+        _ => None,
+    };
+    if let Some(fixed) = fixed {
+        return Some(fixed.to_string());
+    }
+    node.children(&mut node.walk())
+        .find(|c| c.kind() == "identifier")
+        .and_then(|n| n.utf8_text(bytes).ok())
+        .map(str::to_string)
+}
+
+/// Pascal routine definitions are named in their header (`declProc`), where a
+/// method's name is qualified by its class (`TShape.Create` → `Create`; the
+/// class becomes the parent in `determine_function_type`). Type declarations
+/// are named only when they declare a class, record, interface, helper or
+/// enum, and generic parameters are dropped (`TList<T>` → `TList`).
+fn get_pascal_node_name(node: Node, bytes: &[u8]) -> Option<String> {
+    let name = match node.kind() {
+        "defProc" => node
+            .child_by_field_name("header")?
+            .child_by_field_name("name")?,
+        "declType" => {
+            let mut ty = node.child_by_field_name("type")?;
+            // Enums come wrapped: `type > declEnum`.
+            if ty.kind() == "type" {
+                ty = ty.named_child(0)?;
+            }
+            if !matches!(
+                ty.kind(),
+                "declClass" | "declIntf" | "declHelper" | "declEnum"
+            ) {
+                return None;
+            }
+            node.child_by_field_name("name")?
+        }
+        _ => node.child_by_field_name("name")?,
+    };
+    let text = name.utf8_text(bytes).ok()?;
+    let short = text.rsplit('.').next().unwrap_or(text);
+    let short = short.split('<').next().unwrap_or(short).trim();
+    (!short.is_empty()).then(|| short.to_string())
+}
+
 /// Get the name of a node (function, class, etc.).
 pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String> {
     let name_node = match lang {
@@ -424,7 +681,71 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("property")),
         Language::Dart => return get_dart_node_name(node, bytes),
-        Language::C | Language::Cpp => {
+        Language::Verilog => return super::hdl::verilog_name(node, bytes),
+        Language::Vhdl => return super::hdl::vhdl_name(node, bytes),
+        Language::Glsl | Language::Hlsl
+            if matches!(node.kind(), "declaration" | "cbuffer_specifier")
+                || super::shader::is_hlsl_buffer(node, bytes) =>
+        {
+            return super::shader::block_name(node, bytes, lang);
+        }
+        Language::ObjectiveC => match node.kind() {
+            "method_definition" | "method_declaration" => {
+                return super::objc::method_selector(node, bytes);
+            }
+            "class_interface" | "class_implementation" | "protocol_declaration" => {
+                return super::objc::container_name(node, bytes);
+            }
+            "function_definition" => return super::objc::declaration_name(node, bytes),
+            _ => return get_node_name(node, bytes, Language::C),
+        },
+        Language::Fortran => return super::fortran::unit_name(node, bytes),
+        // A statement-form `package Name;` is no container of its own (see
+        // perl::extra_units); only block packages and classes are named here.
+        Language::Perl
+            if matches!(node.kind(), "package_statement" | "class_statement")
+                && !node.children(&mut node.walk()).any(|c| c.kind() == "block") =>
+        {
+            None
+        }
+        Language::Perl => node.child_by_field_name("name"),
+        Language::D => return get_d_node_name(node, bytes),
+        Language::Odin => node
+            .children(&mut node.walk())
+            .find(|c| c.kind() == "identifier"),
+        Language::Pascal => return get_pascal_node_name(node, bytes),
+        // Constructors, `receive()` and `fallback()` have no name field: the
+        // keyword is the name.
+        Language::Solidity => match node.kind() {
+            "constructor_definition" => return Some("constructor".to_string()),
+            "fallback_receive_definition" => {
+                return node
+                    .children(&mut node.walk())
+                    .map(|c| c.kind())
+                    .find(|k| matches!(*k, "receive" | "fallback"))
+                    .map(str::to_string)
+                    .or_else(|| Some("fallback".to_string()));
+            }
+            _ => node.child_by_field_name("name"),
+        },
+        Language::Gdscript => {
+            if node.kind() == "constructor_definition" {
+                return Some("_init".to_string());
+            }
+            node.child_by_field_name("name")
+        }
+        Language::Luau if node.kind() == "function_call" => {
+            return get_luau_test_block_name(node, bytes);
+        }
+        // `type Callback<T> = ...` names a generic_type: keep the identifier.
+        Language::Luau => node.child_by_field_name("name").map(|n| {
+            if n.kind() == "generic_type" {
+                n.named_child(0).unwrap_or(n)
+            } else {
+                n
+            }
+        }),
+        Language::C | Language::Cpp | Language::Cuda | Language::Glsl | Language::Hlsl => {
             // For classes/structs/unions/enums, look for name field or type_identifier
             if matches!(
                 node.kind(),
@@ -457,6 +778,7 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
         | Language::R
         | Language::Zig
         | Language::Julia
+        | Language::Matlab
         | Language::Sql
         | Language::Shell
         | Language::Groovy => node.child_by_field_name("name"),
@@ -465,6 +787,13 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             node.child_by_field_name("target")
                 .or_else(|| node.child_by_field_name("name"))
         }
+        // Functions and constants carry a `name` field; types keep it under
+        // `type_name` (`pub type User(a)` -> `User`).
+        Language::Gleam => node.child_by_field_name("name").or_else(|| {
+            node.children(&mut node.walk())
+                .find(|c| c.kind() == "type_name")
+                .and_then(|t| t.child_by_field_name("name"))
+        }),
         Language::Ocaml => node
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("pattern")),
@@ -763,6 +1092,24 @@ pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: 
         return 0;
     }
 
+    // HDL and shader comment blocks are only documentation when they touch
+    // the declaration (see doc_comment).
+    match lang {
+        Language::Hlsl => {
+            let start = super::shader::attribute_lines_start(node_start_line, lines);
+            return comment_block_above(start, lines, SLASHES).map_or(start, |(start, _)| start);
+        }
+        Language::Verilog | Language::Glsl => {
+            return comment_block_above(node_start_line, lines, SLASHES)
+                .map_or(node_start_line, |(start, _)| start);
+        }
+        Language::Vhdl => {
+            return comment_block_above(node_start_line, lines, DASHES)
+                .map_or(node_start_line, |(start, _)| start);
+        }
+        _ => {}
+    }
+
     let mut start = node_start_line;
 
     // Look backwards for attribute/decorator/doc comment lines
@@ -785,11 +1132,26 @@ pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: 
             Language::Java | Language::Kotlin | Language::Scala => line.starts_with('@'),
             // Dart: metadata annotations and /// documentation comments
             Language::Dart => line.starts_with('@') || line.starts_with("///"),
+            // Gleam: `@external(...)` / `@deprecated(...)` attributes and `///`
+            // doc comments (`////` is the module doc, not the item's).
+            Language::Gleam => {
+                line.starts_with('@') || (line.starts_with("///") && !line.starts_with("////"))
+            }
+            // GDScript: `@rpc` / `@export` annotation lines and `##` doc comments
+            Language::Gdscript => is_gdscript_annotation_line(line) || line.starts_with("##"),
             // C#: [Attribute]
             Language::CSharp => line.starts_with('[') && line.ends_with(']'),
             // TypeScript/JavaScript/Vue/Svelte: @decorator (when using decorators), or /** JSDoc */
             Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => {
                 line.starts_with('@') || line.starts_with("/**") || line.starts_with("*")
+            }
+            // Objective-C: /// and /** */ doc comments above a method or class
+            Language::ObjectiveC => {
+                line.starts_with("///") || line.starts_with("/*") || line.starts_with('*')
+            }
+            // Solidity: NatSpec /// lines and /** */ blocks
+            Language::Solidity => {
+                line.starts_with("///") || line.starts_with("/**") || line.starts_with('*')
             }
             // Go: // doc comments (by convention, comments immediately preceding a declaration)
             Language::Go => line.starts_with("//"),
@@ -812,4 +1174,210 @@ pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: 
     }
 
     start
+}
+
+/// Comment node kinds of the grammars whose doc comments are read from the
+/// tree by [`leading_doc_comments`] rather than line by line.
+fn is_doc_comment_kind(kind: &str, lang: Language) -> bool {
+    match lang {
+        Language::Perl => matches!(kind, "comment" | "pod"),
+        Language::Odin => matches!(kind, "comment" | "block_comment"),
+        Language::D | Language::Pascal => kind == "comment",
+        _ => false,
+    }
+}
+
+/// The comments documenting a declaration, in source order: the run of
+/// comment siblings directly above it (`///` / `/** */` / `/++ +/` in D, `//`
+/// in Odin, `//` / `{ }` / `(* *)` in Pascal, `#` lines in Perl). A blank line
+/// or a trailing comment of the previous statement ends the run. Perl POD
+/// blocks are separated from the sub they document by a blank line, so one is
+/// taken across blank lines, but only when it names the sub (`=head2 name`,
+/// `=item name`): a module's leading `=head1 DESCRIPTION` is not the doc of
+/// whichever sub happens to follow it.
+///
+/// Comments are siblings of the outermost node starting on the declaration's
+/// line, so `private void f()` (D attributes wrap the function) still finds
+/// the comment above `private`.
+pub fn leading_doc_comments<'a>(
+    node: Node<'a>,
+    bytes: &[u8],
+    lang: Language,
+    name: &str,
+) -> Vec<Node<'a>> {
+    let mut anchor = node;
+    while let Some(parent) = anchor.parent() {
+        if parent.parent().is_none()
+            || parent.start_position().row != anchor.start_position().row
+            || is_doc_comment_kind(parent.kind(), lang)
+        {
+            break;
+        }
+        anchor = parent;
+    }
+
+    let mut comments = Vec::new();
+    let mut top_row = anchor.start_position().row;
+    let mut prev = anchor.prev_sibling();
+    while let Some(comment) = prev {
+        if !is_doc_comment_kind(comment.kind(), lang) {
+            break;
+        }
+        // tree-sitter puts a node's end at the start of the next row when the
+        // node swallows its trailing newline (POD does).
+        let end = comment.end_position();
+        let end_row = if end.column == 0 && end.row > comment.start_position().row {
+            end.row - 1
+        } else {
+            end.row
+        };
+        if comment.kind() == "pod" {
+            let text = comment.utf8_text(bytes).unwrap_or("");
+            if end_row + 3 < top_row || !pod_documents(text, name) {
+                break;
+            }
+        } else if end_row + 1 < top_row {
+            break;
+        }
+        // A comment sharing its first row with the previous statement trails
+        // that statement (`x = 1; // note`); it documents nothing below it.
+        if let Some(before) = comment.prev_sibling() {
+            if before.end_position().row == comment.start_position().row
+                && !is_doc_comment_kind(before.kind(), lang)
+            {
+                break;
+            }
+        }
+        comments.push(comment);
+        top_row = comment.start_position().row;
+        prev = comment.prev_sibling();
+    }
+    comments.reverse();
+    comments
+}
+
+/// True if a POD block has a `=head` / `=item` heading naming `name`.
+fn pod_documents(pod: &str, name: &str) -> bool {
+    pod.lines().any(|line| {
+        let Some(rest) = line.strip_prefix('=') else {
+            return false;
+        };
+        let mut words = rest.split_whitespace();
+        let directive = words.next().unwrap_or("");
+        (directive.starts_with("head") || directive == "item")
+            && words.any(|w| {
+                w.trim_start_matches(['$', '@', '%', '*', '&'])
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+                    .any(|part| part == name || part.rsplit("::").next() == Some(name))
+            })
+    })
+}
+
+/// Plain text of doc comments: comment markers stripped, POD commands
+/// reduced to their text, everything joined on one line.
+pub fn doc_comment_text(comments: &[Node], bytes: &[u8]) -> Option<String> {
+    let mut words: Vec<&str> = Vec::new();
+    for comment in comments {
+        let text = comment.utf8_text(bytes).unwrap_or("");
+        for line in text.lines() {
+            let mut line = line.trim();
+            if comment.kind() == "pod" {
+                let Some(rest) = line.strip_prefix('=') else {
+                    if !line.is_empty() {
+                        words.push(line);
+                    }
+                    continue;
+                };
+                let mut parts = rest.splitn(2, char::is_whitespace);
+                let directive = parts.next().unwrap_or("");
+                if !(directive.starts_with("head") || directive == "item") {
+                    continue;
+                }
+                line = parts.next().unwrap_or("");
+            } else {
+                for prefix in ["///", "//", "/**", "/++", "/*", "/+", "(*", "#", "{"] {
+                    if let Some(rest) = line.strip_prefix(prefix) {
+                        line = rest;
+                        break;
+                    }
+                }
+                for suffix in ["*/", "+/", "*)", "}"] {
+                    if let Some(rest) = line.strip_suffix(suffix) {
+                        line = rest;
+                        break;
+                    }
+                }
+                line = line.trim_start_matches(['*', '+', '#']);
+            }
+            let line = line.trim();
+            if !line.is_empty() {
+                words.push(line);
+            }
+        }
+    }
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
+/// Name of a Luau test block: a multi-line call whose first argument is a
+/// string and which passes an anonymous function, as in jest-roblox's
+/// `describe("Some", function() ... end)` or TestEZ-style
+/// `ctx:Test("creates an option", function() ... end)` →
+/// `Test "creates an option"`. Spec files are made of nothing else, so
+/// without this they would only produce raw code.
+fn get_luau_test_block_name(node: Node, bytes: &[u8]) -> Option<String> {
+    if node.end_position().row < node.start_position().row + 2 {
+        return None;
+    }
+    let args = node.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    let mut named = args.named_children(&mut cursor);
+    let first = named.next()?;
+    if first.kind() != "string" {
+        return None;
+    }
+    if !named.any(|a| a.kind() == "function_definition") {
+        return None;
+    }
+    let callee = node.child_by_field_name("name")?.utf8_text(bytes).ok()?;
+    #[allow(clippy::double_ended_iterator_last)]
+    let callee = callee.rsplit([':', '.']).next().unwrap_or(callee).trim();
+    let label = first.utf8_text(bytes).ok()?.trim();
+    if callee.is_empty() || label.len() > 200 || label.contains('\n') {
+        return None;
+    }
+    Some(format!("{callee} {label}"))
+}
+
+/// A GDScript line holding only annotations (`@rpc("any_peer")`, `@tool`),
+/// as opposed to an annotated declaration (`@export var speed := 1.0`).
+fn is_gdscript_annotation_line(line: &str) -> bool {
+    let mut rest = line.trim();
+    if !rest.starts_with('@') {
+        return false;
+    }
+    while let Some(after) = rest.strip_prefix('@') {
+        let name_len = after
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(after.len());
+        rest = after[name_len..].trim_start();
+        if rest.starts_with('(') {
+            let mut depth = 0usize;
+            let mut end = rest.len();
+            for (i, c) in rest.char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            rest = rest[end..].trim_start();
+        }
+    }
+    rest.is_empty()
 }

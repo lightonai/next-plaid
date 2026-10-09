@@ -700,59 +700,93 @@ ColGREP automatically detects and repairs index/metadata desync from interrupted
 
 ## Supported Languages
 
-### Code (35 languages, tree-sitter AST parsing)
+### Code (65 languages, split into functions, classes and definitions)
 
-| Language         | Extensions                                              |
-| ---------------- | ------------------------------------------------------- |
-| Python           | `.py`, `.pyi`                                           |
-| TypeScript       | `.ts`, `.tsx`, `.mts`, `.cts`                           |
-| JavaScript       | `.js`, `.jsx`, `.mjs`, `.cjs`                           |
-| Go               | `.go`                                                   |
-| Rust             | `.rs`                                                   |
-| Java             | `.java`                                                 |
-| C                | `.c`, `.h`                                              |
-| C++              | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`                   |
-| C#               | `.cs`                                                   |
-| Dart             | `.dart`                                                 |
-| Ruby             | `.rb`, `.rake`, `.gemspec`, `Rakefile`, `Gemfile`, `Vagrantfile` |
-| Kotlin           | `.kt`, `.kts`                                           |
-| Swift            | `.swift`                                                |
-| Scala            | `.scala`, `.sc`, `.sbt`                                 |
-| PHP              | `.php`                                                  |
-| Lua              | `.lua`                                                  |
-| Elixir           | `.ex`, `.exs`                                           |
-| Haskell          | `.hs`                                                   |
-| OCaml            | `.ml`, `.mli`                                           |
-| R                | `.r`, `.rmd`                                            |
-| Zig              | `.zig`                                                  |
-| Julia            | `.jl`                                                   |
-| SQL              | `.sql`                                                  |
-| Vue              | `.vue`                                                  |
-| Svelte           | `.svelte`                                               |
-| HTML             | `.html`, `.htm`                                         |
-| Terraform / HCL  | `.tf`, `.tfvars`, `.hcl`                                |
-| Shell            | `.sh`, `.bash`, `.zsh`                                  |
-| PowerShell       | `.ps1`, `.psm1`, `.psd1`                                |
-| Protocol Buffers | `.proto`                                                |
-| GraphQL          | `.graphql`, `.gql`                                      |
-| Starlark / Bazel | `.bzl`, `.star`, `BUILD`, `WORKSPACE`, `MODULE.bazel`   |
-| CMake            | `.cmake`, `CMakeLists.txt`                              |
-| Groovy           | `.groovy`, `.gradle`, `Jenkinsfile`                     |
-| INI              | `.ini`, `.cfg`, `.properties`, `.service`, `.timer`, `.socket` |
+| Language | Extensions |
+|---|---|
+| Python | `.py`, `.pyi`; Cython `.pyx`, `.pxd`, `.pxi` |
+| Jupyter notebooks | `.ipynb` (code cells in the kernel's language, markdown cells as text; outputs skipped) |
+| TypeScript | `.ts`, `.tsx`, `.mts`, `.cts` |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |
+| Go | `.go` |
+| Rust | `.rs` |
+| Java | `.java` |
+| C | `.c`, `.h`; OpenCL `.cl` kernels |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx`, `.hh`, `.h++`, `.c++`, `.inl`, `.ipp`, `.tpp`, `.txx`; Arduino `.ino`; Metal `.metal` |
+| CUDA / HIP | `.cu`, `.cuh`, `.hip` |
+| Objective-C | `.m`, `.mm` |
+| C# | `.cs` |
+| F# | `.fs`, `.fsi`, `.fsx` |
+| Dart | `.dart` |
+| Ruby | `.rb`, `.rake`, `.gemspec`, `Rakefile`, `Gemfile`, `Vagrantfile` |
+| Kotlin | `.kt`, `.kts` |
+| Swift | `.swift` |
+| Scala | `.scala`, `.sc`, `.sbt` |
+| PHP | `.php` |
+| Perl | `.pl`, `.pm`, `.t` |
+| Lua | `.lua` |
+| Luau | `.luau` |
+| Elixir | `.ex`, `.exs` |
+| Erlang | `.erl`, `.hrl`, `.app.src`, `rebar.config` |
+| Gleam | `.gleam` |
+| Haskell | `.hs` |
+| OCaml | `.ml`, `.mli` |
+| Elm | `.elm` |
+| Clojure | `.clj`, `.cljs`, `.cljc`, `.edn` |
+| Scheme | `.scm`, `.ss`, `.sld`, `.sls` |
+| Racket | `.rkt`, `.rktl` |
+| Common Lisp | `.lisp`, `.lsp`, `.asd`, `.cl` |
+| R | `.r`, `.rmd` |
+| Julia | `.jl` |
+| MATLAB | `.m` |
+| Fortran | `.f`, `.for`, `.ftn`, `.f77`, `.f90`, `.f95`, `.f03`, `.f08` |
+| Zig | `.zig` |
+| D | `.d`, `.di` |
+| Odin | `.odin` |
+| Pascal / Delphi | `.pas`, `.pp`, `.dpr`, `.lpr` |
+| Assembly | `.asm`, `.s`, `.S`, `.nasm` |
+| GLSL | `.glsl`, `.vert`, `.frag`, `.geom`, `.comp`, `.tesc`, `.tese`, `.rgen`, `.rchit`, `.rmiss`, `.rahit`, `.rint`, `.rcall` |
+| HLSL | `.hlsl`, `.hlsli`, `.fx`, `.fxh` |
+| Verilog / SystemVerilog | `.v`, `.vh`, `.sv`, `.svh` |
+| VHDL | `.vhd`, `.vhdl` |
+| Solidity | `.sol` |
+| GDScript | `.gd` |
+| SQL | `.sql` |
+| Vue | `.vue` |
+| Svelte | `.svelte` |
+| HTML | `.html`, `.htm` |
+| QML | `.qml` |
+| CSS | `.css` |
+| SCSS / Sass | `.scss`, `.sass` |
+| Less | `.less` |
+| Nix | `.nix` |
+| Terraform / HCL | `.tf`, `.tfvars`, `.hcl` |
+| Shell | `.sh`, `.bash`, `.zsh` |
+| PowerShell | `.ps1`, `.psm1`, `.psd1` |
+| Protocol Buffers | `.proto` |
+| GraphQL | `.graphql`, `.gql` |
+| Starlark / Bazel | `.bzl`, `.star`, `BUILD`, `WORKSPACE`, `MODULE.bazel` |
+| CMake | `.cmake`, `CMakeLists.txt` |
+| Groovy | `.groovy`, `.gradle`, `Jenkinsfile` |
+| INI | `.ini`, `.cfg`, `.properties`, `.service`, `.timer`, `.socket` |
 
-### Text & Config (9 formats, document-level extraction)
+A few extensions are shared by unrelated languages; colgrep reads the start of the file to tell them apart: `.m` (Objective-C or MATLAB), `.cl` (Common Lisp or OpenCL), `.v` (Verilog or Coq, indexed as text), `.sls` (Scheme or SaltStack YAML), `.pp` (Pascal or Puppet, skipped), and `.d` (D, or a compiler-generated dependency file, skipped).
 
-| Format     | Extensions             |
-| ---------- | ---------------------- |
-| Markdown   | `.md`                  |
-| Plain text | `.txt`, `.rst`         |
-| AsciiDoc   | `.adoc`                |
-| Org        | `.org`                 |
-| YAML       | `.yaml`, `.yml`        |
-| TOML       | `.toml`                |
-| JSON       | `.json`                |
-| Dockerfile | `Dockerfile`           |
-| Makefile   | `Makefile`, `.mk`      |
+### Text & Config (11 formats, document-level extraction)
+
+| Format | Extensions |
+|---|---|
+| Markdown | `.md`, `.mdx` |
+| Plain text | `.txt`, `.rst` |
+| AsciiDoc | `.adoc` |
+| Org | `.org` |
+| LaTeX | `.tex`, `.ltx`, `.sty`, `.cls`, `.bib` |
+| XML | `.xml`, `.xsd`, `.xsl`, `.xslt`, `.xaml`, `.axaml`, `.csproj`, `.vbproj`, `.fsproj`, `.vcxproj`, `.props`, `.targets`, `.nuspec`, `.plist` |
+| YAML | `.yaml`, `.yml` |
+| TOML | `.toml` |
+| JSON | `.json`, `.jsonc`, `.json5` |
+| Dockerfile | `Dockerfile` |
+| Makefile | `Makefile`, `.mk` |
 
 ---
 

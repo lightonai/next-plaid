@@ -4,7 +4,10 @@
 //! allowing you to extract code units (functions, classes, etc.) from
 //! source files across multiple programming languages.
 
-use colgrep::{build_embedding_text, detect_language, extract_units, CodeUnit, Language, UnitType};
+use colgrep::{
+    build_embedding_text, detect_language, detect_language_with_content, extract_units, CodeUnit,
+    Language, UnitType,
+};
 use pyo3::prelude::*;
 use std::path::Path;
 
@@ -344,7 +347,9 @@ fn merge_units(units: Vec<PyCodeUnit>, filename: &str) -> PyCodeUnit {
 fn parse_code(code: &str, filename: &str, merge: bool) -> PyResult<Vec<PyCodeUnit>> {
     let path = Path::new(filename);
 
-    let lang = detect_language(path).ok_or_else(|| {
+    // The code is in hand: extensions shared by several languages (`.m`) are
+    // settled from it rather than from a file that may not exist.
+    let lang = detect_language_with_content(path, code).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!(
             "Could not detect language for file: {}",
             filename
@@ -383,6 +388,36 @@ fn parse_code(code: &str, filename: &str, merge: bool) -> PyResult<Vec<PyCodeUni
 /// - java
 /// - c
 /// - cpp, c++
+/// - cuda, cu
+/// - objectivec, objc, objective-c
+/// - matlab
+/// - fortran, f90
+/// - perl, pl
+/// - d, dlang
+/// - pascal, delphi
+/// - odin
+/// - assembly, asm
+/// - fsharp, f#
+/// - erlang, erl
+/// - gleam
+/// - elm
+/// - clojure, clj
+/// - scheme, scm
+/// - racket, rkt
+/// - commonlisp, lisp
+/// - nix
+/// - solidity, sol
+/// - verilog, systemverilog, sv
+/// - vhdl
+/// - glsl
+/// - hlsl
+/// - gdscript, gd
+/// - luau
+/// - scss, sass
+/// - less
+/// - notebook, ipynb, jupyter
+/// - xml
+/// - latex, tex
 /// - ruby, rb
 /// - csharp, c#, cs
 /// - kotlin, kt
@@ -482,6 +517,7 @@ fn supported_languages() -> Vec<&'static str> {
         "java",
         "c",
         "cpp",
+        "cuda",
         "ruby",
         "csharp",
         "kotlin",
@@ -504,6 +540,35 @@ fn supported_languages() -> Vec<&'static str> {
         "toml",
         "json",
         "shell",
+        "objectivec",
+        "matlab",
+        "fortran",
+        "perl",
+        "d",
+        "pascal",
+        "odin",
+        "assembly",
+        "fsharp",
+        "erlang",
+        "gleam",
+        "elm",
+        "clojure",
+        "scheme",
+        "racket",
+        "commonlisp",
+        "nix",
+        "solidity",
+        "verilog",
+        "vhdl",
+        "glsl",
+        "hlsl",
+        "gdscript",
+        "luau",
+        "scss",
+        "less",
+        "notebook",
+        "xml",
+        "latex",
     ]
 }
 

@@ -12,18 +12,125 @@
 
 // Submodules
 mod analysis;
+mod asm;
 mod ast;
+mod builder;
 mod call_graph;
+mod clojure;
+mod cython;
+mod doc_comment;
+mod elm;
+mod erlang;
 mod extract;
+mod fortran;
+mod fsharp;
+mod hdl;
 mod html;
 mod language;
+mod latex;
+mod lisp;
+mod matlab;
+mod metal;
+mod nix;
+mod notebook;
+mod objc;
+mod odin;
+mod pascal;
+mod perl;
 mod qml;
+mod shader;
+mod style;
 mod svelte;
 mod text;
 pub mod types;
 mod vue;
+mod xml;
 
 // New per-language tests
+/// A GDScript file is itself a class: `class_name Player` names it and
+/// `extends CharacterBody2D` gives its base. Its top-level functions are that
+/// class's methods, so they get the script class as their parent (when it is
+/// named) and the base class as `extends`, which tells the embedding what
+/// kind of node a `_physics_process` belongs to.
+fn attach_gdscript_script_class(root: Node, bytes: &[u8], units: &mut [CodeUnit]) {
+    let mut class_name = None;
+    let mut base = None;
+    for child in root.children(&mut root.walk()) {
+        match child.kind() {
+            "class_name_statement" => {
+                class_name = child
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(bytes).ok())
+                    .map(str::to_string);
+                // `class_name Foo extends Bar` on one line.
+                if let Some(ext) = child.child_by_field_name("extends") {
+                    base = analysis::gdscript_extends_target(ext, bytes);
+                }
+            }
+            "extends_statement" => base = analysis::gdscript_extends_target(child, bytes),
+            _ => {}
+        }
+    }
+    for unit in units.iter_mut() {
+        if unit.unit_type != UnitType::Function || unit.parent_class.is_some() {
+            continue;
+        }
+        if let Some(class_name) = &class_name {
+            unit.unit_type = UnitType::Method;
+            unit.parent_class = Some(class_name.clone());
+            unit.qualified_name = format!("{}::{}::{}", unit.file.display(), class_name, unit.name);
+        }
+        if unit.extends.is_none() {
+            unit.extends = base.clone();
+        }
+    }
+}
+
+/// Replace raw-code units longer than 60 lines / 4000 characters with chunks
+/// cut at blank lines.
+fn split_long_raw_units(
+    units: &mut Vec<CodeUnit>,
+    path: &Path,
+    lines: &[&str],
+    lang: Language,
+    file_imports: &[String],
+) {
+    const MAX_LINES: usize = 60;
+    const MAX_CHARS: usize = 4000;
+    let mut out = Vec::with_capacity(units.len());
+    for unit in units.drain(..) {
+        if unit.unit_type != UnitType::RawCode
+            || (unit.end_line + 1 - unit.line <= MAX_LINES && unit.code.len() <= MAX_CHARS)
+        {
+            out.push(unit);
+            continue;
+        }
+        for (s, e) in text::chunk_ranges(
+            lines,
+            unit.line - 1,
+            unit.end_line - 1,
+            MAX_LINES,
+            MAX_CHARS,
+        ) {
+            if let Some(chunk) =
+                extract::create_raw_code_unit(path, lines, s + 1, e + 1, lang, file_imports)
+            {
+                out.push(chunk);
+            }
+        }
+    }
+    *units = out;
+}
+
+/// A script- or class-level GDScript `var` with a `get:` / `set(value):` body.
+fn is_gdscript_property(node: Node) -> bool {
+    node.kind() == "variable_statement"
+        && node.child_by_field_name("setget").is_some()
+        && node
+            .parent()
+            .is_some_and(|p| matches!(p.kind(), "source" | "class_body"))
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -34,14 +141,13 @@ mod test_core;
 
 // Re-exports
 pub use call_graph::build_call_graph;
-pub use language::{detect_language, is_text_format};
+pub use language::{detect_language, detect_language_with_content, is_text_format};
 pub use types::{CodeUnit, Language, UnitType};
 
 // Internal imports
 use analysis::extract_file_imports;
 use ast::{find_class_body, get_node_name, is_class_node, is_constant_node, is_function_node};
 use extract::{extract_class, extract_constant, extract_function, fill_raw_code_gaps};
-use language::get_tree_sitter_language;
 use text::extract_text_units;
 
 /// Abstract type-contract nodes (interfaces, traits, protocols, type aliases,
@@ -65,8 +171,22 @@ fn is_abstract_type_container(kind: &str, lang: Language) -> bool {
             kind,
             "interface_declaration" | "trait_declaration" | "enum_declaration"
         ),
-        Language::Cpp => kind == "enum_specifier",
+        Language::Cpp | Language::Cuda => kind == "enum_specifier",
+        Language::Hlsl => kind == "enum_specifier",
+        Language::Verilog => kind == "interface_class_declaration",
+        Language::Vhdl => kind == "protected_type_declaration",
+        // @interface / @protocol hold declarations only; methods live in
+        // @implementation.
+        Language::ObjectiveC => matches!(
+            kind,
+            "class_interface" | "protocol_declaration" | "enum_specifier"
+        ),
+        // Interface blocks declare procedures defined elsewhere.
+        Language::Fortran => kind == "interface",
+        Language::D => matches!(kind, "interface_declaration" | "enum_declaration"),
+        Language::Solidity => matches!(kind, "interface_declaration" | "enum_declaration"),
         Language::Dart => kind == "type_alias",
+        Language::Luau => kind == "type_definition",
         _ => false,
     }
 }
@@ -115,6 +235,30 @@ pub(crate) fn max_recursion_depth() -> usize {
     })
 }
 
+/// Bytes of a tree covered by ERROR or MISSING nodes.
+fn tree_error_bytes(tree: &tree_sitter::Tree) -> usize {
+    let mut total = 0;
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.is_error() || node.is_missing() {
+            total += node.end_byte() - node.start_byte();
+            continue;
+        }
+        if node.has_error() {
+            stack.extend(node.children(&mut node.walk()));
+        }
+    }
+    total
+}
+/// Parse-time budget for a file (see `extract_units`). Real source parses in
+/// milliseconds; a grammar's error recovery can go quadratic on text it does
+/// not know (tree-sitter-luau on unknown syntax, tree-sitter-gleam on prose),
+/// and one such file must not stall the whole index.
+const PARSE_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+/// Luau hits that case on real code (`declare class` definition files), so it
+/// gives up sooner.
+const LUAU_PARSE_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Extract all code units from a file with 5-layer analysis.
 ///
 /// This is the main entry point for parsing source files. It:
@@ -132,6 +276,10 @@ pub(crate) fn max_recursion_depth() -> usize {
 /// # Returns
 /// A vector of `CodeUnit` instances covering the entire file
 pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit> {
+    // Extensions shared by unrelated languages (`.cl`, `.sls`) are settled
+    // from the content.
+    let lang = language::refine_language(path, source, lang);
+
     // Handle text formats separately (no tree-sitter parsing)
     if is_text_format(lang) {
         return extract_text_units(path, source, lang);
@@ -147,8 +295,30 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         return svelte::extract_svelte_units(path, source);
     }
 
+    // Assembly is split on its function directives, line by line (asm.rs).
+    if lang == Language::Assembly {
+        return asm::extract_asm_units(path, source);
+    }
+
     if lang == Language::Qml {
         return qml::extract_qml_units(path, source);
+    }
+
+    // S-expression languages are split by head symbol, not node kind
+    if matches!(
+        lang,
+        Language::Scheme | Language::Racket | Language::CommonLisp
+    ) {
+        return lisp::extract_lisp_units(path, source, lang);
+    }
+
+    if lang == Language::Nix {
+        return nix::extract_nix_units(path, source);
+    }
+
+    // SCSS / Sass / Less are split by a brace (or indentation) scanner
+    if matches!(lang, Language::Scss | Language::Less) {
+        return style::extract_style_units(path, source, lang);
     }
 
     // Handle HTML files with special extraction logic
@@ -156,39 +326,156 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         return html::extract_html_units(path, source);
     }
 
+    // `.v` is shared by Verilog and Coq/Rocq; Coq proofs are indexed as text
+    if lang == Language::Verilog && hdl::is_coq_source(source) {
+        return extract_text_units(path, source, Language::Text);
+    }
+
+    // Jupyter notebooks: cells are pulled out of the JSON and parsed one by one
+    if lang == Language::Notebook {
+        return notebook::extract_notebook_units(path, source);
+    }
+
     let mut parser = Parser::new();
     if parser
-        .set_language(&get_tree_sitter_language(lang))
+        .set_language(&language::get_tree_sitter_language(lang))
         .is_err()
     {
         return Vec::new();
     }
 
-    let tree = match parser.parse(source, None) {
+    // Some grammars only parse a normalized view of the source (Fortran
+    // fixed-form, Objective-C preprocessor branches, Gleam `assert`, Metal,
+    // Cython). The view keeps every
+    // line in place, so rows map 1:1 onto `lines`; node text is read from it.
+    let parse_source = parse_view(path, source, lang);
+    // Past its time budget a file is indexed as raw-code chunks instead.
+    let budget = if lang == Language::Luau {
+        LUAU_PARSE_BUDGET
+    } else {
+        PARSE_BUDGET
+    };
+    let started = std::time::Instant::now();
+    let mut over_budget = |_: &tree_sitter::ParseState| started.elapsed() > budget;
+    let options = tree_sitter::ParseOptions::new().progress_callback(&mut over_budget);
+    let parse_bytes = parse_source.as_bytes();
+    let tree = match parser.parse_with_options(
+        &mut |offset, _| parse_bytes.get(offset..).unwrap_or_default(),
+        None,
+        Some(options),
+    ) {
         Some(t) => t,
-        None => return Vec::new(),
+        None => {
+            let lines: Vec<&str> = source.lines().collect();
+            let mut units = Vec::new();
+            text::fill_gaps_chunked(&mut units, path, &lines, lang, 60, 4000);
+            return units;
+        }
+    };
+
+    // Pascal: retry a file that does not parse cleanly with its inactive
+    // `{$ELSE}` branches masked (see pascal.rs). Names are read from the
+    // parsed text; unit code always comes from the original lines.
+    let reparsed = (lang == Language::Pascal && tree.root_node().has_error())
+        .then(|| pascal::masked_source(source))
+        .flatten()
+        .and_then(|masked| Some((parser.parse(&masked, None)?, masked)))
+        .filter(|(masked_tree, _)| tree_error_bytes(masked_tree) < tree_error_bytes(&tree));
+    let (tree, parsed_source) = match reparsed {
+        Some((masked_tree, masked)) => (masked_tree, std::borrow::Cow::Owned(masked)),
+        None => (tree, parse_source),
     };
 
     let lines: Vec<&str> = source.lines().collect();
-    let bytes = source.as_bytes();
+    let bytes = parsed_source.as_bytes();
+
+    // Languages whose definitions are not single AST nodes of a known kind
+    // have a dedicated extractor (see builder.rs).
+    let dedicated = match lang {
+        Language::Erlang => Some(erlang::extract_erlang_units(
+            tree.root_node(),
+            path,
+            &lines,
+            bytes,
+        )),
+        Language::Fsharp => Some(fsharp::extract_fsharp_units(
+            tree.root_node(),
+            path,
+            &lines,
+            bytes,
+        )),
+        Language::Clojure => Some(clojure::extract_clojure_units(
+            tree.root_node(),
+            path,
+            &lines,
+            bytes,
+        )),
+        Language::Elm => Some(elm::extract_elm_units(
+            tree.root_node(),
+            path,
+            &lines,
+            bytes,
+        )),
+        _ => None,
+    };
+    if let Some((mut units, file_imports)) = dedicated {
+        fill_raw_code_gaps(&mut units, path, &lines, lang, &file_imports);
+        return units;
+    }
+
     let file_imports = extract_file_imports(tree.root_node(), bytes, lang);
 
     let max_depth = max_recursion_depth();
     let mut units = Vec::new();
     let mut depth_limit_hit = false;
-    extract_from_node(
-        tree.root_node(),
-        path,
-        &lines,
-        bytes,
-        lang,
-        &mut units,
-        None,
-        &file_imports,
-        0,
-        max_depth,
-        &mut depth_limit_hit,
-    );
+    // Pascal: when the file still has parse errors, parse it section by
+    // section instead, so one construct the grammar misses costs one
+    // section rather than every unit after it (see pascal.rs).
+    // Odin: the same when an unknown construct swallowed most of the file.
+    let sections = match lang {
+        Language::Pascal if tree.root_node().has_error() => pascal::sections(&parsed_source),
+        Language::Odin if tree_error_bytes(&tree) * 3 > bytes.len() => {
+            odin::sections(&parsed_source)
+        }
+        _ => Vec::new(),
+    };
+    if !sections.is_empty() {
+        for section in sections {
+            if parser.set_included_ranges(&[section]).is_err() {
+                continue;
+            }
+            let Some(section_tree) = parser.parse(parsed_source.as_bytes(), None) else {
+                continue;
+            };
+            extract_from_node(
+                section_tree.root_node(),
+                path,
+                &lines,
+                bytes,
+                lang,
+                &mut units,
+                None,
+                &file_imports,
+                0,
+                max_depth,
+                &mut depth_limit_hit,
+            );
+        }
+    } else {
+        extract_from_node(
+            tree.root_node(),
+            path,
+            &lines,
+            bytes,
+            lang,
+            &mut units,
+            None,
+            &file_imports,
+            0,
+            max_depth,
+            &mut depth_limit_hit,
+        );
+    }
 
     if depth_limit_hit {
         eprintln!(
@@ -199,10 +486,73 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         return Vec::new();
     }
 
+    if lang == Language::Perl {
+        perl::extra_units(
+            tree.root_node(),
+            path,
+            &lines,
+            bytes,
+            &file_imports,
+            &mut units,
+        );
+    }
+
+    if lang == Language::Gdscript {
+        attach_gdscript_script_class(tree.root_node(), bytes, &mut units);
+    }
+
     // Fill gaps with raw code units to achieve 100% file coverage
     fill_raw_code_gaps(&mut units, path, &lines, lang, &file_imports);
+    // Luau and GDScript scripts can be hundreds of lines of top-level
+    // statements: cut long raw-code gaps into bounded chunks.
+    if matches!(lang, Language::Luau | Language::Gdscript) {
+        split_long_raw_units(&mut units, path, &lines, lang, &file_imports);
+    }
 
     units
+}
+
+/// The text tree-sitter parses for `source`: the source itself, or a
+/// line-preserving rewrite for grammars that cannot parse it as written.
+pub(crate) fn parse_view<'a>(
+    path: &Path,
+    source: &'a str,
+    lang: Language,
+) -> std::borrow::Cow<'a, str> {
+    match lang {
+        Language::Fortran if fortran::is_fixed_form(path, source) => {
+            std::borrow::Cow::Owned(fortran::fixed_form_to_free_form(source))
+        }
+        Language::ObjectiveC => objc::parse_view(source),
+        Language::Gleam => std::borrow::Cow::Owned(gleam_assert_compat(source)),
+        // Metal is C++ once its MSL-only keywords and attributes are blanked;
+        // Cython reads as Python once its `cdef`/`cpdef` headers are rewritten.
+        Language::Cpp if metal::is_metal_path(path) => {
+            std::borrow::Cow::Owned(metal::mask_metal(source))
+        }
+        Language::Python if cython::is_cython_path(path) => {
+            std::borrow::Cow::Owned(cython::mask_cython(source))
+        }
+        _ => std::borrow::Cow::Borrowed(source),
+    }
+}
+
+/// Rewrite Gleam `assert <expr>` statements as `let _= <expr>` (same
+/// length), leaving `let assert` and everything else untouched.
+fn gleam_assert_compat(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    for line in source.split_inclusive('\n') {
+        let body = line.trim_start();
+        if let Some(rest) = body.strip_prefix("assert ") {
+            let indent = line.len() - body.len();
+            out.push_str(&line[..indent]);
+            out.push_str("let _= ");
+            out.push_str(rest);
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 /// Recursively extract code units from AST nodes.
@@ -233,7 +583,24 @@ fn extract_from_node(
         return;
     }
 
-    let kind = node.kind();
+    // A file-scope HLSL cbuffer parses as a function definition or a
+    // declaration; treat it as the resource block it is.
+    let kind = if lang == Language::Hlsl && shader::is_hlsl_buffer(node, bytes) {
+        "cbuffer_specifier"
+    } else {
+        node.kind()
+    };
+
+    // GDScript properties with `get:` / `set(value):` bodies hold code like a
+    // method does; a script can be hundreds of lines of them.
+    if lang == Language::Gdscript && is_gdscript_property(node) {
+        if let Some(unit) =
+            extract_function(node, path, lines, bytes, lang, parent_class, file_imports)
+        {
+            units.push(unit);
+        }
+        return;
+    }
 
     // Check if this is a function/method definition
     if is_function_node(kind, lang) {
@@ -305,7 +672,11 @@ fn extract_from_node(
         }
     }
     // Check if this is a top-level constant/static declaration (only at module level)
-    else if parent_class.is_none() && is_constant_node(kind, lang) {
+    else if parent_class.is_none()
+        && is_constant_node(kind, lang)
+        // GDScript: script-level declarations only, not a function's locals.
+        && (lang != Language::Gdscript || node.parent().is_some_and(|p| p.kind() == "source"))
+    {
         if let Some(unit) = extract_constant(node, path, lines, bytes, lang, file_imports) {
             units.push(unit);
         }

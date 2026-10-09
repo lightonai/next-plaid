@@ -9,6 +9,8 @@ pub fn extract_text_units(path: &Path, source: &str, lang: Language) -> Vec<Code
 
     match lang {
         Language::Markdown => extract_markdown_units(path, &lines),
+        Language::Latex => super::latex::extract_latex_units(path, source),
+        Language::Xml => super::xml::extract_xml_units(path, source),
         // All other text formats: treat as plain text documents
         _ => extract_plain_text_units(path, &lines, lang),
     }
@@ -59,7 +61,7 @@ fn extract_plain_text_units(path: &Path, lines: &[&str], lang: Language) -> Vec<
 }
 
 /// Create a CodeUnit for text content.
-fn create_text_unit(
+pub(super) fn create_text_unit(
     path: &Path,
     name: &str,
     line: usize,
@@ -119,5 +121,82 @@ fn create_text_unit(
         variables: Vec::new(),
         imports: Vec::new(),
         code,
+    }
+}
+
+/// Split the lines `start..=end` into chunks that respect the size caps,
+/// cutting at blank lines (paragraph breaks) where possible. Returns
+/// inclusive (start, end) ranges with surrounding blank lines trimmed.
+pub(super) fn chunk_ranges(
+    lines: &[&str],
+    start: usize,
+    end: usize,
+    max_lines: usize,
+    max_chars: usize,
+) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut s = start;
+    while s <= end {
+        while s <= end && lines[s].trim().is_empty() {
+            s += 1;
+        }
+        if s > end {
+            break;
+        }
+        let mut chars = 0usize;
+        let mut last_blank: Option<usize> = None;
+        let mut e = s;
+        let mut cut = end;
+        while e <= end {
+            chars += lines[e].len() + 1;
+            if lines[e].trim().is_empty() {
+                last_blank = Some(e);
+            }
+            if (e + 1 - s >= max_lines || chars >= max_chars) && e < end {
+                cut = match last_blank {
+                    Some(b) if b > s => b - 1,
+                    _ => e,
+                };
+                break;
+            }
+            e += 1;
+        }
+        let mut ce = cut;
+        while ce > s && lines[ce].trim().is_empty() {
+            ce -= 1;
+        }
+        ranges.push((s, ce));
+        s = cut + 1;
+    }
+    ranges
+}
+
+/// Cover every line not claimed by a unit with raw-code units, like
+/// [`fill_raw_code_gaps`](super::extract::fill_raw_code_gaps), but cut a long
+/// gap into chunks of at most `max_lines` lines / `max_chars` characters so
+/// a file of thousands of loose declarations never becomes one giant unit.
+pub(super) fn fill_gaps_chunked(
+    units: &mut Vec<CodeUnit>,
+    path: &Path,
+    lines: &[&str],
+    lang: Language,
+    max_lines: usize,
+    max_chars: usize,
+) {
+    let before = units.len();
+    super::extract::fill_raw_code_gaps(units, path, lines, lang, &[]);
+    let gaps: Vec<CodeUnit> = units.drain(before..).collect();
+    for gap in gaps {
+        if gap.end_line + 1 - gap.line <= max_lines && gap.code.len() <= max_chars {
+            units.push(gap);
+            continue;
+        }
+        for (s, e) in chunk_ranges(lines, gap.line - 1, gap.end_line - 1, max_lines, max_chars) {
+            if let Some(unit) =
+                super::extract::create_raw_code_unit(path, lines, s + 1, e + 1, lang, &[])
+            {
+                units.push(unit);
+            }
+        }
     }
 }

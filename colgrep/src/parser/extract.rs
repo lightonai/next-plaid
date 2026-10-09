@@ -4,7 +4,9 @@ use super::analysis::{
     extract_control_flow, extract_docstring, extract_function_calls, extract_parameters,
     extract_parent_class, extract_return_type, extract_used_modules, extract_variables,
 };
-use super::ast::{find_start_with_attributes, get_node_name};
+use super::ast::{
+    doc_comment_text, find_start_with_attributes, get_node_name, leading_doc_comments,
+};
 use super::types::{CodeUnit, Language, UnitType};
 use std::path::Path;
 use tree_sitter::Node;
@@ -21,6 +23,18 @@ fn dart_function_body(node: Node) -> Option<Node> {
             .filter(|sibling| sibling.kind() == "function_body")
     } else {
         None
+    }
+}
+
+/// Last row holding text of `node`. A node that ends with its line break
+/// (Fortran statements, for one) ends at column 0 of the next row; that row
+/// is not part of it.
+fn last_row(node: Node) -> usize {
+    let end = node.end_position();
+    if end.column == 0 && end.row > node.start_position().row {
+        end.row - 1
+    } else {
+        end.row
     }
 }
 
@@ -51,13 +65,14 @@ pub fn extract_function(
     // tree-sitter can report an end row one past EOF for a construct left
     // unterminated at end-of-file (e.g. a block missing its closing brace);
     // clamp so a unit's end_line never points outside the file.
-    let end_line = content_node
-        .end_position()
-        .row
-        .min(lines.len().saturating_sub(1));
+    let end_line = last_row(content_node).min(lines.len().saturating_sub(1));
 
     // Include preceding attributes/decorators in the line range
-    let code_start = find_start_with_attributes(ast_start_line, lines, lang);
+    let doc_comments = tree_doc_comments(node, bytes, lang, &name);
+    let code_start = doc_comments.first().map_or_else(
+        || find_start_with_attributes(ast_start_line, lines, lang),
+        |c| c.start_position().row,
+    );
     let start_line = code_start;
 
     // Determine if this is a method based on parent class or language-specific patterns
@@ -74,11 +89,26 @@ pub fn extract_function(
     );
 
     // Layer 1: AST
+    // An HLSL entry point starts with its `[numthreads(...)]` attribute; the
+    // signature is the declaration line after it.
+    let signature_line = match lang {
+        Language::Hlsl => node
+            .child_by_field_name("type")
+            .map_or(ast_start_line, |t| t.start_position().row),
+        // Odin attributes (`@(private)`) sit on their own line inside the
+        // declaration; the signature is the line naming the procedure.
+        Language::Odin => node
+            .children(&mut node.walk())
+            .find(|c| c.kind() == "identifier")
+            .map_or(ast_start_line, |n| n.start_position().row),
+        _ => ast_start_line,
+    };
     unit.signature = lines
-        .get(ast_start_line)
+        .get(signature_line)
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    unit.docstring = extract_docstring(node, lines, lang);
+    unit.docstring =
+        doc_comment_text(&doc_comments, bytes).or_else(|| extract_docstring(node, lines, lang));
     unit.parameters = extract_parameters(node, bytes, lang);
     unit.return_type = extract_return_type(node, bytes, lang);
 
@@ -130,6 +160,23 @@ pub fn extract_function(
     Some(unit)
 }
 
+/// Doc comments read from the tree (comment / POD siblings above the
+/// declaration) for the grammars that keep them as nodes; empty otherwise,
+/// and the line-based `find_start_with_attributes` / `extract_docstring` apply.
+fn tree_doc_comments<'a>(
+    node: Node<'a>,
+    bytes: &[u8],
+    lang: Language,
+    name: &str,
+) -> Vec<Node<'a>> {
+    match lang {
+        Language::Perl | Language::D | Language::Odin | Language::Pascal => {
+            leading_doc_comments(node, bytes, lang, name)
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Extract a class, struct, or similar type definition from an AST node.
 pub fn extract_class(
     node: Node,
@@ -141,13 +188,30 @@ pub fn extract_class(
 ) -> Option<CodeUnit> {
     let name = get_node_name(node, bytes, lang)?;
     let ast_start_line = node.start_position().row;
+    // `cbuffer Name : register(b0) { ... };` parses as a declaration whose
+    // body is left as its next siblings.
+    let last_node = match lang {
+        Language::Hlsl => super::shader::hlsl_buffer_end(node).unwrap_or(node),
+        _ => node,
+    };
     // tree-sitter can report an end row one past EOF for a construct left
     // unterminated at end-of-file (e.g. a block missing its closing brace);
     // clamp so a unit's end_line never points outside the file.
-    let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
+    let mut end_line = last_row(last_node).min(lines.len().saturating_sub(1));
+    // A Fortran module or program is indexed by its specification part; its
+    // `contains` section is split into one unit per procedure.
+    if lang == Language::Fortran {
+        if let Some(row) = super::fortran::specification_last_row(node) {
+            end_line = end_line.min(row);
+        }
+    }
 
     // Include preceding attributes/decorators in the line range
-    let code_start = find_start_with_attributes(ast_start_line, lines, lang);
+    let doc_comments = tree_doc_comments(node, bytes, lang, &name);
+    let code_start = doc_comments.first().map_or_else(
+        || find_start_with_attributes(ast_start_line, lines, lang),
+        |c| c.start_position().row,
+    );
     let start_line = code_start;
 
     let mut unit = CodeUnit::new(
@@ -165,7 +229,8 @@ pub fn extract_class(
         .get(ast_start_line)
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    unit.docstring = extract_docstring(node, lines, lang);
+    unit.docstring =
+        doc_comment_text(&doc_comments, bytes).or_else(|| extract_docstring(node, lines, lang));
     unit.extends = extract_parent_class(node, bytes, lang, super::max_recursion_depth());
 
     // Layer 1: Type parameters (generics like <T, U>)
@@ -176,6 +241,16 @@ pub fn extract_class(
 
     // Layer 4: Data Flow - extract class attributes/variables (deduplicated)
     unit.variables = extract_variables(node, bytes, lang);
+    if matches!(lang, Language::Glsl | Language::Hlsl) {
+        // Struct and resource-block members: what a uniform search names.
+        extend_unique(
+            &mut unit.variables,
+            super::shader::block_members(node, bytes),
+        );
+        // A declaration-shaped cbuffer declares its own name.
+        let name = unit.name.clone();
+        unit.variables.retain(|v| *v != name);
+    }
 
     // Layer 5: Dependencies
     // Get modules used via attribute access (e.g., `json` from `json.loads()`)
@@ -216,12 +291,36 @@ fn extract_class_type_parameters(node: Node, bytes: &[u8], lang: Language) -> Ve
             node.children(&mut node.walk())
                 .find(|child| child.kind() == "type_parameters")
         }),
+        Language::ObjectiveC => None,
         Language::Swift => {
             // Swift uses generic_parameter_clause
             node.children(&mut node.walk())
                 .find(|c| c.kind() == "generic_parameter_clause")
         }
-        Language::Cpp => {
+        // Ports of a module / entity (generics stay in the code).
+        Language::Verilog => return super::hdl::verilog_ports(node, bytes),
+        Language::Vhdl => return super::hdl::vhdl_parameters(node, bytes),
+        // D: `struct Box(T, size_t n)`, `template Foo(T)`: each template
+        // parameter's first identifier is its name.
+        Language::D => {
+            let params = node
+                .named_children(&mut node.walk())
+                .find(|c| c.kind() == "template_parameters");
+            let mut result = Vec::new();
+            if let Some(params) = params {
+                for param in params.named_children(&mut params.walk()) {
+                    if let Some(name) = param
+                        .named_children(&mut param.walk())
+                        .find(|c| c.kind() == "identifier")
+                        .and_then(|n| n.utf8_text(bytes).ok())
+                    {
+                        result.push(name.trim().to_string());
+                    }
+                }
+            }
+            return result;
+        }
+        Language::Cpp | Language::Cuda => {
             // C++ templates: look for template_parameter_list in parent template_declaration
             if let Some(parent) = node.parent() {
                 if parent.kind() == "template_declaration" {
@@ -338,7 +437,7 @@ pub fn extract_constant(
     // tree-sitter can report an end row one past EOF for a construct left
     // unterminated at end-of-file (e.g. a block missing its closing brace);
     // clamp so a unit's end_line never points outside the file.
-    let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
+    let end_line = last_row(node).min(lines.len().saturating_sub(1));
 
     // Get constant name based on language
     let name = get_constant_name(node, bytes, lang)?;
@@ -440,7 +539,8 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             }
             None
         }
-        Language::C | Language::Cpp => {
+        Language::ObjectiveC => super::objc::declaration_name(node, bytes),
+        Language::C | Language::Cpp | Language::Cuda => {
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "init_declarator" || child.kind() == "declarator" {
                     if let Some(name_node) = child.child_by_field_name("declarator") {
@@ -503,6 +603,12 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             }
             None
         }
+        // `const SPEED := 300.0`, `enum State {...}`, `signal died`. An
+        // anonymous `enum { A, B }` has no name and stays raw code.
+        Language::Gdscript => node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map(|s| s.to_string()),
         Language::Kotlin => node
             .child_by_field_name("name")
             .or_else(|| {
@@ -539,6 +645,10 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .child_by_field_name("pattern")
             .and_then(|n| n.utf8_text(bytes).ok())
             .map(|s| s.to_string()),
+        Language::Solidity => node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map(|s| s.to_string()),
         Language::Php => {
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "const_element" {
@@ -563,15 +673,51 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             }
             None
         }
+        Language::Gleam => node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map(|s| s.to_string()),
         Language::Haskell | Language::Ocaml => node
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("pattern"))
             .and_then(|n| n.utf8_text(bytes).ok())
             .map(|s| s.to_string()),
+        Language::Perl => super::perl::constant_name(node, bytes),
+        // D `enum MAX = 10;`, Odin `MAX :: 10`, Pascal `MaxSize = 10;`: the
+        // first identifier names the constant. Local constants inside a
+        // routine body are left to the routine's unit.
+        Language::D | Language::Odin | Language::Pascal => {
+            let mut ancestor = node.parent();
+            while let Some(a) = ancestor {
+                if matches!(a.kind(), "function_body" | "procedure" | "defProc") {
+                    return None;
+                }
+                ancestor = a.parent();
+            }
+            let holder = if lang == Language::D {
+                node.named_children(&mut node.walk())
+                    .find(|c| c.kind() == "manifest_declarator")?
+            } else {
+                node
+            };
+            let name = holder
+                .child_by_field_name("name")
+                .or_else(|| {
+                    holder
+                        .named_children(&mut holder.walk())
+                        .find(|c| c.kind() == "identifier")
+                })?
+                .utf8_text(bytes)
+                .ok()?
+                .trim()
+                .to_string();
+            (!name.is_empty()).then_some(name)
+        }
         // CSS at-rules ( @import / @charset / @namespace ): the unit name
         // is the at-keyword, produced by the same helper that names
         // rule_set / @media / @keyframes elsewhere in the parser.
         Language::Css => super::ast::get_node_name(node, bytes, lang),
+        Language::Verilog => super::hdl::verilog_constant_name(node, bytes),
         _ => None,
     }
 }
@@ -612,6 +758,15 @@ fn get_constant_type(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             }
             None
         }
+        Language::Gleam => node
+            .child_by_field_name("type")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map(|s| s.to_string()),
+        Language::Gdscript => node
+            .child_by_field_name("type")
+            .filter(|t| t.kind() == "type")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map(|s| s.to_string()),
         Language::Python => {
             let assignment = node.child(0)?;
             if assignment.kind() == "assignment" {
@@ -648,7 +803,7 @@ fn extract_arrow_function_as_function(
     // tree-sitter can report an end row one past EOF for a construct left
     // unterminated at end-of-file (e.g. a block missing its closing brace);
     // clamp so a unit's end_line never points outside the file.
-    let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
+    let end_line = last_row(node).min(lines.len().saturating_sub(1));
     let code_start = find_start_with_attributes(ast_start_line, lines, lang);
 
     let mut unit = CodeUnit::new(
@@ -734,6 +889,12 @@ fn determine_function_type(
     lang: Language,
     parent_class: Option<&str>,
 ) -> (UnitType, Option<String>) {
+    // Fortran procedures stay functions inside a module or program; the unit
+    // keeps the enclosing unit as its parent.
+    if lang == Language::Fortran {
+        return (UnitType::Function, None);
+    }
+
     // If already has a parent class, it's a method
     if parent_class.is_some() {
         return (UnitType::Method, None);
@@ -770,6 +931,32 @@ fn determine_function_type(
             }
             (UnitType::Function, None)
         }
+        // SystemVerilog: `function void drv::build_phase(...)` defines a
+        // method of `drv` outside the class body.
+        Language::Verilog => match super::hdl::verilog_method_scope(node, bytes) {
+            Some(class) => (UnitType::Method, Some(class)),
+            None => (UnitType::Function, None),
+        },
+        // Pascal: a method is defined with its class-qualified name,
+        // `procedure TShape.Draw;` (nested types: `TOuter.TInner.Draw`).
+        Language::Pascal => {
+            let qualified = node
+                .child_by_field_name("header")
+                .and_then(|h| h.child_by_field_name("name"))
+                .filter(|n| n.kind() == "genericDot")
+                .and_then(|n| n.utf8_text(bytes).ok());
+            match qualified.and_then(|q| q.rsplit_once('.')) {
+                Some((class, _)) if !class.trim().is_empty() => {
+                    (UnitType::Method, Some(class.trim().to_string()))
+                }
+                _ => (UnitType::Function, None),
+            }
+        }
+        // Perl: a sub after `package Name;` belongs to that package.
+        Language::Perl => match super::perl::enclosing_package(node, bytes) {
+            Some(package) if package != "main" => (UnitType::Method, Some(package)),
+            _ => (UnitType::Function, None),
+        },
         _ => (UnitType::Function, None),
     }
 }
@@ -864,8 +1051,71 @@ pub fn fill_raw_code_gaps(
     units.extend(raw_units);
 }
 
+/// Cut raw-code units longer than `max_lines` into pieces, preferring to cut
+/// at a blank line, so long runs of one-line definitions stay searchable
+/// within the embedding budget.
+pub fn split_long_raw_code(units: &mut Vec<CodeUnit>, lines: &[&str], max_lines: usize) {
+    let mut out = Vec::with_capacity(units.len());
+    for unit in units.drain(..) {
+        let span = unit.end_line + 1 - unit.line;
+        if unit.unit_type != UnitType::RawCode || span <= max_lines {
+            out.push(unit);
+            continue;
+        }
+        let mut start = unit.line; // 1-indexed
+        while start <= unit.end_line {
+            let hard_end = (start + max_lines - 1).min(unit.end_line);
+            let mut end = hard_end;
+            if hard_end < unit.end_line {
+                // Look back over the last third for a blank line to cut at.
+                let floor = start + (max_lines * 2) / 3;
+                if let Some(blank) = (floor..=hard_end)
+                    .rev()
+                    .find(|l| lines.get(l - 1).is_some_and(|s| s.trim().is_empty()))
+                {
+                    end = blank;
+                }
+            }
+            // Skip leading blank lines of the piece.
+            let mut piece_start = start;
+            while piece_start < end
+                && lines
+                    .get(piece_start - 1)
+                    .is_some_and(|s| s.trim().is_empty())
+            {
+                piece_start += 1;
+            }
+            let mut piece_end = end;
+            while piece_end > piece_start
+                && lines
+                    .get(piece_end - 1)
+                    .is_some_and(|s| s.trim().is_empty())
+            {
+                piece_end -= 1;
+            }
+            let code = lines[piece_start - 1..piece_end].join("\n");
+            if !code.trim().is_empty() {
+                let mut piece = unit.clone();
+                piece.name = format!("raw_code_{piece_start}");
+                piece.qualified_name = format!("{}::raw_code_{}", unit.file.display(), piece_start);
+                piece.line = piece_start;
+                piece.end_line = piece_end;
+                piece.signature = lines[piece_start - 1..piece_end]
+                    .iter()
+                    .find(|l| !l.trim().is_empty())
+                    .map(|l| l.trim().to_string())
+                    .unwrap_or_default();
+                piece.code = code;
+                out.push(piece);
+            }
+            start = end + 1;
+        }
+    }
+    *units = out;
+}
+
 /// Create a RawCode unit for a range of lines.
-fn create_raw_code_unit(
+pub(super) fn create_raw_code_unit(
     path: &Path,
     lines: &[&str],
     start_line: usize,

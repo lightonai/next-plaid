@@ -401,6 +401,8 @@ fn test_is_text_format_true() {
     assert!(is_text_format(Language::Makefile));
     assert!(is_text_format(Language::AsciiDoc));
     assert!(is_text_format(Language::Org));
+    assert!(is_text_format(Language::Xml));
+    assert!(is_text_format(Language::Latex));
 }
 
 #[test]
@@ -788,6 +790,72 @@ fn test_language_from_str() {
     assert_eq!(Language::from_str("c"), Ok(Language::C));
     assert_eq!(Language::from_str("cpp"), Ok(Language::Cpp));
     assert_eq!(Language::from_str("c++"), Ok(Language::Cpp));
+    assert_eq!(Language::from_str("cuda"), Ok(Language::Cuda));
+    assert_eq!(Language::from_str("solidity"), Ok(Language::Solidity));
+    assert_eq!(Language::from_str("sol"), Ok(Language::Solidity));
+    assert_eq!(Language::from_str("scheme"), Ok(Language::Scheme));
+    assert_eq!(Language::from_str("scm"), Ok(Language::Scheme));
+    assert_eq!(Language::from_str("racket"), Ok(Language::Racket));
+    assert_eq!(Language::from_str("rkt"), Ok(Language::Racket));
+    assert_eq!(Language::from_str("commonlisp"), Ok(Language::CommonLisp));
+    assert_eq!(Language::from_str("common-lisp"), Ok(Language::CommonLisp));
+    assert_eq!(Language::from_str("lisp"), Ok(Language::CommonLisp));
+    assert_eq!(Language::from_str("cl"), Ok(Language::CommonLisp));
+    assert_eq!(Language::from_str("nix"), Ok(Language::Nix));
+    assert_eq!(Language::from_str("cu"), Ok(Language::Cuda));
+    assert_eq!(Language::from_str("glsl"), Ok(Language::Glsl));
+    assert_eq!(Language::from_str("HLSL"), Ok(Language::Hlsl));
+    assert_eq!(Language::from_str("verilog"), Ok(Language::Verilog));
+    assert_eq!(Language::from_str("v"), Ok(Language::Verilog));
+    assert_eq!(Language::from_str("systemverilog"), Ok(Language::Verilog));
+    assert_eq!(Language::from_str("sv"), Ok(Language::Verilog));
+    assert_eq!(Language::from_str("vhdl"), Ok(Language::Vhdl));
+    assert_eq!(Language::from_str("vhd"), Ok(Language::Vhdl));
+    assert_eq!(Language::from_str("objc"), Ok(Language::ObjectiveC));
+    assert_eq!(Language::from_str("Objective-C"), Ok(Language::ObjectiveC));
+    assert_eq!(Language::from_str("objectivec"), Ok(Language::ObjectiveC));
+    assert_eq!(
+        Language::from_str("objective-c++"),
+        Ok(Language::ObjectiveC)
+    );
+    assert_eq!(Language::from_str("matlab"), Ok(Language::Matlab));
+    assert_eq!(Language::from_str("MATLAB"), Ok(Language::Matlab));
+    assert_eq!(Language::from_str("fortran"), Ok(Language::Fortran));
+    assert_eq!(Language::from_str("f90"), Ok(Language::Fortran));
+    assert_eq!(Language::from_str("erlang"), Ok(Language::Erlang));
+    assert_eq!(Language::from_str("erl"), Ok(Language::Erlang));
+    assert_eq!(Language::from_str("fsharp"), Ok(Language::Fsharp));
+    assert_eq!(Language::from_str("F#"), Ok(Language::Fsharp));
+    assert_eq!(Language::from_str("fs"), Ok(Language::Fsharp));
+    assert_eq!(Language::from_str("clojure"), Ok(Language::Clojure));
+    assert_eq!(Language::from_str("clj"), Ok(Language::Clojure));
+    assert_eq!(Language::from_str("elm"), Ok(Language::Elm));
+    assert_eq!(Language::from_str("Gleam"), Ok(Language::Gleam));
+    assert_eq!(Language::from_str("d"), Ok(Language::D));
+    assert_eq!(Language::from_str("dlang"), Ok(Language::D));
+    assert_eq!(Language::from_str("perl"), Ok(Language::Perl));
+    assert_eq!(Language::from_str("pl"), Ok(Language::Perl));
+    assert_eq!(Language::from_str("odin"), Ok(Language::Odin));
+    assert_eq!(Language::from_str("pascal"), Ok(Language::Pascal));
+    assert_eq!(Language::from_str("Delphi"), Ok(Language::Pascal));
+    assert_eq!(Language::from_str("freepascal"), Ok(Language::Pascal));
+    assert_eq!(Language::from_str("pas"), Ok(Language::Pascal));
+    assert_eq!(Language::from_str("assembly"), Ok(Language::Assembly));
+    assert_eq!(Language::from_str("asm"), Ok(Language::Assembly));
+    assert_eq!(Language::from_str("nasm"), Ok(Language::Assembly));
+    assert_eq!(Language::from_str("notebook"), Ok(Language::Notebook));
+    assert_eq!(Language::from_str("ipynb"), Ok(Language::Notebook));
+    assert_eq!(Language::from_str("Jupyter"), Ok(Language::Notebook));
+    assert_eq!(Language::from_str("gdscript"), Ok(Language::Gdscript));
+    assert_eq!(Language::from_str("gd"), Ok(Language::Gdscript));
+    assert_eq!(Language::from_str("luau"), Ok(Language::Luau));
+    assert_eq!(Language::from_str("xml"), Ok(Language::Xml));
+    assert_eq!(Language::from_str("latex"), Ok(Language::Latex));
+    assert_eq!(Language::from_str("tex"), Ok(Language::Latex));
+    assert_eq!(Language::from_str("bibtex"), Ok(Language::Latex));
+    assert_eq!(Language::from_str("scss"), Ok(Language::Scss));
+    assert_eq!(Language::from_str("sass"), Ok(Language::Scss));
+    assert_eq!(Language::from_str("less"), Ok(Language::Less));
 
     assert_eq!(Language::from_str("csharp"), Ok(Language::CSharp));
     assert_eq!(Language::from_str("c#"), Ok(Language::CSharp));
@@ -1641,4 +1709,28 @@ if __name__ == "__main__":
     );
 
     verify_coverage_and_no_duplicates(source, Language::Python, "test.py");
+}
+
+/// `.jsonc`/`.json5` index like JSON and `.mdx` like Markdown: one document.
+#[test]
+fn test_jsonc_json5_mdx_are_documents() {
+    for (file, source, lang) in [
+        (
+            "tsconfig.jsonc",
+            "{\n  // comment\n  \"strict\": true,\n}",
+            Language::Json,
+        ),
+        ("config.json5", "{\n  unquoted: 'value',\n}", Language::Json),
+        (
+            "intro.mdx",
+            "# Intro\n\nimport X from './x'\n\n<X />",
+            Language::Markdown,
+        ),
+    ] {
+        assert_eq!(detect_language(Path::new(file)), Some(lang), "{file}");
+        let units = extract_units(Path::new(file), source, lang);
+        assert_eq!(units.len(), 1, "{file}");
+        assert_eq!(units[0].unit_type, UnitType::Document, "{file}");
+        assert_eq!(units[0].code, source, "{file}");
+    }
 }
