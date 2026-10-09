@@ -11,7 +11,7 @@
       "name": "colgrep",
       "source": "./plugins/colgrep",
       "description": "Semantic grep with hybrid search - find code by meaning",
-      "version": "1.8.1",
+      "version": "1.8.2",
       "author": {
         "name": "LightOn"
       },

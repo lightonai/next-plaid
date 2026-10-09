@@ -16,9 +16,9 @@ path = "src/main.rs"
 
 [dependencies]
 # === Core: your crates ===
-next-plaid = { path = "../next-plaid", version = "1.8.1" }
-colgrep-agent = { path = "../agent", version = "1.8.1" }
-next-plaid-onnx = { path = "../next-plaid-onnx", version = "1.8.1" }
+next-plaid = { path = "../next-plaid", version = "1.8.2" }
+colgrep-agent = { path = "../agent", version = "1.8.2" }
+next-plaid-onnx = { path = "../next-plaid-onnx", version = "1.8.2" }
 
 # === Tree-sitter for parsing ===
 tree-sitter = "0.25"
