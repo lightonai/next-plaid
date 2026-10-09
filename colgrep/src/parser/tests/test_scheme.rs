@@ -261,3 +261,19 @@ fn test_long_closure_value_is_a_container() {
     assert_eq!(helper.unit_type, UnitType::Function);
     assert_eq!(helper.parent_class.as_deref(), Some("$pass"));
 }
+
+/// Deep nesting stays within a 2 MB worker stack, and degenerate forms
+/// (`(defpackage)`, an empty `named-lambda`) do not slice out of bounds.
+#[test]
+fn test_deep_nesting_and_degenerate_forms() {
+    let deep = format!("{}x{}\n", "(module m racket ".repeat(700), ")".repeat(700));
+    parse(&deep, Language::Scheme, "deep.scm");
+    parse(&deep, Language::Racket, "deep.rkt");
+    for source in [
+        "(defpackage)\n",
+        "(define-package)\n",
+        "(define f (named-lambda () x))\n",
+    ] {
+        parse(source, Language::Scheme, "x.scm");
+    }
+}

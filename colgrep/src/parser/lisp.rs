@@ -65,7 +65,10 @@ pub fn extract_lisp_units(path: &Path, source: &str, lang: Language) -> Vec<Code
         lines: &lines,
         bytes: parsed_source.as_bytes(),
         lang,
-        max_depth: super::max_recursion_depth(),
+        // Each nesting level of the walk below uses several KB of stack, so the
+        // shared limit (sized for one small frame per level) would overflow a
+        // 2 MB worker thread first; definitions are never nested this deep.
+        max_depth: (super::max_recursion_depth() / 8).max(16),
     };
     let root = tree.root_node();
     let file_imports = collect_file_imports(&ctx, root);
@@ -982,7 +985,7 @@ fn lambda_params(ctx: &Ctx, head: &str, els: &[Node]) -> Vec<String> {
         "named-lambda" => els
             .get(1)
             .filter(|n| is_list(n.kind()))
-            .map(|n| scheme_params(ctx, &elements(*n)[1..]))
+            .map(|n| scheme_params(ctx, elements(*n).get(1..).unwrap_or(&[])))
             .unwrap_or_default(),
         _ => els
             .get(1)
@@ -1964,7 +1967,7 @@ fn collect_imports_from_form(ctx: &Ctx, node: Node, out: &mut Vec<String>, depth
             }
         }
         "defpackage" | "define-package" => {
-            for opt in &els[2..] {
+            for opt in els.iter().skip(2) {
                 if !is_list(opt.kind()) {
                     continue;
                 }

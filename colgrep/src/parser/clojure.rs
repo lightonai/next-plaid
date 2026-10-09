@@ -309,7 +309,14 @@ struct Requires {
     referred: HashMap<String, String>,
 }
 
-fn libspec(spec: Node, bytes: &[u8], prefix: Option<&str>, req: &mut Requires) {
+/// Deepest prefix-list / quote nesting followed in a libspec. Real ones nest
+/// two or three levels; the cap keeps hostile input from overflowing the stack.
+const MAX_LIBSPEC_DEPTH: usize = 16;
+
+fn libspec(spec: Node, bytes: &[u8], prefix: Option<&str>, req: &mut Requires, depth: usize) {
+    if depth > MAX_LIBSPEC_DEPTH {
+        return;
+    }
     match spec.kind() {
         "sym_lit" => {
             let ns = sym_full(spec, bytes);
@@ -360,7 +367,7 @@ fn libspec(spec: Node, bytes: &[u8], prefix: Option<&str>, req: &mut Requires) {
                 if first.kind() == "sym_lit" {
                     let p = sym_full(first, bytes);
                     for v in &vals[1..] {
-                        libspec(*v, bytes, Some(&p), req);
+                        libspec(*v, bytes, Some(&p), req, depth + 1);
                     }
                 }
             }
@@ -368,7 +375,7 @@ fn libspec(spec: Node, bytes: &[u8], prefix: Option<&str>, req: &mut Requires) {
         // `'[foo.bar :as b]` in a top-level `(require ...)`.
         "quoting_lit" => {
             if let Some(inner) = spec.named_child(spec.named_child_count().saturating_sub(1)) {
-                libspec(inner, bytes, prefix, req);
+                libspec(inner, bytes, prefix, req, depth + 1);
             }
         }
         _ => {}
@@ -421,7 +428,7 @@ fn collect_requires(forms: &[Node], bytes: &[u8]) -> Requires {
                     match text(kw, bytes) {
                         ":require" | ":require-macros" | ":use" => {
                             for spec in &vals[1..] {
-                                libspec(*spec, bytes, None, &mut req);
+                                libspec(*spec, bytes, None, &mut req, 0);
                             }
                         }
                         ":import" => {
@@ -435,7 +442,7 @@ fn collect_requires(forms: &[Node], bytes: &[u8]) -> Requires {
             }
             "require" => {
                 for spec in values(form).into_iter().skip(1) {
-                    libspec(spec, bytes, None, &mut req);
+                    libspec(spec, bytes, None, &mut req, 0);
                 }
             }
             "import" => {
@@ -830,7 +837,8 @@ impl<'a> Extractor<'a> {
             .collect::<Vec<_>>()
             .join(" ");
         let mut sig = format!("({} {}", head_text, name_text);
-        for d in &rest[dispatch_start..(dispatch_start + 1).min(rest.len())] {
+        // `:-` with nothing after it leaves dispatch_start past the end.
+        for d in rest.iter().skip(dispatch_start).take(1) {
             if head_name.ends_with("defmethod") {
                 sig.push(' ');
                 sig.push_str(&one_line(text(*d, bytes)));

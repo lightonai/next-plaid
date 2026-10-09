@@ -250,7 +250,13 @@ fn tree_error_bytes(tree: &tree_sitter::Tree) -> usize {
     }
     total
 }
-/// Parse-time budget for a Luau file (see `extract_units`).
+/// Parse-time budget for a file (see `extract_units`). Real source parses in
+/// milliseconds; a grammar's error recovery can go quadratic on text it does
+/// not know (tree-sitter-luau on unknown syntax, tree-sitter-gleam on prose),
+/// and one such file must not stall the whole index.
+const PARSE_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+/// Luau hits that case on real code (`declare class` definition files), so it
+/// gives up sooner.
 const LUAU_PARSE_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Extract all code units from a file with 5-layer analysis.
@@ -343,32 +349,27 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
     // Cython). The view keeps every
     // line in place, so rows map 1:1 onto `lines`; node text is read from it.
     let parse_source = parse_view(path, source, lang);
-    let tree = if lang == Language::Luau {
-        // tree-sitter-luau's error recovery can go quadratic on syntax it
-        // does not know (a 7,600-line `declare class` definition file took
-        // over three minutes). Give up after a time budget and index the
-        // file as raw-code chunks instead of stalling the whole index.
-        let started = std::time::Instant::now();
-        let mut over_budget = |_: &tree_sitter::ParseState| started.elapsed() > LUAU_PARSE_BUDGET;
-        let options = tree_sitter::ParseOptions::new().progress_callback(&mut over_budget);
-        let bytes = source.as_bytes();
-        match parser.parse_with_options(
-            &mut |offset, _| bytes.get(offset..).unwrap_or_default(),
-            None,
-            Some(options),
-        ) {
-            Some(t) => t,
-            None => {
-                let lines: Vec<&str> = source.lines().collect();
-                let mut units = Vec::new();
-                text::fill_gaps_chunked(&mut units, path, &lines, lang, 60, 4000);
-                return units;
-            }
-        }
+    // Past its time budget a file is indexed as raw-code chunks instead.
+    let budget = if lang == Language::Luau {
+        LUAU_PARSE_BUDGET
     } else {
-        match parser.parse(parse_source.as_ref(), None) {
-            Some(t) => t,
-            None => return Vec::new(),
+        PARSE_BUDGET
+    };
+    let started = std::time::Instant::now();
+    let mut over_budget = |_: &tree_sitter::ParseState| started.elapsed() > budget;
+    let options = tree_sitter::ParseOptions::new().progress_callback(&mut over_budget);
+    let parse_bytes = parse_source.as_bytes();
+    let tree = match parser.parse_with_options(
+        &mut |offset, _| parse_bytes.get(offset..).unwrap_or_default(),
+        None,
+        Some(options),
+    ) {
+        Some(t) => t,
+        None => {
+            let lines: Vec<&str> = source.lines().collect();
+            let mut units = Vec::new();
+            text::fill_gaps_chunked(&mut units, path, &lines, lang, 60, 4000);
+            return units;
         }
     };
 

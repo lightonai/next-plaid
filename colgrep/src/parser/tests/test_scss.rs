@@ -263,3 +263,12 @@ fn test_unbalanced_braces_dont_panic() {
     let _ = assert_extractor_invariants("  .a\n    b: c\n.d\n", Language::Scss, "x.sass");
     assert!(parse("", Language::Scss, "e.scss").is_empty());
 }
+
+/// 50,000 nested blocks on one line used to build a tree that overflowed
+/// the stack when it was dropped; nesting past the cap stays flat text.
+#[test]
+fn test_deep_brace_nesting_does_not_overflow() {
+    let deep = "a{".repeat(50_000);
+    parse(&deep, Language::Scss, "deep.scss");
+    parse(&deep, Language::Less, "deep.less");
+}

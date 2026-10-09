@@ -208,3 +208,30 @@ fn test_edn_is_raw_code() {
     let units = assert_extractor_invariants(source, Language::Clojure, "deps.edn");
     assert!(units.iter().all(|u| u.unit_type == UnitType::RawCode));
 }
+
+/// Hostile requires (thousands of nested quotes or prefix lists) used to
+/// overflow the stack in the libspec walk, which no panic handler can catch.
+#[test]
+fn test_deeply_nested_require_does_not_overflow() {
+    let quotes = format!("(require {}[x])\n", "'".repeat(6000));
+    parse(&quotes, Language::Clojure, "core.clj");
+    let lists = format!(
+        "(ns a (:require {}{}))\n",
+        "(a ".repeat(10000),
+        ")".repeat(10000)
+    );
+    parse(&lists, Language::Clojure, "core.clj");
+}
+
+/// `:-` (a schema return type) with nothing after it used to slice past the
+/// end of the form.
+#[test]
+fn test_dangling_return_type_marker() {
+    for source in [
+        "(defn foo :-)\n",
+        "(mu/defn f :-)\n",
+        "(defmethod foo :-)\n",
+    ] {
+        parse(source, Language::Clojure, "core.clj");
+    }
+}

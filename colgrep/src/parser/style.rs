@@ -33,6 +33,10 @@ use std::path::Path;
 const MAX_UNIT_LINES: usize = 50;
 /// Raw-code chunks of loose statements are cut at this size.
 const MAX_RAW_CHARS: usize = 4000;
+/// Deepest block nesting kept as a tree. Deeper `{ ... }` (or indentation)
+/// stays text of the innermost kept block: real stylesheets nest a handful of
+/// levels, and an unbounded tree overflows the stack when it is dropped.
+const MAX_STYLE_DEPTH: usize = 256;
 /// Nested blocks shorter than this stay folded into their parent.
 const MIN_NESTED_LINES: usize = 3;
 /// Longest prelude kept as a unit name.
@@ -104,6 +108,8 @@ fn scan_braces(source: &str) -> Vec<Item> {
     let mut paren = 0usize;
     let mut interp = 0usize;
     let mut chars = source.chars().peekable();
+    // Braces opened past MAX_STYLE_DEPTH, kept as text until they close.
+    let mut flat = 0usize;
 
     let begin = |prelude_start: &mut Option<usize>, line: usize| {
         if prelude_start.is_none() {
@@ -188,6 +194,15 @@ fn scan_braces(source: &str) -> Vec<Item> {
             }
             ')' => {
                 paren = paren.saturating_sub(1);
+                prelude.push(c);
+            }
+            '{' if stack.len() > MAX_STYLE_DEPTH => {
+                flat += 1;
+                begin(&mut prelude_start, line);
+                prelude.push(c);
+            }
+            '}' if flat > 0 => {
+                flat -= 1;
                 prelude.push(c);
             }
             '{' => {
@@ -315,7 +330,7 @@ fn scan_indented(lines: &[&str]) -> Vec<Item> {
             prelude.push(' ');
             prelude.push_str(strip_line_comment(lines[i].trim()));
         }
-        while stack.last().is_some_and(|(ind, _)| *ind >= indent) {
+        while stack.last().is_some_and(|(ind, _)| *ind >= indent) || stack.len() > MAX_STYLE_DEPTH {
             close_indented(&mut stack);
         }
         stack.push((

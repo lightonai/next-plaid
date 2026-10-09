@@ -356,3 +356,15 @@ fn test_deep_nesting_does_not_overflow() {
         .join();
     assert!(result.is_ok());
 }
+
+/// Definitions nested 700 deep stay within a 2 MB worker stack.
+#[test]
+fn test_deep_defun_nesting_stays_within_stack() {
+    let deep = format!(
+        "{}{}\n",
+        "(progn (defun f () ".repeat(700),
+        "))".repeat(700)
+    );
+    parse(&deep, Language::CommonLisp, "deep.lisp");
+    parse("(defpackage)\n", Language::CommonLisp, "x.lisp");
+}
