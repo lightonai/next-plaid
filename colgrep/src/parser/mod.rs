@@ -15,8 +15,11 @@ mod analysis;
 mod ast;
 mod call_graph;
 mod extract;
+mod fortran;
 mod html;
 mod language;
+mod matlab;
+mod objc;
 mod qml;
 mod svelte;
 mod text;
@@ -34,7 +37,7 @@ mod test_core;
 
 // Re-exports
 pub use call_graph::build_call_graph;
-pub use language::{detect_language, is_text_format};
+pub use language::{detect_language, detect_language_with_content, is_text_format};
 pub use types::{CodeUnit, Language, UnitType};
 
 // Internal imports
@@ -66,6 +69,14 @@ fn is_abstract_type_container(kind: &str, lang: Language) -> bool {
             "interface_declaration" | "trait_declaration" | "enum_declaration"
         ),
         Language::Cpp | Language::Cuda => kind == "enum_specifier",
+        // @interface / @protocol hold declarations only; methods live in
+        // @implementation.
+        Language::ObjectiveC => matches!(
+            kind,
+            "class_interface" | "protocol_declaration" | "enum_specifier"
+        ),
+        // Interface blocks declare procedures defined elsewhere.
+        Language::Fortran => kind == "interface",
         Language::Dart => kind == "type_alias",
         _ => false,
     }
@@ -164,13 +175,17 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         return Vec::new();
     }
 
-    let tree = match parser.parse(source, None) {
+    // Some grammars only parse a normalized view of the source (Fortran
+    // fixed-form, Objective-C preprocessor branches). The view keeps every
+    // line in place, so rows map 1:1 onto `lines`; node text is read from it.
+    let parse_source = parse_view(path, source, lang);
+    let tree = match parser.parse(parse_source.as_ref(), None) {
         Some(t) => t,
         None => return Vec::new(),
     };
 
     let lines: Vec<&str> = source.lines().collect();
-    let bytes = source.as_bytes();
+    let bytes = parse_source.as_bytes();
     let file_imports = extract_file_imports(tree.root_node(), bytes, lang);
 
     let max_depth = max_recursion_depth();
@@ -203,6 +218,22 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
     fill_raw_code_gaps(&mut units, path, &lines, lang, &file_imports);
 
     units
+}
+
+/// The text tree-sitter parses for `source`: the source itself, or a
+/// line-preserving rewrite for grammars that cannot parse it as written.
+pub(crate) fn parse_view<'a>(
+    path: &Path,
+    source: &'a str,
+    lang: Language,
+) -> std::borrow::Cow<'a, str> {
+    match lang {
+        Language::Fortran if fortran::is_fixed_form(path, source) => {
+            std::borrow::Cow::Owned(fortran::fixed_form_to_free_form(source))
+        }
+        Language::ObjectiveC => objc::parse_view(source),
+        _ => std::borrow::Cow::Borrowed(source),
+    }
 }
 
 /// Recursively extract code units from AST nodes.

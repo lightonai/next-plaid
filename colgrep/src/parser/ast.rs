@@ -17,6 +17,7 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         Language::Go => kind == "function_declaration" || kind == "method_declaration",
         Language::Java => kind == "method_declaration" || kind == "constructor_declaration",
         Language::C | Language::Cpp | Language::Cuda => kind == "function_definition",
+        Language::ObjectiveC => matches!(kind, "function_definition" | "method_definition"),
         Language::Ruby => kind == "method" || kind == "singleton_method",
         Language::CSharp => kind == "method_declaration" || kind == "constructor_declaration",
         Language::Dart => matches!(
@@ -39,6 +40,8 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         Language::R => kind == "function_definition",
         Language::Zig => kind == "FnProto" || kind == "fn_decl",
         Language::Julia => matches!(kind, "function_definition" | "short_function_definition"),
+        Language::Matlab => kind == "function_definition",
+        Language::Fortran => super::fortran::PROCEDURE_KINDS.contains(&kind),
         Language::Sql => matches!(kind, "create_function_statement" | "create_procedure"),
         // Both `function foo() {...}` and `foo() {...}` forms produce
         // function_definition in tree-sitter-bash.
@@ -77,6 +80,15 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
         Language::Cpp | Language::Cuda => matches!(
             kind,
             "class_specifier" | "struct_specifier" | "enum_specifier"
+        ),
+        Language::ObjectiveC => matches!(
+            kind,
+            "class_interface"
+                | "class_implementation"
+                | "protocol_declaration"
+                | "struct_specifier"
+                | "union_specifier"
+                | "enum_specifier"
         ),
         Language::Ruby => kind == "class" || kind == "module",
         Language::CSharp => matches!(
@@ -126,6 +138,8 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
         Language::R => false, // R doesn't have traditional classes
         Language::Zig => kind == "ContainerDecl", // struct, enum, union
         Language::Julia => matches!(kind, "struct_definition" | "abstract_definition"),
+        Language::Matlab => kind == "class_definition",
+        Language::Fortran => super::fortran::CONTAINER_KINDS.contains(&kind),
         Language::Sql => matches!(
             kind,
             "create_table_statement" | "create_view_statement" | "create_index_statement"
@@ -198,7 +212,9 @@ pub fn is_constant_node(kind: &str, lang: Language) -> bool {
             kind,
             "static_final_declaration_list" | "initialized_identifier_list" | "identifier_list"
         ),
-        Language::C | Language::Cpp | Language::Cuda => kind == "declaration",
+        Language::C | Language::Cpp | Language::Cuda | Language::ObjectiveC => {
+            kind == "declaration"
+        }
         Language::Python => {
             // Python doesn't have const, but we capture module-level assignments
             // We'll filter for UPPER_CASE names in extract_constant
@@ -254,6 +270,16 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
             None
         }
         Language::Ruby => node.child_by_field_name("body"),
+        Language::ObjectiveC => match node.kind() {
+            // Methods sit directly in the @implementation.
+            "class_implementation" => Some(node),
+            _ => node
+                .children(&mut node.walk())
+                .find(|child| child.kind() == "field_declaration_list"),
+        },
+        // classdef `methods` blocks and Fortran `contains` sections sit
+        // directly in the class / program unit.
+        Language::Matlab | Language::Fortran => Some(node),
         // Additional languages
         Language::Kotlin | Language::Swift | Language::Scala | Language::Php => {
             node.child_by_field_name("body")
@@ -424,6 +450,17 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("property")),
         Language::Dart => return get_dart_node_name(node, bytes),
+        Language::ObjectiveC => match node.kind() {
+            "method_definition" | "method_declaration" => {
+                return super::objc::method_selector(node, bytes);
+            }
+            "class_interface" | "class_implementation" | "protocol_declaration" => {
+                return super::objc::container_name(node, bytes);
+            }
+            "function_definition" => return super::objc::declaration_name(node, bytes),
+            _ => return get_node_name(node, bytes, Language::C),
+        },
+        Language::Fortran => return super::fortran::unit_name(node, bytes),
         Language::C | Language::Cpp | Language::Cuda => {
             // For classes/structs/unions/enums, look for name field or type_identifier
             if matches!(
@@ -457,6 +494,7 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
         | Language::R
         | Language::Zig
         | Language::Julia
+        | Language::Matlab
         | Language::Sql
         | Language::Shell
         | Language::Groovy => node.child_by_field_name("name"),
@@ -790,6 +828,10 @@ pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: 
             // TypeScript/JavaScript/Vue/Svelte: @decorator (when using decorators), or /** JSDoc */
             Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => {
                 line.starts_with('@') || line.starts_with("/**") || line.starts_with("*")
+            }
+            // Objective-C: /// and /** */ doc comments above a method or class
+            Language::ObjectiveC => {
+                line.starts_with("///") || line.starts_with("/*") || line.starts_with('*')
             }
             // Go: // doc comments (by convention, comments immediately preceding a declaration)
             Language::Go => line.starts_with("//"),

@@ -24,6 +24,18 @@ fn dart_function_body(node: Node) -> Option<Node> {
     }
 }
 
+/// Last row holding text of `node`. A node that ends with its line break
+/// (Fortran statements, for one) ends at column 0 of the next row; that row
+/// is not part of it.
+fn last_row(node: Node) -> usize {
+    let end = node.end_position();
+    if end.column == 0 && end.row > node.start_position().row {
+        end.row - 1
+    } else {
+        end.row
+    }
+}
+
 fn extend_unique(target: &mut Vec<String>, values: Vec<String>) {
     for value in values {
         if !target.contains(&value) {
@@ -51,10 +63,7 @@ pub fn extract_function(
     // tree-sitter can report an end row one past EOF for a construct left
     // unterminated at end-of-file (e.g. a block missing its closing brace);
     // clamp so a unit's end_line never points outside the file.
-    let end_line = content_node
-        .end_position()
-        .row
-        .min(lines.len().saturating_sub(1));
+    let end_line = last_row(content_node).min(lines.len().saturating_sub(1));
 
     // Include preceding attributes/decorators in the line range
     let code_start = find_start_with_attributes(ast_start_line, lines, lang);
@@ -144,7 +153,14 @@ pub fn extract_class(
     // tree-sitter can report an end row one past EOF for a construct left
     // unterminated at end-of-file (e.g. a block missing its closing brace);
     // clamp so a unit's end_line never points outside the file.
-    let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
+    let mut end_line = last_row(node).min(lines.len().saturating_sub(1));
+    // A Fortran module or program is indexed by its specification part; its
+    // `contains` section is split into one unit per procedure.
+    if lang == Language::Fortran {
+        if let Some(row) = super::fortran::specification_last_row(node) {
+            end_line = end_line.min(row);
+        }
+    }
 
     // Include preceding attributes/decorators in the line range
     let code_start = find_start_with_attributes(ast_start_line, lines, lang);
@@ -216,6 +232,7 @@ fn extract_class_type_parameters(node: Node, bytes: &[u8], lang: Language) -> Ve
             node.children(&mut node.walk())
                 .find(|child| child.kind() == "type_parameters")
         }),
+        Language::ObjectiveC => None,
         Language::Swift => {
             // Swift uses generic_parameter_clause
             node.children(&mut node.walk())
@@ -338,7 +355,7 @@ pub fn extract_constant(
     // tree-sitter can report an end row one past EOF for a construct left
     // unterminated at end-of-file (e.g. a block missing its closing brace);
     // clamp so a unit's end_line never points outside the file.
-    let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
+    let end_line = last_row(node).min(lines.len().saturating_sub(1));
 
     // Get constant name based on language
     let name = get_constant_name(node, bytes, lang)?;
@@ -440,6 +457,7 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             }
             None
         }
+        Language::ObjectiveC => super::objc::declaration_name(node, bytes),
         Language::C | Language::Cpp | Language::Cuda => {
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "init_declarator" || child.kind() == "declarator" {
@@ -648,7 +666,7 @@ fn extract_arrow_function_as_function(
     // tree-sitter can report an end row one past EOF for a construct left
     // unterminated at end-of-file (e.g. a block missing its closing brace);
     // clamp so a unit's end_line never points outside the file.
-    let end_line = node.end_position().row.min(lines.len().saturating_sub(1));
+    let end_line = last_row(node).min(lines.len().saturating_sub(1));
     let code_start = find_start_with_attributes(ast_start_line, lines, lang);
 
     let mut unit = CodeUnit::new(
@@ -734,6 +752,12 @@ fn determine_function_type(
     lang: Language,
     parent_class: Option<&str>,
 ) -> (UnitType, Option<String>) {
+    // Fortran procedures stay functions inside a module or program; the unit
+    // keeps the enclosing unit as its parent.
+    if lang == Language::Fortran {
+        return (UnitType::Function, None);
+    }
+
     // If already has a parent class, it's a method
     if parent_class.is_some() {
         return (UnitType::Method, None);
