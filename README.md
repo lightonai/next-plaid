@@ -23,13 +23,15 @@ Semantic code search for your terminal and your coding agents. Searches combine 
 
 ### Quick start
 
-Install:
+Install with **Homebrew** (macOS / Linux):
 
 ```bash
-# Homebrew (macOS / Linux)
 brew install lightonai/tap/colgrep && colgrep --install-agent
+```
 
-# Shell installer
+or with the **shell installer**:
+
+```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lightonai/next-plaid/releases/latest/download/colgrep-installer.sh | sh && "${CARGO_HOME:-$HOME/.cargo}/bin/colgrep" --install-agent
 ```
 
