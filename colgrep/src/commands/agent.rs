@@ -123,6 +123,9 @@ pub fn cmd_agent(
     no_update: bool,
     force_cpu: bool,
 ) -> Result<()> {
+    if task.trim().is_empty() {
+        bail!("--agent needs a question, e.g. colgrep --agent \"where is the config loaded\"");
+    }
     if paths.len() > 1 {
         bail!("--agent explores one repository at a time; pass a single directory");
     }
