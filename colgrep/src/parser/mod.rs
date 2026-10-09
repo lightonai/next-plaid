@@ -17,6 +17,7 @@ mod ast;
 mod builder;
 mod call_graph;
 mod clojure;
+mod cython;
 mod doc_comment;
 mod elm;
 mod erlang;
@@ -28,7 +29,9 @@ mod html;
 mod language;
 mod lisp;
 mod matlab;
+mod metal;
 mod nix;
+mod notebook;
 mod objc;
 mod odin;
 mod pascal;
@@ -228,6 +231,11 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
         return extract_text_units(path, source, Language::Text);
     }
 
+    // Jupyter notebooks: cells are pulled out of the JSON and parsed one by one
+    if lang == Language::Notebook {
+        return notebook::extract_notebook_units(path, source);
+    }
+
     let mut parser = Parser::new();
     if parser
         .set_language(&get_tree_sitter_language_for_path(lang, path))
@@ -237,7 +245,8 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
     }
 
     // Some grammars only parse a normalized view of the source (Fortran
-    // fixed-form, Objective-C preprocessor branches). The view keeps every
+    // fixed-form, Objective-C preprocessor branches, Gleam `assert`, Metal,
+    // Cython). The view keeps every
     // line in place, so rows map 1:1 onto `lines`; node text is read from it.
     let parse_source = parse_view(path, source, lang);
     let tree = match parser.parse(parse_source.as_ref(), None) {
@@ -388,6 +397,14 @@ pub(crate) fn parse_view<'a>(
         }
         Language::ObjectiveC => objc::parse_view(source),
         Language::Gleam => std::borrow::Cow::Owned(gleam_assert_compat(source)),
+        // Metal is C++ once its MSL-only keywords and attributes are blanked;
+        // Cython reads as Python once its `cdef`/`cpdef` headers are rewritten.
+        Language::Cpp if metal::is_metal_path(path) => {
+            std::borrow::Cow::Owned(metal::mask_metal(source))
+        }
+        Language::Python if cython::is_cython_path(path) => {
+            std::borrow::Cow::Owned(cython::mask_cython(source))
+        }
         _ => std::borrow::Cow::Borrowed(source),
     }
 }

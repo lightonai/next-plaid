@@ -70,6 +70,8 @@ pub enum Language {
     Powershell,
     // Text/config formats (no tree-sitter, indexed as documents)
     Html,
+    // Jupyter notebooks: code cells parsed with the kernel's language
+    Notebook,
     Markdown,
     Text,
     Yaml,
@@ -151,6 +153,7 @@ impl FromStr for Language {
             // Text/config formats
             "qml" => Ok(Language::Qml),
             "html" | "htm" => Ok(Language::Html),
+            "notebook" | "ipynb" | "jupyter" => Ok(Language::Notebook),
             "markdown" | "md" => Ok(Language::Markdown),
             "text" | "txt" => Ok(Language::Text),
             "yaml" | "yml" => Ok(Language::Yaml),

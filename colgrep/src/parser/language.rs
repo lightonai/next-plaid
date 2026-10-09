@@ -46,7 +46,9 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
     // Then check extension
     match path.extension()?.to_str()?.to_lowercase().as_str() {
         // Original languages
-        "py" | "pyi" => Some(Language::Python),
+        // Cython parses with the Python grammar (`cdef`/`cpdef` headers are
+        // rewritten as `def` for the parser, see `cython.rs`).
+        "py" | "pyi" | "pyx" | "pxd" | "pxi" => Some(Language::Python),
         "ts" | "tsx" | "mts" | "cts" => Some(Language::TypeScript),
         "js" | "jsx" | "mjs" | "cjs" => Some(Language::JavaScript),
         "go" => Some(Language::Go),
@@ -54,6 +56,13 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
         "java" => Some(Language::Java),
         "c" | "h" => Some(Language::C),
         "cpp" | "cc" | "cxx" | "hpp" | "hxx" => Some(Language::Cpp),
+        // C++ header/source spellings, template implementation files
+        // (`.inl`/`.ipp`/`.tpp`/`.txx`), Arduino sketches (C++ with an implicit
+        // `#include <Arduino.h>`) and Metal shaders (Metal Shading Language is
+        // C++14-based) all parse with the C++ grammar.
+        "hh" | "h++" | "c++" | "inl" | "ipp" | "tpp" | "txx" | "ino" | "metal" => {
+            Some(Language::Cpp)
+        }
         "cu" | "cuh" => Some(Language::Cuda),
         // Shading languages. `.fs` / `.vs` are left alone: F# owns `.fs`.
         "glsl" | "vert" | "frag" | "geom" | "comp" | "tesc" | "tese" | "rgen" | "rchit"
@@ -67,6 +76,8 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
         // files (`foo.o: foo.c foo.h \\`); those are skipped, not parsed as D.
         "d" => (!is_make_dependency_file(path)).then_some(Language::D),
         "sol" => Some(Language::Solidity),
+        // AMD HIP is CUDA's syntax (`__global__`, `<<<grid, block>>>`, ...)
+        "hip" => Some(Language::Cuda),
         "rb" | "rake" | "gemspec" => Some(Language::Ruby),
         "pl" | "pm" | "t" => Some(Language::Perl),
         "cs" => Some(Language::CSharp),
@@ -124,14 +135,15 @@ fn detect_language_impl(path: &Path, content: Option<&str>) -> Option<Language> 
         // Text/documentation formats
         "qml" => Some(Language::Qml),
         "html" | "htm" => Some(Language::Html),
-        "md" | "markdown" => Some(Language::Markdown),
+        "ipynb" => Some(Language::Notebook),
+        "md" | "markdown" | "mdx" => Some(Language::Markdown),
         "txt" | "text" | "rst" => Some(Language::Text),
         "adoc" | "asciidoc" => Some(Language::AsciiDoc),
         "org" => Some(Language::Org),
         // Config formats
         "yaml" | "yml" => Some(Language::Yaml),
         "toml" => Some(Language::Toml),
-        "json" => Some(Language::Json),
+        "json" | "jsonc" | "json5" => Some(Language::Json),
         "mk" => Some(Language::Makefile),
         // Shell scripts
         "sh" | "bash" | "zsh" => Some(Language::Shell),
@@ -513,6 +525,9 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Qml => tree_sitter_qmljs::LANGUAGE.into(),
         // HTML uses tree-sitter-html
         Language::Html => tree_sitter_html::LANGUAGE.into(),
+        // Notebook cells are parsed with their kernel's grammar; Python is the
+        // default kernel language.
+        Language::Notebook => tree_sitter_python::LANGUAGE.into(),
         // CSS uses tree-sitter-css
         Language::Css => tree_sitter_css::LANGUAGE.into(),
         // Terraform / HCL uses tree-sitter-hcl
@@ -1121,6 +1136,102 @@ __kernel void blur(__global const float *in, __global float *out, const int w)
         );
         assert!(!is_text_format(Language::Elm));
         assert!(!is_text_format(Language::Gleam));
+    }
+
+    #[test]
+    fn test_detect_language_hip() {
+        for file in ["vector_add.hip", "KERNEL.HIP", "src/rocprim/scan.hip"] {
+            assert_eq!(
+                detect_language(Path::new(file)),
+                Some(Language::Cuda),
+                "{file}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_detect_language_cpp_variants() {
+        for file in [
+            "seastar/core/future.hh",
+            "header.h++",
+            "main.c++",
+            "glm/detail/func_common.inl",
+            "asio/impl/read.ipp",
+            "matrix.tpp",
+            "itkImageFilter.txx",
+            "Blink.ino",
+            "shaders/gemm.metal",
+            "FUTURE.HH",
+            "MAIN.C++",
+            "VEC.INL",
+            "READ.IPP",
+            "MATRIX.TPP",
+            "FILTER.TXX",
+            "BLINK.INO",
+            "GEMM.METAL",
+        ] {
+            assert_eq!(
+                detect_language(Path::new(file)),
+                Some(Language::Cpp),
+                "{file}"
+            );
+        }
+        // Left to other mappings: `.h` is C, `.cl`/`.m` are not mapped here.
+        assert_eq!(detect_language(Path::new("x.h")), Some(Language::C));
+    }
+
+    #[test]
+    fn test_detect_language_json_and_markdown_variants() {
+        for file in [
+            "tsconfig.jsonc",
+            ".vscode/settings.JSONC",
+            "config.json5",
+            "X.JSON5",
+        ] {
+            assert_eq!(
+                detect_language(Path::new(file)),
+                Some(Language::Json),
+                "{file}"
+            );
+        }
+        for file in ["docs/intro.mdx", "README.MDX"] {
+            assert_eq!(
+                detect_language(Path::new(file)),
+                Some(Language::Markdown),
+                "{file}"
+            );
+        }
+        assert!(is_text_format(Language::Json));
+        assert!(is_text_format(Language::Markdown));
+    }
+
+    #[test]
+    fn test_detect_language_cython() {
+        for file in [
+            "pandas/_libs/algos.pyx",
+            "algos.pxd",
+            "khash.pxi",
+            "ALGOS.PYX",
+        ] {
+            assert_eq!(
+                detect_language(Path::new(file)),
+                Some(Language::Python),
+                "{file}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_detect_language_notebook() {
+        for file in ["train.ipynb", "notebooks/01_intro.IPYNB"] {
+            assert_eq!(
+                detect_language(Path::new(file)),
+                Some(Language::Notebook),
+                "{file}"
+            );
+        }
+        // Code cells are code: `--code-only` keeps them.
+        assert!(!is_text_format(Language::Notebook));
     }
 
     #[test]
