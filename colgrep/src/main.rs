@@ -314,6 +314,7 @@ fn main() -> Result<()> {
         }
         Some(Commands::Init {
             path,
+            dry_run,
             model,
             no_pool,
             pool_factor,
@@ -325,6 +326,7 @@ fn main() -> Result<()> {
         }) => cmd_init(
             &path,
             InitOptions {
+                dry_run,
                 cli_model: model.as_deref(),
                 no_pool,
                 pool_factor,
