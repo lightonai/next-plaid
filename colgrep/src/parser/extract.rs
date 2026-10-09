@@ -539,6 +539,10 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .child_by_field_name("pattern")
             .and_then(|n| n.utf8_text(bytes).ok())
             .map(|s| s.to_string()),
+        Language::Solidity => node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map(|s| s.to_string()),
         Language::Php => {
             for child in node.children(&mut node.walk()) {
                 if child.kind() == "const_element" {
@@ -862,6 +866,69 @@ pub fn fill_raw_code_gaps(
     }
 
     units.extend(raw_units);
+}
+
+/// Cut raw-code units longer than `max_lines` into pieces, preferring to cut
+/// at a blank line, so long runs of one-line definitions stay searchable
+/// within the embedding budget.
+pub fn split_long_raw_code(units: &mut Vec<CodeUnit>, lines: &[&str], max_lines: usize) {
+    let mut out = Vec::with_capacity(units.len());
+    for unit in units.drain(..) {
+        let span = unit.end_line + 1 - unit.line;
+        if unit.unit_type != UnitType::RawCode || span <= max_lines {
+            out.push(unit);
+            continue;
+        }
+        let mut start = unit.line; // 1-indexed
+        while start <= unit.end_line {
+            let hard_end = (start + max_lines - 1).min(unit.end_line);
+            let mut end = hard_end;
+            if hard_end < unit.end_line {
+                // Look back over the last third for a blank line to cut at.
+                let floor = start + (max_lines * 2) / 3;
+                if let Some(blank) = (floor..=hard_end)
+                    .rev()
+                    .find(|l| lines.get(l - 1).is_some_and(|s| s.trim().is_empty()))
+                {
+                    end = blank;
+                }
+            }
+            // Skip leading blank lines of the piece.
+            let mut piece_start = start;
+            while piece_start < end
+                && lines
+                    .get(piece_start - 1)
+                    .is_some_and(|s| s.trim().is_empty())
+            {
+                piece_start += 1;
+            }
+            let mut piece_end = end;
+            while piece_end > piece_start
+                && lines
+                    .get(piece_end - 1)
+                    .is_some_and(|s| s.trim().is_empty())
+            {
+                piece_end -= 1;
+            }
+            let code = lines[piece_start - 1..piece_end].join("\n");
+            if !code.trim().is_empty() {
+                let mut piece = unit.clone();
+                piece.name = format!("raw_code_{piece_start}");
+                piece.qualified_name = format!("{}::raw_code_{}", unit.file.display(), piece_start);
+                piece.line = piece_start;
+                piece.end_line = piece_end;
+                piece.signature = lines[piece_start - 1..piece_end]
+                    .iter()
+                    .find(|l| !l.trim().is_empty())
+                    .map(|l| l.trim().to_string())
+                    .unwrap_or_default();
+                piece.code = code;
+                out.push(piece);
+            }
+            start = end + 1;
+        }
+    }
+    *units = out;
 }
 
 /// Create a RawCode unit for a range of lines.

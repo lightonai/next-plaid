@@ -34,6 +34,7 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "c" | "h" => Some(Language::C),
         "cpp" | "cc" | "cxx" | "hpp" | "hxx" => Some(Language::Cpp),
         "cu" | "cuh" => Some(Language::Cuda),
+        "sol" => Some(Language::Solidity),
         "rb" | "rake" | "gemspec" => Some(Language::Ruby),
         "cs" => Some(Language::CSharp),
         "dart" => Some(Language::Dart),
@@ -44,6 +45,11 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "php" => Some(Language::Php),
         "lua" => Some(Language::Lua),
         "ex" | "exs" => Some(Language::Elixir),
+        // Lisps. `.cl` defaults to Common Lisp from the path alone;
+        // `refine_language` re-checks it against the content (OpenCL C).
+        "scm" | "ss" | "sld" | "sls" => Some(Language::Scheme),
+        "rkt" | "rktl" => Some(Language::Racket),
+        "lisp" | "lsp" | "asd" | "cl" => Some(Language::CommonLisp),
         "hs" => Some(Language::Haskell),
         "ml" | "mli" => Some(Language::Ocaml),
         "r" | "rmd" => Some(Language::R),
@@ -55,6 +61,7 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "css" => Some(Language::Css),
         // Terraform / HashiCorp Configuration Language
         "tf" | "tfvars" | "hcl" => Some(Language::Terraform),
+        "nix" => Some(Language::Nix),
         // API schema formats
         "proto" => Some(Language::Proto),
         "graphql" | "gql" => Some(Language::Graphql),
@@ -81,6 +88,127 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "ps1" | "psm1" | "psd1" => Some(Language::Powershell),
         _ => None,
     }
+}
+
+/// Re-check a path-based detection against the file's content, for
+/// extensions that unrelated languages share. Only a language that
+/// `detect_language` would pick from the path alone is re-checked, so an
+/// explicit choice by the caller is kept.
+pub fn refine_language(path: &Path, source: &str, lang: Language) -> Language {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match (ext.as_deref(), lang) {
+        (Some("cl"), Language::CommonLisp) => sniff_cl(source),
+        (Some("sls"), Language::Scheme) => sniff_sls(source),
+        _ => lang,
+    }
+}
+
+/// The first `limit` bytes of `source`, cut on a char boundary.
+fn sniff_prefix(source: &str, limit: usize) -> &str {
+    let mut end = source.len().min(limit);
+    while !source.is_char_boundary(end) {
+        end -= 1;
+    }
+    &source[..end]
+}
+
+/// `.cl` is both Common Lisp and OpenCL C kernels. A cheap look at the first
+/// few KB settles it: OpenCL kernels use `__kernel`/`__global` qualifiers,
+/// `#pragma OPENCL`, `#include`/`#define` and C comments, Lisp files open with
+/// `;` comments and `(in-package`/`(defun` forms. OpenCL maps to C, whose
+/// grammar parses kernels well (the qualifiers are plain identifiers to it).
+pub fn sniff_cl(source: &str) -> Language {
+    let head = sniff_prefix(source, 4096);
+    let lower = head.to_ascii_lowercase();
+    let mut opencl = 0usize;
+    let mut lisp = 0usize;
+    for marker in [
+        "__kernel",
+        "kernel void",
+        "#pragma opencl",
+        "__global",
+        "__local",
+        "__constant",
+        "get_global_id",
+        "get_local_id",
+    ] {
+        if lower.contains(marker) {
+            opencl += 3;
+        }
+    }
+    for marker in [
+        "(defun",
+        "(in-package",
+        "(defpackage",
+        "(defmacro",
+        "(defvar",
+        "(defparameter",
+        "(defclass",
+        "(defmethod",
+        "(defgeneric",
+        "(defstruct",
+        "(defconstant",
+        "(eval-when",
+        "(asdf:",
+        "(uiop:",
+    ] {
+        if lower.contains(marker) {
+            lisp += 3;
+        }
+    }
+    for line in head.lines() {
+        let t = line.trim_start();
+        if t.starts_with(';') || t.starts_with("#|") || t.starts_with("#+") || t.starts_with("#-") {
+            lisp += 1;
+        } else if t.starts_with("#include")
+            || t.starts_with("#define")
+            || t.starts_with("#if")
+            || t.starts_with("//")
+            || t.starts_with("/*")
+        {
+            opencl += 1;
+        }
+    }
+    if opencl > lisp {
+        Language::C
+    } else {
+        Language::CommonLisp
+    }
+}
+
+/// `.sls` is both an R6RS Scheme library and a SaltStack state (YAML with
+/// Jinja). Scheme opens with a form, a `;` comment, a `#|` block comment or
+/// `#!r6rs`; a Salt state opens with a key, a Jinja tag, a `#` comment or a
+/// `#!jinja|yaml` renderer line.
+pub fn sniff_sls(source: &str) -> Language {
+    for line in sniff_prefix(source, 4096).lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if let Some(directive) = t.strip_prefix("#!") {
+            let d = directive.to_ascii_lowercase();
+            let salt_renderer = ["yaml", "jinja", "mako", "json", "py", "gpg", "stateconf"]
+                .iter()
+                .any(|r| d.contains(r));
+            return if salt_renderer {
+                Language::Yaml
+            } else {
+                Language::Scheme
+            };
+        }
+        if t.starts_with("#|") || t.starts_with('(') || t.starts_with(';') {
+            return Language::Scheme;
+        }
+        if t.starts_with('#') {
+            continue;
+        }
+        return Language::Yaml;
+    }
+    Language::Scheme
 }
 
 /// Check if a language is a text/config format (not code parsed with tree-sitter).
@@ -112,6 +240,7 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::C => tree_sitter_c::LANGUAGE.into(),
         Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
         Language::Cuda => tree_sitter_cuda::LANGUAGE.into(),
+        Language::Solidity => tree_sitter_solidity::LANGUAGE.into(),
         Language::Ruby => tree_sitter_ruby::LANGUAGE.into(),
         Language::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
         Language::Dart => tree_sitter_dart::LANGUAGE.into(),
@@ -122,6 +251,9 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Php => tree_sitter_php::LANGUAGE_PHP.into(),
         Language::Lua => tree_sitter_lua::LANGUAGE.into(),
         Language::Elixir => tree_sitter_elixir::LANGUAGE.into(),
+        Language::Scheme => tree_sitter_scheme::LANGUAGE.into(),
+        Language::Racket => tree_sitter_racket::LANGUAGE.into(),
+        Language::CommonLisp => tree_sitter_commonlisp::LANGUAGE_COMMONLISP.into(),
         Language::Haskell => tree_sitter_haskell::LANGUAGE.into(),
         Language::Ocaml => tree_sitter_ocaml::LANGUAGE_OCAML.into(),
         Language::R => tree_sitter_r::LANGUAGE.into(),
@@ -137,6 +269,7 @@ pub fn get_tree_sitter_language(lang: Language) -> TsLanguage {
         Language::Css => tree_sitter_css::LANGUAGE.into(),
         // Terraform / HCL uses tree-sitter-hcl
         Language::Terraform => tree_sitter_hcl::LANGUAGE.into(),
+        Language::Nix => tree_sitter_nix::LANGUAGE.into(),
         // Ops / build / API-schema formats
         Language::Shell => tree_sitter_bash::LANGUAGE.into(),
         Language::Powershell => tree_sitter_powershell::LANGUAGE.into(),
@@ -251,6 +384,118 @@ mod tests {
         assert_eq!(
             detect_language(Path::new("header.hxx")),
             Some(Language::Cpp)
+        );
+    }
+
+    #[test]
+    fn test_detect_language_lisps() {
+        for (file, lang) in [
+            ("lib.scm", Language::Scheme),
+            ("chez.ss", Language::Scheme),
+            ("srfi.sld", Language::Scheme),
+            ("r6rs.sls", Language::Scheme),
+            ("MAIN.SCM", Language::Scheme),
+            ("main.rkt", Language::Racket),
+            ("load.rktl", Language::Racket),
+            ("MAIN.RKT", Language::Racket),
+            ("utils.lisp", Language::CommonLisp),
+            ("old.lsp", Language::CommonLisp),
+            ("app.asd", Language::CommonLisp),
+            ("kernel.cl", Language::CommonLisp),
+            ("UTILS.LISP", Language::CommonLisp),
+        ] {
+            assert_eq!(detect_language(Path::new(file)), Some(lang), "{file}");
+            assert!(!is_text_format(lang));
+        }
+    }
+
+    #[test]
+    fn test_detect_language_nix_and_solidity() {
+        assert_eq!(
+            detect_language(Path::new("default.nix")),
+            Some(Language::Nix)
+        );
+        assert_eq!(detect_language(Path::new("FLAKE.NIX")), Some(Language::Nix));
+        assert_eq!(
+            detect_language(Path::new("Token.sol")),
+            Some(Language::Solidity)
+        );
+        assert_eq!(
+            detect_language(Path::new("TOKEN.SOL")),
+            Some(Language::Solidity)
+        );
+        assert!(!is_text_format(Language::Nix));
+        assert!(!is_text_format(Language::Solidity));
+    }
+
+    #[test]
+    fn test_sniff_cl_opencl() {
+        let kernel = r#"/* Box blur */
+#include "common.h"
+
+__kernel void blur(__global const float *in, __global float *out, const int w)
+{
+  const int x = get_global_id(0);
+  out[x] = (in[x - 1] + in[x] + in[x + 1]) / 3.0f;
+}
+"#;
+        let path = Path::new("blur.cl");
+        assert_eq!(sniff_cl(kernel), Language::C);
+        assert_eq!(
+            refine_language(path, kernel, Language::CommonLisp),
+            Language::C
+        );
+        let plain = "kernel void add(global int *a) { a[get_global_id(0)] += 1; }\n";
+        assert_eq!(sniff_cl(plain), Language::C);
+        let pragma = "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
+        assert_eq!(sniff_cl(pragma), Language::C);
+    }
+
+    #[test]
+    fn test_sniff_cl_common_lisp() {
+        let lisp = r#";;;; utils.cl
+(in-package :cl-user)
+
+(defun square (x)
+  "Square X."
+  (* x x))
+"#;
+        let path = Path::new("utils.cl");
+        assert_eq!(sniff_cl(lisp), Language::CommonLisp);
+        assert_eq!(
+            refine_language(path, lisp, Language::CommonLisp),
+            Language::CommonLisp
+        );
+        // Upper-case code and a reader conditional, no comments.
+        assert_eq!(sniff_cl("#+SBCL\n(DEFUN F () 1)\n"), Language::CommonLisp);
+        // An empty file keeps the path's language.
+        assert_eq!(sniff_cl(""), Language::CommonLisp);
+        // An explicit language from the caller is kept.
+        assert_eq!(refine_language(path, lisp, Language::C), Language::C);
+        // Other extensions are never sniffed.
+        assert_eq!(
+            refine_language(
+                Path::new("a.lisp"),
+                "__kernel void f() {}",
+                Language::CommonLisp
+            ),
+            Language::CommonLisp
+        );
+    }
+
+    #[test]
+    fn test_sniff_sls() {
+        let r6rs = "#!r6rs\n(library (stack) (export) (import (rnrs)))\n";
+        assert_eq!(sniff_sls(r6rs), Language::Scheme);
+        assert_eq!(sniff_sls(";; lib\n(library (x))\n"), Language::Scheme);
+        let salt = "# Install nginx\nnginx:\n  pkg.installed: []\n";
+        assert_eq!(sniff_sls(salt), Language::Yaml);
+        let jinja = "{% set port = 80 %}\nnginx:\n  service.running\n";
+        assert_eq!(sniff_sls(jinja), Language::Yaml);
+        assert_eq!(sniff_sls("#!jinja|yaml\nfoo:\n  bar\n"), Language::Yaml);
+        assert_eq!(
+            refine_language(Path::new("init.sls"), salt, Language::Scheme),
+            Language::Yaml
         );
     }
 

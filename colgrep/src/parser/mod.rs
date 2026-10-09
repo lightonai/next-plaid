@@ -17,6 +17,8 @@ mod call_graph;
 mod extract;
 mod html;
 mod language;
+mod lisp;
+mod nix;
 mod qml;
 mod svelte;
 mod text;
@@ -66,6 +68,7 @@ fn is_abstract_type_container(kind: &str, lang: Language) -> bool {
             "interface_declaration" | "trait_declaration" | "enum_declaration"
         ),
         Language::Cpp | Language::Cuda => kind == "enum_specifier",
+        Language::Solidity => matches!(kind, "interface_declaration" | "enum_declaration"),
         Language::Dart => kind == "type_alias",
         _ => false,
     }
@@ -132,6 +135,10 @@ pub(crate) fn max_recursion_depth() -> usize {
 /// # Returns
 /// A vector of `CodeUnit` instances covering the entire file
 pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit> {
+    // Extensions shared by unrelated languages (`.cl`, `.sls`) are settled
+    // from the content.
+    let lang = language::refine_language(path, source, lang);
+
     // Handle text formats separately (no tree-sitter parsing)
     if is_text_format(lang) {
         return extract_text_units(path, source, lang);
@@ -149,6 +156,18 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
 
     if lang == Language::Qml {
         return qml::extract_qml_units(path, source);
+    }
+
+    // S-expression languages are split by head symbol, not node kind
+    if matches!(
+        lang,
+        Language::Scheme | Language::Racket | Language::CommonLisp
+    ) {
+        return lisp::extract_lisp_units(path, source, lang);
+    }
+
+    if lang == Language::Nix {
+        return nix::extract_nix_units(path, source);
     }
 
     // Handle HTML files with special extraction logic

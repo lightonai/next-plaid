@@ -17,6 +17,17 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         Language::Go => kind == "function_declaration" || kind == "method_declaration",
         Language::Java => kind == "method_declaration" || kind == "constructor_declaration",
         Language::C | Language::Cpp | Language::Cuda => kind == "function_definition",
+        // Events and custom errors are declared like functions (a name and a
+        // parameter list) and are searched for like them.
+        Language::Solidity => matches!(
+            kind,
+            "function_definition"
+                | "modifier_definition"
+                | "constructor_definition"
+                | "fallback_receive_definition"
+                | "event_definition"
+                | "error_declaration"
+        ),
         Language::Ruby => kind == "method" || kind == "singleton_method",
         Language::CSharp => kind == "method_declaration" || kind == "constructor_declaration",
         Language::Dart => matches!(
@@ -77,6 +88,14 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
         Language::Cpp | Language::Cuda => matches!(
             kind,
             "class_specifier" | "struct_specifier" | "enum_specifier"
+        ),
+        Language::Solidity => matches!(
+            kind,
+            "contract_declaration"
+                | "interface_declaration"
+                | "library_declaration"
+                | "struct_declaration"
+                | "enum_declaration"
         ),
         Language::Ruby => kind == "class" || kind == "module",
         Language::CSharp => matches!(
@@ -199,6 +218,12 @@ pub fn is_constant_node(kind: &str, lang: Language) -> bool {
             "static_final_declaration_list" | "initialized_identifier_list" | "identifier_list"
         ),
         Language::C | Language::Cpp | Language::Cuda => kind == "declaration",
+        // File-level constants and user-defined value types
+        // (`type Currency is address;`); state variables live in contracts.
+        Language::Solidity => matches!(
+            kind,
+            "constant_variable_declaration" | "user_defined_type_definition"
+        ),
         Language::Python => {
             // Python doesn't have const, but we capture module-level assignments
             // We'll filter for UPPER_CASE names in extract_constant
@@ -244,6 +269,7 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
             })
         }),
         Language::Go => node.child_by_field_name("type"),
+        Language::Solidity => node.child_by_field_name("body"),
         Language::Cpp | Language::Cuda => {
             // Look for field_declaration_list in class_specifier
             for child in node.children(&mut node.walk()) {
@@ -424,6 +450,20 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("property")),
         Language::Dart => return get_dart_node_name(node, bytes),
+        // Constructors, `receive()` and `fallback()` have no name field: the
+        // keyword is the name.
+        Language::Solidity => match node.kind() {
+            "constructor_definition" => return Some("constructor".to_string()),
+            "fallback_receive_definition" => {
+                return node
+                    .children(&mut node.walk())
+                    .map(|c| c.kind())
+                    .find(|k| matches!(*k, "receive" | "fallback"))
+                    .map(str::to_string)
+                    .or_else(|| Some("fallback".to_string()));
+            }
+            _ => node.child_by_field_name("name"),
+        },
         Language::C | Language::Cpp | Language::Cuda => {
             // For classes/structs/unions/enums, look for name field or type_identifier
             if matches!(
@@ -790,6 +830,10 @@ pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: 
             // TypeScript/JavaScript/Vue/Svelte: @decorator (when using decorators), or /** JSDoc */
             Language::TypeScript | Language::JavaScript | Language::Vue | Language::Svelte => {
                 line.starts_with('@') || line.starts_with("/**") || line.starts_with("*")
+            }
+            // Solidity: NatSpec /// lines and /** */ blocks
+            Language::Solidity => {
+                line.starts_with("///") || line.starts_with("/**") || line.starts_with('*')
             }
             // Go: // doc comments (by convention, comments immediately preceding a declaration)
             Language::Go => line.starts_with("//"),

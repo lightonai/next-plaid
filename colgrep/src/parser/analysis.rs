@@ -267,6 +267,14 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
                 Some(doc_lines.join(" "))
             }
         }
+        // NatSpec comments are C-style; drop the tags that only say where the
+        // text goes (`@notice`, `@dev`, `@title`) and the block's closing `/`.
+        Language::Solidity => extract_docstring(node, lines, Language::C).map(|doc| {
+            let doc = doc.trim_end_matches('/').trim();
+            ["@notice ", "@dev ", "@title "]
+                .iter()
+                .fold(doc.to_string(), |d, tag| d.replace(tag, ""))
+        }),
         Language::C | Language::Cpp | Language::Cuda => {
             // Look for /* */ block comments or /// doc comments
             let start_row = node.start_position().row;
@@ -486,6 +494,10 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
             // Return the node itself and handle parameter extraction in the loop below
             Some(node)
         }
+        // Solidity: `parameter` / `event_parameter` / `error_parameter` are
+        // direct children of the definition (the return parameters sit
+        // inside `return_type_definition`).
+        Language::Solidity => Some(node),
         Language::Scala => {
             // Scala has both type_parameters and parameters with the same field name
             // We need to find the actual parameters node (not type_parameters)
@@ -520,7 +532,7 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
         // For OCaml, parameters are direct children with kind "parameter"
         // Also handle "typed" for typed parameters like (a : int)
         if kind.contains("parameter")
-            || kind == "identifier"
+            || (kind == "identifier" && lang != Language::Solidity)
             || (lang == Language::Ocaml && kind == "typed")
         {
             // Go: handle grouped parameters like `a, b int`
@@ -642,6 +654,21 @@ pub fn extract_return_type(node: Node, bytes: &[u8], lang: Language) -> Option<S
         Language::Go => node.child_by_field_name("result"),
         Language::Java | Language::CSharp => node.child_by_field_name("type"),
         Language::Cpp | Language::Cuda | Language::C => node.child_by_field_name("type"),
+        // `returns (uint256 amount0, uint256 amount1)` -> `uint256 amount0, uint256 amount1`
+        Language::Solidity => {
+            let text = node
+                .child_by_field_name("return_type")?
+                .utf8_text(bytes)
+                .ok()?;
+            let inner = text.trim().trim_start_matches("returns").trim();
+            let inner = inner
+                .strip_prefix('(')
+                .and_then(|t| t.strip_suffix(')'))
+                .unwrap_or(inner)
+                .trim();
+            return (!inner.is_empty())
+                .then(|| inner.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
         Language::Dart => {
             let signature = find_first_by_kinds(
                 node,
@@ -767,6 +794,15 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
         Language::Go => &["call_expression"],
         Language::Java | Language::CSharp => &["method_invocation", "object_creation_expression"],
         Language::C | Language::Cpp | Language::Cuda => &["call_expression"],
+        // Events emitted, errors reverted with and modifiers applied are
+        // recorded as calls, linking them to their declarations.
+        Language::Solidity => &[
+            "call_expression",
+            "emit_statement",
+            "revert_statement",
+            "modifier_invocation",
+            "new_expression",
+        ],
         Language::Ruby => &["call", "method_call"],
         Language::Kotlin => &["call_expression", "navigation_expression"],
         Language::Swift => &["call_expression"],
@@ -785,19 +821,28 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
                 .child_by_field_name("function")
                 .or_else(|| current.child_by_field_name("name"))
                 .or_else(|| current.child_by_field_name("method"))
+                .or_else(|| current.child_by_field_name("error"))
                 .or_else(|| current.child(0))
             {
                 if let Ok(text) = name_node.utf8_text(bytes) {
+                    // Solidity call options: `addr.call{value: v}("")`
+                    let text = if lang == Language::Solidity {
+                        text.split('{').next().unwrap_or(text).trim()
+                    } else {
+                        text
+                    };
                     #[allow(clippy::double_ended_iterator_last)]
                     let name = text.split('.').last().unwrap_or(text);
                     #[allow(clippy::double_ended_iterator_last)]
                     let name = name.split("::").last().unwrap_or(name);
                     let name = name.trim_end_matches('!');
+                    // Solidity's internal functions are `_`-prefixed by
+                    // convention (`_transfer`, `_mint`).
                     if !name.is_empty()
                         && name
                             .chars()
                             .next()
-                            .map(|c| c.is_alphabetic())
+                            .map(|c| c.is_alphabetic() || (c == '_' && lang == Language::Solidity))
                             .unwrap_or(false)
                     {
                         calls.push(name.to_string());
@@ -877,6 +922,7 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
         ],
         Language::Java | Language::CSharp => &["variable_declarator", "local_variable_declaration"],
         Language::C | Language::Cpp | Language::Cuda => &["declaration", "init_declarator"],
+        Language::Solidity => &["variable_declaration"],
         Language::Ruby => &["assignment"],
         Language::Kotlin => &["property_declaration", "variable_declaration"],
         Language::Swift => &["property_declaration", "constant_declaration"],
@@ -1006,10 +1052,65 @@ fn extract_dart_imports(node: Node, bytes: &[u8]) -> Vec<String> {
     imports
 }
 
+/// Solidity imports, as the names they bring into scope:
+/// `import {IERC20, IERC20Metadata} from "./IERC20.sol";` -> IERC20, IERC20Metadata;
+/// `import "./Context.sol";` -> Context; `import * as Math from "./Math.sol";` -> Math.
+fn extract_solidity_imports(node: Node, bytes: &[u8]) -> Vec<String> {
+    let mut imports = Vec::new();
+    for child in node.children(&mut node.walk()) {
+        if child.kind() != "import_directive" {
+            continue;
+        }
+        let mut cursor = child.walk();
+        let mut names: Vec<String> = child
+            .children_by_field_name("alias", &mut cursor)
+            .chain(child.children_by_field_name("import_name", &mut child.walk()))
+            .filter_map(|n| n.utf8_text(bytes).ok().map(str::to_string))
+            .collect();
+        if names.is_empty() {
+            // `import {A} from "x"` exposes no fields in some grammar
+            // versions: take the identifiers directly.
+            names = child
+                .children(&mut child.walk())
+                .filter(|c| c.kind() == "identifier")
+                .filter_map(|n| n.utf8_text(bytes).ok().map(str::to_string))
+                .collect();
+        }
+        if names.is_empty() {
+            if let Some(source) = child
+                .child_by_field_name("source")
+                .or_else(|| {
+                    child
+                        .children(&mut child.walk())
+                        .find(|c| c.kind() == "string")
+                })
+                .and_then(|s| s.utf8_text(bytes).ok())
+            {
+                let file = source.trim_matches(|c| c == '"' || c == '\'');
+                let stem = file
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(file)
+                    .trim_end_matches(".sol");
+                if !stem.is_empty() {
+                    names.push(stem.to_string());
+                }
+            }
+        }
+        imports.extend(names);
+    }
+    imports.sort();
+    imports.dedup();
+    imports
+}
+
 /// Extract import statements from a file.
 pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<String> {
     if lang == Language::Dart {
         return extract_dart_imports(node, bytes);
+    }
+    if lang == Language::Solidity {
+        return extract_solidity_imports(node, bytes);
     }
 
     let mut imports = Vec::new();
@@ -1320,6 +1421,7 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         Language::Scala => &["field_expression"],
         Language::Kotlin => &["navigation_expression"],
         Language::C | Language::Cpp | Language::Cuda => &["field_expression"],
+        Language::Solidity => &["member_expression"],
         Language::Ruby => &["call"],
         Language::Swift => &["navigation_expression"],
         Language::Php => &[
@@ -1388,7 +1490,8 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                     Language::JavaScript
                     | Language::TypeScript
                     | Language::Vue
-                    | Language::Svelte => node.child_by_field_name("object"),
+                    | Language::Svelte
+                    | Language::Solidity => node.child_by_field_name("object"),
                     Language::Rust => node.child_by_field_name("value"),
                     Language::Go => node.child_by_field_name("operand"),
                     Language::Java | Language::CSharp => node
@@ -1591,6 +1694,20 @@ pub fn extract_parent_class(
                 }
             }
             None
+        }
+
+        // Solidity: contract ERC20 is Context, IERC20 -> every ancestor
+        Language::Solidity => {
+            let ancestors: Vec<String> = node
+                .children(&mut node.walk())
+                .filter(|c| c.kind() == "inheritance_specifier")
+                .filter_map(|c| {
+                    c.child_by_field_name("ancestor")
+                        .and_then(|a| a.utf8_text(bytes).ok())
+                        .map(str::to_string)
+                })
+                .collect();
+            (!ancestors.is_empty()).then(|| ancestors.join(", "))
         }
 
         // C++: class Dog : public Animal -> base_class_clause -> type_identifier
