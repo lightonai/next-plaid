@@ -222,6 +222,27 @@ pub fn extract_docstring(node: Node, lines: &[&str], lang: Language) -> Option<S
             }
             None
         }
+        Language::Gleam => {
+            // `///` item docs, possibly above `@external(...)` attributes;
+            // `////` is the module doc.
+            let mut doc_lines = Vec::new();
+            let start_row = node.start_position().row;
+            for i in (0..start_row).rev() {
+                let line = lines.get(i)?.trim();
+                if line.starts_with("///") && !line.starts_with("////") {
+                    doc_lines.insert(0, line.trim_start_matches("///").trim());
+                } else if line.starts_with('@') && doc_lines.is_empty() {
+                    continue;
+                } else {
+                    break;
+                }
+            }
+            if doc_lines.is_empty() {
+                None
+            } else {
+                Some(doc_lines.join(" "))
+            }
+        }
         Language::Swift | Language::Dart => {
             // Swift and Dart use /// doc comments (like Rust)
             let mut doc_lines = Vec::new();
@@ -492,7 +513,7 @@ pub fn extract_parameters(node: Node, bytes: &[u8], lang: Language) -> Vec<Strin
             node.children(&mut node.walk())
                 .find(|child| child.kind() == "parameters")
         }
-        Language::Php | Language::Lua | Language::Elixir | Language::Haskell => {
+        Language::Php | Language::Lua | Language::Elixir | Language::Haskell | Language::Gleam => {
             node.child_by_field_name("parameters")
         }
         Language::Ocaml => {
@@ -640,6 +661,7 @@ pub fn extract_return_type(node: Node, bytes: &[u8], lang: Language) -> Option<S
             node.child_by_field_name("return_type")
         }
         Language::Go => node.child_by_field_name("result"),
+        Language::Gleam => node.child_by_field_name("return_type"),
         Language::Java | Language::CSharp => node.child_by_field_name("type"),
         Language::Cpp | Language::Cuda | Language::C => node.child_by_field_name("type"),
         Language::Dart => {
@@ -774,6 +796,7 @@ pub fn extract_function_calls(node: Node, bytes: &[u8], lang: Language) -> Vec<S
         Language::Php => &["function_call_expression", "method_call_expression"],
         Language::Lua => &["function_call"],
         Language::Elixir => &["call"],
+        Language::Gleam => &["function_call"],
         Language::Haskell => &["function_application"],
         Language::Ocaml => &["application_expression"],
         _ => return calls,
@@ -884,6 +907,7 @@ pub fn extract_variables(node: Node, bytes: &[u8], lang: Language) -> Vec<String
         Language::Php => &["simple_variable"],
         Language::Lua => &["variable_declaration", "local_variable_declaration"],
         Language::Elixir => &["match"],
+        Language::Gleam => &["let"],
         Language::Haskell => &["function_binding"],
         // OCaml: Don't extract let_binding as variable since it's the function definition itself
         Language::Ocaml => &[],
@@ -1030,6 +1054,7 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         Language::Php => &["namespace_use_declaration"],
         Language::Lua => &["function_call"],
         Language::Elixir => &["call"],
+        Language::Gleam => &["import"],
         Language::Haskell => &["import"],
         Language::Ocaml => &["open_module"],
         _ => return imports,
@@ -1167,6 +1192,25 @@ pub fn extract_file_imports(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                 if let Some(pkg) = find_string_content(node, bytes, 0, max_depth) {
                     if !pkg.is_empty() {
                         imports.push(pkg);
+                    }
+                }
+                return;
+            }
+
+            // Gleam: `import gleam/string as str` -> `string` and `str`, the
+            // names the code qualifies calls with.
+            if lang == Language::Gleam {
+                if let Some(module) = node.child_by_field_name("module") {
+                    if let Ok(text) = module.utf8_text(bytes) {
+                        let last = text.rsplit('/').next().unwrap_or(text);
+                        if !last.is_empty() {
+                            imports.push(last.to_string());
+                        }
+                    }
+                }
+                if let Some(alias) = node.child_by_field_name("alias") {
+                    if let Ok(text) = alias.utf8_text(bytes) {
+                        imports.push(text.to_string());
                     }
                 }
                 return;
@@ -1329,6 +1373,7 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
         ],
         Language::Lua => &["dot_index_expression", "method_index_expression"],
         Language::Ocaml => &["field_get_expression", "value_path"],
+        Language::Gleam => &["field_access"],
         _ => return modules,
     };
 
@@ -1397,6 +1442,7 @@ pub fn extract_used_modules(node: Node, bytes: &[u8], lang: Language) -> Vec<Str
                     Language::Scala => node.child_by_field_name("value"),
                     Language::Kotlin => node.named_child(0), // First child of navigation_expression
                     Language::Ruby => node.child_by_field_name("receiver"),
+                    Language::Gleam => node.child_by_field_name("record"),
                     Language::Ocaml => {
                         // OCaml value_path has module_path -> module_name
                         fn find_module_name<'a>(

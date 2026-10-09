@@ -13,8 +13,13 @@
 // Submodules
 mod analysis;
 mod ast;
+mod builder;
 mod call_graph;
+mod clojure;
+mod elm;
+mod erlang;
 mod extract;
+mod fsharp;
 mod html;
 mod language;
 mod qml;
@@ -41,7 +46,7 @@ pub use types::{CodeUnit, Language, UnitType};
 use analysis::extract_file_imports;
 use ast::{find_class_body, get_node_name, is_class_node, is_constant_node, is_function_node};
 use extract::{extract_class, extract_constant, extract_function, fill_raw_code_gaps};
-use language::get_tree_sitter_language;
+use language::get_tree_sitter_language_for_path;
 use text::extract_text_units;
 
 /// Abstract type-contract nodes (interfaces, traits, protocols, type aliases,
@@ -158,19 +163,66 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
 
     let mut parser = Parser::new();
     if parser
-        .set_language(&get_tree_sitter_language(lang))
+        .set_language(&get_tree_sitter_language_for_path(lang, path))
         .is_err()
     {
         return Vec::new();
     }
 
-    let tree = match parser.parse(source, None) {
+    // Gleam 1.11 added the `assert <expr>` statement, which the published
+    // grammar does not know; one in a file can derail the parse of the whole
+    // rest of it. Parse a same-length rewrite (`let _= <expr>`) so byte
+    // offsets still match; unit code is taken from the original lines.
+    let compat;
+    let parse_source = if lang == Language::Gleam {
+        compat = gleam_assert_compat(source);
+        compat.as_str()
+    } else {
+        source
+    };
+
+    let tree = match parser.parse(parse_source, None) {
         Some(t) => t,
         None => return Vec::new(),
     };
 
     let lines: Vec<&str> = source.lines().collect();
-    let bytes = source.as_bytes();
+    let bytes = parse_source.as_bytes();
+
+    // Languages whose definitions are not single AST nodes of a known kind
+    // have a dedicated extractor (see builder.rs).
+    let dedicated = match lang {
+        Language::Erlang => Some(erlang::extract_erlang_units(
+            tree.root_node(),
+            path,
+            &lines,
+            bytes,
+        )),
+        Language::Fsharp => Some(fsharp::extract_fsharp_units(
+            tree.root_node(),
+            path,
+            &lines,
+            bytes,
+        )),
+        Language::Clojure => Some(clojure::extract_clojure_units(
+            tree.root_node(),
+            path,
+            &lines,
+            bytes,
+        )),
+        Language::Elm => Some(elm::extract_elm_units(
+            tree.root_node(),
+            path,
+            &lines,
+            bytes,
+        )),
+        _ => None,
+    };
+    if let Some((mut units, file_imports)) = dedicated {
+        fill_raw_code_gaps(&mut units, path, &lines, lang, &file_imports);
+        return units;
+    }
+
     let file_imports = extract_file_imports(tree.root_node(), bytes, lang);
 
     let max_depth = max_recursion_depth();
@@ -203,6 +255,24 @@ pub fn extract_units(path: &Path, source: &str, lang: Language) -> Vec<CodeUnit>
     fill_raw_code_gaps(&mut units, path, &lines, lang, &file_imports);
 
     units
+}
+
+/// Rewrite Gleam `assert <expr>` statements as `let _= <expr>` (same
+/// length), leaving `let assert` and everything else untouched.
+fn gleam_assert_compat(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    for line in source.split_inclusive('\n') {
+        let body = line.trim_start();
+        if let Some(rest) = body.strip_prefix("assert ") {
+            let indent = line.len() - body.len();
+            out.push_str(&line[..indent]);
+            out.push_str("let _= ");
+            out.push_str(rest);
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 /// Recursively extract code units from AST nodes.

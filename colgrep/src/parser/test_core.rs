@@ -790,6 +790,15 @@ fn test_language_from_str() {
     assert_eq!(Language::from_str("c++"), Ok(Language::Cpp));
     assert_eq!(Language::from_str("cuda"), Ok(Language::Cuda));
     assert_eq!(Language::from_str("cu"), Ok(Language::Cuda));
+    assert_eq!(Language::from_str("erlang"), Ok(Language::Erlang));
+    assert_eq!(Language::from_str("erl"), Ok(Language::Erlang));
+    assert_eq!(Language::from_str("fsharp"), Ok(Language::Fsharp));
+    assert_eq!(Language::from_str("F#"), Ok(Language::Fsharp));
+    assert_eq!(Language::from_str("fs"), Ok(Language::Fsharp));
+    assert_eq!(Language::from_str("clojure"), Ok(Language::Clojure));
+    assert_eq!(Language::from_str("clj"), Ok(Language::Clojure));
+    assert_eq!(Language::from_str("elm"), Ok(Language::Elm));
+    assert_eq!(Language::from_str("Gleam"), Ok(Language::Gleam));
 
     assert_eq!(Language::from_str("csharp"), Ok(Language::CSharp));
     assert_eq!(Language::from_str("c#"), Ok(Language::CSharp));

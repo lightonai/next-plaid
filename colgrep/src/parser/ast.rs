@@ -34,6 +34,8 @@ pub fn is_function_node(kind: &str, lang: Language) -> bool {
         Language::Php => matches!(kind, "function_definition" | "method_declaration"),
         Language::Lua => kind == "function_declaration",
         Language::Elixir => matches!(kind, "call" | "anonymous_function"), // def/defp are calls in elixir
+        // Gleam: `pub fn` / `fn`, including bodyless `@external` functions.
+        Language::Gleam => kind == "function",
         Language::Haskell => kind == "function",
         Language::Ocaml => matches!(kind, "let_binding" | "value_definition"),
         Language::R => kind == "function_definition",
@@ -121,6 +123,8 @@ pub fn is_class_node(kind: &str, lang: Language) -> bool {
         ),
         Language::Lua => false,             // Lua doesn't have classes
         Language::Elixir => kind == "call", // defmodule is a call
+        // Gleam custom types (`pub type User { ... }`) and aliases.
+        Language::Gleam => matches!(kind, "type_definition" | "type_alias"),
         Language::Haskell => matches!(kind, "type_alias" | "newtype" | "adt"),
         Language::Ocaml => matches!(kind, "type_definition" | "module_definition"),
         Language::R => false, // R doesn't have traditional classes
@@ -209,7 +213,8 @@ pub fn is_constant_node(kind: &str, lang: Language) -> bool {
         Language::Scala => matches!(kind, "val_definition" | "var_definition"),
         Language::Php => kind == "const_declaration",
         Language::Elixir => kind == "unary_operator", // @ for module attributes
-        Language::Haskell => kind == "function",      // top-level bindings
+        Language::Gleam => kind == "constant",
+        Language::Haskell => kind == "function", // top-level bindings
         Language::Ocaml => kind == "let_binding",
         Language::R => kind == "left_assignment" || kind == "equals_assignment", // x <- value or x = value
         Language::Zig => kind == "VarDecl", // const/var declarations
@@ -259,6 +264,8 @@ pub fn find_class_body(node: Node, lang: Language) -> Option<Node> {
             node.child_by_field_name("body")
         }
         Language::Elixir => node.child_by_field_name("body"),
+        // Gleam types hold constructors, not functions.
+        Language::Gleam => None,
         Language::Haskell | Language::Ocaml => node.child_by_field_name("body"),
         Language::R => None, // R doesn't have class bodies
         Language::Zig => node.child_by_field_name("body"),
@@ -465,6 +472,13 @@ pub fn get_node_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             node.child_by_field_name("target")
                 .or_else(|| node.child_by_field_name("name"))
         }
+        // Functions and constants carry a `name` field; types keep it under
+        // `type_name` (`pub type User(a)` -> `User`).
+        Language::Gleam => node.child_by_field_name("name").or_else(|| {
+            node.children(&mut node.walk())
+                .find(|c| c.kind() == "type_name")
+                .and_then(|t| t.child_by_field_name("name"))
+        }),
         Language::Ocaml => node
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("pattern")),
@@ -785,6 +799,11 @@ pub fn find_start_with_attributes(node_start_line: usize, lines: &[&str], lang: 
             Language::Java | Language::Kotlin | Language::Scala => line.starts_with('@'),
             // Dart: metadata annotations and /// documentation comments
             Language::Dart => line.starts_with('@') || line.starts_with("///"),
+            // Gleam: `@external(...)` / `@deprecated(...)` attributes and `///`
+            // doc comments (`////` is the module doc, not the item's).
+            Language::Gleam => {
+                line.starts_with('@') || (line.starts_with("///") && !line.starts_with("////"))
+            }
             // C#: [Attribute]
             Language::CSharp => line.starts_with('[') && line.ends_with(']'),
             // TypeScript/JavaScript/Vue/Svelte: @decorator (when using decorators), or /** JSDoc */

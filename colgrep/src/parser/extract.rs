@@ -563,6 +563,10 @@ fn get_constant_name(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             }
             None
         }
+        Language::Gleam => node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map(|s| s.to_string()),
         Language::Haskell | Language::Ocaml => node
             .child_by_field_name("name")
             .or_else(|| node.child_by_field_name("pattern"))
@@ -612,6 +616,10 @@ fn get_constant_type(node: Node, bytes: &[u8], lang: Language) -> Option<String>
             }
             None
         }
+        Language::Gleam => node
+            .child_by_field_name("type")
+            .and_then(|n| n.utf8_text(bytes).ok())
+            .map(|s| s.to_string()),
         Language::Python => {
             let assignment = node.child(0)?;
             if assignment.kind() == "assignment" {
