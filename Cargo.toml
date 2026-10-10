@@ -4,7 +4,7 @@ exclude = ["vendor"]
 resolver = "2"
 
 [workspace.package]
-version = "1.8.4"
+version = "1.8.5"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/lightonai/next-plaid"
@@ -56,18 +56,18 @@ Multi-vector database with REST API. Run with Docker:
 
 **CPU:**
 ```bash
-docker pull ghcr.io/lightonai/next-plaid:cpu-1.8.4
+docker pull ghcr.io/lightonai/next-plaid:cpu-1.8.5
 docker run -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cpu-1.8.4 \
+  ghcr.io/lightonai/next-plaid:cpu-1.8.5 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/answerai-colbert-small-v1-onnx --int8
 ```
 
 **GPU (CUDA):**
 ```bash
-docker pull ghcr.io/lightonai/next-plaid:cuda-1.8.4
+docker pull ghcr.io/lightonai/next-plaid:cuda-1.8.5
 docker run --gpus all -p 8080:8080 -v ~/.local/share/next-plaid:/data/indices \
-  ghcr.io/lightonai/next-plaid:cuda-1.8.4 \
+  ghcr.io/lightonai/next-plaid:cuda-1.8.5 \
   --host 0.0.0.0 --port 8080 --index-dir /data/indices \
   --model lightonai/GTE-ModernColBERT-v1 --cuda
 ```
