@@ -183,7 +183,7 @@ On a terminal, progress lines (the agent's searches and reads, then a summary wi
 
 The model downloads on first use; `colgrep --install-agent` fetches it ahead of time, checks that it loads, and prepares the cache of the prompt every question starts with, so the first question is as fast as the next ones.
 
-Once the model is downloaded (or an endpoint is configured), colgrep's Claude Code hooks also tell the coding agent about `colgrep --agent`, so it can delegate open-ended "where is X handled?" questions to it. Until then the hooks don't mention it.
+Once the model is downloaded (or an endpoint is configured), colgrep's Claude Code hooks also tell the coding agent about `colgrep --agent`, so it can delegate open-ended "where is X handled?" questions to it. Until then the hooks don't mention it. How much the hooks push the agent is a setting, see [Hook mode](#hook-mode).
 
 How it works:
 
@@ -343,6 +343,9 @@ colgrep settings --k 20
 # Set default context lines
 colgrep settings --n 10
 
+# What the Claude Code hooks advertise: hybrid (default), agent or colgrep
+colgrep settings --hook-mode agent
+
 # Use INT8 quantized model (faster inference)
 colgrep settings --int8
 
@@ -445,6 +448,34 @@ Trade-offs to know about:
   search quality on your repo before adopting it, or pair `--binary` with a
   higher-dimension model.
 
+### Hook mode
+
+`colgrep settings --hook-mode` chooses what colgrep's Claude Code hooks tell the coding agent to search with:
+
+| Mode | The hooks tell the coding agent to use |
+|---|---|
+| `hybrid` (default) | plain `colgrep` for names, error messages and patterns, and `colgrep --agent` as a first step for questions about behaviour |
+| `agent` | `colgrep --agent` as its search tool |
+| `colgrep` | plain `colgrep` only, never `colgrep --agent` |
+
+```bash
+colgrep settings --hook-mode agent     # delegate code search to colgrep --agent
+colgrep settings --hook-mode colgrep   # plain colgrep only
+colgrep settings --hook-mode default   # back to hybrid
+```
+
+`colgrep --agent` is only mentioned once its model is downloaded (or an endpoint is configured): until then, `hybrid` and `agent` behave like `colgrep`. The mode applies to new sessions.
+
+Measured with a coding agent (Sonnet 5.5) on 52 code-search questions over 13 repositories, 3 runs each:
+
+| | `colgrep` | `hybrid` | `agent` |
+|---|---|---|---|
+| Sessions that call `colgrep --agent` | 0% | 51% | 100% |
+| Tokens vs. no colgrep | −25% | −21% | −34% |
+| Time per question (13.0 s without colgrep) | 15.0 s | 17.7 s | 21.6 s |
+
+`agent` uses the fewest tokens, `colgrep` is the fastest, and `hybrid` lets the coding agent choose; the differences in answer accuracy were not significant.
+
 ### Hybrid Search
 
 By default, colgrep fuses ColBERT semantic search with FTS5 trigram keyword search using Reciprocal Rank Fusion (RRF). This improves recall for exact identifier matches with negligible indexing overhead. You can disable it persistently:
@@ -545,6 +576,7 @@ The Claude Code integration installs session and task hooks that:
 - Inject colgrep usage instructions into the agent's system prompt
 - Activate when the project (or a parent) already has a colgrep index, even an outdated one, or when it has fewer than 5,000 code blocks, small enough to index on the first search. The count stops at 5,000 and within one second, so it stays instant on huge repositories.
 - Propagate colgrep instructions to spawned sub-agents via task hooks
+- Follow the [hook mode](#hook-mode): plain `colgrep`, `colgrep --agent`, or both (the default)
 
 This means Claude Code automatically uses `colgrep` as its primary search tool wherever it is ready to answer.
 

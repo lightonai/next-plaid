@@ -117,6 +117,7 @@ pub fn cmd_config(
     no_relative_paths: bool,
     hybrid_search: bool,
     no_hybrid_search: bool,
+    hook_mode: Option<String>,
     alpha: Option<f32>,
     binary: bool,
     no_binary: bool,
@@ -163,6 +164,7 @@ pub fn cmd_config(
         && !no_relative_paths
         && !hybrid_search
         && !no_hybrid_search
+        && hook_mode.is_none()
         && alpha.is_none()
         && !binary
         && !no_binary
@@ -245,6 +247,13 @@ pub fn cmd_config(
             }
         } else {
             println!("  hybrid:      false");
+        }
+
+        // hook mode
+        if config.hook_mode.is_some() {
+            println!("  hook-mode:   {}", config.hook_mode().as_str());
+        } else {
+            println!("  hook-mode:   {} (default)", config.hook_mode().as_str());
         }
 
         // hybrid alpha
@@ -460,6 +469,27 @@ pub fn cmd_config(
     } else if no_hybrid_search {
         config.set_hybrid_search(false);
         println!("✅ Disabled hybrid search (pure semantic search mode)");
+        changed = true;
+    }
+
+    // Set or clear the hook mode
+    if let Some(mode) = hook_mode.as_deref() {
+        if mode == "default" {
+            config.clear_hook_mode();
+        } else {
+            config.set_hook_mode(mode.parse().map_err(|e: String| anyhow::anyhow!(e))?);
+        }
+        let what = match config.hook_mode() {
+            colgrep::HookMode::Hybrid => {
+                "plain colgrep, plus colgrep --agent for behaviour questions once installed"
+            }
+            colgrep::HookMode::Agent => "colgrep --agent as the search tool, once installed",
+            colgrep::HookMode::Colgrep => "plain colgrep only",
+        };
+        println!(
+            "✅ Hook mode set to {} ({what})",
+            config.hook_mode().as_str()
+        );
         changed = true;
     }
 
