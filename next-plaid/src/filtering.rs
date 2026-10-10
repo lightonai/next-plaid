@@ -1089,8 +1089,11 @@ fn create_with_fixed_columns(
     }
 
     let db_path = get_db_path(index_path);
+    // Drop any cached reader even when the file is already gone: after the
+    // index directory is deleted, a cached connection still reads the old,
+    // unlinked database.
+    invalidate_read_connection(&db_path);
     if db_path.exists() {
-        invalidate_read_connection(&db_path);
         fs::remove_file(&db_path)?;
     }
 
@@ -1156,8 +1159,11 @@ pub fn create(index_path: &str, metadata: &[Value], doc_ids: &[i64]) -> Result<u
 
     // Remove existing database
     let db_path = get_db_path(index_path);
+    // Drop any cached reader even when the file is already gone: after the
+    // index directory is deleted, a cached connection still reads the old,
+    // unlinked database.
+    invalidate_read_connection(&db_path);
     if db_path.exists() {
-        invalidate_read_connection(&db_path);
         fs::remove_file(&db_path)?;
     }
 
@@ -2726,6 +2732,31 @@ mod tests {
 
         // Verify count
         assert_eq!(count(path).unwrap(), 3);
+    }
+
+    #[test]
+    fn test_create_after_directory_removal_drops_cached_reader() {
+        let dir = setup_test_dir();
+        let path = dir.path().join("index");
+        let path = path.to_str().unwrap();
+
+        let metadata: Vec<Value> = (0..5)
+            .map(|i| json!({"name": format!("old-{i}")}))
+            .collect();
+        let doc_ids: Vec<i64> = (0..5).collect();
+        create(path, &metadata, &doc_ids).unwrap();
+        // Warm the cached read connection for this DB path.
+        assert_eq!(count(path).unwrap(), 5);
+
+        // Delete the whole index directory, as DELETE /indices/{name} does,
+        // then recreate an index with the same name.
+        fs::remove_dir_all(path).unwrap();
+        let metadata = vec![json!({"name": "new-0"}), json!({"name": "new-1"})];
+        create(path, &metadata, &[0, 1]).unwrap();
+
+        assert_eq!(count(path).unwrap(), 2);
+        let rows = get(path, None, &[], None).unwrap();
+        assert_eq!(rows[0]["name"], json!("new-0"));
     }
 
     #[test]
