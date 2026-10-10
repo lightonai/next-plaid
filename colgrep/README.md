@@ -80,6 +80,20 @@ colgrep init -y  # auto-confirm for large codebases (>10K code units)
 colgrep "database connection pooling"
 ```
 
+Each result is a matching code unit, `path:start-end  Name` (up to 3 per file, best first; documents and loose code have no name):
+
+```
+$ colgrep -k 5 "which terminal commands are refused"
+colgrep/README.md:1-953
+agent/src/sandbox.rs:1-22
+agent/src/sandbox.rs:202-236  Sandbox.run
+agent/src/sandbox.rs:3549-3567  fifos_are_refused_not_read
+colgrep/src/commands/agent_ui.rs:516-522  cdata_values_are_unwrapped
+...
+```
+
+`-n N` adds N lines of context around the matching lines, `-c` the code of each unit (up to 50 lines), `-l` only the file names.
+
 No setup, no config, no dependencies. `colgrep init` builds the index for the first time. After that, every search detects file changes and updates the index automatically before returning results. Supports `--model` to override the ColBERT model and `--pool-factor` to control embedding compression.
 
 ---

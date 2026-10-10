@@ -399,7 +399,7 @@ fn location_results(repo_root: &Path, locations: &[Location]) -> Vec<colgrep::Se
                 .get(start - 1..end.min(lines.len()))
                 .map(|l| l.join("\n"))
                 .unwrap_or_default();
-            Some(colgrep::SearchResult { unit, score: 1.0 })
+            Some(colgrep::SearchResult::new(unit, 1.0))
         })
         .collect()
 }
