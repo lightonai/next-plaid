@@ -17,7 +17,9 @@ pub mod ranking;
 pub mod signal;
 pub mod stderr;
 
-pub use config::{Config, DEFAULT_BATCH_SIZE, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_POOL_FACTOR};
+pub use config::{
+    Config, HookMode, DEFAULT_BATCH_SIZE, DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_POOL_FACTOR,
+};
 pub use embed::build_embedding_text;
 pub use index::paths::{
     acquire_index_lock, find_parent_index, get_colgrep_data_dir, get_index_dir_for_project,

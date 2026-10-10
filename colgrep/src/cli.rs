@@ -785,6 +785,13 @@ pub enum Commands {
         #[arg(long = "no-hybrid-search", conflicts_with = "hybrid_search")]
         no_hybrid_search: bool,
 
+        /// What the coding-agent hooks tell the assistant to search with: `hybrid` (plain colgrep,
+        /// plus `colgrep --agent` for behaviour questions once installed; the default),
+        /// `agent` (`colgrep --agent` as the search tool), `colgrep` (plain colgrep only),
+        /// or `default` to reset
+        #[arg(long = "hook-mode", value_name = "MODE", value_parser = ["hybrid", "agent", "colgrep", "default"])]
+        hook_mode: Option<String>,
+
         /// Set hybrid search alpha: balance between keyword (0.0) and semantic (1.0).
         /// Default: 0.75. Use 0 to reset to default.
         #[arg(long, value_name = "FLOAT")]

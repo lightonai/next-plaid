@@ -106,6 +106,44 @@ pub const MAX_PARALLEL_SESSIONS_CPU: usize = 16;
 /// This caps search query encoding threads on high-core-count systems.
 pub const MAX_INTRA_OP_THREADS: usize = 16;
 
+/// What the coding-agent hooks (Claude Code) tell the assistant to search with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HookMode {
+    /// Plain `colgrep` for names and patterns, and `colgrep --agent` (once installed) as a
+    /// first step for questions about behaviour.
+    #[default]
+    Hybrid,
+    /// `colgrep --agent` as the search tool, once installed (plain `colgrep` until then).
+    Agent,
+    /// Plain `colgrep` only; the hooks never mention `colgrep --agent`.
+    Colgrep,
+}
+
+impl HookMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HookMode::Hybrid => "hybrid",
+            HookMode::Agent => "agent",
+            HookMode::Colgrep => "colgrep",
+        }
+    }
+}
+
+impl std::str::FromStr for HookMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "hybrid" => Ok(HookMode::Hybrid),
+            "agent" => Ok(HookMode::Agent),
+            "colgrep" => Ok(HookMode::Colgrep),
+            other => Err(format!(
+                "unknown hook mode `{other}` (expected hybrid, agent or colgrep)"
+            )),
+        }
+    }
+}
+
 /// User configuration stored in the colgrep data directory
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -175,6 +213,10 @@ pub struct Config {
     /// Default: true (enabled). Set to false to use pure semantic search.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hybrid_search: Option<bool>,
+
+    /// What the coding-agent hooks tell the assistant to search with (default: hybrid)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hook_mode: Option<HookMode>,
 
     /// Hybrid search alpha: balance between keyword (0.0) and semantic (1.0).
     /// Default: 0.75 (favors semantic).
@@ -449,6 +491,21 @@ impl Config {
     /// Clear max parser recursion depth setting (revert to default).
     pub fn clear_max_recursion_depth(&mut self) {
         self.max_recursion_depth = None;
+    }
+
+    /// What the coding-agent hooks advertise. Defaults to [`HookMode::Hybrid`].
+    pub fn hook_mode(&self) -> HookMode {
+        self.hook_mode.unwrap_or_default()
+    }
+
+    /// Set the hook mode
+    pub fn set_hook_mode(&mut self, mode: HookMode) {
+        self.hook_mode = Some(mode);
+    }
+
+    /// Clear the hook mode (revert to default: hybrid)
+    pub fn clear_hook_mode(&mut self) {
+        self.hook_mode = None;
     }
 
     /// Check if hybrid search (FTS5 + ColBERT) is enabled.
