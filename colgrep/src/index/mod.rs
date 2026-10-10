@@ -3467,6 +3467,75 @@ impl IndexBuilder {
 pub struct SearchResult {
     pub unit: CodeUnit,
     pub score: f32,
+    /// The matched units of this file, best first. Results are one per file and
+    /// `unit.line..unit.end_line` spans all of them; these keep each unit's own range and
+    /// name, which the default output lists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matches: Vec<UnitMatch>,
+}
+
+impl SearchResult {
+    pub fn new(unit: CodeUnit, score: f32) -> Self {
+        Self {
+            unit,
+            score,
+            matches: Vec::new(),
+        }
+    }
+
+    /// The matched units, or the result's own unit when none were recorded.
+    pub fn unit_matches(&self) -> Vec<UnitMatch> {
+        if self.matches.is_empty() {
+            vec![UnitMatch::of(&self.unit, self.score)]
+        } else {
+            self.matches.clone()
+        }
+    }
+
+    /// Merge `other`'s matched units into this result's (same file), best first, without
+    /// duplicates.
+    pub fn absorb_matches(&mut self, other: &SearchResult) {
+        let mut all = self.unit_matches();
+        for m in other.unit_matches() {
+            match all
+                .iter_mut()
+                .find(|e| e.line == m.line && e.end_line == m.end_line)
+            {
+                Some(e) => e.score = e.score.max(m.score),
+                None => all.push(m),
+            }
+        }
+        all.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.line.cmp(&b.line)));
+        self.matches = all;
+    }
+}
+
+/// One matched code unit inside a file result.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UnitMatch {
+    pub line: usize,
+    pub end_line: usize,
+    /// Display name (`Class.method`, `function`), empty for raw code and whole documents.
+    pub name: String,
+    pub score: f32,
+}
+
+impl UnitMatch {
+    fn of(unit: &CodeUnit, score: f32) -> Self {
+        let name = match unit.unit_type {
+            crate::parser::UnitType::RawCode | crate::parser::UnitType::Document => String::new(),
+            _ => match &unit.parent_class {
+                Some(class) if !class.is_empty() => format!("{class}.{}", unit.name),
+                _ => unit.name.clone(),
+            },
+        };
+        Self {
+            line: unit.line,
+            end_line: unit.end_line,
+            name,
+            score,
+        }
+    }
 }
 
 /// Convert BRE (Basic Regular Expression) patterns to ERE (Extended Regular Expression).
@@ -4412,7 +4481,7 @@ impl Searcher {
                 fix_sqlite_types(&mut meta);
                 serde_json::from_value::<CodeUnit>(meta)
                     .ok()
-                    .map(|unit| SearchResult { unit, score })
+                    .map(|unit| SearchResult::new(unit, score))
             })
             .collect();
 
@@ -4571,10 +4640,7 @@ impl Searcher {
                         let file_str = unit.file.to_string_lossy();
                         final_score *= crate::ranking::file_path_penalty(&file_str);
                     }
-                    SearchResult {
-                        unit,
-                        score: final_score,
-                    }
+                    SearchResult::new(unit, final_score)
                 })
             })
             .collect();
@@ -4744,8 +4810,10 @@ fn collapse_by_file(results: Vec<SearchResult>, top_k: usize) -> Vec<SearchResul
     let mut out: Vec<SearchResult> = Vec::with_capacity(top_k.min(results.len()));
     for r in results {
         if let Some(&idx) = by_file.get(&r.unit.file) {
-            // Merge: cover the full span of all candidates from this file.
+            // Merge: cover the full span of all candidates from this file, and keep each
+            // candidate's own range and name.
             let leader = &mut out[idx];
+            leader.absorb_matches(&r);
             leader.unit.line = leader.unit.line.min(r.unit.line);
             leader.unit.end_line = leader.unit.end_line.max(r.unit.end_line);
         } else {

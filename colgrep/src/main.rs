@@ -65,7 +65,28 @@ fn query_is_misplaced_path(query: &str) -> bool {
     std::path::Path::new(query).exists() || !query.chars().any(char::is_whitespace)
 }
 
+/// `colgrep ... | head` closes stdout before all results are printed: exit quietly, like
+/// grep, instead of panicking. SIGPIPE stays ignored so pipes and sockets to child
+/// processes (the agent's model server, sandboxed commands) keep returning errors.
+fn exit_quietly_on_closed_stdout() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        if message.starts_with("failed printing to stdout") && message.contains("Broken pipe") {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
+}
+
 fn main() -> Result<()> {
+    exit_quietly_on_closed_stdout();
+
     // Set up Ctrl+C handler for graceful interruption during indexing
     // This is non-fatal if it fails (e.g., in environments without signal support)
     let _ = setup_signal_handler();

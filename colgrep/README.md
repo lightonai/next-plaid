@@ -80,6 +80,20 @@ colgrep init -y  # auto-confirm for large codebases (>10K code units)
 colgrep "database connection pooling"
 ```
 
+Each result is a matching code unit, `path:start-end  Name` (up to 3 per file, best first; documents and loose code have no name):
+
+```
+$ colgrep -k 5 "which terminal commands are refused"
+colgrep/README.md:1-953
+agent/src/sandbox.rs:1-22
+agent/src/sandbox.rs:202-236  Sandbox.run
+agent/src/sandbox.rs:3549-3567  fifos_are_refused_not_read
+colgrep/src/commands/agent_ui.rs:516-522  cdata_values_are_unwrapped
+...
+```
+
+`-n N` adds N lines of context around the matching lines, `-c` the code of each unit (up to 50 lines), `-l` only the file names.
+
 No setup, no config, no dependencies. `colgrep init` builds the index for the first time. After that, every search detects file changes and updates the index automatically before returning results. Supports `--model` to override the ColBERT model and `--pool-factor` to control embedding compression.
 
 ---
@@ -141,25 +155,31 @@ colgrep settings --no-hybrid-search
 
 ## Agent Mode (`--agent`)
 
-`colgrep --agent` hands your question to a small local model trained to localize code with colgrep ([`lightonai/colgrep-agent-2B-GGUF`](https://huggingface.co/lightonai/colgrep-agent-2B-GGUF)). It searches the repository, reads the candidates, and returns the files and line ranges to look at, like a sub-agent that only does code search:
+`colgrep --agent` hands your question to a small local model trained to localize code with colgrep ([`lightonai/colgrep-agent-2B-GGUF`](https://huggingface.co/lightonai/colgrep-agent-2B-GGUF)). It searches the repository, reads the candidates, and returns the locations to look at, each with the name and code of its enclosing function, like a sub-agent that only does code search:
 
 ```bash
 colgrep --agent "sessions never expire after logout"
-colgrep --agent "crash when the config file is empty" ./backend -c   # show the lines
+colgrep --agent "crash when the config file is empty" ./backend -c   # whole ranges, search-style
 colgrep --agent --json "where are retries configured"              # for scripts / agents
 ```
 
 ```
-$ colgrep --agent "Training loss becomes NaN when using the contrastive loss with in-batch negatives"
-   1 colgrep 'contrastive loss training'
-   2 cat -n pylate/losses/contrastive.py
-   3 cat -n pylate/losses/contrastive.py | sed -n '96,232p'
-   ...
-pylate/losses/contrastive.py:224-228
-🤖 8 turns · 2 searches · 2 reads · 38291 prompt tokens (31171 cached) · 283 generated · model 19.7s · tools 0.0s · total 20.3s
+$ colgrep --agent "where does the agent decide which terminal commands are refused"
+agent/src/sandbox.rs:1000-1002  Shell<'a>.build_cmd
+   997                          }
+   998                      } else if target == "&1" || target == "&2" {
+   999                      } else {
+  1000                          return Err(format!(
+  1001                              "bash: {target}: write refused — the terminal is read-only"
+  1002                          ));
+  1003                      }
+  1004                  }
+  1005                  Tok::Op("<") => match it.next() {
 ```
 
-Progress lines go to stderr (only on a terminal); stdout carries just the locations.
+Each location is printed as `path:start-end  Name` (the enclosing function, method or class, as in a search result), followed by its numbered code: the whole function when it is at most 40 lines, otherwise the located lines with 3 lines of context, and never more than 40 lines per location. A coding agent that delegates the search can usually answer from this output without opening the files. `-c` prints the full ranges search-style instead, `-l` only the files, `--json` the bare locations.
+
+On a terminal, progress lines (the agent's searches and reads, then a summary with turns, tokens and timings) go to stderr; stdout carries just the locations.
 
 The model downloads on first use; `colgrep --install-agent` fetches it ahead of time, checks that it loads, and prepares the cache of the prompt every question starts with, so the first question is as fast as the next ones.
 

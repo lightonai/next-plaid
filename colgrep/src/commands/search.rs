@@ -659,6 +659,9 @@ pub(crate) struct PrintOptions<'a> {
 
 /// Print search results the way `colgrep` shows them: compact `path:start-end` lines,
 /// or highlighted code with `-c` / `-n` / the verbose setting.
+/// Matched units listed per file in the default output.
+const MATCHES_PER_FILE: usize = 3;
+
 pub(crate) fn print_results(
     config: &Config,
     results: &[colgrep::SearchResult],
@@ -773,13 +776,18 @@ pub(crate) fn print_results(
                     );
                 }
             } else {
-                // Semantic-only mode: show filepath:start-end ordered by score
+                // Semantic-only mode: files ordered by score; for each, its best matched
+                // units with their own range and name, so an agent can read exactly those
+                // lines (`path:start-end  name`).
                 for result in &results {
                     let file_path = display_path(&result.unit.file, use_relative);
-                    println!(
-                        "{}:{}-{}",
-                        file_path, result.unit.line, result.unit.end_line
-                    );
+                    for m in result.unit_matches().iter().take(MATCHES_PER_FILE) {
+                        if m.name.is_empty() {
+                            println!("{}:{}-{}", file_path, m.line, m.end_line);
+                        } else {
+                            println!("{}:{}-{}  {}", file_path, m.line, m.end_line, m.name);
+                        }
+                    }
                 }
             }
         } else {
@@ -1780,11 +1788,20 @@ pub(crate) fn run_query(
                     let existing = e.get_mut();
                     let new_start = existing.unit.line.min(result.unit.line);
                     let new_end = existing.unit.end_line.max(result.unit.end_line);
-                    if result.score > existing.score {
-                        *existing = result;
-                    }
-                    existing.unit.line = new_start;
-                    existing.unit.end_line = new_end;
+                    let mut merged_result = if result.score > existing.score {
+                        result.clone()
+                    } else {
+                        existing.clone()
+                    };
+                    let other = if result.score > existing.score {
+                        existing.clone()
+                    } else {
+                        result
+                    };
+                    merged_result.absorb_matches(&other);
+                    merged_result.unit.line = new_start;
+                    merged_result.unit.end_line = new_end;
+                    *existing = merged_result;
                 }
                 Entry::Vacant(e) => {
                     e.insert(result);
@@ -1866,7 +1883,7 @@ mod tests {
             colgrep::UnitType::Function,
             None,
         );
-        colgrep::SearchResult { unit, score }
+        colgrep::SearchResult::new(unit, score)
     }
 
     /// The deterministic comparator must order purely by (score desc, file,
