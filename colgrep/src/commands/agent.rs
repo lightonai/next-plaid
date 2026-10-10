@@ -312,7 +312,25 @@ pub fn cmd_agent(
         }
     }
 
-    // The answer, printed exactly like a colgrep search result.
+    // Default answer: each location with the name and code of its enclosing function, so
+    // the caller (often another coding agent) can use it without opening the file.
+    if !show_content && !files_only {
+        let cwd = std::env::current_dir()
+            .ok()
+            .and_then(|d| std::fs::canonicalize(d).ok());
+        print!(
+            "{}",
+            render_locations(
+                &repo_root,
+                locations,
+                cwd.as_deref(),
+                resolve_relative_paths(&config)
+            )
+        );
+        return Ok(());
+    }
+
+    // `-c` / `-l`: printed exactly like a colgrep search result.
     let results = location_results(&repo_root, locations);
     let context_lines = resolve_context_lines(&config, cli_context_lines, 20);
     print_results(
@@ -371,6 +389,111 @@ fn metal_kernels_dir() -> Option<PathBuf> {
     colgrep::get_colgrep_data_dir()
         .ok()
         .and_then(|indices| indices.parent().map(|d| d.join("agent").join("metal")))
+}
+
+/// Code lines shown per location: the whole enclosing function when it fits, otherwise
+/// a window around the located lines.
+const LOCATION_MAX_LINES: usize = 40;
+/// Lines of context kept around the located lines when the enclosing unit is too long.
+const LOCATION_CONTEXT: usize = 3;
+
+/// The default `--agent` answer: for each location, `path:start-end  Name` (the enclosing
+/// function, method or class, as in a colgrep search) followed by its numbered code.
+fn render_locations(
+    repo_root: &Path,
+    locations: &[Location],
+    cwd: Option<&Path>,
+    use_relative: bool,
+) -> String {
+    let mut out = String::new();
+    for loc in locations {
+        let abs = repo_root.join(&loc.file);
+        let Ok(text) = std::fs::read_to_string(&abs) else {
+            continue;
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        let n = lines.len().max(1);
+        let start = loc.start_line.unwrap_or(1).clamp(1, n);
+        let end = loc.end_line.unwrap_or(n).clamp(start, n);
+        let unit = enclosing_unit(&abs, &text, start, end);
+        let (lo, hi) = match &unit {
+            Some(u) if u.end_line + 1 - u.line <= LOCATION_MAX_LINES => (u.line, u.end_line),
+            Some(u) => (
+                start.saturating_sub(LOCATION_CONTEXT).max(u.line),
+                (end + LOCATION_CONTEXT).min(u.end_line),
+            ),
+            None => (
+                start.saturating_sub(LOCATION_CONTEXT).max(1),
+                (end + LOCATION_CONTEXT).min(n),
+            ),
+        };
+        let (lo, hi) = (lo.max(1), hi.min(lines.len()).max(lo));
+        let shown_hi = hi.min(lo + LOCATION_MAX_LINES - 1);
+        let path = match cwd
+            .filter(|_| use_relative)
+            .and_then(|c| abs.strip_prefix(c).ok())
+        {
+            Some(rel) => rel.display().to_string(),
+            None => abs.display().to_string(),
+        };
+        let name = unit.as_ref().map(unit_name).unwrap_or_default();
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!("{path}:{start}-{end}"));
+        if !name.is_empty() {
+            out.push_str(&format!("  {name}"));
+        }
+        out.push('\n');
+        for (i, line) in lines.iter().enumerate().take(shown_hi).skip(lo - 1) {
+            out.push_str(&format!("{:>6}  {line}\n", i + 1));
+        }
+        if shown_hi < hi {
+            out.push_str(&format!(
+                "        … {} more lines (to line {hi})\n",
+                hi - shown_hi
+            ));
+        }
+    }
+    out
+}
+
+/// The innermost function, method or class containing `start..=end`, or else the one
+/// overlapping it most.
+fn enclosing_unit(path: &Path, text: &str, start: usize, end: usize) -> Option<colgrep::CodeUnit> {
+    let language = colgrep::detect_language(path)?;
+    let units: Vec<colgrep::CodeUnit> = colgrep::extract_units(path, text, language)
+        .into_iter()
+        .filter(|u| {
+            !matches!(
+                u.unit_type,
+                colgrep::UnitType::RawCode | colgrep::UnitType::Document
+            )
+        })
+        .collect();
+    let span = |u: &colgrep::CodeUnit| u.end_line + 1 - u.line;
+    let containing = units
+        .iter()
+        .filter(|u| u.line <= start && u.end_line >= end)
+        .min_by_key(|u| span(u));
+    let overlap =
+        |u: &colgrep::CodeUnit| (u.end_line.min(end) + 1).saturating_sub(u.line.max(start));
+    containing
+        .or_else(|| {
+            units
+                .iter()
+                .filter(|u| overlap(u) > 0)
+                .max_by_key(|u| overlap(u))
+        })
+        .cloned()
+}
+
+/// Display name of a unit, as in colgrep search results: `Class.method` or `function`.
+fn unit_name(unit: &colgrep::CodeUnit) -> String {
+    match &unit.parent_class {
+        Some(class) if !class.is_empty() => format!("{class}.{}", unit.name),
+        _ => unit.name.clone(),
+    }
 }
 
 /// Agent locations as search results, so they print like any colgrep hit.
@@ -752,6 +875,38 @@ pub fn print_agent_settings(s: &AgentSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locations_show_the_enclosing_function_and_its_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut src = String::from("import os\n\n\nclass Store:\n    def load(self, path):\n");
+        src.push_str("        with open(path) as f:\n            return f.read()\n\n");
+        src.push_str("def big():\n");
+        for i in 0..80 {
+            src.push_str(&format!("    x{i} = {i}\n"));
+        }
+        std::fs::write(dir.path().join("store.py"), &src).unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let loc = |start, end| Location {
+            file: "store.py".into(),
+            start_line: Some(start),
+            end_line: Some(end),
+        };
+        // A short method is shown whole, with its qualified name and line numbers.
+        let out = render_locations(&root, &[loc(6, 7)], Some(&root), true);
+        assert!(out.starts_with("store.py:6-7  Store.load\n"), "{out}");
+        assert!(out.contains("     5      def load(self, path):"), "{out}");
+        assert!(out.contains("     7              return f.read()"), "{out}");
+        assert!(!out.contains("import os"), "{out}");
+        // A long function only shows the located lines with a little context.
+        let out = render_locations(&root, &[loc(50, 51)], Some(&root), true);
+        assert!(out.starts_with("store.py:50-51  big\n"), "{out}");
+        assert_eq!(out.lines().count(), 1 + 2 + 2 * LOCATION_CONTEXT, "{out}");
+        // A whole-file range is capped.
+        let out = render_locations(&root, &[loc(1, 90)], Some(&root), true);
+        assert!(out.lines().count() <= LOCATION_MAX_LINES + 2, "{out}");
+        assert!(out.contains("more lines"), "{out}");
+    }
 
     #[test]
     fn default_resets_and_values_parse() {

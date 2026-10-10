@@ -70,7 +70,7 @@ fn session_context(agent_ready: bool) -> String {
 
 const SESSION_AGENT_CONTEXT: &str = concat!(
     "\nAGENT MODE:\n",
-    "- `colgrep --agent \"where are sessions expired after logout\"`: a small local model searches with colgrep, reads files, and returns the relevant file:line ranges\n",
+    "- `colgrep --agent \"where are sessions expired after logout\"`: a small local model searches with colgrep, reads files, and returns the relevant locations with the name and code of their enclosing function\n",
     "- Use it for open-ended questions when you don't know where to start (\"where is X handled\", \"why does Y happen\"); use plain `colgrep` when you know what to search for\n",
 );
 

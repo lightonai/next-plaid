@@ -40,7 +40,8 @@ EXAMPLES:
     colgrep --json \"authentication\" | jq '.[] | .unit.file'
 
     # Let the agent find the code to change: a small local model searches with
-    # colgrep and reads files (read-only), then returns file:line ranges
+    # colgrep and reads files (read-only), then returns the locations with the
+    # code of their enclosing function
     colgrep --agent \"sessions never expire after logout\"
     colgrep --agent \"crash when the config file is empty\" ./backend -c
     colgrep --agent --json \"where are retries configured\"
