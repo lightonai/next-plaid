@@ -4,10 +4,13 @@ use anyhow::{Context, Result};
 
 use crate::commands::search::{resolve_model, resolve_pool_factor};
 use colgrep::{
-    ensure_model, find_parent_index, index_exists, scan_reaches_subdir, Config, IndexBuilder,
+    ensure_model, find_parent_index, index_exists, scan_project_files, scan_reaches_subdir, Config,
+    IndexBuilder,
 };
 
 pub struct InitOptions<'a> {
+    /// Report the resolved file set and return, before the model is downloaded.
+    pub dry_run: bool,
     pub cli_model: Option<&'a str>,
     pub no_pool: bool,
     pub pool_factor: Option<usize>,
@@ -65,34 +68,74 @@ pub fn cmd_init(path: &PathBuf, options: InitOptions<'_>) -> Result<()> {
     // (including index-format bumps on upgrade) and `colgrep clear`. A
     // directory the walk simply hasn't seen yet (e.g. just created) is already
     // reachable and needs no registration — the parent update below picks it up.
+    //
+    // A dry run takes the same list in memory and does not persist it: it reports the set the
+    // real run would use, and writes nothing at all.
+    let effective_root = match &parent_info {
+        Some(info) => info.project_path.clone(),
+        None => path.clone(),
+    };
+    let mut scan_dirs = config.force_include_dirs_for(&effective_root);
     if let Some(info) = &parent_info {
-        let covered = config.force_include_dirs_for(&info.project_path);
         if !scan_reaches_subdir(
             &info.project_path,
             &info.relative_subdir,
             &config.extra_ignore,
             &config.force_include,
-            &covered,
+            &scan_dirs,
         ) {
-            config.add_force_include_dir(&info.project_path, &info.relative_subdir);
-            config
-                .save()
-                .context("Failed to persist force-included directory registration")?;
-            eprintln!(
-                "📌 {} is excluded by {}'s ignore rules — force-included it so this and every future rebuild index it.",
-                info.relative_subdir.display(),
-                info.project_path.display(),
-            );
-            eprintln!(
-                "   Undo with: colgrep settings --no-force-include {}",
-                path.display()
-            );
+            if options.dry_run {
+                // Mirror `add_force_include_dir`: a subdirectory an ancestor registration already
+                // covers is a no-op there, so it must not widen the reported set here either.
+                if !scan_dirs
+                    .iter()
+                    .any(|covered| info.relative_subdir.starts_with(covered))
+                {
+                    scan_dirs.push(info.relative_subdir.clone());
+                }
+            } else {
+                config.add_force_include_dir(&info.project_path, &info.relative_subdir);
+                config
+                    .save()
+                    .context("Failed to persist force-included directory registration")?;
+                eprintln!(
+                    "📌 {} is excluded by {}'s ignore rules — force-included it so this and every future rebuild index it.",
+                    info.relative_subdir.display(),
+                    info.project_path.display(),
+                );
+                eprintln!(
+                    "   Undo with: colgrep settings --no-force-include {}",
+                    path.display()
+                );
+            }
         }
     }
-    let effective_root = match &parent_info {
-        Some(info) => info.project_path.clone(),
-        None => path.clone(),
-    };
+
+    if options.dry_run {
+        // Paths on stdout so the list pipes; the summary on stderr like the rest of the
+        // command's output. Nothing below this point runs: no model, no encoding, no write.
+        let (mut files, skipped) = scan_project_files(
+            &effective_root,
+            None,
+            &config.extra_ignore,
+            &config.force_include,
+            &scan_dirs,
+        );
+        files.sort();
+        for file in &files {
+            println!("{}", file.display());
+        }
+        eprintln!(
+            "{} file(s) would be parsed under {} ({skipped} skipped: too large or outside the root)",
+            files.len(),
+            effective_root.display()
+        );
+        eprintln!(
+            "dry run: the model was not loaded, nothing was encoded and no index was written. \
+             Files whose content is binary or not UTF-8 are dropped later, at parse time."
+        );
+        return Ok(());
+    }
 
     // Check if index already exists for the effective root
     let has_existing_index = index_exists(&effective_root, &model);

@@ -300,6 +300,7 @@ colgrep --json "auth" | jq '.[] | .unit.file'
 | Command                  | Description                            |
 | ------------------------ | -------------------------------------- |
 | `colgrep init`           | Build or update the index              |
+| `colgrep init --dry-run` | List the files a real init would parse, without indexing |
 | `colgrep status`         | Show index status for current project  |
 | `colgrep clear`          | Clear index for current project        |
 | `colgrep clear --all`    | Clear all indexes                      |
@@ -652,6 +653,19 @@ colgrep init ~/projects/myapp                       # specific project
 colgrep init -y                                     # auto-confirm for large codebases (>10K code units)
 colgrep init --model lightonai/LateOn-Code          # use a specific model
 colgrep init --pool-factor 1                        # disable embedding pooling (more precise)
+colgrep init --dry-run                              # list the files that would be indexed, then stop
+```
+
+`--dry-run` (alias `--list-files`) prints the resolved file set — the built-in default
+exclusions, this project's `.gitignore` and its persistent `settings --ignore` patterns
+applied — one root-relative path per line on stdout, with the count on stderr. It loads no
+model, encodes nothing and writes no index, so it is the way to check an ignore pattern
+before paying for a full run. It is the walk, not the parser: a file whose content turns out
+to be binary or not UTF-8 is listed here and dropped later, at parse time.
+
+```bash
+colgrep init --dry-run > files.txt   # feed a SAST tool, or just read it
+colgrep init --dry-run | wc -l       # how many files a real init would parse
 ```
 
 This is useful for:
@@ -659,6 +673,8 @@ This is useful for:
 - **Pre-warming** the index so the first search is instant
 - **CI/dev setup** scripts where you want indexing to happen ahead of time
 - **Updating** the index after pulling new code
+- **Checking the file set**: `--dry-run` before a first init on a large tree, or after editing
+  an ignore pattern
 
 ```bash
 # Check index status
