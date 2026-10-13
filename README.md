@@ -86,14 +86,15 @@ Each (project, model) pair has its own index directory, so switching models neve
 
 ### Agent integrations
 
-| Tool        | Install                         |
-| ----------- | ------------------------------- |
-| Claude Code | `colgrep --install-claude-code` |
-| OpenCode    | `colgrep --install-opencode`    |
-| Codex       | `colgrep --install-codex`       |
-| Hermes      | `colgrep --install-hermes`      |
+| Tool                    | Install                         |
+| ----------------------- | ------------------------------- |
+| Claude Code             | `colgrep --install-claude-code` |
+| OpenCode                | `colgrep --install-opencode`    |
+| Codex                   | `colgrep --install-codex`       |
+| GitHub Copilot (VS Code) | `colgrep --install-copilot`     |
+| Hermes                  | `colgrep --install-hermes`      |
 
-> Restart your agent after installing. Claude Code has full hooks support. OpenCode, Codex, and Hermes integrations are basic for now, PRs welcome.
+> Restart your agent after installing. Claude Code has full hooks support; the other integrations install skills or instructions.
 
 ### How it works
 

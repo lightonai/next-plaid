@@ -434,6 +434,14 @@ pub struct Cli {
     #[arg(long = "uninstall-codex")]
     pub uninstall_codex: bool,
 
+    /// Install colgrep as a skill for GitHub Copilot in VS Code
+    #[arg(long = "install-copilot")]
+    pub install_copilot: bool,
+
+    /// Uninstall colgrep skill from GitHub Copilot
+    #[arg(long = "uninstall-copilot")]
+    pub uninstall_copilot: bool,
+
     /// Install colgrep for Hermes
     #[arg(long = "install-hermes")]
     pub install_hermes: bool,
