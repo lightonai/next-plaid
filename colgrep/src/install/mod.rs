@@ -1,5 +1,6 @@
 mod claude_code;
 mod codex;
+mod copilot;
 mod hermes;
 mod kimi;
 mod opencode;
@@ -7,6 +8,7 @@ mod uninstall;
 
 pub use claude_code::{install_claude_code, uninstall_claude_code};
 pub use codex::{install_codex, uninstall_codex};
+pub use copilot::{install_copilot, uninstall_copilot};
 pub use hermes::{install_hermes, uninstall_hermes};
 pub use kimi::{install_kimi, uninstall_kimi};
 pub use opencode::{install_opencode, uninstall_opencode};

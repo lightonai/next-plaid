@@ -559,13 +559,14 @@ Config stored at `~/.config/colgrep/config.json`.
 
 ## Agent Integrations
 
-| Agent       | Install                         | Uninstall                         |
-| ----------- | ------------------------------- | --------------------------------- |
-| Claude Code | `colgrep --install-claude-code` | `colgrep --uninstall-claude-code` |
-| OpenCode    | `colgrep --install-opencode`    | `colgrep --uninstall-opencode`    |
-| Codex       | `colgrep --install-codex`       | `colgrep --uninstall-codex`       |
-| Hermes      | `colgrep --install-hermes`      | `colgrep --uninstall-hermes`      |
-| Kimi Code   | `colgrep --install-kimi`        | `colgrep --uninstall-kimi`        |
+| Agent                    | Install                         | Uninstall                         |
+| ------------------------ | ------------------------------- | --------------------------------- |
+| Claude Code              | `colgrep --install-claude-code` | `colgrep --uninstall-claude-code` |
+| OpenCode                 | `colgrep --install-opencode`    | `colgrep --uninstall-opencode`    |
+| Codex                    | `colgrep --install-codex`       | `colgrep --uninstall-codex`       |
+| GitHub Copilot (VS Code) | `colgrep --install-copilot`     | `colgrep --uninstall-copilot`     |
+| Hermes                   | `colgrep --install-hermes`      | `colgrep --uninstall-hermes`      |
+| Kimi Code                | `colgrep --install-kimi`        | `colgrep --uninstall-kimi`        |
 
 > Restart your agent after installing.
 
@@ -583,6 +584,10 @@ This means Claude Code automatically uses `colgrep` as its primary search tool w
 ### Kimi Code Integration
 
 The Kimi Code integration installs a [skill](https://www.kimi.com/code/docs/en/kimi-code-cli/customization/skills.html) at `~/.kimi-code/skills/colgrep/SKILL.md` (or `$KIMI_CODE_HOME/skills/colgrep/SKILL.md` when `KIMI_CODE_HOME` is set) that teaches the agent to use `colgrep` as its primary search tool. New sessions pick it up automatically.
+
+### GitHub Copilot Integration
+
+The GitHub Copilot integration installs a skill at `~/.copilot/skills/colgrep/SKILL.md`, which VS Code discovers as a personal agent skill. Copilot can load it automatically for relevant code-search tasks or invoke it as `/colgrep`.
 
 ### Complete Uninstall
 

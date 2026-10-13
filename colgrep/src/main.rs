@@ -12,9 +12,9 @@ use rayon::ThreadPoolBuilder;
 
 use colgrep::{
     acceleration::{apply_acceleration_mode, env_acceleration_mode, AccelerationMode},
-    install_claude_code, install_codex, install_hermes, install_kimi, install_opencode,
-    setup_signal_handler, uninstall_all, uninstall_claude_code, uninstall_codex, uninstall_hermes,
-    uninstall_kimi, uninstall_opencode, Config,
+    install_claude_code, install_codex, install_copilot, install_hermes, install_kimi,
+    install_opencode, setup_signal_handler, uninstall_all, uninstall_claude_code, uninstall_codex,
+    uninstall_copilot, uninstall_hermes, uninstall_kimi, uninstall_opencode, Config,
 };
 
 use cli::{Cli, Commands};
@@ -139,6 +139,14 @@ fn main() -> Result<()> {
 
     if cli.uninstall_codex {
         return uninstall_codex();
+    }
+
+    if cli.install_copilot {
+        return install_copilot();
+    }
+
+    if cli.uninstall_copilot {
+        return uninstall_copilot();
     }
 
     if cli.install_hermes {
