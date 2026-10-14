@@ -1,4 +1,30 @@
-//! Residual codec for quantization and decompression
+//! Residual codec for quantization and decompression.
+//!
+//! After each token is assigned to its nearest centroid, the *residual*
+//! (`token − centroid`) is quantized and packed. Search reconstructs
+//! `centroid + dequantized_residual` and rescores with exact float MaxSim, so
+//! the codec trades index size against reconstruction fidelity. Two schemes
+//! share this struct:
+//!
+//! * **Scalar** (`nbits ∈ {1,2,4}`, base-2): each dimension maps to one of
+//!   `2^nbits` global buckets; `8 / nbits` dims pack per byte.
+//! * **Ternary** ([`ternary`](ResidualCodec::ternary), base-3): each dimension
+//!   maps to one of three buckets `{-m, 0, +m}` (a dead-zone around 0) and five
+//!   trits pack per byte (`3^5 = 243 ≤ 256`), ~1.585 bits/dim.
+//!
+//! Compression profiles (residual bytes per token, `dim = 128`):
+//!
+//! | profile        | bits/dim | dims/byte | bytes/token | buckets |
+//! |----------------|---------:|----------:|------------:|--------:|
+//! | scalar 1-bit   |    1.0   |     8     |     16      |    2    |
+//! | **ternary**    |   ~1.585 |     5     |   **26**    |    3    |
+//! | scalar 2-bit   |    2.0   |     4     |     32      |    4    |
+//! | scalar 4-bit   |    4.0   |     2     |     64      |   16    |
+//!
+//! Ternary is ~19% smaller than 2-bit and decodes five dims per byte (vs four),
+//! a size/quality rung between the 1-bit and 2-bit scalar codecs. The separate
+//! 1-bit *sign* store in [`crate::binary`] is a different thing entirely: it is
+//! scored asymmetrically without any reconstruction, not a residual codec.
 
 use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2, Axis};
 
@@ -105,8 +131,17 @@ impl Clone for CentroidStore {
 /// accelerate bit unpacking operations.
 #[derive(Clone)]
 pub struct ResidualCodec {
-    /// Number of bits used to represent each residual bucket (e.g., 2 or 4)
+    /// Number of bits used to represent each residual bucket (e.g., 2 or 4).
+    ///
+    /// For a [`ternary`](Self::ternary) codec this is nominal only (ternary
+    /// spends ~1.585 bits/dim and does not pack in base 2); all byte math goes
+    /// through [`packed_residual_dim`](Self::packed_residual_dim), never `nbits`.
     pub nbits: usize,
+    /// Base-3 dead-zone residual codec: each dimension is quantized to one of
+    /// three buckets `{-m, 0, +m}` and five trits are packed per byte
+    /// (`3^5 = 243 <= 256`), a ~1.585-bit rung between 1-bit and 2-bit scalar
+    /// quantization. When false, the classic base-2 scalar `nbits` codec is used.
+    pub ternary: bool,
     /// Coarse centroids (codebook) of shape `[num_centroids, dim]`.
     /// Can be either owned (in-memory) or memory-mapped for reduced RAM usage.
     pub centroids: CentroidStore,
@@ -116,10 +151,39 @@ pub struct ResidualCodec {
     pub bucket_cutoffs: Option<Array1<f32>>,
     /// Values (weights) corresponding to each quantization bucket
     pub bucket_weights: Option<Array1<f32>>,
-    /// Lookup table (256 entries) for byte-to-bits unpacking
+    /// Lookup table (256 entries) for byte-to-bits unpacking (scalar codec only;
+    /// empty for a ternary codec).
     pub byte_reversed_bits_map: Vec<u8>,
     /// Maps byte values directly to bucket indices for fast decompression
+    /// (scalar codec only; `None` for a ternary codec).
     pub bucket_weight_indices_lookup: Option<Array2<usize>>,
+    /// Ternary decode table: byte value -> its five base-3 trits (each in
+    /// `0..=2`, indexing `bucket_weights`). `Some` only for a ternary codec.
+    /// 256 entries so any stored byte decodes without a bounds branch; bytes in
+    /// `243..=255` are never emitted by the encoder and decode to trit `0`s.
+    pub trit_lookup: Option<Vec<[u8; 5]>>,
+}
+
+/// Trits packed per byte for the ternary codec: `3^5 = 243 <= 256`, so five
+/// base-3 digits fit in one byte at ~99% density (`5 * log2(3) / 8 ≈ 0.99`).
+pub const TERNARY_TRITS_PER_BYTE: usize = 5;
+
+/// Build the 256-entry ternary decode table mapping each byte to its five
+/// little-endian base-3 trits: dimension `5g + j` of a group lives at place
+/// value `3^j`, so `trit[j] = (byte / 3^j) % 3`. The inverse of the packing in
+/// [`ResidualCodec::quantize_residuals`].
+fn build_trit_lookup() -> Vec<[u8; 5]> {
+    (0..256usize)
+        .map(|b| {
+            let mut v = b;
+            let mut trits = [0u8; TERNARY_TRITS_PER_BYTE];
+            for t in trits.iter_mut() {
+                *t = (v % 3) as u8;
+                v /= 3;
+            }
+            trits
+        })
+        .collect()
 }
 
 impl ResidualCodec {
@@ -215,18 +279,105 @@ impl ResidualCodec {
 
         Ok(Self {
             nbits,
+            ternary: false,
             centroids,
             avg_residual,
             bucket_cutoffs,
             bucket_weights,
             byte_reversed_bits_map,
             bucket_weight_indices_lookup,
+            trit_lookup: None,
+        })
+    }
+
+    /// Creates a ternary (base-3 dead-zone) ResidualCodec with owned centroids.
+    ///
+    /// The residual of each dimension is quantized to one of three buckets
+    /// `{-m, 0, +m}` and stored at ~1.585 bits/dim (five trits per byte). This is
+    /// a codec *variant* of the residual path — it still reconstructs
+    /// `centroid + bucket_weight` and scores with float MaxSim — sitting between
+    /// the 1-bit and 2-bit scalar rungs on the size/quality frontier.
+    ///
+    /// `bucket_cutoffs` must hold the two dead-zone boundaries (ascending) and
+    /// `bucket_weights` the three reconstruction values `[-m, ~0, +m]`, computed
+    /// exactly like the scalar codec but with three buckets (see
+    /// `prepare_codec_artifacts`). `nbits` is retained for reporting only.
+    pub fn new_ternary(
+        nbits: usize,
+        centroids: Array2<f32>,
+        avg_residual: Array1<f32>,
+        bucket_cutoffs: Option<Array1<f32>>,
+        bucket_weights: Option<Array1<f32>>,
+    ) -> Result<Self> {
+        Self::new_with_store_ternary(
+            nbits,
+            CentroidStore::Owned(centroids),
+            avg_residual,
+            bucket_cutoffs,
+            bucket_weights,
+        )
+    }
+
+    /// Ternary codec with a specified centroid storage backend (owned or mmap).
+    ///
+    /// See [`new_ternary`](Self::new_ternary). Unlike the scalar constructor this
+    /// does not require `nbits` to divide 8 — the ternary path never packs in
+    /// base 2 — and it validates the codebook arities instead: two cutoffs and
+    /// three weights.
+    pub fn new_with_store_ternary(
+        nbits: usize,
+        centroids: CentroidStore,
+        avg_residual: Array1<f32>,
+        bucket_cutoffs: Option<Array1<f32>>,
+        bucket_weights: Option<Array1<f32>>,
+    ) -> Result<Self> {
+        if let Some(c) = bucket_cutoffs.as_ref() {
+            if c.len() != 2 {
+                return Err(Error::Codec(format!(
+                    "ternary codec needs exactly 2 bucket_cutoffs, got {}",
+                    c.len()
+                )));
+            }
+        }
+        if let Some(w) = bucket_weights.as_ref() {
+            if w.len() != 3 {
+                return Err(Error::Codec(format!(
+                    "ternary codec needs exactly 3 bucket_weights, got {}",
+                    w.len()
+                )));
+            }
+        }
+
+        Ok(Self {
+            nbits,
+            ternary: true,
+            centroids,
+            avg_residual,
+            bucket_cutoffs,
+            bucket_weights,
+            byte_reversed_bits_map: Vec::new(),
+            bucket_weight_indices_lookup: None,
+            trit_lookup: Some(build_trit_lookup()),
         })
     }
 
     /// Returns the embedding dimension
     pub fn embedding_dim(&self) -> usize {
         self.centroids.ncols()
+    }
+
+    /// Number of packed residual bytes per token for this codec's `dim`.
+    ///
+    /// The single source of truth for residual byte math, replacing the inline
+    /// `dim * nbits / 8`: base-2 scalar packs `8 / nbits` dims per byte, ternary
+    /// packs [`TERNARY_TRITS_PER_BYTE`] trits per byte (`ceil(dim / 5)`).
+    #[inline]
+    pub fn packed_residual_dim(&self, dim: usize) -> usize {
+        if self.ternary {
+            dim.div_ceil(TERNARY_TRITS_PER_BYTE)
+        } else {
+            dim * self.nbits / 8
+        }
     }
 
     /// Returns the number of centroids
@@ -352,7 +503,7 @@ impl ResidualCodec {
     ///
     /// # Returns
     ///
-    /// Packed residuals of shape `[N, dim * nbits / 8]` as bytes
+    /// Packed residuals of shape `[N, packed_residual_dim(dim)]` as bytes
     pub fn quantize_residuals(&self, residuals: &Array2<f32>) -> Result<Array2<u8>> {
         use rayon::prelude::*;
 
@@ -363,7 +514,7 @@ impl ResidualCodec {
 
         let n = residuals.nrows();
         let dim = residuals.ncols();
-        let packed_dim = dim * self.nbits / 8;
+        let packed_dim = self.packed_residual_dim(dim);
         let nbits = self.nbits;
 
         if n == 0 {
@@ -372,6 +523,10 @@ impl ResidualCodec {
 
         // Convert cutoffs to a slice for faster access
         let cutoffs_slice = cutoffs.as_slice().unwrap();
+
+        if self.ternary {
+            return self.quantize_residuals_ternary(residuals, cutoffs_slice, packed_dim);
+        }
 
         // Process rows in parallel
         let packed_rows: Vec<Vec<u8>> = residuals
@@ -410,6 +565,56 @@ impl ResidualCodec {
         Ok(packed)
     }
 
+    /// Base-3 packing for the ternary codec: each dimension's residual is bucketed
+    /// to a trit `{0,1,2}` (same `searchsorted` over the two cutoffs the scalar
+    /// path uses) and five trits are packed per byte at place values
+    /// `3^0..3^4`, so byte `g` holds dims `5g..5g+5`. The last group is
+    /// zero-padded; the padding trits are `0` and never read back (decode stops
+    /// at `dim`). Max byte value is `2 * (1+3+9+27+81) = 242`.
+    fn quantize_residuals_ternary(
+        &self,
+        residuals: &Array2<f32>,
+        cutoffs: &[f32],
+        packed_dim: usize,
+    ) -> Result<Array2<u8>> {
+        use rayon::prelude::*;
+
+        let n = residuals.nrows();
+        let dim = residuals.ncols();
+
+        let packed_rows: Vec<Vec<u8>> = residuals
+            .axis_iter(Axis(0))
+            .into_par_iter()
+            .map(|row| {
+                let mut packed_row = vec![0u8; packed_dim];
+                for (g, slot) in packed_row.iter_mut().enumerate() {
+                    let mut byte = 0u16;
+                    let mut place = 1u16;
+                    for j in 0..TERNARY_TRITS_PER_BYTE {
+                        let d = g * TERNARY_TRITS_PER_BYTE + j;
+                        if d < dim {
+                            // trit in 0..=2 via searchsorted over the 2 cutoffs.
+                            let trit = cutoffs.iter().filter(|&&c| row[d] > c).count() as u16;
+                            byte += trit * place;
+                        }
+                        place *= 3;
+                    }
+                    *slot = byte as u8;
+                }
+                packed_row
+            })
+            .collect();
+
+        let mut packed = Array2::<u8>::zeros((n, packed_dim));
+        for (i, row) in packed_rows.into_iter().enumerate() {
+            for (j, val) in row.into_iter().enumerate() {
+                packed[[i, j]] = val;
+            }
+        }
+
+        Ok(packed)
+    }
+
     /// Decompress residuals from packed bytes using lookup tables.
     ///
     /// # Arguments
@@ -430,31 +635,54 @@ impl ResidualCodec {
             .as_ref()
             .ok_or_else(|| Error::Codec("bucket_weights required for decompression".into()))?;
 
-        let lookup = self
-            .bucket_weight_indices_lookup
-            .as_ref()
-            .ok_or_else(|| Error::Codec("bucket_weight_indices_lookup required".into()))?;
-
         let n = packed_residuals.nrows();
         let dim = self.embedding_dim();
 
         let mut output = Array2::<f32>::zeros((n, dim));
 
-        for i in 0..n {
-            // Get centroid for this embedding (zero-copy via CentroidStore)
-            let centroid = self.centroids.row(codes[i]);
+        if self.ternary {
+            let lut = self.trit_lookup.as_ref().ok_or_else(|| {
+                Error::Codec("trit_lookup required for ternary decompression".into())
+            })?;
+            // Three reconstruction values [-m, ~0, +m]; trits index directly.
+            let weights = bucket_weights.as_slice().unwrap();
+            for i in 0..n {
+                let centroid = self.centroids.row(codes[i]);
+                let mut residual_idx = 0;
+                for &byte_val in packed_residuals.row(i).iter() {
+                    // Each byte expands to five trits (each 0..=2), decoding five
+                    // dims; the last byte's padding trits fall past `dim`.
+                    for &trit in lut[byte_val as usize].iter() {
+                        if residual_idx < dim {
+                            output[[i, residual_idx]] =
+                                centroid[residual_idx] + weights[trit as usize];
+                            residual_idx += 1;
+                        }
+                    }
+                }
+            }
+        } else {
+            let lookup = self
+                .bucket_weight_indices_lookup
+                .as_ref()
+                .ok_or_else(|| Error::Codec("bucket_weight_indices_lookup required".into()))?;
 
-            // Unpack residuals
-            let mut residual_idx = 0;
-            for &byte_val in packed_residuals.row(i).iter() {
-                let reversed = self.byte_reversed_bits_map[byte_val as usize];
-                let indices = lookup.row(reversed as usize);
+            for i in 0..n {
+                // Get centroid for this embedding (zero-copy via CentroidStore)
+                let centroid = self.centroids.row(codes[i]);
 
-                for &bucket_idx in indices.iter() {
-                    if residual_idx < dim {
-                        output[[i, residual_idx]] =
-                            centroid[residual_idx] + bucket_weights[bucket_idx];
-                        residual_idx += 1;
+                // Unpack residuals
+                let mut residual_idx = 0;
+                for &byte_val in packed_residuals.row(i).iter() {
+                    let reversed = self.byte_reversed_bits_map[byte_val as usize];
+                    let indices = lookup.row(reversed as usize);
+
+                    for &bucket_idx in indices.iter() {
+                        if residual_idx < dim {
+                            output[[i, residual_idx]] =
+                                centroid[residual_idx] + bucket_weights[bucket_idx];
+                            residual_idx += 1;
+                        }
                     }
                 }
             }
@@ -529,13 +757,26 @@ impl ResidualCodec {
             .ok_or_else(|| Error::IndexLoad("nbits not found in metadata".into()))?
             as usize;
 
-        Self::new(
-            nbits,
-            centroids,
-            avg_residual,
-            bucket_cutoffs,
-            bucket_weights,
-        )
+        // Ternary is opt-in and absent from pre-existing indexes -> default false.
+        let ternary = metadata["ternary"].as_bool().unwrap_or(false);
+
+        if ternary {
+            Self::new_ternary(
+                nbits,
+                centroids,
+                avg_residual,
+                bucket_cutoffs,
+                bucket_weights,
+            )
+        } else {
+            Self::new(
+                nbits,
+                centroids,
+                avg_residual,
+                bucket_cutoffs,
+                bucket_weights,
+            )
+        }
     }
 
     /// Load codec from index directory with memory-mapped centroids.
@@ -602,13 +843,15 @@ impl ResidualCodec {
             .ok_or_else(|| Error::IndexLoad("nbits not found in metadata".into()))?
             as usize;
 
-        Self::new_with_store(
-            nbits,
-            CentroidStore::Mmap(mmap_centroids),
-            avg_residual,
-            bucket_cutoffs,
-            bucket_weights,
-        )
+        // Ternary is opt-in and absent from pre-existing indexes -> default false.
+        let ternary = metadata["ternary"].as_bool().unwrap_or(false);
+        let store = CentroidStore::Mmap(mmap_centroids);
+
+        if ternary {
+            Self::new_with_store_ternary(nbits, store, avg_residual, bucket_cutoffs, bucket_weights)
+        } else {
+            Self::new_with_store(nbits, store, avg_residual, bucket_cutoffs, bucket_weights)
+        }
     }
 }
 
@@ -749,5 +992,134 @@ mod tests {
 
         let codes = codec.compress_into_codes_cpu(&embeddings);
         assert_eq!(codes[0], 1);
+    }
+
+    // ---- Ternary (base-3 dead-zone) residual codec ----
+
+    fn ternary_codec(dim: usize, n_centroids: usize) -> ResidualCodec {
+        let centroids = Array2::zeros((n_centroids, dim));
+        let avg_residual = Array1::zeros(dim);
+        ResidualCodec::new_ternary(
+            2,
+            centroids,
+            avg_residual,
+            Some(Array1::from_vec(vec![-0.5, 0.5])),
+            Some(Array1::from_vec(vec![-1.0, 0.0, 1.0])),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_build_trit_lookup_is_base3_and_inverts_packing() {
+        let lut = build_trit_lookup();
+        assert_eq!(lut.len(), 256);
+        // Byte 0 -> all zeros; byte 242 (max emitted) -> all twos.
+        assert_eq!(lut[0], [0, 0, 0, 0, 0]);
+        assert_eq!(lut[242], [2, 2, 2, 2, 2]);
+        // Every byte reconstructs from its trits at place values 3^j.
+        for (b, trits) in lut.iter().enumerate() {
+            let recon: usize = trits
+                .iter()
+                .enumerate()
+                .map(|(j, &t)| t as usize * 3usize.pow(j as u32))
+                .sum();
+            // Only the low 5 trits are represented; bytes >= 243 alias down.
+            assert_eq!(recon, b % 243);
+            // Trits are always valid weight indices (0..=2), even for 243..=255.
+            assert!(trits.iter().all(|&t| t <= 2));
+        }
+    }
+
+    #[test]
+    fn test_ternary_packed_residual_dim() {
+        let codec = ternary_codec(128, 4);
+        assert_eq!(codec.packed_residual_dim(128), 26); // ceil(128/5)
+        assert_eq!(codec.packed_residual_dim(48), 10); // ceil(48/5)
+        assert_eq!(codec.packed_residual_dim(7), 2); // ceil(7/5)
+        assert_eq!(codec.packed_residual_dim(5), 1);
+        assert!(codec.ternary);
+    }
+
+    #[test]
+    fn test_ternary_quantize_packs_five_trits_per_byte() {
+        // dim = 7 -> 2 bytes; the second holds only 2 real trits (padding = 0).
+        let codec = ternary_codec(7, 1);
+        let residuals =
+            Array2::from_shape_vec((1, 7), vec![-0.9, -0.2, 0.0, 0.3, 0.9, -0.7, 0.6]).unwrap();
+        let packed = codec.quantize_residuals(&residuals).unwrap();
+        assert_eq!(packed.shape(), &[1, 2]);
+        // trits [0,1,1,1,2 | 0,2] -> byte0 = 3+9+27+162 = 201, byte1 = 2*3 = 6.
+        assert_eq!(packed[[0, 0]], 201);
+        assert_eq!(packed[[0, 1]], 6);
+    }
+
+    #[test]
+    fn test_ternary_roundtrip_reconstructs_then_normalizes() {
+        let codec = ternary_codec(7, 1);
+        let residuals =
+            Array2::from_shape_vec((1, 7), vec![-0.9, -0.2, 0.0, 0.3, 0.9, -0.7, 0.6]).unwrap();
+        let packed = codec.quantize_residuals(&residuals).unwrap();
+        let codes = Array1::from_vec(vec![0usize]);
+        let out = codec.decompress(&packed, &codes.view()).unwrap();
+        // Pre-norm reconstruction is [-1,0,0,0,1,-1,1] (centroid 0 + weight[trit]);
+        // L2 norm = 2, so each nonzero collapses to +/-0.5.
+        let expected = [-0.5f32, 0.0, 0.0, 0.0, 0.5, -0.5, 0.5];
+        for (j, &e) in expected.iter().enumerate() {
+            assert!(
+                (out[[0, j]] - e).abs() < 1e-6,
+                "dim {j}: got {}, want {e}",
+                out[[0, j]]
+            );
+        }
+    }
+
+    #[test]
+    fn test_ternary_padding_trits_do_not_leak_into_reconstruction() {
+        // dim = 5*k + r with r != 0: the tail byte's padding trits must not add
+        // phantom dimensions. dim = 6 -> 2 bytes, second byte has 4 padding trits.
+        let codec = ternary_codec(6, 1);
+        let residuals = Array2::from_shape_vec((1, 6), vec![0.9, 0.9, 0.9, 0.9, 0.9, 0.9]).unwrap();
+        let packed = codec.quantize_residuals(&residuals).unwrap();
+        let codes = Array1::from_vec(vec![0usize]);
+        let out = codec.decompress(&packed, &codes.view()).unwrap();
+        assert_eq!(out.shape(), &[1, 6]);
+        // All six dims are +m before norm -> uniform after; exactly six of them.
+        for j in 0..6 {
+            assert!((out[[0, j]] - (1.0 / 6.0_f32.sqrt())).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_ternary_constructor_rejects_wrong_arity() {
+        let centroids = Array2::zeros((2, 4));
+        let avg = Array1::zeros(4);
+        // 3 cutoffs is scalar-shaped, invalid for ternary (needs exactly 2).
+        assert!(ResidualCodec::new_ternary(
+            2,
+            centroids.clone(),
+            avg.clone(),
+            Some(Array1::from_vec(vec![-0.5, 0.0, 0.5])),
+            Some(Array1::from_vec(vec![-1.0, 0.0, 1.0])),
+        )
+        .is_err());
+        // 4 weights invalid (needs exactly 3).
+        assert!(ResidualCodec::new_ternary(
+            2,
+            centroids,
+            avg,
+            Some(Array1::from_vec(vec![-0.5, 0.5])),
+            Some(Array1::from_vec(vec![-1.0, -0.3, 0.3, 1.0])),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_ternary_codec_has_no_scalar_lookups() {
+        // The ternary codec must not carry (or depend on) the base-2 unpacking
+        // tables; decompress selects the trit path purely on `ternary`.
+        let codec = ternary_codec(16, 2);
+        assert!(codec.trit_lookup.is_some());
+        assert!(codec.bucket_weight_indices_lookup.is_none());
+        assert!(codec.byte_reversed_bits_map.is_empty());
     }
 }

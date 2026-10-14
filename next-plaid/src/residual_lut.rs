@@ -58,6 +58,72 @@ pub struct ResidualLut {
     pub scale: f32,
     /// Nibble-factored form of `fused` for the SIMD expand paths.
     pub nibble: Option<NibbleLut>,
+    /// Ternary's route onto those same SIMD paths: a one-hop byte→weights
+    /// table (see [`TernaryDirect`]). `None` for the scalar rungs.
+    pub ternary_direct: Option<TernaryDirect>,
+}
+
+/// Ternary's route onto the SIMD kernels, in one hop.
+///
+/// A ternary byte packs five trits in base 3, so no trit is a function of a
+/// single nibble and `derive_nibble_lut` rightly refuses it: no SIMD
+/// byte-shuffle (`tbl`, `pshufb`) reaches past 16 entries, and 243 values need
+/// 256. Any packing that *is* nibble-factorable costs at least 2 bits/dim,
+/// which is 2-bit exactly, with the storage win gone. So a scalar pre-pass is
+/// the price of sub-2-bit packing, not an implementation defect.
+///
+/// Given that, the cheapest pre-pass is the one that goes straight to the
+/// answer. The fused table is already `byte → [w(trit0)…w(trit4)]`; padded to
+/// eight, each row is one unaligned `u64`-sized copy into the kernel's weight
+/// buffer at `5i`. The copies overlap by three bytes, but every one is a
+/// **pure store** — the next iteration overwrites the slack — so there is no
+/// read-modify-write and no store-forwarding stall.
+///
+/// The obvious alternative is a two-hop route — repack base-3 into a 2-bit
+/// stream, then run the nibble `tbl` every scalar rung already runs — and it
+/// was built and measured first. Both produce identical weights; one hop skips
+/// the intermediate stream, its per-thread scratch buffer, the round trip
+/// through it, and the `tbl` stage. Interleaved in one process (aarch64, dim
+/// 128): two hops 12.89 + 5.00 ns/token against one hop's 12.03, so what
+/// ternary owes 2-bit — which pays only the 5.00 — falls from 12.89 to 7.03
+/// ns/token. Treat that as the reason for the choice, not as its size: an
+/// isolated expansion benchmark overstates a stage that runs under the dot.
+/// The e2e ladder in `.github/workflows/ternary-bench.yml` is the number.
+///
+/// Output is **natural dim order**, so ternary queries need no permutation at
+/// all: [`build_query_planes`] hands the kernels a plain zero-padded copy.
+///
+/// Bit-parity with the scalar base-3 reference: identical weights from the
+/// identical table, and integer addition is associative, so the accumulator
+/// matches whatever order the dot visits. Slots past `dim` hold real padding
+/// trits, but meet a zeroed query lane and contribute `0·w = 0` exactly.
+pub struct TernaryDirect {
+    /// `[byte] → its five int8 weights`, padded to eight so one unaligned
+    /// 8-byte copy places a whole stored byte's worth of dims.
+    pub table: Box<[[i8; 8]; 256]>,
+}
+
+/// Ternary's one-hop expansion (see [`TernaryDirect`]). `w` must have eight
+/// bytes of slack past `5·nbytes` for the final overlapping copy.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+#[inline(always)]
+unsafe fn expand_ternary_direct(row: &[u8], nbytes: usize, table: &[[i8; 8]; 256], wp: *mut i8) {
+    for (i, &b) in row[..nbytes].iter().enumerate() {
+        std::ptr::copy_nonoverlapping(table[b as usize].as_ptr(), wp.add(5 * i), 8);
+    }
+}
+
+/// Which expansion a kernel runs to turn packed bytes into int8 weights. The
+/// dot, fold and epilogue after it are identical either way, which is why this
+/// is a two-arm choice inside one kernel rather than a second kernel family
+/// per ISA.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+#[derive(Clone, Copy)]
+enum Expand<'a> {
+    /// Scalar rungs: one `tbl`/`pshufb` per key position per 16 packed bytes.
+    Nibble(&'a NibbleLut),
+    /// Ternary: one 8-byte table copy per stored byte, straight to weights.
+    Ternary(&'a [[i8; 8]; 256]),
 }
 
 /// The fused table factored per key position into 16-entry nibble tables —
@@ -105,13 +171,48 @@ fn derive_nibble_lut(fused: &[i8], keys_per_byte: usize) -> Option<NibbleLut> {
 /// Returns `None` for codecs without bucket artifacts (binary indexes).
 pub fn quantize_lut(codec: &ResidualCodec) -> Option<ResidualLut> {
     let weights = codec.bucket_weights.as_ref()?;
-    let lookup = codec.bucket_weight_indices_lookup.as_ref()?;
     let max_abs = weights.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
     let scale = (max_abs / 127.0).max(1e-12);
     let vals: Vec<i8> = weights
         .iter()
         .map(|&w| (w / scale).round().clamp(-127.0, 127.0) as i8)
         .collect();
+
+    // Ternary is base-3 packed: five trits per byte, and a trit value (0..=2)
+    // *is* its weight index. So the fused row is byte -> [w(trit0)..w(trit4)],
+    // with no bit-reversal step -- arithmetic packing has no sub-byte bit order
+    // to undo. The table cannot nibble-factor (5 trits do not align to 4-bit
+    // boundaries, and 3^5 = 243 is not a product of two 16-entry lookups), so
+    // `nibble` stays None and `maxsim_residual_lut_scalar`, whose `d == dim`
+    // break already masks the last byte's padding trits, remains the reference.
+    // SIMD is reached the other way: see [`TernaryDirect`].
+    if codec.ternary {
+        let trits = codec.trit_lookup.as_ref()?;
+        let keys_per_byte = crate::codec::TERNARY_TRITS_PER_BYTE;
+        let mut fused = vec![0i8; 256 * keys_per_byte];
+        for (byte, quintet) in trits.iter().enumerate() {
+            for (k, &trit) in quintet.iter().enumerate() {
+                fused[byte * keys_per_byte + k] = vals[trit as usize];
+            }
+        }
+
+        // One-hop expansion table: a stored byte's five weights, padded to
+        // eight so a single unaligned copy places them all.
+        let mut table = Box::new([[0i8; 8]; 256]);
+        for (byte, row) in table.iter_mut().enumerate() {
+            row[..keys_per_byte]
+                .copy_from_slice(&fused[byte * keys_per_byte..(byte + 1) * keys_per_byte]);
+        }
+        return Some(ResidualLut {
+            fused,
+            keys_per_byte,
+            scale,
+            nibble: None,
+            ternary_direct: Some(TernaryDirect { table }),
+        });
+    }
+
+    let lookup = codec.bucket_weight_indices_lookup.as_ref()?;
     let keys_per_byte = 8 / codec.nbits;
     let mut fused = vec![0i8; 256 * keys_per_byte];
     for byte in 0..256usize {
@@ -126,6 +227,7 @@ pub fn quantize_lut(codec: &ResidualCodec) -> Option<ResidualLut> {
         keys_per_byte,
         scale,
         nibble,
+        ternary_direct: None,
     })
 }
 
@@ -146,11 +248,24 @@ pub struct QueryPlanes {
     pub sqw: Vec<f32>,
 }
 
-/// Build [`QueryPlanes`] from already-quantized query codes. `dim` must be a
-/// multiple of 8 (the SIMD dispatch precondition), so every plane holds
-/// exactly `dim / lut.keys_per_byte` lanes.
+/// Build [`QueryPlanes`] from already-quantized query codes. For the scalar
+/// rungs `dim` must be a multiple of 8 (the SIMD dispatch precondition), so
+/// every plane holds exactly `dim / lut.keys_per_byte` lanes. Ternary expands
+/// to natural dim order (see [`TernaryDirect`]), so it needs no permutation —
+/// just the zero padding, which is what makes its slots past `dim` contribute
+/// `0·w = 0`.
 pub fn build_query_planes(q8: &QueryI8, lut: &ResidualLut, dim: usize) -> QueryPlanes {
     let nq = q8.values.nrows();
+    if lut.ternary_direct.is_some() {
+        let stride = crate::binary::padded_stride(dim);
+        let qv = q8.values.as_slice().expect("QueryI8.values is contiguous");
+        let mut data = vec![0i8; nq * stride];
+        for qi in 0..nq {
+            data[qi * stride..qi * stride + dim].copy_from_slice(&qv[qi * dim..(qi + 1) * dim]);
+        }
+        let sqw = q8.scales.iter().map(|&s| s * lut.scale).collect();
+        return QueryPlanes { data, stride, sqw };
+    }
     let keys_per_byte = lut.keys_per_byte;
     let stride = crate::binary::padded_stride(dim);
     let pdim = dim / keys_per_byte;
@@ -199,11 +314,37 @@ pub(crate) fn compute_inv_norms_into(
     out: &mut Vec<f32>,
 ) -> Option<()> {
     let weights = codec.bucket_weights.as_ref()?;
-    let lookup = codec.bucket_weight_indices_lookup.as_ref()?;
     let dim = codec.embedding_dim();
     assert_eq!(codes.len(), packed.nrows());
     out.clear();
     out.reserve(codes.len());
+
+    // Ternary reconstructs `centroid + weights[trit]` through the base-3 trit
+    // table -- there is no bit-reversal step, because a trit value *is* its
+    // weight index. Stopping at `dim` keeps the last byte's padding trits from
+    // contributing, so this is the same norm the float decode path computes.
+    if codec.ternary {
+        let trits = codec.trit_lookup.as_ref()?;
+        for (t, &code) in codes.iter().enumerate() {
+            let centroid = codec.centroids.row(code as usize);
+            let mut sq = 0.0f32;
+            let mut d = 0usize;
+            'row: for &byte in packed.row(t).iter() {
+                for &trit in trits[byte as usize].iter() {
+                    if d == dim {
+                        break 'row;
+                    }
+                    let v = centroid[d] + weights[trit as usize];
+                    sq += v * v;
+                    d += 1;
+                }
+            }
+            out.push(1.0 / sq.sqrt().max(1e-12));
+        }
+        return Some(());
+    }
+
+    let lookup = codec.bucket_weight_indices_lookup.as_ref()?;
     for (t, &code) in codes.iter().enumerate() {
         let centroid = codec.centroids.row(code as usize);
         let mut sq = 0.0f32;
@@ -349,47 +490,100 @@ pub fn maxsim_residual_lut_i8(
     #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     let _ = planes;
     #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-    if let (Some(planes), Some(nib)) = (planes, lut.nibble.as_ref()) {
-        if dim.is_multiple_of(8) {
-            #[cfg(target_arch = "aarch64")]
-            if std::arch::is_aarch64_feature_detected!("dotprod") {
-                return SCRATCH.with(|s| {
-                    let (best, accs) = &mut *s.borrow_mut();
-                    unsafe {
-                        neon::maxsim_residual_lut_neon(
-                            q8, planes, doc_packed, doc_codes, cdot_t, lut, nib, inv_norms, dim,
-                            best, accs,
-                        )
-                    }
-                });
+    {
+        if let (Some(planes), Some(nib)) = (planes, lut.nibble.as_ref()) {
+            if dim.is_multiple_of(8) {
+                if let Some(score) = dispatch_simd(
+                    q8,
+                    planes,
+                    doc_packed,
+                    doc_codes,
+                    cdot_t,
+                    lut,
+                    Expand::Nibble(nib),
+                    inv_norms,
+                    dim,
+                ) {
+                    return score;
+                }
             }
-            #[cfg(target_arch = "x86_64")]
-            if has_avx512_vnni() {
-                return SCRATCH.with(|s| {
-                    let (best, accs) = &mut *s.borrow_mut();
-                    unsafe {
-                        avx512::maxsim_residual_lut_avx512(
-                            q8, planes, doc_packed, doc_codes, cdot_t, lut, nib, inv_norms, dim,
-                            best, accs,
-                        )
-                    }
-                });
-            }
-            #[cfg(target_arch = "x86_64")]
-            if is_x86_feature_detected!("avx2") {
-                return SCRATCH.with(|s| {
-                    let (best, accs) = &mut *s.borrow_mut();
-                    unsafe {
-                        avx2::maxsim_residual_lut_avx2(
-                            q8, planes, doc_packed, doc_codes, cdot_t, lut, nib, inv_norms, dim,
-                            best, accs,
-                        )
-                    }
-                });
+        }
+        // Ternary expands base-3 bytes straight to weights in these same
+        // kernels; see [`TernaryDirect`]. No multiple-of-8 precondition — that
+        // one belongs to the nibble route's exact `dim / keys_per_byte`.
+        if let (Some(planes), Some(td)) = (planes, lut.ternary_direct.as_ref()) {
+            if let Some(score) = dispatch_simd(
+                q8,
+                planes,
+                doc_packed,
+                doc_codes,
+                cdot_t,
+                lut,
+                Expand::Ternary(&td.table),
+                inv_norms,
+                dim,
+            ) {
+                return score;
             }
         }
     }
     maxsim_residual_lut_scalar(q8, doc_packed, doc_codes, cdot_t, lut, inv_norms, dim)
+}
+
+/// The per-CPU kernel selection shared by the nibble and ternary routes — one
+/// place that knows which fused kernel this machine runs. `None` when the CPU
+/// has none of them (caller falls back to scalar).
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+#[allow(clippy::too_many_arguments)]
+fn dispatch_simd(
+    q8: &QueryI8,
+    planes: &QueryPlanes,
+    doc_packed: &ArrayView2<u8>,
+    doc_codes: &[i64],
+    cdot_t: &ArrayView2<f32>,
+    lut: &ResidualLut,
+    expand: Expand,
+    inv_norms: &[f32],
+    dim: usize,
+) -> Option<f32> {
+    #[cfg(target_arch = "aarch64")]
+    if std::arch::is_aarch64_feature_detected!("dotprod") {
+        return Some(SCRATCH.with(|s| {
+            let (best, accs) = &mut *s.borrow_mut();
+            unsafe {
+                neon::maxsim_residual_lut_neon(
+                    q8, planes, doc_packed, doc_codes, cdot_t, lut, expand, inv_norms, dim, best,
+                    accs,
+                )
+            }
+        }));
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if has_avx512_vnni() {
+            return Some(SCRATCH.with(|s| {
+                let (best, accs) = &mut *s.borrow_mut();
+                unsafe {
+                    avx512::maxsim_residual_lut_avx512(
+                        q8, planes, doc_packed, doc_codes, cdot_t, lut, expand, inv_norms, dim,
+                        best, accs,
+                    )
+                }
+            }));
+        }
+        if is_x86_feature_detected!("avx2") {
+            return Some(SCRATCH.with(|s| {
+                let (best, accs) = &mut *s.borrow_mut();
+                unsafe {
+                    avx2::maxsim_residual_lut_avx2(
+                        q8, planes, doc_packed, doc_codes, cdot_t, lut, expand, inv_norms, dim,
+                        best, accs,
+                    )
+                }
+            }));
+        }
+    }
+    None
 }
 
 /// Does this CPU have the full AVX-512 set the fused kernel needs?
@@ -400,14 +594,9 @@ fn has_avx512_vnni() -> bool {
         && is_x86_feature_detected!("avx512vnni")
 }
 
-/// Name of the kernel this process will actually run, for benchmark output.
-/// A speedup attributed to a path that never executed is the easiest
-/// measurement error to make and the hardest to notice, so harnesses print
-/// this next to their numbers.
-pub fn active_kernel_name(dim: usize, nibble_ok: bool) -> &'static str {
-    if !nibble_ok || !dim.is_multiple_of(8) || dim > MAX_DIM {
-        return "scalar (no SIMD dispatch)";
-    }
+/// The fused kernel this CPU runs, shape questions aside ("scalar" when it
+/// has none).
+fn arch_kernel_name() -> &'static str {
     #[cfg(target_arch = "x86_64")]
     {
         if has_avx512_vnni() {
@@ -424,6 +613,59 @@ pub fn active_kernel_name(dim: usize, nibble_ok: bool) -> &'static str {
         }
     }
     "scalar"
+}
+
+/// Name of the kernel this process will actually run, for benchmark output.
+/// A speedup attributed to a path that never executed is the easiest
+/// measurement error to make and the hardest to notice, so harnesses print
+/// this next to their numbers.
+///
+/// Shape semantics are the *nibble* route's; ternary LUTs answer through
+/// [`ResidualLut::kernel_name`], which knows the one-hop route's shape rules
+/// instead.
+pub fn active_kernel_name(dim: usize, nibble_ok: bool) -> &'static str {
+    if !nibble_ok || !dim.is_multiple_of(8) || dim > MAX_DIM {
+        return "scalar (no SIMD dispatch)";
+    }
+    arch_kernel_name()
+}
+
+impl ResidualLut {
+    /// Should a search build [`QueryPlanes`] for this LUT at this dim — i.e.
+    /// is there a SIMD route the planes could feed? (CPU capability is the
+    /// dispatcher's question; planes are cheap and harmless without it.)
+    pub fn wants_planes(&self, dim: usize) -> bool {
+        if self.ternary_direct.is_some() {
+            dim <= MAX_DIM
+        } else {
+            dim.is_multiple_of(8) && self.nibble.is_some()
+        }
+    }
+
+    /// The kernel [`maxsim_residual_lut_i8`] will actually run for this LUT
+    /// (given planes) — the lut-aware form of [`active_kernel_name`], and the
+    /// one that answers correctly for ternary.
+    pub fn kernel_name(&self, dim: usize) -> &'static str {
+        if self.ternary_direct.is_some() {
+            if dim <= MAX_DIM {
+                arch_kernel_name()
+            } else {
+                "scalar (no SIMD dispatch)"
+            }
+        } else {
+            active_kernel_name(dim, self.nibble.is_some())
+        }
+    }
+
+    /// Will the fused SIMD kernel actually run for this LUT on this CPU? The
+    /// lut-aware form of [`simd_dispatch_available`].
+    pub fn simd_available(&self, dim: usize) -> bool {
+        if self.ternary_direct.is_some() {
+            dim <= MAX_DIM && arch_kernel_name() != "scalar"
+        } else {
+            simd_dispatch_available(dim, self.nibble.is_some())
+        }
+    }
 }
 
 /// Will the fused SIMD kernel actually run for this shape on this CPU?
@@ -558,7 +800,7 @@ mod neon {
         doc_codes: &[i64],
         cdot_t: &ArrayView2<f32>,
         lut: &ResidualLut,
-        nib: &NibbleLut,
+        expand: Expand,
         inv_norms: &[f32],
         dim: usize,
         best: &mut Vec<f32>,
@@ -569,7 +811,8 @@ mod neon {
             return 0.0;
         }
         let kpb = lut.keys_per_byte;
-        let pdim = dim / kpb; // packed bytes per token (dim % 8 == 0)
+        let pdim = dim / kpb; // nibble route: packed bytes per token (dim % 8 == 0)
+        let tbytes = dim.div_ceil(kpb); // ternary route: stored bytes per token
         let ps = planes.stride;
         let qp_base = planes.data.as_ptr();
         let d_all = doc_packed.as_slice().expect("doc bytes must be contiguous");
@@ -581,47 +824,55 @@ mod neon {
         best.resize(nq, f32::NEG_INFINITY);
         accs.clear();
         accs.resize(nq, 0);
-        let mut w = [0i8; MAX_DIM];
+        let mut w = [0i8; MAX_DIM + 8]; // slack for the ternary copy's overhang
         let mut tabs = [vdupq_n_s8(0); 8];
-        for (tab, src) in tabs.iter_mut().zip(nib.tables.iter()).take(kpb) {
-            *tab = vld1q_s8(src.as_ptr());
+        if let Expand::Nibble(nib) = expand {
+            for (tab, src) in tabs.iter_mut().zip(nib.tables.iter()).take(kpb) {
+                *tab = vld1q_s8(src.as_ptr());
+            }
         }
         let low_mask = vdupq_n_u8(0x0F);
 
         for (t, &code) in doc_codes.iter().enumerate() {
             let row = &d_all[t * pb..t * pb + pb];
             let wp = w.as_mut_ptr();
-            let mut i = 0usize;
-            while i + 16 <= pdim {
-                let v = vld1q_u8(row.as_ptr().add(i));
-                let hi = vshrq_n_u8(v, 4);
-                let lo = vandq_u8(v, low_mask);
-                for (k, tab) in tabs.iter().enumerate().take(kpb) {
-                    let idx = if nib.from_hi[k] { hi } else { lo };
-                    vst1q_s8(wp.add(k * pdim + i), vqtbl1q_s8(*tab, idx));
-                }
-                i += 16;
-            }
-            // Sub-16 tail: pad the remaining packed bytes into a zeroed
-            // 16-byte scratch, expand with the same tbl, and copy out only
-            // the valid lanes — a direct 16-lane store would clobber the
-            // next plane's already-written low bytes. This keeps narrow
-            // dims on the SIMD path (dim 48 at nbits 2/1 packs to 12/6
-            // bytes — under one chunk — and previously fell to a scalar
-            // walk). Bit-identical: the nibble tables are verified against
-            // the fused table over all 256 byte values, zero-pad included.
-            if i < pdim {
-                let rem = pdim - i;
-                let mut src = [0u8; 16];
-                src[..rem].copy_from_slice(&row[i..pdim]);
-                let v = vld1q_u8(src.as_ptr());
-                let hi = vshrq_n_u8(v, 4);
-                let lo = vandq_u8(v, low_mask);
-                let mut dst = [0i8; 16];
-                for k in 0..kpb {
-                    let idx = if nib.from_hi[k] { hi } else { lo };
-                    vst1q_s8(dst.as_mut_ptr(), vqtbl1q_s8(tabs[k], idx));
-                    w[k * pdim + i..k * pdim + pdim].copy_from_slice(&dst[..rem]);
+            match expand {
+                // One 8-byte copy per stored byte, straight to weights.
+                Expand::Ternary(tab) => expand_ternary_direct(row, tbytes, tab, wp),
+                Expand::Nibble(nib) => {
+                    let mut i = 0usize;
+                    while i + 16 <= pdim {
+                        let v = vld1q_u8(row.as_ptr().add(i));
+                        let hi = vshrq_n_u8(v, 4);
+                        let lo = vandq_u8(v, low_mask);
+                        for (k, tab) in tabs.iter().enumerate().take(kpb) {
+                            let idx = if nib.from_hi[k] { hi } else { lo };
+                            vst1q_s8(wp.add(k * pdim + i), vqtbl1q_s8(*tab, idx));
+                        }
+                        i += 16;
+                    }
+                    // Sub-16 tail: pad the remaining packed bytes into a zeroed
+                    // 16-byte scratch, expand with the same tbl, and copy out only
+                    // the valid lanes — a direct 16-lane store would clobber the
+                    // next plane's already-written low bytes. This keeps narrow
+                    // dims on the SIMD path (dim 48 at nbits 2/1 packs to 12/6
+                    // bytes — under one chunk — and previously fell to a scalar
+                    // walk). Bit-identical: the nibble tables are verified against
+                    // the fused table over all 256 byte values, zero-pad included.
+                    if i < pdim {
+                        let rem = pdim - i;
+                        let mut src = [0u8; 16];
+                        src[..rem].copy_from_slice(&row[i..pdim]);
+                        let v = vld1q_u8(src.as_ptr());
+                        let hi = vshrq_n_u8(v, 4);
+                        let lo = vandq_u8(v, low_mask);
+                        let mut dst = [0i8; 16];
+                        for k in 0..kpb {
+                            let idx = if nib.from_hi[k] { hi } else { lo };
+                            vst1q_s8(dst.as_mut_ptr(), vqtbl1q_s8(tabs[k], idx));
+                            w[k * pdim + i..k * pdim + pdim].copy_from_slice(&dst[..rem]);
+                        }
+                    }
                 }
             }
             let cid = code as usize;
@@ -733,7 +984,7 @@ mod avx2 {
         doc_codes: &[i64],
         cdot_t: &ArrayView2<f32>,
         lut: &ResidualLut,
-        nib: &NibbleLut,
+        expand: Expand,
         inv_norms: &[f32],
         dim: usize,
         best: &mut Vec<f32>,
@@ -744,7 +995,8 @@ mod avx2 {
             return 0.0;
         }
         let kpb = lut.keys_per_byte;
-        let pdim = dim / kpb;
+        let pdim = dim / kpb; // nibble route: packed bytes per token
+        let tbytes = dim.div_ceil(kpb); // ternary route: stored bytes per token
         let ps = planes.stride;
         let qp_base = planes.data.as_ptr();
         let d_all = doc_packed.as_slice().expect("doc bytes must be contiguous");
@@ -756,10 +1008,12 @@ mod avx2 {
         best.resize(nq, f32::NEG_INFINITY);
         accs.clear();
         accs.resize(nq, 0);
-        let mut w = [0i8; MAX_DIM];
+        let mut w = [0i8; MAX_DIM + 8]; // slack for the ternary copy's overhang
         let mut tabs = [_mm_setzero_si128(); 8];
-        for (tab, src) in tabs.iter_mut().zip(nib.tables.iter()).take(kpb) {
-            *tab = _mm_loadu_si128(src.as_ptr() as *const __m128i);
+        if let Expand::Nibble(nib) = expand {
+            for (tab, src) in tabs.iter_mut().zip(nib.tables.iter()).take(kpb) {
+                *tab = _mm_loadu_si128(src.as_ptr() as *const __m128i);
+            }
         }
         let low_mask = _mm_set1_epi8(0x0F);
         let ones = _mm256_set1_epi16(1);
@@ -767,39 +1021,45 @@ mod avx2 {
         for (t, &code) in doc_codes.iter().enumerate() {
             let row = &d_all[t * pb..t * pb + pb];
             let wp = w.as_mut_ptr();
-            let mut i = 0usize;
-            while i + 16 <= pdim {
-                let v = _mm_loadu_si128(row.as_ptr().add(i) as *const __m128i);
-                let hi = _mm_and_si128(_mm_srli_epi16(v, 4), low_mask);
-                let lo = _mm_and_si128(v, low_mask);
-                for (k, tab) in tabs.iter().enumerate().take(kpb) {
-                    let idx = if nib.from_hi[k] { hi } else { lo };
-                    _mm_storeu_si128(
-                        wp.add(k * pdim + i) as *mut __m128i,
-                        _mm_shuffle_epi8(*tab, idx),
-                    );
-                }
-                i += 16;
-            }
-            // Sub-16 tail: same padded-scratch expand as the NEON kernel —
-            // see the comment there. Keeps narrow dims on pshufb instead of
-            // a scalar walk; copy-out of only the valid lanes protects the
-            // next plane's low bytes.
-            if i < pdim {
-                let rem = pdim - i;
-                let mut src = [0u8; 16];
-                src[..rem].copy_from_slice(&row[i..pdim]);
-                let v = _mm_loadu_si128(src.as_ptr() as *const __m128i);
-                let hi = _mm_and_si128(_mm_srli_epi16(v, 4), low_mask);
-                let lo = _mm_and_si128(v, low_mask);
-                let mut dst = [0i8; 16];
-                for k in 0..kpb {
-                    let idx = if nib.from_hi[k] { hi } else { lo };
-                    _mm_storeu_si128(
-                        dst.as_mut_ptr() as *mut __m128i,
-                        _mm_shuffle_epi8(tabs[k], idx),
-                    );
-                    w[k * pdim + i..k * pdim + pdim].copy_from_slice(&dst[..rem]);
+            match expand {
+                // One 8-byte copy per stored byte, straight to weights.
+                Expand::Ternary(tab) => expand_ternary_direct(row, tbytes, tab, wp),
+                Expand::Nibble(nib) => {
+                    let mut i = 0usize;
+                    while i + 16 <= pdim {
+                        let v = _mm_loadu_si128(row.as_ptr().add(i) as *const __m128i);
+                        let hi = _mm_and_si128(_mm_srli_epi16(v, 4), low_mask);
+                        let lo = _mm_and_si128(v, low_mask);
+                        for (k, tab) in tabs.iter().enumerate().take(kpb) {
+                            let idx = if nib.from_hi[k] { hi } else { lo };
+                            _mm_storeu_si128(
+                                wp.add(k * pdim + i) as *mut __m128i,
+                                _mm_shuffle_epi8(*tab, idx),
+                            );
+                        }
+                        i += 16;
+                    }
+                    // Sub-16 tail: same padded-scratch expand as the NEON kernel —
+                    // see the comment there. Keeps narrow dims on pshufb instead of
+                    // a scalar walk; copy-out of only the valid lanes protects the
+                    // next plane's low bytes.
+                    if i < pdim {
+                        let rem = pdim - i;
+                        let mut src = [0u8; 16];
+                        src[..rem].copy_from_slice(&row[i..pdim]);
+                        let v = _mm_loadu_si128(src.as_ptr() as *const __m128i);
+                        let hi = _mm_and_si128(_mm_srli_epi16(v, 4), low_mask);
+                        let lo = _mm_and_si128(v, low_mask);
+                        let mut dst = [0i8; 16];
+                        for k in 0..kpb {
+                            let idx = if nib.from_hi[k] { hi } else { lo };
+                            _mm_storeu_si128(
+                                dst.as_mut_ptr() as *mut __m128i,
+                                _mm_shuffle_epi8(tabs[k], idx),
+                            );
+                            w[k * pdim + i..k * pdim + pdim].copy_from_slice(&dst[..rem]);
+                        }
+                    }
                 }
             }
             let cid = code as usize;
@@ -893,7 +1153,7 @@ mod avx512 {
         doc_codes: &[i64],
         cdot_t: &ArrayView2<f32>,
         lut: &ResidualLut,
-        nib: &NibbleLut,
+        expand: Expand,
         inv_norms: &[f32],
         dim: usize,
         best: &mut Vec<f32>,
@@ -904,7 +1164,8 @@ mod avx512 {
             return 0.0;
         }
         let kpb = lut.keys_per_byte;
-        let pdim = dim / kpb;
+        let pdim = dim / kpb; // nibble route: packed bytes per token
+        let tbytes = dim.div_ceil(kpb); // ternary route: stored bytes per token
         let ps = planes.stride;
         let qp_base = planes.data.as_ptr();
         let d_all = doc_packed.as_slice().expect("doc bytes must be contiguous");
@@ -916,10 +1177,12 @@ mod avx512 {
         best.resize(nq, f32::NEG_INFINITY);
         accs.clear();
         accs.resize(nq, 0);
-        let mut w = [0i8; MAX_DIM];
+        let mut w = [0i8; MAX_DIM + 8]; // slack for the ternary copy's overhang
         let mut tabs = [_mm_setzero_si128(); 8];
-        for (tab, src) in tabs.iter_mut().zip(nib.tables.iter()).take(kpb) {
-            *tab = _mm_loadu_si128(src.as_ptr() as *const __m128i);
+        if let Expand::Nibble(nib) = expand {
+            for (tab, src) in tabs.iter_mut().zip(nib.tables.iter()).take(kpb) {
+                *tab = _mm_loadu_si128(src.as_ptr() as *const __m128i);
+            }
         }
         let low_mask = _mm_set1_epi8(0x0F);
         let zero = _mm512_setzero_si512();
@@ -927,35 +1190,41 @@ mod avx512 {
         for (t, &code) in doc_codes.iter().enumerate() {
             let row = &d_all[t * pb..t * pb + pb];
             let wp = w.as_mut_ptr();
-            let mut i = 0usize;
-            while i + 16 <= pdim {
-                let v = _mm_loadu_si128(row.as_ptr().add(i) as *const __m128i);
-                let hi = _mm_and_si128(_mm_srli_epi16(v, 4), low_mask);
-                let lo = _mm_and_si128(v, low_mask);
-                for (k, tab) in tabs.iter().enumerate().take(kpb) {
-                    let idx = if nib.from_hi[k] { hi } else { lo };
-                    _mm_storeu_si128(
-                        wp.add(k * pdim + i) as *mut __m128i,
-                        _mm_shuffle_epi8(*tab, idx),
-                    );
-                }
-                i += 16;
-            }
-            if i < pdim {
-                let rem = pdim - i;
-                let mut src = [0u8; 16];
-                src[..rem].copy_from_slice(&row[i..pdim]);
-                let v = _mm_loadu_si128(src.as_ptr() as *const __m128i);
-                let hi = _mm_and_si128(_mm_srli_epi16(v, 4), low_mask);
-                let lo = _mm_and_si128(v, low_mask);
-                let mut dst = [0i8; 16];
-                for k in 0..kpb {
-                    let idx = if nib.from_hi[k] { hi } else { lo };
-                    _mm_storeu_si128(
-                        dst.as_mut_ptr() as *mut __m128i,
-                        _mm_shuffle_epi8(tabs[k], idx),
-                    );
-                    w[k * pdim + i..k * pdim + pdim].copy_from_slice(&dst[..rem]);
+            match expand {
+                // One 8-byte copy per stored byte, straight to weights.
+                Expand::Ternary(tab) => expand_ternary_direct(row, tbytes, tab, wp),
+                Expand::Nibble(nib) => {
+                    let mut i = 0usize;
+                    while i + 16 <= pdim {
+                        let v = _mm_loadu_si128(row.as_ptr().add(i) as *const __m128i);
+                        let hi = _mm_and_si128(_mm_srli_epi16(v, 4), low_mask);
+                        let lo = _mm_and_si128(v, low_mask);
+                        for (k, tab) in tabs.iter().enumerate().take(kpb) {
+                            let idx = if nib.from_hi[k] { hi } else { lo };
+                            _mm_storeu_si128(
+                                wp.add(k * pdim + i) as *mut __m128i,
+                                _mm_shuffle_epi8(*tab, idx),
+                            );
+                        }
+                        i += 16;
+                    }
+                    if i < pdim {
+                        let rem = pdim - i;
+                        let mut src = [0u8; 16];
+                        src[..rem].copy_from_slice(&row[i..pdim]);
+                        let v = _mm_loadu_si128(src.as_ptr() as *const __m128i);
+                        let hi = _mm_and_si128(_mm_srli_epi16(v, 4), low_mask);
+                        let lo = _mm_and_si128(v, low_mask);
+                        let mut dst = [0i8; 16];
+                        for k in 0..kpb {
+                            let idx = if nib.from_hi[k] { hi } else { lo };
+                            _mm_storeu_si128(
+                                dst.as_mut_ptr() as *mut __m128i,
+                                _mm_shuffle_epi8(tabs[k], idx),
+                            );
+                            w[k * pdim + i..k * pdim + pdim].copy_from_slice(&dst[..rem]);
+                        }
+                    }
                 }
             }
             let cid = code as usize;
@@ -1140,7 +1409,7 @@ mod tests {
                             &codes,
                             &cdot_t.view(),
                             &lut,
-                            nib,
+                            Expand::Nibble(nib),
                             &inv,
                             dim,
                             &mut best,
@@ -1156,7 +1425,7 @@ mod tests {
                             &codes,
                             &cdot_t.view(),
                             &lut,
-                            nib,
+                            Expand::Nibble(nib),
                             &inv,
                             dim,
                             &mut best,
@@ -1184,7 +1453,7 @@ mod tests {
                                 &codes,
                                 &cdot_t.view(),
                                 &lut,
-                                nib,
+                                Expand::Nibble(nib),
                                 &inv,
                                 dim,
                                 &mut best,
@@ -1358,6 +1627,253 @@ mod tests {
                 assert!(
                     (got as f64 - expect).abs() < 1e-3,
                     "nbits={nbits} dim={dim}: got {got} expect {expect}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod ternary_tests {
+    use super::*;
+    use crate::codec::ResidualCodec;
+    use ndarray::{Array1, Array2};
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    fn ternary_codec(dim: usize, k: usize, seed: u64) -> ResidualCodec {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let centroids = Array2::from_shape_fn((k, dim), |_| rng.gen_range(-0.5f32..0.5));
+        ResidualCodec::new_ternary(
+            2,
+            centroids,
+            Array1::zeros(dim),
+            Some(Array1::from_vec(vec![-0.12, 0.12])),
+            Some(Array1::from_vec(vec![-0.21, 0.0, 0.21])),
+        )
+        .unwrap()
+    }
+
+    /// The asymmetric path must engage for ternary, and must reach SIMD the
+    /// one-hop way rather than the nibble way: 5 trits per byte cannot factor
+    /// into two 16-entry lookups, so `nibble` is necessarily `None` and the
+    /// nibble-shaped dispatch predicate must keep saying no — while the
+    /// lut-aware one says yes.
+    #[test]
+    fn ternary_engages_asym_off_the_nibble_route() {
+        let codec = ternary_codec(128, 16, 3);
+        let lut = quantize_lut(&codec).expect("ternary must produce a fused LUT");
+        assert_eq!(lut.keys_per_byte, crate::codec::TERNARY_TRITS_PER_BYTE);
+        assert!(
+            lut.nibble.is_none(),
+            "base-3 bytes must not claim a nibble factorization"
+        );
+        assert!(!simd_dispatch_available(128, lut.nibble.is_some()));
+        assert!(lut.ternary_direct.is_some(), "ternary needs its own route");
+        assert!(lut.wants_planes(128), "ternary planes are the padded copy");
+        // Ternary's route has no multiple-of-8 precondition -- that one belongs
+        // to the nibble route's exact `dim / keys_per_byte`.
+        assert!(lut.wants_planes(45) && lut.wants_planes(44));
+        assert!(!lut.wants_planes(MAX_DIM + 1));
+        assert_eq!(lut.fused.len(), 256 * 5);
+
+        // The one-hop table is the fused table padded to eight, so one
+        // unaligned copy places a whole stored byte's dims. Slots 5..8 are
+        // slack the next copy overwrites, and must be zero for the final byte,
+        // whose slack lands past `dim` and meets a zeroed query lane.
+        let td = lut.ternary_direct.as_ref().unwrap();
+        for byte in 0..256usize {
+            assert_eq!(&td.table[byte][..5], &lut.fused[byte * 5..byte * 5 + 5]);
+            assert_eq!(&td.table[byte][5..], &[0i8; 3], "slack must be zero");
+        }
+
+        // Every fused row is the byte's five trits mapped through the weight
+        // table -- including the 13 bytes (243..=255) the encoder never emits.
+        let trits = codec.trit_lookup.as_ref().unwrap();
+        let weights = codec.bucket_weights.as_ref().unwrap();
+        for byte in 0..256usize {
+            for k in 0..5 {
+                let want = (weights[trits[byte][k] as usize] / lut.scale)
+                    .round()
+                    .clamp(-127.0, 127.0) as i8;
+                assert_eq!(lut.fused[byte * 5 + k], want, "byte {byte} key {k}");
+            }
+        }
+    }
+
+    /// The whole point of the asym path: it must agree with the float decode
+    /// path it replaces. Reference is `query · (centroid + weights[trit])`
+    /// renormalized -- exactly what `decompress` + float MaxSim computes.
+    #[test]
+    fn ternary_asym_matches_the_float_decode_reference() {
+        let mut rng = StdRng::seed_from_u64(17);
+        // 96 and 128 are byte-aligned in base 3 only by ceil(); 45 exercises a
+        // dim that is a clean multiple of 5, and 44 one that is neither.
+        for &dim in &[44usize, 45, 96, 128] {
+            let k = 16usize;
+            let codec = ternary_codec(dim, k, 5);
+            let lut = quantize_lut(&codec).unwrap();
+            let weights = codec.bucket_weights.as_ref().unwrap();
+            let trits = codec.trit_lookup.as_ref().unwrap();
+
+            let query = Array2::from_shape_fn((6, dim), |_| rng.gen_range(-1.0f32..1.0));
+            let q8 = crate::binary::quantize_query_i8(&query.view());
+            let res = Array2::from_shape_fn((9, dim), |_| rng.gen_range(-0.3f32..0.3));
+            let packed = codec.quantize_residuals(&res).unwrap();
+            assert_eq!(packed.ncols(), dim.div_ceil(5));
+            let codes: Vec<i64> = (0..9).map(|_| rng.gen_range(0..k as i64)).collect();
+            let cents = Array2::from_shape_fn((k, dim), |(i, d)| codec.centroids.row(i)[d]);
+            let cdot_t = cents.dot(&query.t());
+            let inv = compute_inv_norms(&codec, &codes, &packed.view()).unwrap();
+
+            // With planes, so this runs the one-hop SIMD route where the CPU
+            // has it -- the path a real search takes.
+            let planes = build_query_planes(&q8, &lut, dim);
+            let got = maxsim_residual_lut_i8(
+                &q8,
+                Some(&planes),
+                &packed.view(),
+                &codes,
+                &cdot_t.view(),
+                &lut,
+                &inv,
+                dim,
+            );
+
+            let mut expect = 0.0f64;
+            for qi in 0..6 {
+                let mut best = f64::NEG_INFINITY;
+                for (t, &code) in codes.iter().enumerate() {
+                    let centroid = codec.centroids.row(code as usize);
+                    let mut recon = vec![0.0f64; dim];
+                    let mut d = 0usize;
+                    'r: for &byte in packed.row(t).iter() {
+                        for &trit in trits[byte as usize].iter() {
+                            if d == dim {
+                                break 'r;
+                            }
+                            recon[d] = centroid[d] as f64 + weights[trit as usize] as f64;
+                            d += 1;
+                        }
+                    }
+                    let norm = recon.iter().map(|v| v * v).sum::<f64>().sqrt();
+                    let dot: f64 = (0..dim)
+                        .map(|d| query[[qi, d]] as f64 * recon[d] / norm)
+                        .sum();
+                    best = best.max(dot);
+                }
+                expect += best;
+            }
+            assert!(
+                (got as f64 - expect).abs() < 0.05,
+                "dim={dim}: asym {got} vs float decode {expect}"
+            );
+        }
+    }
+
+    /// `compute_inv_norms` must reproduce the float reconstruction's norm,
+    /// padding trits excluded -- the regression that broke every ternary index
+    /// when asymmetric scoring became the default.
+    #[test]
+    fn ternary_inv_norms_match_the_reconstruction() {
+        let mut rng = StdRng::seed_from_u64(23);
+        for &dim in &[44usize, 45, 128] {
+            let codec = ternary_codec(dim, 8, 9);
+            let weights = codec.bucket_weights.as_ref().unwrap();
+            let trits = codec.trit_lookup.as_ref().unwrap();
+            let res = Array2::from_shape_fn((12, dim), |_| rng.gen_range(-0.3f32..0.3));
+            let packed = codec.quantize_residuals(&res).unwrap();
+            let codes: Vec<i64> = (0..12).map(|_| rng.gen_range(0..8i64)).collect();
+            let got = compute_inv_norms(&codec, &codes, &packed.view())
+                .expect("ternary must produce inverse norms");
+
+            for (t, &code) in codes.iter().enumerate() {
+                let centroid = codec.centroids.row(code as usize);
+                let mut sq = 0.0f64;
+                let mut d = 0usize;
+                'r: for &byte in packed.row(t).iter() {
+                    for &trit in trits[byte as usize].iter() {
+                        if d == dim {
+                            break 'r;
+                        }
+                        let v = centroid[d] as f64 + weights[trit as usize] as f64;
+                        sq += v * v;
+                        d += 1;
+                    }
+                }
+                let want = 1.0 / sq.sqrt().max(1e-12);
+                assert!(
+                    (got[t] as f64 - want).abs() < 1e-4,
+                    "dim={dim} token {t}: {} vs {want}",
+                    got[t]
+                );
+            }
+        }
+    }
+
+    /// The one-hop SIMD expansion must be **bit-identical** to the scalar
+    /// base-3 reference, not merely close.
+    ///
+    /// It can be: both read the same fused table, and the integer accumulator
+    /// is order-invariant, so the dot may visit dims in any order. The only
+    /// way to break parity is the padding — a stored byte carries five trits
+    /// whether or not `dim` wants them, so slots `dim..` hold *real* weights
+    /// from real padding trits and are made harmless solely by the zeroed
+    /// query lanes `build_query_planes` leaves there. Dims that are a multiple
+    /// of neither 8 nor 5 are where that goes wrong, so they are the ones
+    /// swept — in a shrinking sequence, so a short row lands on a longer one's
+    /// leftovers and any missed clear shows up as a mismatch.
+    #[test]
+    fn ternary_simd_matches_the_scalar_kernel_bitwise() {
+        #[cfg(target_arch = "aarch64")]
+        if !std::arch::is_aarch64_feature_detected!("dotprod") {
+            return;
+        }
+        #[cfg(target_arch = "x86_64")]
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+        let mut rng = StdRng::seed_from_u64(41);
+        for &nq in &[3usize, 7, 8, 9, 32] {
+            // Shrinking, and deliberately including 47/43/41 (multiples of
+            // neither 8 nor 5), 45/40 (multiples of 5), 48/128 (of 8).
+            for &dim in &[256usize, 128, 96, 48, 47, 45, 43, 41, 40, 12, 5, 3] {
+                let k = 12usize;
+                let codec = ternary_codec(dim, k, 7);
+                let lut = quantize_lut(&codec).unwrap();
+                assert!(lut.simd_available(dim), "dim={dim} must reach SIMD");
+                let query = Array2::from_shape_fn((nq, dim), |_| rng.gen_range(-1.0f32..1.0));
+                let q8 = crate::binary::quantize_query_i8(&query.view());
+                let planes = build_query_planes(&q8, &lut, dim);
+                let res = Array2::from_shape_fn((13, dim), |_| rng.gen_range(-0.4f32..0.4));
+                let packed = codec.quantize_residuals(&res).unwrap();
+                let codes: Vec<i64> = (0..13).map(|_| rng.gen_range(0..k as i64)).collect();
+                let cdot_t = Array2::from_shape_fn((k, nq), |_| rng.gen_range(-1.0f32..1.0));
+                let inv: Vec<f32> = (0..13).map(|_| rng.gen_range(0.5f32..1.5)).collect();
+
+                let scalar = maxsim_residual_lut_scalar(
+                    &q8,
+                    &packed.view(),
+                    &codes,
+                    &cdot_t.view(),
+                    &lut,
+                    &inv,
+                    dim,
+                );
+                let simd = maxsim_residual_lut_i8(
+                    &q8,
+                    Some(&planes),
+                    &packed.view(),
+                    &codes,
+                    &cdot_t.view(),
+                    &lut,
+                    &inv,
+                    dim,
+                );
+                assert_eq!(
+                    simd.to_bits(),
+                    scalar.to_bits(),
+                    "nq={nq} dim={dim}: simd {simd} vs scalar {scalar}"
                 );
             }
         }
