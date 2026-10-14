@@ -3,10 +3,12 @@
 //! Started on a free localhost port with GPU offload requested (`-ngl 999`) on a single
 //! GPU — the one with the most free memory (a 2B model gains nothing from being split,
 //! and the split costs ~30% of the generation speed on 8 H100s). llama.cpp uses the CPU
-//! when its backend finds no GPU. On Linux, a GPU whose driver is installed but that
-//! Vulkan cannot see because the distribution left out the Vulkan loader is reached
-//! through a pinned loader downloaded on demand ([`crate::runtime::vulkan_loader`]). The session talks to
-//! it through [`OpenAiCompletions`]; the process is tied to colgrep's lifetime and killed
+//! when its backend finds no GPU. Unless the user chose the layer count, a GPU without
+//! room for the model is not used, and a GPU that runs out of memory while loading gets
+//! one more try on the CPU: on a shared machine the GPUs are often full. On Linux, a GPU
+//! whose driver is installed but that Vulkan cannot see because the distribution left
+//! out the Vulkan loader is reached through a pinned loader downloaded on demand
+//! ([`crate::runtime::vulkan_loader`]). The session talks to it through [`OpenAiCompletions`]; the process is tied to colgrep's lifetime and killed
 //! when the engine drops.
 
 use std::io::{Read, Seek, SeekFrom};
@@ -26,6 +28,9 @@ pub struct ServerOptions {
     pub threads: Option<usize>,
     /// Layers offloaded to the GPU (0 = CPU only).
     pub gpu_layers: u32,
+    /// `gpu_layers` is the default rather than the user's choice: the server may then
+    /// fall back to the CPU when no GPU has room for the model.
+    pub cpu_fallback: bool,
     /// Show a progress bar if the Vulkan loader has to be downloaded.
     pub progress: bool,
 }
@@ -51,6 +56,58 @@ pub struct LlamaServer {
 
 impl LlamaServer {
     pub fn start(server: &Path, model: &Path, opts: &ServerOptions) -> Result<Self, String> {
+        let (gpu, lib_dir, gpu_note) = if opts.gpu_layers > 0 {
+            let need_mib = opts
+                .cpu_fallback
+                .then(|| std::fs::metadata(model).ok())
+                .flatten()
+                .map(|m| vram_needed_mib(m.len()));
+            find_gpu(server, opts.progress, need_mib)
+        } else {
+            (None, None, None)
+        };
+        // A GPU is installed but has no room: request no layers, or llama.cpp would
+        // offload to its default device anyway.
+        let gpu_layers = if gpu.is_none() && opts.cpu_fallback && gpu_note.is_some() {
+            0
+        } else {
+            opts.gpu_layers
+        };
+        match Self::launch(
+            server,
+            model,
+            opts,
+            gpu_layers,
+            gpu.clone(),
+            lib_dir,
+            gpu_note,
+        ) {
+            Err(e) if e.out_of_memory && opts.cpu_fallback && gpu.is_some() => {
+                let name = gpu.map(|g| g.name).unwrap_or_default();
+                Self::launch(
+                    server,
+                    model,
+                    opts,
+                    0,
+                    None,
+                    None,
+                    Some(format!("{name} ran out of memory loading the model")),
+                )
+                .map_err(|e| e.message)
+            }
+            other => other.map_err(|e| e.message),
+        }
+    }
+
+    fn launch(
+        server: &Path,
+        model: &Path,
+        opts: &ServerOptions,
+        gpu_layers: u32,
+        gpu: Option<Gpu>,
+        lib_dir: Option<PathBuf>,
+        gpu_note: Option<String>,
+    ) -> Result<Self, LaunchError> {
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .and_then(|l| l.local_addr())
             .map_err(|e| format!("no free local port: {e}"))?
@@ -61,12 +118,6 @@ impl LlamaServer {
         ));
         let log_file =
             std::fs::File::create(&log).map_err(|e| format!("{}: {e}", log.display()))?;
-
-        let (gpu, lib_dir, gpu_note) = if opts.gpu_layers > 0 {
-            find_gpu(server, opts.progress)
-        } else {
-            (None, None, None)
-        };
 
         // Only this session may use the server: other local users, and web pages that
         // find the port, get 401. Passed through the environment, which other users
@@ -92,7 +143,7 @@ impl LlamaServer {
                 "--ubatch-size",
                 "1024",
             ])
-            .args(["--n-gpu-layers", &opts.gpu_layers.to_string()])
+            .args(["--n-gpu-layers", &gpu_layers.to_string()])
             .arg("--no-webui")
             .stdin(Stdio::null())
             .stdout(log_file.try_clone().map_err(|e| e.to_string())?)
@@ -103,7 +154,7 @@ impl LlamaServer {
         if let Some(gpu) = &gpu {
             cmd.args(["--device", &gpu.id]);
         }
-        if opts.gpu_layers == 0 {
+        if gpu_layers == 0 {
             // CPU weights are repacked; mmap would keep a second resident copy.
             cmd.args(no_mmap_args(&help));
         }
@@ -135,7 +186,13 @@ impl LlamaServer {
             #[cfg(windows)]
             _job: job,
         };
-        this.wait_ready(&base)?;
+        if let Err(message) = this.wait_ready(&base) {
+            let out_of_memory = out_of_device_memory(&read_log(&this.log));
+            return Err(LaunchError {
+                message,
+                out_of_memory,
+            });
+        }
         this.props = fetch_props(&base, &key);
         this.client = OpenAiCompletions::new(
             &format!("{base}/v1"),
@@ -217,6 +274,41 @@ impl Drop for LlamaServer {
         let _ = self.child.wait();
         let _ = std::fs::remove_file(&self.log);
     }
+}
+
+/// Why a launch failed, and whether the GPU ran out of memory (worth a CPU retry).
+struct LaunchError {
+    message: String,
+    out_of_memory: bool,
+}
+
+impl From<String> for LaunchError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            out_of_memory: false,
+        }
+    }
+}
+
+/// Whether the server log shows a failed GPU allocation (Vulkan, CUDA, Metal).
+fn out_of_device_memory(log: &str) -> bool {
+    let log = log.to_ascii_lowercase();
+    [
+        "erroroutofdevicememory",
+        "out of memory",
+        "unable to allocate",
+        "failed to allocate",
+    ]
+    .iter()
+    .any(|s| log.contains(s))
+}
+
+/// GPU memory the model needs, from its file size: the weights, plus a fifth for the
+/// compute buffers and 512 MiB for the KV cache (16K context of a 2B model: ~350 MiB).
+fn vram_needed_mib(model_bytes: u64) -> u64 {
+    let weights = model_bytes.div_ceil(1024 * 1024);
+    weights + weights / 5 + 512
 }
 
 fn fetch_props(base: &str, key: &str) -> ServerProps {
@@ -367,11 +459,17 @@ struct Gpu {
 }
 
 /// The GPU to run on, the extra library directory needed to reach it (the downloaded
-/// Vulkan loader), and, when no GPU is usable although one is installed, why.
-fn find_gpu(server: &Path, progress: bool) -> (Option<Gpu>, Option<PathBuf>, Option<String>) {
+/// Vulkan loader), and, when no GPU is usable although one is installed, why. With
+/// `need_mib`, a GPU with less free memory than that is not usable.
+fn find_gpu(
+    server: &Path,
+    progress: bool,
+    need_mib: Option<u64>,
+) -> (Option<Gpu>, Option<PathBuf>, Option<String>) {
     let gpus = list_gpus(server, None);
     if !gpus.is_empty() {
-        return (best_gpu(gpus), None, None);
+        let (gpu, note) = choose_gpu(gpus, need_mib);
+        return (gpu, None, note);
     }
     #[cfg(target_os = "linux")]
     if gpu_device_present() {
@@ -392,7 +490,9 @@ fn find_gpu(server: &Path, progress: bool) -> (Option<Gpu>, Option<PathBuf>, Opt
                         Some("a GPU is installed but its driver has no Vulkan support".into()),
                     )
                 } else {
-                    (best_gpu(gpus), Some(dir), None)
+                    let (gpu, note) = choose_gpu(gpus, need_mib);
+                    let dir = gpu.is_some().then_some(dir);
+                    (gpu, dir, note)
                 }
             }
             Err(e) => (
@@ -456,6 +556,24 @@ fn parse_gpus(list: &str) -> Vec<Gpu> {
             }
         })
         .collect()
+}
+
+/// [`best_gpu`], unless it has less than `need_mib` free: then no GPU, and why. A GPU
+/// that reports no free memory figure (0) is trusted.
+fn choose_gpu(gpus: Vec<Gpu>, need_mib: Option<u64>) -> (Option<Gpu>, Option<String>) {
+    let Some(gpu) = best_gpu(gpus) else {
+        return (None, None);
+    };
+    match need_mib {
+        Some(need) if gpu.free_mib > 0 && gpu.free_mib < need => {
+            let note = format!(
+                "{} has {} MiB free, the model needs ~{need} MiB",
+                gpu.name, gpu.free_mib
+            );
+            (None, Some(note))
+        }
+        _ => (Some(gpu), None),
+    }
 }
 
 /// The GPU with the most free memory (the first one on ties): one device is plenty for
@@ -586,5 +704,42 @@ mod tests {
         let list = "Available devices:\n  Vulkan0: NVIDIA H100 80GB HBM3 (81559 MiB, 2000 MiB free)\n  Vulkan1: NVIDIA H100 80GB HBM3 (81559 MiB, 81078 MiB free)\n  Vulkan2: NVIDIA H100 80GB HBM3 (81559 MiB, 81078 MiB free)\n";
         assert_eq!(best_gpu(parse_gpus(list)).unwrap().id, "Vulkan1");
         assert_eq!(best_gpu(Vec::new()), None);
+    }
+
+    #[test]
+    fn skips_a_gpu_without_room_for_the_model() {
+        // Two GPUs held by another server: ~2 GB free each, as on the machine that
+        // failed with ErrorOutOfDeviceMemory for the 2.5 GiB Q8_0 model.
+        let full = "Available devices:\n  Vulkan0: NVIDIA RTX PRO 6000 (97887 MiB, 1990 MiB free)\n  Vulkan1: NVIDIA RTX PRO 6000 (97887 MiB, 1985 MiB free)\n";
+        let need = vram_needed_mib(2_690_000_000);
+        let (gpu, note) = choose_gpu(parse_gpus(full), Some(need));
+        assert_eq!(gpu, None);
+        assert!(note.unwrap().contains("1990 MiB free"));
+        // The same GPUs with room, no size limit, or no free-memory figure: used.
+        let roomy = full.replace("1990 MiB free", "20000 MiB free");
+        assert_eq!(
+            choose_gpu(parse_gpus(&roomy), Some(need)).0.unwrap().id,
+            "Vulkan0"
+        );
+        assert!(choose_gpu(parse_gpus(full), None).0.is_some());
+        let unknown = "Available devices:\n  MTL0: Apple M3 Pro\n";
+        assert!(choose_gpu(parse_gpus(unknown), Some(need)).0.is_some());
+        assert_eq!(choose_gpu(Vec::new(), Some(need)), (None, None));
+    }
+
+    #[test]
+    fn model_size_to_gpu_memory() {
+        // 2.5 GiB of weights: + a fifth + 512 MiB.
+        assert_eq!(vram_needed_mib(2560 * 1024 * 1024), 2560 + 512 + 512);
+    }
+
+    #[test]
+    fn out_of_device_memory_is_recognised() {
+        let vulkan = "ggml_vulkan: Device memory allocation of size 1072128000 failed.\nggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory\n0.00.976.061 E llama_model_load: error loading model: unable to allocate Vulkan0 buffer";
+        assert!(out_of_device_memory(vulkan));
+        assert!(out_of_device_memory("CUDA error: out of memory"));
+        assert!(!out_of_device_memory(
+            "llama_model_load: error loading model: invalid magic"
+        ));
     }
 }

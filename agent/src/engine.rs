@@ -190,6 +190,9 @@ fn load_server(
             context_size: settings.context_size(),
             threads: Some(settings.threads.unwrap_or_else(server_threads)),
             gpu_layers,
+            // The default request for every layer may be lowered when no GPU has room;
+            // a count the user chose is kept.
+            cpu_fallback: settings.gpu_layers.is_none(),
             progress,
         },
     )?;
