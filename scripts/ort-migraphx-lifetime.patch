@@ -1,0 +1,20 @@
+diff --git a/onnxruntime/core/session/provider_bridge_ort.cc b/onnxruntime/core/session/provider_bridge_ort.cc
+index 41cf8be1d..d85577be4 100644
+--- a/onnxruntime/core/session/provider_bridge_ort.cc
++++ b/onnxruntime/core/session/provider_bridge_ort.cc
+@@ -1932,7 +1932,14 @@ static ProviderLibrary s_library_tensorrt(LIBRARY_PREFIX ORT_TSTR("onnxruntime_p
+ #endif
+ );
+ static ProviderLibrary s_library_nv(LIBRARY_PREFIX ORT_TSTR("onnxruntime_providers_nv_tensorrt_rtx") LIBRARY_EXTENSION);
+-static ProviderLibrary s_library_migraphx(LIBRARY_PREFIX ORT_TSTR("onnxruntime_providers_migraphx") LIBRARY_EXTENSION);
++static ProviderLibrary s_library_migraphx(LIBRARY_PREFIX ORT_TSTR("onnxruntime_providers_migraphx") LIBRARY_EXTENSION
++#ifdef __linux__
++                                        ,
++                                        // MIGraphX keeps dynamically loaded GPU plugins until exit.
++                                        // Unloading the EP can let that cleanup unload its own code.
++                                        false
++#endif
++);
+
+ // QNN EP can be built either as a static library or a shared library. Can safely define s_library_qnn even if static.
+ static ProviderLibrary s_library_qnn(LIBRARY_PREFIX ORT_TSTR("onnxruntime_providers_qnn") LIBRARY_EXTENSION);

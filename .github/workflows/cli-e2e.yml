@@ -20,7 +20,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            features: "--features mkl,cuda"
+            features: "--features mkl,cuda,migraphx"
             setup: ""
           - os: macos-latest
             features: "--features accelerate,coreml,metal_gpu"

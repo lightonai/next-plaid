@@ -1,0 +1,644 @@
+--- a/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc
++++ b/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc
+@@ -6,6 +6,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <cerrno>
++#include <cstring>
+ #include <optional>
+ #include <string_view>
+ #include <cstdlib>
+@@ -380,6 +381,556 @@
+   return result;
+ }
+
++static bool IsInteger8DataType(int32_t element_type) {
++  return element_type == ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8 ||
++         element_type == ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT8;
++}
++
++static bool IsDimensionCompatible(const ONNX_NAMESPACE::TensorShapeProto_Dimension& actual,
++                                  const ONNX_NAMESPACE::TensorShapeProto_Dimension& expected) {
++  if (actual.has_dim_value() && expected.has_dim_value()) {
++    return actual.dim_value() == expected.dim_value();
++  }
++  if (actual.has_dim_param() && expected.has_dim_param()) {
++    return actual.dim_param() == expected.dim_param();
++  }
++  return true;
++}
++
++static bool IsMatMulIntegerZeroPointSupported(const NodeArg* zero_point,
++                                             const NodeArg& data,
++                                             int row_axis,
++                                             int contraction_axis,
++                                             std::string* reason) {
++  if (zero_point == nullptr || zero_point->Name().empty()) return true;
++
++  const auto* data_type = data.TypeAsProto();
++  const auto* zero_point_type = zero_point->TypeAsProto();
++  const auto* data_shape = data.Shape();
++  const auto* zero_point_shape = zero_point->Shape();
++  if (data_type == nullptr || zero_point_type == nullptr || data_shape == nullptr || zero_point_shape == nullptr ||
++      !data_type->has_tensor_type() || !zero_point_type->has_tensor_type() ||
++      zero_point_type->tensor_type().elem_type() != data_type->tensor_type().elem_type()) {
++    if (reason != nullptr) *reason = "zero point must have a known tensor type and shape matching its input type";
++    return false;
++  }
++
++  const int data_rank = data_shape->dim_size();
++  const int zero_point_rank = zero_point_shape->dim_size();
++  if (zero_point_rank == 0) return true;
++  if (zero_point_rank == 1) {
++    const auto& zp_dim = zero_point_shape->dim(0);
++    if (zp_dim.has_dim_value() && zp_dim.dim_value() == 1) return true;
++    if (data_rank == 2 && IsDimensionCompatible(zp_dim, data_shape->dim(row_axis))) return true;
++    if (reason != nullptr) *reason = "rank-1 zero point must be a one-element vector or match a rank-2 row/column dimension";
++    return false;
++  }
++  if (zero_point_rank != data_rank) {
++    if (reason != nullptr) *reason = "zero point must be scalar, rank 1, or have the same rank as its input";
++    return false;
++  }
++
++  for (int axis = 0; axis < data_rank; ++axis) {
++    const auto& zp_dim = zero_point_shape->dim(axis);
++    const auto& data_dim = data_shape->dim(axis);
++    if (axis == contraction_axis) {
++      if (!zp_dim.has_dim_value() || zp_dim.dim_value() != 1) {
++        if (reason != nullptr) *reason = "full-rank zero point must have dimension 1 on the contraction axis";
++        return false;
++      }
++    } else if (axis == row_axis) {
++      if (!IsDimensionCompatible(zp_dim, data_dim)) {
++        if (reason != nullptr) *reason = "full-rank zero point must match the input row/column dimension";
++        return false;
++      }
++    } else if (!(zp_dim.has_dim_value() && zp_dim.dim_value() == 1) &&
++               !IsDimensionCompatible(zp_dim, data_dim)) {
++      if (reason != nullptr) *reason = "full-rank zero point batch dimensions must be 1 or match the input";
++      return false;
++    }
++  }
++  return true;
++}
++
++static std::string MatMulIntegerRewriteUnsupportedReason(const Node& node) {
++  if (node.Domain() != kOnnxDomain || node.InputDefs().size() < 2 || node.InputDefs().size() > 4 ||
++      node.OutputDefs().size() != 1) {
++    return "expected a standard ONNX node with two to four inputs and one output";
++  }
++
++  const auto& inputs = node.InputDefs();
++  const auto* a_type = inputs[0]->TypeAsProto();
++  const auto* b_type = inputs[1]->TypeAsProto();
++  const auto* a_shape = inputs[0]->Shape();
++  const auto* b_shape = inputs[1]->Shape();
++  const auto* output_type = node.OutputDefs()[0]->TypeAsProto();
++  if (a_type == nullptr || b_type == nullptr || output_type == nullptr || a_shape == nullptr || b_shape == nullptr ||
++      !a_type->has_tensor_type() || !b_type->has_tensor_type() || !output_type->has_tensor_type() ||
++      !IsInteger8DataType(a_type->tensor_type().elem_type()) ||
++      !IsInteger8DataType(b_type->tensor_type().elem_type()) ||
++      output_type->tensor_type().elem_type() != ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32 ||
++      a_shape->dim_size() < 2 || b_shape->dim_size() < 2) {
++    return "A and B must be rank-2-or-higher INT8/UINT8 tensors with an INT32 output and known ranks";
++  }
++
++  const NodeArg* a_zero_point = inputs.size() > 2 ? inputs[2] : nullptr;
++  const NodeArg* b_zero_point = inputs.size() > 3 ? inputs[3] : nullptr;
++  std::string zero_point_reason;
++  if (!IsMatMulIntegerZeroPointSupported(a_zero_point, *inputs[0], a_shape->dim_size() - 2,
++                                         a_shape->dim_size() - 1, &zero_point_reason)) {
++    return "A " + zero_point_reason;
++  }
++  if (!IsMatMulIntegerZeroPointSupported(b_zero_point, *inputs[1], b_shape->dim_size() - 1,
++                                         b_shape->dim_size() - 2, &zero_point_reason)) {
++    return "B " + zero_point_reason;
++  }
++  return {};
++}
++
++static bool IsMatMulIntegerRewriteSupported(const Node& node) {
++  return MatMulIntegerRewriteUnsupportedReason(node).empty();
++}
++
++static std::unique_ptr<ONNX_NAMESPACE::TypeProto> CopyTensorType(const ONNX_NAMESPACE::TypeProto* source,
++                                                                 int32_t element_type) {
++  auto type = ONNX_NAMESPACE::TypeProto::Create();
++  type->copy_from(source);
++  type->mutable_tensor_type()->set_elem_type(element_type);
++  return type;
++}
++
++static std::unique_ptr<ONNX_NAMESPACE::TypeProto> MakeTensorType(
++    int32_t element_type, const std::vector<std::optional<int64_t>>& dimensions) {
++  auto type = ONNX_NAMESPACE::TypeProto::Create();
++  auto* tensor_type = type->mutable_tensor_type();
++  tensor_type->set_elem_type(element_type);
++  auto* shape = tensor_type->mutable_shape();
++  for (const auto& dimension : dimensions) {
++    auto* dim = shape->add_dim();
++    if (dimension.has_value()) dim->set_dim_value(*dimension);
++  }
++  return type;
++}
++
++static std::unique_ptr<ONNX_NAMESPACE::TypeProto> MakeReducedTensorType(const ONNX_NAMESPACE::TypeProto* source,
++                                                                        int32_t axis) {
++  auto type = CopyTensorType(source, ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32);
++  type->mutable_tensor_type()->mutable_shape()->mutable_dim(axis)->set_dim_value(1);
++  return type;
++}
++
++static std::unique_ptr<ONNX_NAMESPACE::TypeProto> MakeVectorUnsqueezeType(const NodeArg& data,
++                                                                           bool row_vector) {
++  const auto* shape = data.Shape();
++  const auto source_axis = row_vector ? shape->dim_size() - 2 : shape->dim_size() - 1;
++  std::optional<int64_t> vector_dimension;
++  if (shape->dim(source_axis).has_dim_value()) vector_dimension = shape->dim(source_axis).dim_value();
++  return row_vector
++             ? MakeTensorType(ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32,
++                              {vector_dimension, 1})
++             : MakeTensorType(ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32,
++                              {1, vector_dimension});
++}
++
++class MatMulIntegerGraphBuilder final {
++ public:
++  MatMulIntegerGraphBuilder(Graph& graph, int opset, std::string prefix)
++      : graph_(graph), opset_(opset), prefix_(std::move(prefix)) {}
++
++  NodeArg& MakeArg(const std::string& base, const ONNX_NAMESPACE::TypeProto* type) {
++    return graph_.GetOrCreateNodeArg(NextArgName(base), type);
++  }
++
++  template <typename T>
++  NodeArg& AddScalarInitializer(const std::string& base, int32_t element_type, T value) {
++    const std::string name = NextArgName(base);
++    auto tensor = ONNX_NAMESPACE::TensorProto::Create();
++    tensor->set_name(name);
++    tensor->set_data_type(element_type);
++    std::string raw(sizeof(value), '\0');
++    std::memcpy(raw.data(), &value, sizeof(value));
++    tensor->mutable_raw_data()->assign(raw);
++    graph_.AddInitializedTensor(*tensor);
++    auto type = MakeTensorType(element_type, {});
++    return graph_.GetOrCreateNodeArg(name, type.get());
++  }
++
++  NodeArg& AddInt64VectorInitializer(const std::string& base, int64_t value) {
++    const std::string name = NextArgName(base);
++    auto tensor = ONNX_NAMESPACE::TensorProto::Create();
++    tensor->set_name(name);
++    tensor->set_data_type(ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT64);
++    tensor->add_dims(1);
++    std::string raw(sizeof(value), '\0');
++    std::memcpy(raw.data(), &value, sizeof(value));
++    tensor->mutable_raw_data()->assign(raw);
++    graph_.AddInitializedTensor(*tensor);
++    auto type = MakeTensorType(ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT64, {1});
++    return graph_.GetOrCreateNodeArg(name, type.get());
++  }
++
++  void AddNode(const std::string& op_type, const std::vector<NodeArg*>& inputs, NodeArg& output,
++               const NodeAttributes* attributes = nullptr) {
++    std::vector<NodeArg*> outputs{&output};
++    graph_.AddNode(NextNodeName(op_type), op_type, "MIGraphX MatMulInteger zero-point correction", inputs,
++                   outputs, attributes, kOnnxDomain);
++  }
++
++  std::unique_ptr<NodeAttributes> MakeIntAttribute(const std::string& name, int64_t value) const {
++    auto attributes = NodeAttributes::Create();
++    auto& attribute = (*attributes)[name];
++    attribute.set_name(name);
++    attribute.set_type(ONNX_NAMESPACE::AttributeProto::INT);
++    attribute.set_i(value);
++    return attributes;
++  }
++
++  std::unique_ptr<NodeAttributes> MakeIntsAndIntAttribute(const std::string& ints_name,
++                                                          int64_t ints_value,
++                                                          const std::string& int_name,
++                                                          int64_t int_value) const {
++    auto attributes = NodeAttributes::Create();
++    auto& ints = (*attributes)[ints_name];
++    ints.set_name(ints_name);
++    ints.set_type(ONNX_NAMESPACE::AttributeProto::INTS);
++    ints.add_ints(ints_value);
++    auto& integer = (*attributes)[int_name];
++    integer.set_name(int_name);
++    integer.set_type(ONNX_NAMESPACE::AttributeProto::INT);
++    integer.set_i(int_value);
++    return attributes;
++  }
++
++  std::unique_ptr<NodeAttributes> MakeIntsAttribute(const std::string& name, int64_t value) const {
++    auto attributes = NodeAttributes::Create();
++    auto& attribute = (*attributes)[name];
++    attribute.set_name(name);
++    attribute.set_type(ONNX_NAMESPACE::AttributeProto::INTS);
++    attribute.add_ints(value);
++    return attributes;
++  }
++
++  NodeArg& MakeAxesArg(const std::string& base, int64_t axis) {
++    return AddInt64VectorInitializer(base, axis);
++  }
++
++  int Opset() const { return opset_; }
++
++ private:
++  std::string NextArgName(const std::string& base) {
++    while (true) {
++      const std::string name = prefix_ + "_" + base + "_" + std::to_string(counter_++);
++      if (graph_.GetNodeArg(name) == nullptr) return name;
++    }
++  }
++
++  std::string NextNodeName(const std::string& base) {
++    while (true) {
++      const std::string name = prefix_ + "_" + base + "_" + std::to_string(counter_++);
++      const auto nodes = graph_.Nodes();
++      if (std::none_of(nodes.begin(), nodes.end(), [&](const Node* node) { return node->Name() == name; })) return name;
++    }
++  }
++
++  Graph& graph_;
++  int opset_;
++  std::string prefix_;
++  size_t counter_{0};
++};
++
++static std::unique_ptr<ONNX_NAMESPACE::TypeProto> MakeBroadcastTensorType(const NodeArg& lhs,
++                                                                          const NodeArg& rhs) {
++  const auto* lhs_shape = lhs.Shape();
++  const auto* rhs_shape = rhs.Shape();
++  const int lhs_rank = lhs_shape->dim_size();
++  const int rhs_rank = rhs_shape->dim_size();
++  const int rank = std::max(lhs_rank, rhs_rank);
++  std::vector<std::optional<int64_t>> dimensions(rank);
++  for (int axis = 0; axis < rank; ++axis) {
++    const int lhs_axis = axis - (rank - lhs_rank);
++    const int rhs_axis = axis - (rank - rhs_rank);
++    const auto* lhs_dim = lhs_axis >= 0 ? &lhs_shape->dim(lhs_axis) : nullptr;
++    const auto* rhs_dim = rhs_axis >= 0 ? &rhs_shape->dim(rhs_axis) : nullptr;
++    if (lhs_dim == nullptr) {
++      if (rhs_dim->has_dim_value()) dimensions[axis] = rhs_dim->dim_value();
++    } else if (rhs_dim == nullptr) {
++      if (lhs_dim->has_dim_value()) dimensions[axis] = lhs_dim->dim_value();
++    } else if (lhs_dim->has_dim_value() && rhs_dim->has_dim_value()) {
++      if (lhs_dim->dim_value() == 1) dimensions[axis] = rhs_dim->dim_value();
++      else if (rhs_dim->dim_value() == 1 || lhs_dim->dim_value() == rhs_dim->dim_value()) dimensions[axis] = lhs_dim->dim_value();
++    } else if (lhs_dim->has_dim_value() && lhs_dim->dim_value() == 1) {
++      if (rhs_dim->has_dim_value()) dimensions[axis] = rhs_dim->dim_value();
++    } else if (rhs_dim->has_dim_value() && rhs_dim->dim_value() == 1) {
++      if (lhs_dim->has_dim_value()) dimensions[axis] = lhs_dim->dim_value();
++    }
++  }
++  return MakeTensorType(ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32, dimensions);
++}
++
++static bool IsVectorZeroPoint(const NodeArg* zero_point) {
++  if (zero_point == nullptr || zero_point->Name().empty()) return false;
++  const auto* shape = zero_point->Shape();
++  return shape != nullptr && shape->dim_size() == 1 &&
++         !(shape->dim(0).has_dim_value() && shape->dim(0).dim_value() == 1);
++}
++
++static NodeArg& AddCast(MatMulIntegerGraphBuilder& builder,
++                        const NodeArg& input,
++                        const std::string& name,
++                        int32_t output_element_type) {
++  auto output_type = CopyTensorType(input.TypeAsProto(), output_element_type);
++  auto& output = builder.MakeArg(name, output_type.get());
++  auto attributes = builder.MakeIntAttribute("to", output_element_type);
++  builder.AddNode("Cast", {const_cast<NodeArg*>(&input)}, output, attributes.get());
++  return output;
++}
++
++static NodeArg& AddOffsetCenteredInt8(MatMulIntegerGraphBuilder& builder,
++                                      const NodeArg& input,
++                                      const std::string& name,
++                                      int32_t offset) {
++  if (input.TypeAsProto()->tensor_type().elem_type() ==
++      ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8) {
++    return const_cast<NodeArg&>(input);
++  }
++  auto int32_type = CopyTensorType(input.TypeAsProto(), ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32);
++  auto& as_int32 = builder.MakeArg(name + "_int32", int32_type.get());
++  auto cast_attributes = builder.MakeIntAttribute("to", ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32);
++  builder.AddNode("Cast", {const_cast<NodeArg*>(&input)}, as_int32, cast_attributes.get());
++  auto& offset_arg = builder.AddScalarInitializer(name + "_offset", ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32,
++                                                  offset);
++  auto& centered_int32 = builder.MakeArg(name + "_centered_int32", int32_type.get());
++  builder.AddNode("Sub", {&as_int32, &offset_arg}, centered_int32);
++  auto int8_type = CopyTensorType(input.TypeAsProto(), ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8);
++  auto& centered_int8 = builder.MakeArg(name + "_centered_int8", int8_type.get());
++  auto int8_attributes = builder.MakeIntAttribute("to", ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8);
++  builder.AddNode("Cast", {&centered_int32}, centered_int8, int8_attributes.get());
++  return centered_int8;
++}
++
++static NodeArg& AddZeroPointCorrection(MatMulIntegerGraphBuilder& builder,
++                                       const NodeArg* zero_point,
++                                       int32_t offset,
++                                       const std::string& name) {
++  auto& offset_arg = builder.AddScalarInitializer(name + "_offset", ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32,
++                                                  offset);
++  if (zero_point == nullptr || zero_point->Name().empty()) return offset_arg;
++  auto& zp_int32 = AddCast(builder, *zero_point, name + "_int32", ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32);
++  auto correction_type = CopyTensorType(zero_point->TypeAsProto(), ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32);
++  auto& correction = builder.MakeArg(name + "_correction", correction_type.get());
++  builder.AddNode("Sub", {&offset_arg, &zp_int32}, correction);
++  return correction;
++}
++
++static NodeArg& AddVectorUnsqueeze(MatMulIntegerGraphBuilder& builder,
++                                   const NodeArg& input,
++                                   const NodeArg& data,
++                                   bool row_vector,
++                                   const std::string& name) {
++  auto output_type = MakeVectorUnsqueezeType(data, row_vector);
++  auto& output = builder.MakeArg(name, output_type.get());
++  const int64_t axis = row_vector ? 1 : 0;
++  std::vector<NodeArg*> inputs{const_cast<NodeArg*>(&input)};
++  std::unique_ptr<NodeAttributes> attributes;
++  if (builder.Opset() >= 13) {
++    inputs.push_back(&builder.MakeAxesArg(name + "_axes", axis));
++  } else {
++    attributes = builder.MakeIntsAttribute("axes", axis);
++  }
++  builder.AddNode("Unsqueeze", inputs, output, attributes.get());
++  return output;
++}
++
++static NodeArg& AddReduceSum(MatMulIntegerGraphBuilder& builder,
++                             const NodeArg& input,
++                             int64_t axis,
++                             const std::string& name) {
++  auto output_type = MakeReducedTensorType(input.TypeAsProto(), static_cast<int32_t>(axis));
++  auto& output = builder.MakeArg(name, output_type.get());
++  std::vector<NodeArg*> inputs{const_cast<NodeArg*>(&input)};
++  std::unique_ptr<NodeAttributes> attributes;
++  if (builder.Opset() >= 13) {
++    inputs.push_back(&builder.MakeAxesArg(name + "_axes", axis));
++    attributes = builder.MakeIntAttribute("keepdims", 1);
++  } else {
++    attributes = builder.MakeIntsAndIntAttribute("axes", axis, "keepdims", 1);
++  }
++  builder.AddNode("ReduceSum", inputs, output, attributes.get());
++  return output;
++}
++
++static NodeArg& AddDynamicReductionLength(MatMulIntegerGraphBuilder& builder,
++                                          const NodeArg& data,
++                                          int64_t axis,
++                                          const std::string& name) {
++  const auto* shape = data.Shape();
++  const auto& dimension = shape->dim(static_cast<int>(axis));
++  if (dimension.has_dim_value()) {
++    return builder.AddScalarInitializer(name + "_length", ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32,
++                                        static_cast<int32_t>(dimension.dim_value()));
++  }
++
++  auto shape_type = MakeTensorType(ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT64,
++                                   {static_cast<int64_t>(shape->dim_size())});
++  auto& shape_arg = builder.MakeArg(name + "_shape", shape_type.get());
++  builder.AddNode("Shape", {const_cast<NodeArg*>(&data)}, shape_arg);
++  auto& index_arg = builder.AddScalarInitializer(name + "_index", ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT64,
++                                                 axis);
++  auto scalar_type = MakeTensorType(ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT64, {});
++  auto& selected_dim = builder.MakeArg(name + "_dimension", scalar_type.get());
++  auto gather_attributes = builder.MakeIntAttribute("axis", 0);
++  builder.AddNode("Gather", {&shape_arg, &index_arg}, selected_dim, gather_attributes.get());
++  auto int32_type = MakeTensorType(ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32, {});
++  auto& length = builder.MakeArg(name + "_length", int32_type.get());
++  auto cast_attributes = builder.MakeIntAttribute("to", ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32);
++  builder.AddNode("Cast", {&selected_dim}, length, cast_attributes.get());
++  return length;
++}
++
++static Status RewriteMatMulIntegerNode(Graph& graph, const Node& original_node, int opset) {
++  const auto unsupported_reason = MatMulIntegerRewriteUnsupportedReason(original_node);
++  if (!unsupported_reason.empty()) {
++    return Status(common::ONNXRUNTIME, common::EP_FAIL,
++                  MakeString("MIGraphX cannot rewrite MatMulInteger node '", original_node.Name(), "' (",
++                             original_node.Index(), "): ", unsupported_reason));
++  }
++  const auto& original_inputs = original_node.InputDefs();
++  const auto& original_output = *original_node.OutputDefs()[0];
++  const std::string node_prefix = "migraphx_integer_" + std::to_string(original_node.Index());
++  const std::string a_name = original_inputs[0]->Name();
++  const std::string b_name = original_inputs[1]->Name();
++  const std::string a_zero_point_name = original_inputs.size() > 2 ? original_inputs[2]->Name() : std::string{};
++  const std::string b_zero_point_name = original_inputs.size() > 3 ? original_inputs[3]->Name() : std::string{};
++  const std::string output_name = original_output.Name();
++  auto a_type = CopyTensorType(original_inputs[0]->TypeAsProto(), original_inputs[0]->TypeAsProto()->tensor_type().elem_type());
++  auto b_type = CopyTensorType(original_inputs[1]->TypeAsProto(), original_inputs[1]->TypeAsProto()->tensor_type().elem_type());
++  auto y_type = CopyTensorType(original_output.TypeAsProto(), original_output.TypeAsProto()->tensor_type().elem_type());
++  std::unique_ptr<ONNX_NAMESPACE::TypeProto> a_zp_type;
++  std::unique_ptr<ONNX_NAMESPACE::TypeProto> b_zp_type;
++  if (!a_zero_point_name.empty()) a_zp_type = CopyTensorType(original_inputs[2]->TypeAsProto(), original_inputs[2]->TypeAsProto()->tensor_type().elem_type());
++  if (!b_zero_point_name.empty()) b_zp_type = CopyTensorType(original_inputs[3]->TypeAsProto(), original_inputs[3]->TypeAsProto()->tensor_type().elem_type());
++  const int a_rank = original_inputs[0]->Shape()->dim_size();
++  const int b_rank = original_inputs[1]->Shape()->dim_size();
++  const int a_offset = a_type->tensor_type().elem_type() == ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT8 ? 128 : 0;
++  const int b_offset = b_type->tensor_type().elem_type() == ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT8 ? 128 : 0;
++
++  struct EdgeToRemove final {
++    NodeIndex destination;
++    int source_arg;
++    int destination_arg;
++  };
++  std::vector<EdgeToRemove> output_edges;
++  for (auto edge_it = original_node.OutputEdgesBegin(); edge_it != original_node.OutputEdgesEnd(); ++edge_it) {
++    const auto& edge = *edge_it;
++    output_edges.push_back({edge.GetNode().Index(), edge.GetSrcArgIndex(), edge.GetDstArgIndex()});
++  }
++  for (const auto& edge : output_edges) {
++    graph.RemoveEdge(original_node.Index(), edge.destination, edge.source_arg, edge.destination_arg);
++  }
++  graph.RemoveNode(original_node.Index());
++
++  MatMulIntegerGraphBuilder builder(graph, opset, node_prefix);
++  auto& a_arg = graph.GetOrCreateNodeArg(a_name, a_type.get());
++  auto& b_arg = graph.GetOrCreateNodeArg(b_name, b_type.get());
++  auto& y_arg = graph.GetOrCreateNodeArg(output_name, y_type.get());
++  NodeArg* a_zp_arg = a_zero_point_name.empty() ? nullptr : &graph.GetOrCreateNodeArg(a_zero_point_name, a_zp_type.get());
++  NodeArg* b_zp_arg = b_zero_point_name.empty() ? nullptr : &graph.GetOrCreateNodeArg(b_zero_point_name, b_zp_type.get());
++
++  auto& a_centered = AddOffsetCenteredInt8(builder, a_arg, "a", a_offset);
++  auto& b_centered = AddOffsetCenteredInt8(builder, b_arg, "b", b_offset);
++  auto int32_output_type = CopyTensorType(y_type.get(), ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32);
++  auto& raw_result = builder.MakeArg("raw_result", int32_output_type.get());
++  builder.AddNode("MatMulInteger", {&a_centered, &b_centered}, raw_result);
++
++  auto a32_type = CopyTensorType(a_centered.TypeAsProto(), ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32);
++  auto& a32 = builder.MakeArg("a_int32", a32_type.get());
++  auto a32_cast_attributes = builder.MakeIntAttribute("to", ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32);
++  builder.AddNode("Cast", {&a_centered}, a32, a32_cast_attributes.get());
++  auto b32_type = CopyTensorType(b_centered.TypeAsProto(), ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32);
++  auto& b32 = builder.MakeArg("b_int32", b32_type.get());
++  auto b32_cast_attributes = builder.MakeIntAttribute("to", ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT32);
++  builder.AddNode("Cast", {&b_centered}, b32, b32_cast_attributes.get());
++  auto& sum_a = AddReduceSum(builder, a32, a_rank - 1, "sum_a");
++  auto& sum_b = AddReduceSum(builder, b32, b_rank - 2, "sum_b");
++
++  auto& c_a = AddZeroPointCorrection(builder, a_zp_arg, a_offset, "a_zero_point");
++  auto& c_b = AddZeroPointCorrection(builder, b_zp_arg, b_offset, "b_zero_point");
++  NodeArg* c_a_broadcast = &c_a;
++  NodeArg* c_b_broadcast = &c_b;
++  if (IsVectorZeroPoint(a_zp_arg)) c_a_broadcast = &AddVectorUnsqueeze(builder, c_a, a_arg, true, "a_zero_point_unsqueezed");
++  if (IsVectorZeroPoint(b_zp_arg)) c_b_broadcast = &AddVectorUnsqueeze(builder, c_b, b_arg, false, "b_zero_point_unsqueezed");
++
++  auto term_a_type = MakeBroadcastTensorType(*c_a_broadcast, sum_b);
++  auto& term_a = builder.MakeArg("a_zero_point_term", term_a_type.get());
++  builder.AddNode("Mul", {c_a_broadcast, &sum_b}, term_a);
++  auto term_b_type = MakeBroadcastTensorType(sum_a, *c_b_broadcast);
++  auto& term_b = builder.MakeArg("b_zero_point_term", term_b_type.get());
++  builder.AddNode("Mul", {&sum_a, c_b_broadcast}, term_b);
++  auto cross_type = MakeBroadcastTensorType(*c_a_broadcast, *c_b_broadcast);
++  auto& cross_zero_points = builder.MakeArg("cross_zero_points", cross_type.get());
++  builder.AddNode("Mul", {c_a_broadcast, c_b_broadcast}, cross_zero_points);
++  auto& reduction_length = AddDynamicReductionLength(builder, a_arg, a_rank - 1, "reduction");
++  auto& cross_term = builder.MakeArg("cross_term", cross_type.get());
++  builder.AddNode("Mul", {&cross_zero_points, &reduction_length}, cross_term);
++
++  auto& partial_result = builder.MakeArg("partial_result", int32_output_type.get());
++  builder.AddNode("Add", {&raw_result, &term_a}, partial_result);
++  auto& partial_result2 = builder.MakeArg("partial_result_2", int32_output_type.get());
++  builder.AddNode("Add", {&partial_result, &term_b}, partial_result2);
++  builder.AddNode("Add", {&partial_result2, &cross_term}, y_arg);
++  return Status::OK();
++}
++
++static Status RewriteMatMulIntegerNodes(Graph& graph) {
++  // Model::Create builds this graph from the filtered ONNX proto. Resolve it
++  // before inspecting NodeArg types and shapes, which may not be populated yet.
++  auto resolve_status = graph.Resolve();
++  if (!resolve_status.IsOK()) return resolve_status;
++
++  std::vector<NodeIndex> matmul_integer_nodes;
++  for (const Node* node : graph.Nodes()) {
++    if (node->OpType() == "MatMulInteger" && node->Domain() == kOnnxDomain) {
++      matmul_integer_nodes.push_back(node->Index());
++    }
++  }
++  if (matmul_integer_nodes.empty()) return graph.Resolve();
++
++  const auto& domain_versions = graph.DomainToVersionMap();
++  const auto opset_it = domain_versions.find(kOnnxDomain);
++  const int opset = opset_it == domain_versions.end() ? 0 : opset_it->second;
++  if (opset <= 0) {
++    return Status(common::ONNXRUNTIME, common::EP_FAIL,
++                  "MIGraphX cannot rewrite MatMulInteger nodes: the model has no default ONNX opset version");
++  }
++  for (NodeIndex index : matmul_integer_nodes) {
++    const Node* node = graph.GetNode(index);
++    if (node == nullptr) {
++      return Status(common::ONNXRUNTIME, common::EP_FAIL,
++                    MakeString("MIGraphX cannot rewrite MatMulInteger node at missing graph index ", index));
++    }
++    auto status = RewriteMatMulIntegerNode(graph, *node, opset);
++    if (!status.IsOK()) return status;
++  }
++  return graph.Resolve();
++}
++
++static bool ContainsMatMulInteger(const Graph& graph);
++
++static bool ContainsMatMulInteger(const Node& node) {
++  if (node.Domain() == kOnnxDomain && node.OpType() == "MatMulInteger") return true;
++  for (const auto& subgraph : node.GetSubgraphs()) {
++    if (ContainsMatMulInteger(*subgraph)) return true;
++  }
++  return false;
++}
++
++static bool ContainsMatMulInteger(const Graph& graph) {
++  for (const Node* node : graph.Nodes()) {
++    if (ContainsMatMulInteger(*node)) return true;
++  }
++  return false;
++}
++
+ static bool IsUnsupportedOpMode(const onnxruntime::GraphViewer& graph_viewer, const Node* node) {
+   std::vector<NodeIndex> input_nodes;
+   const auto& optype = node->OpType();
+@@ -444,16 +995,11 @@
+       return true;
+     }
+   } else if (optype == "MatMulInteger") {
+-    // only support int8 and uint8 type
+-    const auto& input_type = node->InputDefs()[0]->TypeAsProto();
+-    if (input_type == nullptr) {
+-      return true;
+-    }
+-
+-    if ((input_type->tensor_type().elem_type() != ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_INT8) &&
+-        (input_type->tensor_type().elem_type() != ONNX_NAMESPACE::TensorProto_DataType::TensorProto_DataType_UINT8)) {
+-      return true;
+-    }
++    return !IsMatMulIntegerRewriteSupported(*node);
++  } else if ((optype == "If" || optype == "Loop") && ContainsMatMulInteger(*node)) {
++    // The provider rewrites MatMulInteger only in a main graph. Leave control-flow
++    // nodes with nested instances to another execution provider.
++    return true;
+   } else if (optype == "NonZero") {
+     if (!canEvalNodeArgument(graph_viewer, node, {0}, input_nodes)) {
+       return true;
+@@ -1075,6 +1621,9 @@
+                                          const GraphOptimizerRegistry& /* graph_optimizer_registry */,
+                                          IResourceAccountant* /* resource_accountant */) const {
+   std::vector<std::unique_ptr<ComputeCapability>> result;
++  if (graph_viewer.IsSubgraph() && ContainsMatMulInteger(graph_viewer.GetGraph())) {
++    return result;
++  }
+   auto model = graph_viewer.CreateModel(*GetLogger());
+   auto model_proto = model->ToProto();
+   graph_viewer.ToProto(*model_proto->mutable_graph(), true, true);
+@@ -1433,6 +1982,10 @@
+     auto model = graph_body_viewer.CreateModel(*GetLogger());
+     auto model_proto = model->ToProto();
+     graph_body_viewer.ToProto(*model_proto->mutable_graph(), true, true);
++    auto rewrite_model = Model::Create(std::move(*model_proto), graph_body_viewer.ModelPath(), nullptr, *GetLogger());
++    auto rewrite_status = RewriteMatMulIntegerNodes(rewrite_model->MainGraph());
++    if (!rewrite_status.IsOK()) return rewrite_status;
++    model_proto = rewrite_model->ToProto();
+     model_proto->set_ir_version(ONNX_NAMESPACE::Version::IR_VERSION);
+     std::string onnx_string_buffer;
+     model_proto->SerializeToString(onnx_string_buffer);
+@@ -1464,6 +2017,7 @@
+         hipRuntimeGetVersion(&runtime_hip_version) == hipSuccess) {
+       persistent_cache_path = model_cache_path_;
+       append_cache_field(identity, "migraphx-model-cache-v2");
++      append_cache_field(identity, "migraphx-integer-zero-point-v2");
+       append_cache_field(identity, "ORT-1.23.1-d9b2048791efb5804fe3d53a04b4971256addebf");
+       append_cache_field(identity, "fast_math=false");
+       append_cache_field(identity, onnx_string_buffer);
+--- a/onnxruntime/core/providers/migraphx/migraphx_execution_provider_info.cc
++++ b/onnxruntime/core/providers/migraphx/migraphx_execution_provider_info.cc
+@@ -19,6 +19,7 @@
+ };
+
+ MIGraphXExecutionProviderInfo::MIGraphXExecutionProviderInfo(const ProviderOptions& options) {
++  bool int8_zero_point_fix_v1 = false;
+   ORT_THROW_IF_ERROR(
+       ProviderOptionsParser{}
+           .AddValueParser(
+@@ -73,12 +74,15 @@
+           .AddAssignmentToReference(migraphx_provider_option::kBf16Enable, bf16_enable)
+           .AddAssignmentToReference(migraphx_provider_option::kFp8Enable, fp8_enable)
+           .AddAssignmentToReference(migraphx_provider_option::kInt8Enable, int8_enable)
++          .AddAssignmentToReference("migraphx_int8_zero_point_fix_v1", int8_zero_point_fix_v1)
+           .AddAssignmentToReference(migraphx_provider_option::kInt8UseNativeCalibTable, int8_use_native_calibration_table)
+           .AddAssignmentToReference(migraphx_provider_option::kInt8CalibTable, int8_calibration_table_name)
+           .AddAssignmentToReference(migraphx_provider_option::kExhaustiveTune, exhaustive_tune)
+           .AddAssignmentToReference(migraphx_provider_option::kMemLimit, mem_limit)
+           .AddAssignmentToEnumReference(migraphx_provider_option::kArenaExtendStrategy, arena_extend_strategy_mapping, arena_extend_strategy)
+           .Parse(options));
++  // This private token is a runtime capability handshake; the integer rewrite is always active.
++  ORT_UNUSED_PARAMETER(int8_zero_point_fix_v1);
+ }
+
+ MIGraphXExecutionProviderInfo::MIGraphXExecutionProviderInfo(const OrtMIGraphXProviderOptions& options) noexcept

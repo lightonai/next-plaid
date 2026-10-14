@@ -166,7 +166,7 @@ jobs:
               FEATURES='features = ["accelerate"]'
               ;;
             *x86_64-unknown-linux*)
-              FEATURES='features = ["mkl", "cuda"]'
+              FEATURES='features = ["mkl", "cuda", "migraphx"]'
               ;;
             *aarch64-unknown-linux*)
               # No MKL on ARM and no CUDA build of ONNX Runtime for linux-aarch64:
@@ -212,11 +212,41 @@ jobs:
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
 
+  build-migraphx-runtime:
+    runs-on: ubuntu-22.04
+    container:
+      image: rocm/dev-ubuntu-22.04:7.1.1@sha256:2d390c574e5e7e49e40e3bb376a88608c750d3f6c64b29d6adbc5834bee6c9be
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install runtime build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential git ca-certificates python3 python3-pip \
+            migraphx-dev=2.14.0.70101-38~22.04 miopen-hip-dev=3.5.1.70101-38~22.04 \
+            hipblaslt-dev=1.1.0.70101-38~22.04 rocblas-dev=5.1.1.70101-38~22.04 rocrand-dev=4.1.0.70101-38~22.04
+          python3 -m pip install cmake==3.31.6
+      - name: Build and verify MIGraphX runtime package
+        run: scripts/build-migraphx-ort.sh "$RUNNER_TEMP/migraphx-ort" "$GITHUB_WORKSPACE/target/distrib" /opt/rocm 2
+      - name: Upload MIGraphX runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-migraphx-runtime
+          path: |
+            target/distrib/onnxruntime-linux-x64-migraphx-1.23.1-rocm7.1.1-r4.tgz
+            target/distrib/onnxruntime-linux-x64-migraphx-1.23.1-rocm7.1.1-r4.tgz.sha256
+          if-no-files-found: error
+
   # Build and package all the platform-agnostic(ish) things
   build-global-artifacts:
     needs:
       - plan
       - build-local-artifacts
+      - build-migraphx-runtime
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -264,8 +294,9 @@ jobs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
-    # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+      - build-migraphx-runtime
+    # Publication requires the runtime; local and global may be skipped by dist.
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && needs.build-migraphx-runtime.result == 'success' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"

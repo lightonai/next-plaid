@@ -1,7 +1,7 @@
 //! ONNX Runtime auto-setup
 //!
 //! Automatically finds or downloads ONNX Runtime library.
-//! When the `cuda` feature is enabled, downloads the GPU version with CUDA support.
+//! Selects a managed CPU, CUDA, or MIGraphX runtime for visible hardware.
 
 use anyhow::{Context, Result};
 use std::env;
@@ -41,11 +41,142 @@ const ORT_LIB_NAME: &str = "libonnxruntime.so";
 #[cfg(target_os = "windows")]
 const ORT_LIB_NAME: &str = "onnxruntime.dll";
 
-/// Subdirectory name for caching (gpu vs cpu)
-#[cfg(any(feature = "_cuda", feature = "directml"))]
-const ORT_CACHE_SUBDIR: &str = "gpu";
-#[cfg(not(any(feature = "_cuda", feature = "directml")))]
-const ORT_CACHE_SUBDIR: &str = "cpu";
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeBackend {
+    Cpu,
+    Cuda,
+    MIGraphX,
+    DirectML,
+}
+
+#[allow(dead_code)]
+fn devices_hidden(keys: &[&str]) -> bool {
+    keys.iter().any(|key| {
+        env::var(key)
+            .is_ok_and(|v| v.trim().is_empty() || matches!(v.trim(), "-1" | "none" | "void"))
+    })
+}
+
+#[cfg(all(feature = "_cuda", target_os = "linux"))]
+fn cuda_driver_available() -> bool {
+    if devices_hidden(&["CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES"]) {
+        return false;
+    }
+    struct DriverProbe {
+        _library: libloading::Library,
+        available: bool,
+    }
+    static PROBE: std::sync::OnceLock<Option<DriverProbe>> = std::sync::OnceLock::new();
+    PROBE
+        .get_or_init(|| unsafe {
+            let library = libloading::Library::new("libcuda.so.1").ok()?;
+            let available = (|| {
+                let init = library
+                    .get::<unsafe extern "C" fn(u32) -> i32>(b"cuInit\0")
+                    .ok()?;
+                let count = library
+                    .get::<unsafe extern "C" fn(*mut i32) -> i32>(b"cuDeviceGetCount\0")
+                    .ok()?;
+                let mut devices = 0;
+                Some(init(0) == 0 && count(&mut devices) == 0 && devices > 0)
+            })()
+            .unwrap_or(false);
+            // Driver function pointers and any registered exit callbacks stay valid.
+            Some(DriverProbe {
+                _library: library,
+                available,
+            })
+        })
+        .as_ref()
+        .is_some_and(|probe| probe.available)
+}
+
+fn runtime_backend() -> RuntimeBackend {
+    if crate::acceleration::env_acceleration_mode_lossy()
+        == crate::acceleration::AccelerationMode::ForceCpu
+    {
+        return RuntimeBackend::Cpu;
+    }
+    #[cfg(all(feature = "_cuda", target_os = "linux"))]
+    if cuda_driver_available() && find_cudnn_directory().is_some() {
+        return RuntimeBackend::Cuda;
+    }
+    #[cfg(all(feature = "migraphx", target_os = "linux", target_arch = "x86_64"))]
+    if !devices_hidden(&[
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ]) && fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/kfd")
+        .is_ok()
+        && fs::read_dir("/sys/class/kfd/kfd/topology/nodes").is_ok_and(|nodes| {
+            nodes.flatten().any(|node| {
+                fs::read_to_string(node.path().join("gpu_id")).is_ok_and(|id| id.trim() != "0")
+            })
+        })
+    {
+        return RuntimeBackend::MIGraphX;
+    }
+    #[cfg(all(feature = "_cuda", target_os = "windows"))]
+    if !devices_hidden(&["CUDA_VISIBLE_DEVICES"]) {
+        return RuntimeBackend::Cuda;
+    }
+    #[cfg(all(feature = "directml", target_os = "windows"))]
+    return RuntimeBackend::DirectML;
+    #[allow(unreachable_code)]
+    RuntimeBackend::Cpu
+}
+
+impl RuntimeBackend {
+    fn version(self) -> &'static str {
+        if self == Self::MIGraphX {
+            "1.23.1"
+        } else {
+            ORT_VERSION
+        }
+    }
+    fn cache_subdir(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Cuda | Self::DirectML => "gpu",
+            Self::MIGraphX => "migraphx-rocm7.1.1-r4",
+        }
+    }
+}
+
+fn runtime_cache_root_for(home: Option<&Path>, xdg_cache_home: Option<&Path>) -> Option<PathBuf> {
+    xdg_cache_home
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join("colgrep/onnxruntime"))
+        .or_else(|| home.map(|home| home.join(".cache/colgrep/onnxruntime")))
+}
+
+pub(crate) fn runtime_cache_roots_for(
+    home: Option<&Path>,
+    xdg_cache_home: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = runtime_cache_root_for(home, xdg_cache_home)
+        .into_iter()
+        .collect();
+    if let Some(home) = home {
+        let legacy = home.join(".cache/colgrep/onnxruntime");
+        if !roots.contains(&legacy) {
+            roots.push(legacy);
+        }
+    }
+    roots
+}
+
+fn runtime_cache_roots() -> Vec<PathBuf> {
+    let home = dirs::home_dir();
+    let xdg_cache_home = env::var_os("XDG_CACHE_HOME").map(PathBuf::from);
+    runtime_cache_roots_for(home.as_deref(), xdg_cache_home.as_deref())
+}
+
+static RUNTIME_PATH: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
 /// On Linux CUDA builds, put cuDNN (and the GPU ONNX Runtime) on `LD_LIBRARY_PATH`,
 /// re-executing the process once if they were not on it: the dynamic linker reads
@@ -54,9 +185,7 @@ const ORT_CACHE_SUBDIR: &str = "cpu";
 /// the large-codebase question a second time. Does nothing in CPU mode or once done.
 pub fn prepare_cuda_library_path() -> Result<()> {
     #[cfg(all(target_os = "linux", feature = "_cuda"))]
-    if crate::acceleration::env_acceleration_mode_lossy()
-        != crate::acceleration::AccelerationMode::ForceCpu
-    {
+    if runtime_backend() == RuntimeBackend::Cuda {
         // Check if we already have the marker indicating we've set up LD_LIBRARY_PATH
         if env::var("_COLGREP_CUDA_SETUP").is_err() {
             // First pass: find cuDNN and set up LD_LIBRARY_PATH, then re-exec
@@ -74,15 +203,10 @@ pub fn prepare_cuda_library_path() -> Result<()> {
                     };
 
                     // Also add the ONNX Runtime GPU directory if we know where it will be
-                    let ort_gpu_dir = dirs::home_dir()
-                        .map(|h| {
-                            h.join(".cache")
-                                .join("colgrep")
-                                .join("onnxruntime")
-                                .join(ORT_VERSION)
-                                .join("gpu")
-                        })
-                        .filter(|p| p.exists());
+                    let ort_gpu_dir = runtime_cache_roots()
+                        .into_iter()
+                        .map(|root| root.join(ORT_VERSION).join("gpu"))
+                        .find(|path| path.exists());
 
                     let final_ld = if let Some(ort_dir) = ort_gpu_dir {
                         let ort_str = ort_dir.to_string_lossy();
@@ -118,7 +242,8 @@ pub fn prepare_cuda_library_path() -> Result<()> {
 
 /// Ensure ONNX Runtime is available.
 /// Sets ORT_DYLIB_PATH if found or downloaded.
-/// When `cuda` feature is enabled, ensures GPU version is used and checks for cuDNN.
+/// Uses a valid explicit library first, otherwise selects a runtime for visible hardware.
+/// Pins the first library for this process so later CPU/GPU sessions share the same ORT API.
 ///
 /// NOTE: To force CPU-only mode and avoid CUDA initialization overhead, set
 /// COLGREP_FORCE_CPU="1" before calling this function. This makes the GPU
@@ -127,6 +252,13 @@ pub fn prepare_cuda_library_path() -> Result<()> {
 /// IMPORTANT: may re-exec the process via [`prepare_cuda_library_path`] if `main` has
 /// not already done so.
 pub fn ensure_onnx_runtime() -> Result<PathBuf> {
+    let mut pinned = RUNTIME_PATH
+        .lock()
+        .map_err(|_| anyhow::anyhow!("ONNX Runtime setup lock poisoned"))?;
+    if let Some(path) = pinned.as_ref() {
+        verify_runtime_provider()?;
+        return Ok(path.clone());
+    }
     // Normally already done by `main` at startup.
     prepare_cuda_library_path()?;
 
@@ -135,6 +267,8 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
         let path = PathBuf::from(&path);
         if path.exists() && is_valid_ort_dylib(&path) {
             pin_runtime_library(&path);
+            *pinned = Some(path.clone());
+            verify_runtime_provider()?;
             return Ok(path);
         }
         // Path from env is missing or can't be loaded (wrong arch, broken
@@ -150,15 +284,41 @@ pub fn ensure_onnx_runtime() -> Result<PathBuf> {
 
     // 2. Search common locations (skip for CUDA - we want our managed GPU version)
     #[cfg(not(feature = "_cuda"))]
-    if let Some(path) = find_onnx_runtime() {
+    if let Some(path) = (runtime_backend() == RuntimeBackend::Cpu)
+        .then(find_onnx_runtime)
+        .flatten()
+    {
         pin_runtime_library(&path);
+        *pinned = Some(path.clone());
         return Ok(path);
     }
 
     // 3. Download and cache
-    let path = download_onnx_runtime()?;
+    let path = acquire_runtime_with_fallback(
+        crate::acceleration::env_acceleration_mode_lossy(),
+        runtime_backend(),
+        download_onnx_runtime,
+    )?;
     pin_runtime_library(&path);
+    *pinned = Some(path.clone());
+    verify_runtime_provider()?;
     Ok(path)
+}
+
+fn verify_runtime_provider() -> Result<()> {
+    if next_plaid_onnx::is_migraphx_available() {
+        if let Err(error) = next_plaid_onnx::validate_execution_provider(
+            next_plaid_onnx::ExecutionProvider::MIGraphX,
+        ) {
+            if crate::acceleration::env_acceleration_mode_lossy()
+                == crate::acceleration::AccelerationMode::ForceGpu
+            {
+                return Err(error).context("MIGraphX could not load. Install ROCm 7.1.1 and MIGraphX and expose their libraries to the dynamic linker");
+            }
+            eprintln!("⚠️  MIGraphX provider could not load; CPU fallback is available: {error:#}");
+        }
+    }
+    Ok(())
 }
 
 fn pin_runtime_library(path: &Path) {
@@ -172,7 +332,9 @@ fn pin_runtime_library(path: &Path) {
     #[cfg(all(target_os = "linux", feature = "_cuda"))]
     {
         // Check for cuDNN availability (result is stored in CUDNN_AVAILABLE)
-        let _ = check_cudnn_available();
+        if next_plaid_onnx::is_cuda_available() {
+            let _ = check_cudnn_available();
+        }
     }
 }
 
@@ -458,16 +620,11 @@ fn find_onnx_runtime() -> Option<PathBuf> {
 fn get_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    // Home directory for cache
+    let backend = runtime_backend();
+    for root in runtime_cache_roots() {
+        paths.push(root.join(backend.version()).join(backend.cache_subdir()));
+    }
     if let Some(home) = dirs::home_dir() {
-        // Our cache location (new path with cpu/gpu subdirs)
-        paths.push(
-            home.join(".cache")
-                .join("colgrep")
-                .join("onnxruntime")
-                .join(ORT_VERSION)
-                .join(ORT_CACHE_SUBDIR),
-        );
         // Legacy cache location (for backwards compatibility)
         paths.push(home.join(".cache").join("onnxruntime").join(ORT_VERSION));
 
@@ -533,71 +690,288 @@ fn get_search_paths() -> Vec<PathBuf> {
     paths
 }
 
-/// Download ONNX Runtime from GitHub releases
-fn download_onnx_runtime() -> Result<PathBuf> {
-    let cache_dir = dirs::home_dir()
-        .context("Could not find home directory")?
-        .join(".cache")
-        .join("colgrep")
-        .join("onnxruntime")
-        .join(ORT_VERSION)
-        .join(ORT_CACHE_SUBDIR);
-
-    let lib_path = cache_dir.join(ORT_LIB_NAME);
-
-    // Already cached - check if all required files exist
-    #[cfg(all(feature = "_cuda", target_os = "linux"))]
-    let already_cached = lib_path.exists()
-        && cache_dir
-            .join("libonnxruntime_providers_shared.so")
-            .exists()
-        && cache_dir.join("libonnxruntime_providers_cuda.so").exists();
-
-    #[cfg(all(feature = "_cuda", target_os = "windows"))]
-    let already_cached = lib_path.exists()
-        && cache_dir.join("onnxruntime_providers_shared.dll").exists()
-        && cache_dir.join("onnxruntime_providers_cuda.dll").exists();
-
-    #[cfg(all(feature = "directml", not(feature = "_cuda")))]
-    let already_cached = lib_path.exists();
-
-    #[cfg(not(any(feature = "_cuda", feature = "directml")))]
-    let already_cached = lib_path.exists();
-
-    if already_cached {
-        return Ok(lib_path);
+fn acquire_runtime_with_fallback(
+    mode: crate::acceleration::AccelerationMode,
+    backend: RuntimeBackend,
+    mut acquire: impl FnMut(RuntimeBackend) -> Result<PathBuf>,
+) -> Result<PathBuf> {
+    match acquire(backend) {
+        Ok(path) => Ok(path),
+        Err(error) if backend != RuntimeBackend::Cpu && mode == crate::acceleration::AccelerationMode::Auto => {
+            eprintln!("⚠️  GPU runtime acquisition failed, using CPU: {error:#}");
+            acquire(RuntimeBackend::Cpu).context("Failed to acquire CPU runtime after GPU runtime acquisition failed")
+        }
+        Err(error) if mode == crate::acceleration::AccelerationMode::ForceGpu => {
+            Err(error).context("GPU runtime acquisition failed with --force-gpu. Check network access and the runtime archive; use --force-cpu to recover")
+        }
+        Err(error) => Err(error),
     }
+}
 
-    fs::create_dir_all(&cache_dir)?;
+const CACHE_MANIFEST: &str = ".verified-libraries.json";
 
-    let (url, files_to_extract) = get_download_info()?;
+fn lock_runtime_cache(cache: &Path) -> Result<fs::File> {
+    fs::create_dir_all(cache)?;
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(cache.join(".lock"))?;
+    fs2::FileExt::lock_exclusive(&lock).context("Failed to lock ONNX Runtime cache")?;
+    Ok(lock)
+}
 
-    #[cfg(feature = "_cuda")]
-    eprintln!("⚙️  Runtime: ONNX {} (GPU/CUDA)", ORT_VERSION);
-    #[cfg(all(feature = "directml", not(feature = "_cuda")))]
-    eprintln!("⚙️  Runtime: ONNX {} (GPU/DirectML)", ORT_VERSION);
-    #[cfg(not(any(feature = "_cuda", feature = "directml")))]
-    eprintln!("⚙️  Runtime: ONNX {} (CPU)", ORT_VERSION);
+fn runtime_file_hash(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0; 65536];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hash.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
 
-    // Download archive
-    let response = ureq::get(&url)
+fn validate_cached_runtime(cache: &Path, files: &[FileToExtract], legacy: bool) -> Result<()> {
+    for (_, name) in files {
+        anyhow::ensure!(
+            cache.join(name).is_file(),
+            "Missing runtime library: {name}"
+        );
+    }
+    let manifest_bytes = match fs::read(cache.join(CACHE_MANIFEST)) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if legacy && error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let manifest: std::collections::BTreeMap<String, String> = match manifest_bytes {
+        Some(bytes) => serde_json::from_slice(&bytes)?,
+        None => {
+            anyhow::ensure!(
+                is_valid_ort_dylib(&cache.join(ORT_LIB_NAME)),
+                "Legacy runtime core cannot be loaded"
+            );
+            return Ok(());
+        }
+    };
+    for (_, name) in files {
+        let expected = manifest
+            .get(name)
+            .with_context(|| format!("Missing runtime checksum for {name}"))?;
+        anyhow::ensure!(
+            runtime_file_hash(&cache.join(name))? == *expected,
+            "Cached runtime checksum mismatch: {name}"
+        );
+    }
+    anyhow::ensure!(
+        is_valid_ort_dylib(&cache.join(ORT_LIB_NAME)),
+        "Cached ONNX Runtime cannot be loaded"
+    );
+    Ok(())
+}
+
+fn publish_runtime_archive(
+    cache: &Path,
+    archive: &[u8],
+    files: &[FileToExtract],
+) -> Result<PathBuf> {
+    let staging = tempfile::Builder::new()
+        .prefix(".incoming-")
+        .tempdir_in(cache)?;
+    extract_libraries(archive, files, staging.path())?;
+    anyhow::ensure!(
+        is_valid_ort_dylib(&staging.path().join(ORT_LIB_NAME)),
+        "Downloaded ONNX Runtime cannot be loaded"
+    );
+    let mut manifest = std::collections::BTreeMap::new();
+    for (_, name) in files {
+        manifest.insert(name.clone(), runtime_file_hash(&staging.path().join(name))?);
+    }
+    fs::write(
+        staging.path().join(CACHE_MANIFEST),
+        serde_json::to_vec(&manifest)?,
+    )?;
+    // Rename replaces the inode, preserving a core already mapped by another
+    // process. The cache lock serializes acquisitions; publish the core last.
+    for (_, name) in files
+        .iter()
+        .filter(|(_, name)| name != ORT_LIB_NAME)
+        .chain(files.iter().filter(|(_, name)| name == ORT_LIB_NAME))
+    {
+        fs::rename(staging.path().join(name), cache.join(name))?;
+    }
+    fs::rename(
+        staging.path().join(CACHE_MANIFEST),
+        cache.join(CACHE_MANIFEST),
+    )?;
+    Ok(cache.join(ORT_LIB_NAME))
+}
+
+/// Download ONNX Runtime from GitHub releases
+fn download_onnx_runtime(backend: RuntimeBackend) -> Result<PathBuf> {
+    let roots = runtime_cache_roots();
+    let (url, files) = get_download_info(backend)?;
+    acquire_runtime_from_roots(&roots, backend, &url, &files)
+}
+
+fn acquire_runtime_from_roots(
+    roots: &[PathBuf],
+    backend: RuntimeBackend,
+    url: &str,
+    files: &[FileToExtract],
+) -> Result<PathBuf> {
+    let root = roots.first().context("Could not find home directory")?;
+    for candidate in roots {
+        if backend == RuntimeBackend::Cpu {
+            if let Some(path) = find_cached_cpu_runtime(candidate) {
+                return Ok(path);
+            }
+        } else {
+            let cache = candidate
+                .join(backend.version())
+                .join(backend.cache_subdir());
+            let valid = if backend == RuntimeBackend::MIGraphX {
+                validate_cached_runtime(&cache, files, false)
+            } else {
+                validate_cached_runtime(&cache, files, true)
+            };
+            if valid.is_ok() {
+                return Ok(cache.join(ORT_LIB_NAME));
+            }
+        }
+    }
+    let cache_dir = root.join(backend.version()).join(backend.cache_subdir());
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "migraphx"))]
+    if backend == RuntimeBackend::MIGraphX {
+        return acquire_migraphx_runtime(&cache_dir, url);
+    }
+    acquire_standard_runtime(&cache_dir, url, files, backend)
+}
+
+fn acquire_standard_runtime(
+    cache: &Path,
+    url: &str,
+    files: &[FileToExtract],
+    backend: RuntimeBackend,
+) -> Result<PathBuf> {
+    if validate_cached_runtime(cache, files, true).is_ok() {
+        return Ok(cache.join(ORT_LIB_NAME));
+    }
+    let _lock = lock_runtime_cache(cache)?;
+    if validate_cached_runtime(cache, files, true).is_ok() {
+        return Ok(cache.join(ORT_LIB_NAME));
+    }
+    fs::create_dir_all(cache)?;
+    eprintln!("⚙️  Runtime: ONNX {} ({backend:?})", backend.version());
+    let response = ureq::get(url)
         .call()
         .context("Failed to download ONNX Runtime")?;
-
     let mut archive_data = Vec::new();
     response.into_reader().read_to_end(&mut archive_data)?;
+    publish_runtime_archive(cache, &archive_data, files)
+}
 
-    // Extract libraries from archive
-    extract_libraries(&archive_data, &files_to_extract, &cache_dir)?;
+fn find_cached_cpu_runtime(root: &Path) -> Option<PathBuf> {
+    let files = vec![(String::new(), ORT_LIB_NAME.to_string())];
+    for (version, backend) in [(ORT_VERSION, "cpu"), (ORT_VERSION, "gpu")] {
+        let cache = root.join(version).join(backend);
+        if validate_cached_runtime(&cache, &files, true).is_ok() {
+            return Some(cache.join(ORT_LIB_NAME));
+        }
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "migraphx"))]
+    {
+        let cache = root.join("1.23.1").join("migraphx-rocm7.1.1-r4");
+        if validate_migraphx_cache(&cache).is_ok() {
+            return Some(cache.join(ORT_LIB_NAME));
+        }
+    }
+    None
+}
 
-    Ok(lib_path)
+#[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "migraphx"))]
+const MIGRAPHX_ARCHIVE: &str = "onnxruntime-linux-x64-migraphx-1.23.1-rocm7.1.1-r4";
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "migraphx"))]
+fn migraphx_files() -> Vec<FileToExtract> {
+    [
+        "libonnxruntime.so.1.23.1",
+        "libonnxruntime_providers_shared.so",
+        "libonnxruntime_providers_migraphx.so",
+    ]
+    .into_iter()
+    .map(|name| {
+        (
+            format!("{MIGRAPHX_ARCHIVE}/lib/{name}"),
+            if name == "libonnxruntime.so.1.23.1" {
+                ORT_LIB_NAME.to_string()
+            } else {
+                name.to_string()
+            },
+        )
+    })
+    .collect()
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "migraphx"))]
+fn validate_migraphx_cache(cache: &Path) -> Result<()> {
+    // Provider libraries cannot be dlopened directly: ORT must initialize
+    // ProviderHost first. Verify their bytes, then register through ORT after pinning.
+    validate_cached_runtime(cache, &migraphx_files(), false)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "migraphx"))]
+fn acquire_migraphx_runtime(cache: &Path, url: &str) -> Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+    if validate_migraphx_cache(cache).is_ok() {
+        return Ok(cache.join(ORT_LIB_NAME));
+    }
+    let _lock = lock_runtime_cache(cache)?;
+    if validate_migraphx_cache(cache).is_ok() {
+        return Ok(cache.join(ORT_LIB_NAME));
+    }
+    eprintln!("⚙️  Runtime: ONNX 1.23.1 (MIGraphX, ROCm 7.1.1)");
+    let mut archive = Vec::new();
+    ureq::get(url)
+        .call()
+        .context("Failed to download MIGraphX ONNX Runtime")?
+        .into_reader()
+        .read_to_end(&mut archive)?;
+    let checksum = ureq::get(&format!("{url}.sha256"))
+        .call()
+        .context("Failed to download MIGraphX runtime checksum")?
+        .into_string()?;
+    let expected = checksum
+        .split_whitespace()
+        .next()
+        .context("Missing runtime checksum")?;
+    anyhow::ensure!(
+        expected.len() == 64 && expected.bytes().all(|b| b.is_ascii_hexdigit()),
+        "Invalid runtime checksum"
+    );
+    anyhow::ensure!(
+        format!("{:x}", Sha256::digest(&archive)).eq_ignore_ascii_case(expected),
+        "MIGraphX runtime checksum mismatch"
+    );
+    publish_runtime_archive(cache, &archive, &migraphx_files())
 }
 
 /// File to extract: (path_in_archive, destination_filename)
 type FileToExtract = (String, String);
 
 /// Get download URL and files to extract for current platform
-fn get_download_info() -> Result<(String, Vec<FileToExtract>)> {
+fn get_download_info(backend: RuntimeBackend) -> Result<(String, Vec<FileToExtract>)> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "migraphx"))]
+    if backend == RuntimeBackend::MIGraphX {
+        return Ok((format!("https://github.com/lightonai/next-plaid/releases/download/v{}/{MIGRAPHX_ARCHIVE}.tgz", env!("CARGO_PKG_VERSION")), migraphx_files()));
+    }
+    let _ = backend;
     // DirectML: download from NuGet (Microsoft GPU package does not include DirectML)
     #[cfg(all(
         target_os = "windows",
@@ -654,40 +1028,27 @@ fn get_download_info() -> Result<(String, Vec<FileToExtract>)> {
             )],
         );
 
-        // Linux x86_64 - supports both CPU and GPU
-        #[cfg(all(target_os = "linux", target_arch = "x86_64", feature = "_cuda"))]
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         let (archive, files) = {
-            let archive_name = format!("onnxruntime-linux-x64-gpu-{}", ORT_VERSION);
-            (
-                format!("{}.tgz", archive_name),
-                vec![
-                    (
-                        format!("{}/lib/libonnxruntime.so.{}", archive_name, ORT_VERSION),
-                        "libonnxruntime.so".to_string(),
-                    ),
-                    (
-                        format!("{}/lib/libonnxruntime_providers_shared.so", archive_name),
-                        "libonnxruntime_providers_shared.so".to_string(),
-                    ),
-                    (
-                        format!("{}/lib/libonnxruntime_providers_cuda.so", archive_name),
-                        "libonnxruntime_providers_cuda.so".to_string(),
-                    ),
-                ],
-            )
+            let name = if backend == RuntimeBackend::Cuda {
+                format!("onnxruntime-linux-x64-gpu-{ORT_VERSION}")
+            } else {
+                format!("onnxruntime-linux-x64-{ORT_VERSION}")
+            };
+            let mut files = vec![(
+                format!("{name}/lib/libonnxruntime.so.{ORT_VERSION}"),
+                ORT_LIB_NAME.to_string(),
+            )];
+            if backend == RuntimeBackend::Cuda {
+                for companion in [
+                    "libonnxruntime_providers_shared.so",
+                    "libonnxruntime_providers_cuda.so",
+                ] {
+                    files.push((format!("{name}/lib/{companion}"), companion.to_string()));
+                }
+            }
+            (format!("{name}.tgz"), files)
         };
-
-        #[cfg(all(target_os = "linux", target_arch = "x86_64", not(feature = "_cuda")))]
-        let (archive, files) = (
-            format!("onnxruntime-linux-x64-{}.tgz", ORT_VERSION),
-            vec![(
-                format!(
-                    "onnxruntime-linux-x64-{}/lib/libonnxruntime.so.{}",
-                    ORT_VERSION, ORT_VERSION
-                ),
-                "libonnxruntime.so".to_string(),
-            )],
-        );
 
         // Linux aarch64 - CPU only (no GPU releases available)
         #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
@@ -857,4 +1218,466 @@ fn extract_libraries(
     }
 
     Ok(())
+}
+
+#[cfg(all(
+    test,
+    target_os = "linux",
+    target_arch = "x86_64",
+    feature = "migraphx"
+))]
+mod migraphx_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    fn serve_archive(archive: Vec<u8>, checksum: String) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/runtime.tgz", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let handle = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            for _ in 0..2 {
+                let (mut stream, _) = loop {
+                    match listener.accept() {
+                        Ok(connection) => break connection,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "runtime download did not contact HTTP server"
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("HTTP accept failed: {error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                let mut request = [0; 4096];
+                let n = stream.read(&mut request).unwrap();
+                let body = if String::from_utf8_lossy(&request[..n]).contains(".sha256 ") {
+                    checksum.as_bytes()
+                } else {
+                    &archive
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(body).unwrap();
+            }
+        });
+        (url, handle)
+    }
+
+    // This crosses real HTTP, extraction, filesystem, and dynamic-library boundaries.
+    #[test]
+    #[ignore = "requires NEXT_PLAID_TEST_ORT_ARCHIVE with the real packaged MIGraphX runtime"]
+    fn managed_migraphx_download_repairs_partial_cache_and_reuses_it() {
+        use sha2::{Digest, Sha256};
+        let archive = fs::read(env::var("NEXT_PLAID_TEST_ORT_ARCHIVE").unwrap()).unwrap();
+        let checksum = format!("{:x}  runtime.tgz\n", Sha256::digest(&archive));
+        let temporary = tempfile::tempdir().unwrap();
+        let cache = env::var_os("NEXT_PLAID_TEST_ORT_CACHE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| temporary.path().to_path_buf());
+        if cache.exists() {
+            assert!(
+                fs::read_dir(&cache).unwrap().next().is_none(),
+                "test cache must be absent or empty"
+            );
+        } else {
+            fs::create_dir_all(&cache).unwrap();
+        }
+        extract_libraries(&archive, &migraphx_files(), &cache).unwrap();
+        fs::remove_file(cache.join("libonnxruntime_providers_migraphx.so")).unwrap();
+        let (url, server) = serve_archive(archive, checksum);
+        let lib = acquire_migraphx_runtime(&cache, &url).unwrap();
+        server.join().unwrap();
+        assert!(is_valid_ort_dylib(&lib));
+        assert!(cache.join("libonnxruntime_providers_migraphx.so").exists());
+        assert!(cache.join("libonnxruntime_providers_shared.so").exists());
+        // Server is gone: a complete cache must still succeed without networking.
+        assert_eq!(acquire_migraphx_runtime(&cache, &url).unwrap(), lib);
+    }
+
+    #[test]
+    #[ignore = "requires real CPU ORT via NEXT_PLAID_TEST_CPU_ORT"]
+    fn xdg_legacy_cpu_and_gpu_core_reuse_offline_without_writes() {
+        use std::os::unix::fs::PermissionsExt;
+        for old_backend in ["cpu", "gpu"] {
+            let fixture = tempfile::tempdir().unwrap();
+            let home = fixture.path().join("home");
+            let xdg = fixture.path().join("xdg");
+            let legacy = home
+                .join(".cache/colgrep/onnxruntime")
+                .join(ORT_VERSION)
+                .join(old_backend);
+            fs::create_dir_all(&legacy).unwrap();
+            fs::copy(
+                env::var("NEXT_PLAID_TEST_CPU_ORT").unwrap(),
+                legacy.join(ORT_LIB_NAME),
+            )
+            .unwrap();
+            fs::set_permissions(&legacy, fs::Permissions::from_mode(0o555)).unwrap();
+            let roots = runtime_cache_roots_for(Some(&home), Some(&xdg));
+            let (_, files) = get_download_info(RuntimeBackend::Cpu).unwrap();
+            let result = acquire_runtime_from_roots(
+                &roots,
+                RuntimeBackend::Cpu,
+                "http://127.0.0.1:9/offline.tgz",
+                &files,
+            );
+            fs::set_permissions(&legacy, fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(result.unwrap(), legacy.join(ORT_LIB_NAME));
+            assert!(!legacy.join(".lock").exists());
+            assert!(!xdg.exists(), "legacy reuse wrote to the primary XDG cache");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires NEXT_PLAID_TEST_ORT_ARCHIVE with the real packaged MIGraphX runtime"]
+    fn xdg_legacy_migraphx_cache_reuse_offline_without_writes() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("home");
+        let xdg = fixture.path().join("xdg");
+        let legacy = home
+            .join(".cache/colgrep/onnxruntime")
+            .join(RuntimeBackend::MIGraphX.version())
+            .join(RuntimeBackend::MIGraphX.cache_subdir());
+        fs::create_dir_all(&legacy).unwrap();
+        publish_runtime_archive(
+            &legacy,
+            &fs::read(env::var("NEXT_PLAID_TEST_ORT_ARCHIVE").unwrap()).unwrap(),
+            &migraphx_files(),
+        )
+        .unwrap();
+        fs::set_permissions(&legacy, fs::Permissions::from_mode(0o555)).unwrap();
+        let roots = runtime_cache_roots_for(Some(&home), Some(&xdg));
+        let result = acquire_runtime_from_roots(
+            &roots,
+            RuntimeBackend::MIGraphX,
+            "http://127.0.0.1:9/offline.tgz",
+            &migraphx_files(),
+        );
+        fs::set_permissions(&legacy, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(result.unwrap(), legacy.join(ORT_LIB_NAME));
+        assert!(!legacy.join(".lock").exists());
+        assert!(!xdg.exists(), "legacy reuse wrote to the primary XDG cache");
+    }
+
+    #[test]
+    #[ignore = "requires real CPU ORT via NEXT_PLAID_TEST_CPU_ORT"]
+    fn legacy_read_only_cpu_cache_is_available_offline() {
+        use std::os::unix::fs::PermissionsExt;
+        let cache = tempfile::tempdir().unwrap();
+        fs::copy(
+            env::var("NEXT_PLAID_TEST_CPU_ORT").unwrap(),
+            cache.path().join(ORT_LIB_NAME),
+        )
+        .unwrap();
+        fs::set_permissions(cache.path(), fs::Permissions::from_mode(0o555)).unwrap();
+        let (_, files) = get_download_info(RuntimeBackend::Cpu).unwrap();
+        let result = acquire_standard_runtime(
+            cache.path(),
+            "http://127.0.0.1:9/offline.tgz",
+            &files,
+            RuntimeBackend::Cpu,
+        );
+        fs::set_permissions(cache.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            result.is_ok(),
+            "a valid legacy read-only cache required a write or network request: {result:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires real CUDA ORT via NEXT_PLAID_TEST_CUDA_ORT"]
+    fn legacy_read_only_cuda_cache_is_available_offline() {
+        use std::os::unix::fs::PermissionsExt;
+        let source = PathBuf::from(env::var("NEXT_PLAID_TEST_CUDA_ORT").unwrap());
+        let cache = tempfile::tempdir().unwrap();
+        let (_, files) = get_download_info(RuntimeBackend::Cuda).unwrap();
+        for (_, name) in &files {
+            fs::copy(source.parent().unwrap().join(name), cache.path().join(name)).unwrap();
+        }
+        fs::set_permissions(cache.path(), fs::Permissions::from_mode(0o555)).unwrap();
+        let result = acquire_standard_runtime(
+            cache.path(),
+            "http://127.0.0.1:9/offline.tgz",
+            &files,
+            RuntimeBackend::Cuda,
+        );
+        fs::set_permissions(cache.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            result.is_ok(),
+            "a valid legacy CUDA cache required a write or network request: {result:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires real CUDA ORT via NEXT_PLAID_TEST_CUDA_ORT"]
+    fn cpu_request_reuses_legacy_gpu_core() {
+        let root = tempfile::tempdir().unwrap();
+        let gpu = root.path().join(ORT_VERSION).join("gpu");
+        fs::create_dir_all(&gpu).unwrap();
+        fs::copy(
+            env::var("NEXT_PLAID_TEST_CUDA_ORT").unwrap(),
+            gpu.join(ORT_LIB_NAME),
+        )
+        .unwrap();
+        assert_eq!(
+            find_cached_cpu_runtime(root.path()).unwrap(),
+            gpu.join(ORT_LIB_NAME)
+        );
+    }
+
+    #[test]
+    #[ignore = "requires real packaged MIGraphX archive, model and GPU; run in its own process"]
+    fn first_download_migraphx_inference() {
+        use sha2::{Digest, Sha256};
+        crate::acceleration::apply_acceleration_mode(
+            crate::acceleration::AccelerationMode::ForceGpu,
+        );
+        let archive = fs::read(env::var("NEXT_PLAID_TEST_ORT_ARCHIVE").unwrap()).unwrap();
+        let checksum = format!("{:x}  runtime.tgz\n", Sha256::digest(&archive));
+        let cache = tempfile::tempdir().unwrap();
+        let temporary_profiles = tempfile::tempdir().unwrap();
+        let profiles = env::var_os("NEXT_PLAID_TEST_PROFILE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| temporary_profiles.path().to_path_buf());
+        fs::create_dir_all(&profiles).unwrap();
+        env::set_var("NEXT_PLAID_ORT_PROFILE", profiles.join("first-download"));
+        let (url, server) = serve_archive(archive, checksum);
+        let library = acquire_migraphx_runtime(cache.path(), &url).unwrap();
+        server.join().unwrap();
+        pin_runtime_library(&library);
+        verify_runtime_provider().unwrap();
+        let model = next_plaid_onnx::Colbert::builder(env::var("NEXT_PLAID_TEST_MODEL").unwrap())
+            .with_execution_provider(next_plaid_onnx::ExecutionProvider::MIGraphX)
+            .with_quantized(true)
+            .build()
+            .unwrap();
+        let embeddings = model
+            .encode_documents(
+                &["fn authenticate(token: &str) -> bool { !token.is_empty() }"],
+                None,
+            )
+            .unwrap();
+        assert!(!embeddings.is_empty());
+        drop(model);
+        let has_migraphx = fs::read_dir(&profiles)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry.path().extension().is_some_and(|e| e == "json")
+                    && entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(&format!("first-download-{}-", std::process::id()))
+            })
+            .any(|entry| {
+                let events: serde_json::Value =
+                    serde_json::from_slice(&fs::read(entry.path()).unwrap()).unwrap();
+                events
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|event| event["args"]["provider"] == "MIGraphXExecutionProvider")
+            });
+        assert!(
+            has_migraphx,
+            "first-download inference produced no MIGraphX kernel profile"
+        );
+    }
+
+    fn serve_not_found() -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/missing.tgz", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let received = stream.read(&mut request).unwrap();
+            assert!(received > 0, "HTTP connection closed before a request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        (url, handle)
+    }
+
+    #[test]
+    #[ignore = "requires NEXT_PLAID_TEST_CPU_ORT with real cached CPU-capable runtime"]
+    fn managed_auto_uses_cpu_after_gpu_http_failure() {
+        use crate::acceleration::AccelerationMode;
+        let cpu = PathBuf::from(env::var("NEXT_PLAID_TEST_CPU_ORT").unwrap());
+        assert!(is_valid_ort_dylib(&cpu));
+        let cache = tempfile::tempdir().unwrap();
+        let (url, server) = serve_not_found();
+        let result = acquire_runtime_with_fallback(
+            AccelerationMode::Auto,
+            RuntimeBackend::MIGraphX,
+            |backend| match backend {
+                RuntimeBackend::MIGraphX => acquire_migraphx_runtime(cache.path(), &url),
+                RuntimeBackend::Cpu => Ok(cpu.clone()),
+                _ => panic!("unexpected fallback backend"),
+            },
+        );
+        server.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "Auto did not fall back after the GPU archive HTTP error"
+        );
+        assert_eq!(result.unwrap(), cpu);
+    }
+
+    #[test]
+    #[ignore = "uses real HTTP server; run separately from GPU inference tests"]
+    fn managed_force_gpu_preserves_http_failure() {
+        use crate::acceleration::AccelerationMode;
+        let cache = tempfile::tempdir().unwrap();
+        let (url, server) = serve_not_found();
+        let result = acquire_runtime_with_fallback(
+            AccelerationMode::ForceGpu,
+            RuntimeBackend::MIGraphX,
+            |backend| {
+                assert_eq!(
+                    backend,
+                    RuntimeBackend::MIGraphX,
+                    "forced GPU selected CPU fallback"
+                );
+                acquire_migraphx_runtime(cache.path(), &url)
+            },
+        );
+        server.join().unwrap();
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(
+            error.contains("404"),
+            "underlying HTTP error was lost: {error}"
+        );
+    }
+
+    fn without_migraphx_companion(archive: &[u8]) -> Vec<u8> {
+        let mut input = tar::Archive::new(flate2::read::GzDecoder::new(archive));
+        let output = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut builder = tar::Builder::new(output);
+        for entry in input.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().into_owned();
+            if path.ends_with("libonnxruntime_providers_migraphx.so") {
+                continue;
+            }
+            let header = entry.header().clone();
+            builder.append(&header, &mut entry).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    #[ignore = "requires NEXT_PLAID_TEST_ORT_ARCHIVE with real packaged MIGraphX runtime"]
+    fn managed_migraphx_repairs_corrupt_companion() {
+        use sha2::{Digest, Sha256};
+        let archive = fs::read(env::var("NEXT_PLAID_TEST_ORT_ARCHIVE").unwrap()).unwrap();
+        let checksum = format!("{:x}  runtime.tgz\n", Sha256::digest(&archive));
+        let cache = tempfile::tempdir().unwrap();
+        let (initial_url, initial_server) = serve_archive(archive.clone(), checksum.clone());
+        acquire_migraphx_runtime(cache.path(), &initial_url).unwrap();
+        initial_server.join().unwrap();
+        let provider = cache.path().join("libonnxruntime_providers_migraphx.so");
+        let original = fs::read(&provider).unwrap();
+        fs::write(&provider, b"broken provider").unwrap();
+        let (url, server) = serve_archive(archive, checksum);
+        acquire_migraphx_runtime(cache.path(), &url).unwrap();
+        assert!(
+            fs::read(provider).unwrap() == original,
+            "corrupt cached companion was reused"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires real MIGraphX archive and NEXT_PLAID_TEST_CPU_ORT"]
+    fn managed_migraphx_incomplete_archive_preserves_previous_core() {
+        use sha2::{Digest, Sha256};
+        let archive = fs::read(env::var("NEXT_PLAID_TEST_ORT_ARCHIVE").unwrap()).unwrap();
+        let archive = without_migraphx_companion(&archive);
+        let old_core = fs::read(env::var("NEXT_PLAID_TEST_CPU_ORT").unwrap()).unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        fs::write(cache.path().join(ORT_LIB_NAME), &old_core).unwrap();
+        let checksum = format!("{:x}  runtime.tgz\n", Sha256::digest(&archive));
+        let (url, server) = serve_archive(archive, checksum);
+        let result = acquire_migraphx_runtime(cache.path(), &url);
+        server.join().unwrap();
+        assert!(
+            result.is_err(),
+            "an incomplete provider archive was accepted"
+        );
+        assert!(
+            fs::read(cache.path().join(ORT_LIB_NAME)).unwrap() == old_core,
+            "rejected archive replaced the previous runtime core"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires NEXT_PLAID_TEST_ORT_ARCHIVE with the real packaged MIGraphX runtime"]
+    fn managed_migraphx_rejects_checksum_mismatch() {
+        let archive = fs::read(env::var("NEXT_PLAID_TEST_ORT_ARCHIVE").unwrap()).unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let (url, server) = serve_archive(archive, format!("{}  runtime.tgz\n", "0".repeat(64)));
+        let result = acquire_migraphx_runtime(cache.path(), &url);
+        server.join().unwrap();
+        assert!(result.is_err());
+        assert!(!cache.path().join(ORT_LIB_NAME).exists());
+    }
+}
+
+#[cfg(test)]
+mod cache_location_tests {
+    use super::*;
+
+    #[test]
+    fn absolute_xdg_cache_home_selects_runtime_location() {
+        let cache = Path::new(if cfg!(windows) {
+            r"C:\workspace\cache"
+        } else {
+            "/workspace/cache"
+        });
+        assert_eq!(
+            runtime_cache_root_for(Some(Path::new("/home/user")), Some(cache)),
+            Some(cache.join("colgrep/onnxruntime"))
+        );
+    }
+
+    #[test]
+    fn relative_xdg_cache_home_preserves_legacy_location() {
+        assert_eq!(
+            runtime_cache_root_for(
+                Some(Path::new("/home/user")),
+                Some(Path::new("relative/cache"))
+            ),
+            Some(PathBuf::from("/home/user/.cache/colgrep/onnxruntime"))
+        );
+    }
+
+    #[test]
+    fn empty_xdg_cache_home_preserves_legacy_location() {
+        assert_eq!(
+            runtime_cache_root_for(Some(Path::new("/home/user")), Some(Path::new(""))),
+            Some(PathBuf::from("/home/user/.cache/colgrep/onnxruntime"))
+        );
+    }
+
+    #[test]
+    fn unset_xdg_cache_home_preserves_legacy_location() {
+        assert_eq!(
+            runtime_cache_root_for(Some(Path::new("/home/user")), None),
+            Some(PathBuf::from("/home/user/.cache/colgrep/onnxruntime"))
+        );
+    }
 }

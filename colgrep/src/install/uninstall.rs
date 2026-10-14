@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{
     uninstall_claude_code, uninstall_codex, uninstall_hermes, uninstall_kimi, uninstall_opencode,
@@ -17,9 +17,22 @@ fn get_colgrep_data_dir() -> Result<PathBuf> {
 }
 
 /// Get the colgrep cache directory (contains ONNX runtime)
-fn get_colgrep_cache_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Could not determine home directory")?;
-    Ok(home.join(".cache").join("colgrep"))
+fn colgrep_cache_directories_for(home: Option<&Path>, xdg: Option<&Path>) -> Vec<PathBuf> {
+    crate::onnx_runtime::runtime_cache_roots_for(home, xdg)
+        .into_iter()
+        .filter_map(|root| root.parent().map(Path::to_path_buf))
+        .collect()
+}
+
+fn get_colgrep_cache_dirs() -> Result<Vec<PathBuf>> {
+    let home = dirs::home_dir();
+    let xdg = std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from);
+    let directories = colgrep_cache_directories_for(home.as_deref(), xdg.as_deref());
+    anyhow::ensure!(
+        !directories.is_empty(),
+        "Could not determine home directory"
+    );
+    Ok(directories)
 }
 
 /// Get the huggingface cache directory for colgrep models
@@ -174,26 +187,29 @@ fn remove_data_directory() -> Result<()> {
 
 /// Remove the colgrep cache directory
 fn remove_cache_directory() -> Result<()> {
-    let cache_dir = get_colgrep_cache_dir()?;
+    remove_cache_directories(&get_colgrep_cache_dirs()?)
+}
 
-    if cache_dir.exists() {
-        fs::remove_dir_all(&cache_dir).with_context(|| {
-            format!("Failed to remove cache directory: {}", cache_dir.display())
-        })?;
+fn remove_cache_directories(directories: &[PathBuf]) -> Result<()> {
+    for cache_dir in directories {
+        if cache_dir.exists() {
+            fs::remove_dir_all(cache_dir).with_context(|| {
+                format!("Failed to remove cache directory: {}", cache_dir.display())
+            })?;
 
-        println!(
-            "{} Removed cache directory: {}",
-            "✓".green(),
-            cache_dir.display()
-        );
-    } else {
-        println!(
-            "  {} No cache directory found at {}",
-            "-".dimmed(),
-            cache_dir.display()
-        );
+            println!(
+                "{} Removed cache directory: {}",
+                "✓".green(),
+                cache_dir.display()
+            );
+        } else {
+            println!(
+                "  {} No cache directory found at {}",
+                "-".dimmed(),
+                cache_dir.display()
+            );
+        }
     }
-
     Ok(())
 }
 
@@ -254,4 +270,31 @@ fn print_binary_removal_instructions() {
     println!();
     println!("  Or if installed via cargo:");
     println!("    {}", "cargo uninstall colgrep".cyan());
+}
+
+#[cfg(test)]
+mod cache_removal_tests {
+    use super::*;
+
+    #[test]
+    fn uninstall_removes_both_colgrep_caches_and_preserves_neighbors() {
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("home");
+        let xdg = fixture.path().join("xdg");
+        let legacy = home.join(".cache/colgrep");
+        let primary = xdg.join("colgrep");
+        for cache in [&legacy, &primary] {
+            fs::create_dir_all(cache.join("onnxruntime")).unwrap();
+            fs::write(cache.join("onnxruntime/runtime.so"), b"owned cache").unwrap();
+        }
+        let neighbor = xdg.join("other-app");
+        fs::create_dir_all(&neighbor).unwrap();
+        fs::write(neighbor.join("keep"), b"not colgrep").unwrap();
+        let directories = colgrep_cache_directories_for(Some(&home), Some(&xdg));
+        remove_cache_directories(&directories).unwrap();
+        assert!(!legacy.exists(), "old colgrep cache survived uninstall");
+        assert!(!primary.exists(), "XDG colgrep cache survived uninstall");
+        assert!(neighbor.join("keep").exists());
+        assert!(xdg.exists());
+    }
 }

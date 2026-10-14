@@ -305,17 +305,29 @@ fn default_index_parallel_sessions(
 /// (just unit refs + doc IDs, no embedding data).
 const METADATA_QUEUE_CAPACITY: usize = 8;
 
-fn compiled_accelerated_execution_provider() -> Option<ExecutionProvider> {
-    if cfg!(feature = "_cuda") {
+fn encoder_batch_size(provider: ExecutionProvider, configured: Option<usize>) -> usize {
+    configured.unwrap_or(match provider {
+        ExecutionProvider::Cuda | ExecutionProvider::MIGraphX | ExecutionProvider::Auto => {
+            crate::config::DEFAULT_BATCH_SIZE_GPU
+        }
+        _ => crate::config::DEFAULT_BATCH_SIZE_CPU,
+    })
+}
+
+fn runtime_accelerated_execution_provider() -> Option<ExecutionProvider> {
+    if cfg!(feature = "_cuda")
+        && crate::onnx_runtime::is_cudnn_available()
+        && next_plaid_onnx::is_cuda_available()
+    {
         Some(ExecutionProvider::Cuda)
+    } else if cfg!(feature = "migraphx") && next_plaid_onnx::is_migraphx_available() {
+        Some(ExecutionProvider::MIGraphX)
     } else if cfg!(feature = "tensorrt") {
         Some(ExecutionProvider::TensorRT)
     } else if cfg!(feature = "coreml") {
         Some(ExecutionProvider::CoreML)
     } else if cfg!(feature = "directml") {
         Some(ExecutionProvider::DirectML)
-    } else if cfg!(feature = "migraphx") {
-        Some(ExecutionProvider::MIGraphX)
     } else {
         None
     }
@@ -324,11 +336,12 @@ fn compiled_accelerated_execution_provider() -> Option<ExecutionProvider> {
 fn execution_provider_for_acceleration_mode(mode: AccelerationMode) -> ExecutionProvider {
     match mode {
         AccelerationMode::ForceCpu => ExecutionProvider::Cpu,
+        // Auto tries strictly registered providers and keeps their errors when forced.
         AccelerationMode::ForceGpu => {
-            compiled_accelerated_execution_provider().unwrap_or(ExecutionProvider::Cuda)
+            runtime_accelerated_execution_provider().unwrap_or(ExecutionProvider::Auto)
         }
         AccelerationMode::Auto => {
-            compiled_accelerated_execution_provider().unwrap_or(ExecutionProvider::Cpu)
+            runtime_accelerated_execution_provider().unwrap_or(ExecutionProvider::Cpu)
         }
     }
 }
@@ -338,20 +351,10 @@ fn execution_provider_for_acceleration_mode(mode: AccelerationMode) -> Execution
     any(feature = "coreml", feature = "directml", feature = "migraphx")
 ))]
 fn indexing_execution_provider_for_acceleration_mode(mode: AccelerationMode) -> ExecutionProvider {
-    match mode {
-        AccelerationMode::ForceCpu => ExecutionProvider::Cpu,
-        AccelerationMode::ForceGpu => {
-            compiled_accelerated_execution_provider().unwrap_or(ExecutionProvider::Cuda)
-        }
-        AccelerationMode::Auto if cfg!(feature = "coreml") => {
-            // CoreML retains substantial per-shape state during bulk document encoding.
-            // Keep Auto indexing memory-bounded; users can still opt into CoreML with
-            // --force-gpu, and search query encoding continues to prefer CoreML.
-            ExecutionProvider::Cpu
-        }
-        AccelerationMode::Auto => {
-            compiled_accelerated_execution_provider().unwrap_or(ExecutionProvider::Cpu)
-        }
+    if mode == AccelerationMode::Auto && cfg!(feature = "coreml") {
+        ExecutionProvider::Cpu
+    } else {
+        execution_provider_for_acceleration_mode(mode)
     }
 }
 
@@ -1230,79 +1233,23 @@ impl IndexBuilder {
     fn ensure_model_created(&mut self, num_units: usize) -> Result<()> {
         if self.model.is_none() {
             #[cfg(feature = "_cuda")]
-            let acceleration_mode = env_acceleration_mode_lossy();
-
-            #[cfg(feature = "_cuda")]
             let (num_sessions, execution_provider) = {
-                match acceleration_mode {
-                    AccelerationMode::ForceCpu => {
-                        apply_acceleration_mode(AccelerationMode::ForceCpu);
-                        crate::onnx_runtime::ensure_onnx_runtime()
-                            .context("Failed to initialize ONNX Runtime")?;
-
-                        (
-                            self.parallel_sessions.unwrap_or_else(|| {
-                                default_index_parallel_sessions(ExecutionProvider::Cpu, num_units)
-                            }),
-                            ExecutionProvider::Cpu,
-                        )
-                    }
-                    AccelerationMode::ForceGpu => {
-                        apply_acceleration_mode(AccelerationMode::ForceGpu);
-                        crate::onnx_runtime::ensure_onnx_runtime()
-                            .context("Failed to initialize ONNX Runtime")?;
-
-                        if !crate::onnx_runtime::is_cudnn_available() {
-                            anyhow::bail!("FORCE_GPU is set, but cuDNN was not initialized");
-                        }
-
-                        if !next_plaid_onnx::is_cuda_available() {
-                            anyhow::bail!(
-                                "FORCE_GPU is set, but the CUDA execution provider was not initialized"
-                            );
-                        }
-
-                        (
-                            self.parallel_sessions
-                                .unwrap_or(crate::config::DEFAULT_PARALLEL_SESSIONS_GPU),
-                            ExecutionProvider::Cuda,
-                        )
-                    }
-                    AccelerationMode::Auto => {
-                        let force_cpu = num_units < SMALL_BATCH_CPU_THRESHOLD;
-                        if force_cpu {
-                            apply_acceleration_mode(AccelerationMode::ForceCpu);
-                        } else {
-                            apply_acceleration_mode(AccelerationMode::Auto);
-                        }
-
-                        crate::onnx_runtime::ensure_onnx_runtime()
-                            .context("Failed to initialize ONNX Runtime")?;
-
-                        let use_cuda = !force_cpu && {
-                            crate::onnx_runtime::is_cudnn_available()
-                                && next_plaid_onnx::is_cuda_available()
-                        };
-
-                        if use_cuda {
-                            (
-                                self.parallel_sessions
-                                    .unwrap_or(crate::config::DEFAULT_PARALLEL_SESSIONS_GPU),
-                                ExecutionProvider::Cuda,
-                            )
-                        } else {
-                            (
-                                self.parallel_sessions.unwrap_or_else(|| {
-                                    default_index_parallel_sessions(
-                                        ExecutionProvider::Cpu,
-                                        num_units,
-                                    )
-                                }),
-                                ExecutionProvider::Cpu,
-                            )
-                        }
-                    }
-                }
+                let mode = env_acceleration_mode_lossy();
+                let encoding_mode =
+                    if mode == AccelerationMode::Auto && num_units < SMALL_BATCH_CPU_THRESHOLD {
+                        AccelerationMode::ForceCpu
+                    } else {
+                        mode
+                    };
+                apply_acceleration_mode(encoding_mode);
+                crate::onnx_runtime::ensure_onnx_runtime()
+                    .context("Failed to initialize ONNX Runtime")?;
+                let provider = execution_provider_for_acceleration_mode(encoding_mode);
+                (
+                    self.parallel_sessions
+                        .unwrap_or_else(|| default_index_parallel_sessions(provider, num_units)),
+                    provider,
+                )
             };
             #[cfg(not(any(
                 feature = "_cuda",
@@ -1325,12 +1272,11 @@ impl IndexBuilder {
             #[cfg(any(feature = "directml", feature = "migraphx", feature = "coreml"))]
             #[cfg(not(feature = "_cuda"))]
             let (num_sessions, execution_provider) = {
+                crate::onnx_runtime::ensure_onnx_runtime()
+                    .context("Failed to initialize ONNX Runtime")?;
                 let execution_provider = indexing_execution_provider_for_acceleration_mode(
                     env_acceleration_mode_lossy(),
                 );
-
-                crate::onnx_runtime::ensure_onnx_runtime()
-                    .context("Failed to initialize ONNX Runtime")?;
 
                 (
                     self.parallel_sessions.unwrap_or_else(|| {
@@ -1342,10 +1288,8 @@ impl IndexBuilder {
 
             // Print model info after ONNX runtime is initialized (and any potential re-exec)
 
-            // Use runtime default for batch size (respects cuDNN availability)
-            let batch = self
-                .batch_size
-                .unwrap_or_else(crate::config::get_default_batch_size);
+            // Resolve the default from the selected encoder; preserve explicit settings.
+            let batch = encoder_batch_size(execution_provider, self.batch_size);
 
             // Suppress stderr during model loading to hide CoreML's harmless
             // "Context leak detected" warnings on macOS.
@@ -1360,9 +1304,26 @@ impl IndexBuilder {
                     .with_dynamic_batch(self.dynamic_batch)
                     .with_execution_provider(execution_provider)
                     .build()
-            })
-            .context("Failed to load ColBERT model")?;
+            });
+            let model = match model {
+                Ok(model) => model,
+                Err(error) if env_acceleration_mode_lossy() == AccelerationMode::Auto => {
+                    eprintln!("⚠️  GPU model initialization failed, using CPU: {error:#}");
+                    Colbert::builder(&self.model_path)
+                        .with_quantized(self.quantized)
+                        .with_parallel(self.parallel_sessions.unwrap_or_else(|| {
+                            default_index_parallel_sessions(ExecutionProvider::Cpu, num_units)
+                        }))
+                        .with_batch_size(crate::config::DEFAULT_BATCH_SIZE_CPU)
+                        .with_dynamic_batch(false)
+                        .with_execution_provider(ExecutionProvider::Cpu)
+                        .build()
+                        .context("Failed to load CPU ColBERT model")?
+                }
+                Err(error) => return Err(error).context("Failed to load ColBERT model"),
+            };
 
+            eprintln!("⚙️  Encoder: {}", model.requested_execution_provider);
             self.model = Some(model);
         }
         Ok(())
@@ -1377,7 +1338,7 @@ impl IndexBuilder {
     }
 
     /// Check if the current model is using GPU execution.
-    #[cfg(feature = "_cuda")]
+    #[cfg(any(feature = "_cuda", feature = "migraphx"))]
     fn is_using_gpu(&self) -> bool {
         self.model
             .as_ref()
@@ -1389,7 +1350,7 @@ impl IndexBuilder {
     /// Uses `dynamic_batch(false)` because CPU encoding processes fixed-size batches
     /// sequentially — the token-budget bucketing of dynamic batch only helps GPU
     /// where plan reuse across similar shapes reduces kernel launch overhead.
-    #[cfg(feature = "_cuda")]
+    #[cfg(any(feature = "_cuda", feature = "migraphx"))]
     fn rebuild_model_for_cpu(&mut self) -> Result<()> {
         // Leak the GPU session rather than dropping it. This runs only after GPU encoding
         // already failed, and a CUDA failure poisons the context: every later CUDA call
@@ -1398,7 +1359,9 @@ impl IndexBuilder {
         // never gets to run. A leaked session costs some memory in a process that is about
         // to finish on CPU and exit; an abort costs the entire index build.
         if let Some(poisoned) = self.model.take() {
-            std::mem::forget(poisoned);
+            if poisoned.requested_execution_provider == ExecutionProvider::Cuda {
+                std::mem::forget(poisoned);
+            }
         }
         apply_acceleration_mode(AccelerationMode::ForceCpu);
 
@@ -1436,7 +1399,8 @@ impl IndexBuilder {
         index_path: &str,
         pb: Option<&ProgressBar>,
     ) -> Result<bool> {
-        let force_cpu = next_plaid::is_force_cpu();
+        let force_cpu = next_plaid::is_force_cpu()
+            || self.model().requested_execution_provider == ExecutionProvider::MIGraphX;
         let config = IndexConfig {
             force_cpu,
             binary: self.binary,
@@ -1460,20 +1424,12 @@ impl IndexBuilder {
             },
         );
 
-        #[cfg(feature = "_cuda")]
+        #[cfg(any(feature = "_cuda", feature = "migraphx"))]
         if let Err(gpu_err) = result {
             if self.is_using_gpu() {
                 let accel = env_acceleration_mode_lossy();
                 if accel == AccelerationMode::ForceGpu {
-                    anyhow::bail!(
-                        "GPU encoding failed with --force-gpu. \
-                         Not enough GPU memory for batch size {batch} and document length. \
-                         Try reducing the batch size or use auto mode to allow CPU fallback.\n\
-                         \nCaused by: {gpu_err}",
-                        batch = self
-                            .batch_size
-                            .unwrap_or(crate::config::DEFAULT_BATCH_SIZE_GPU),
-                    );
+                    return Err(gpu_err).context("GPU encoding failed with --force-gpu. Check the GPU runtime dependencies; reduce the batch size if the underlying error reports insufficient memory.");
                 }
 
                 eprintln!("\n⚠️  GPU encoding failed, falling back to CPU.\n   Cause: {gpu_err}\n");
@@ -2494,7 +2450,8 @@ impl IndexBuilder {
             self.ensure_model_created(all_units.len())?;
 
             #[cfg(feature = "_cuda")]
-            if !crate::onnx_runtime::is_cudnn_available()
+            if self.model().requested_execution_provider == ExecutionProvider::Cpu
+                && !crate::onnx_runtime::is_cudnn_available()
                 && std::env::var("_COLGREP_CUDNN_NOTICE").is_err()
             {
                 std::env::set_var("_COLGREP_CUDNN_NOTICE", "1");
@@ -4042,7 +3999,6 @@ impl Searcher {
         let index_path = vector_dir.to_str().unwrap().to_string();
 
         let acceleration_mode = env_acceleration_mode_lossy();
-        let execution_provider = execution_provider_for_acceleration_mode(acceleration_mode);
 
         #[cfg(feature = "_cuda")]
         match acceleration_mode {
@@ -4054,17 +4010,12 @@ impl Searcher {
 
         crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")?;
 
-        #[cfg(feature = "_cuda")]
-        if matches!(acceleration_mode, AccelerationMode::ForceGpu) {
-            if !crate::onnx_runtime::is_cudnn_available() {
-                anyhow::bail!("FORCE_GPU is set, but cuDNN was not initialized");
-            }
-            if !next_plaid_onnx::is_cuda_available() {
-                anyhow::bail!(
-                    "FORCE_GPU is set, but the CUDA execution provider was not initialized"
-                );
-            }
-        }
+        let query_mode = if cfg!(feature = "_cuda") && acceleration_mode == AccelerationMode::Auto {
+            AccelerationMode::ForceCpu
+        } else {
+            acceleration_mode
+        };
+        let execution_provider = execution_provider_for_acceleration_mode(query_mode);
 
         // Cap intra-op threads to avoid overhead on high-core-count systems
         let num_threads = std::thread::available_parallelism()
@@ -4108,7 +4059,6 @@ impl Searcher {
         let index_path = vector_dir.to_str().unwrap().to_string();
 
         let acceleration_mode = env_acceleration_mode_lossy();
-        let execution_provider = execution_provider_for_acceleration_mode(acceleration_mode);
 
         #[cfg(feature = "_cuda")]
         match acceleration_mode {
@@ -4120,17 +4070,12 @@ impl Searcher {
 
         crate::onnx_runtime::ensure_onnx_runtime().context("Failed to initialize ONNX Runtime")?;
 
-        #[cfg(feature = "_cuda")]
-        if matches!(acceleration_mode, AccelerationMode::ForceGpu) {
-            if !crate::onnx_runtime::is_cudnn_available() {
-                anyhow::bail!("FORCE_GPU is set, but cuDNN was not initialized");
-            }
-            if !next_plaid_onnx::is_cuda_available() {
-                anyhow::bail!(
-                    "FORCE_GPU is set, but the CUDA execution provider was not initialized"
-                );
-            }
-        }
+        let query_mode = if cfg!(feature = "_cuda") && acceleration_mode == AccelerationMode::Auto {
+            AccelerationMode::ForceCpu
+        } else {
+            acceleration_mode
+        };
+        let execution_provider = execution_provider_for_acceleration_mode(query_mode);
 
         // Cap intra-op threads to avoid overhead on high-core-count systems
         let num_threads = std::thread::available_parallelism()
@@ -5056,20 +5001,23 @@ mod tests {
     }
 
     #[test]
-    fn test_force_cpu_execution_provider_is_cpu() {
+    fn test_selected_encoder_batch_defaults_and_override() {
+        assert_eq!(encoder_batch_size(ExecutionProvider::MIGraphX, None), 64);
+        assert_eq!(encoder_batch_size(ExecutionProvider::Cuda, None), 64);
+        assert_eq!(encoder_batch_size(ExecutionProvider::Cpu, None), 1);
+        assert_eq!(encoder_batch_size(ExecutionProvider::DirectML, None), 1);
+        assert_eq!(encoder_batch_size(ExecutionProvider::CoreML, None), 1);
         assert_eq!(
-            execution_provider_for_acceleration_mode(AccelerationMode::ForceCpu),
-            ExecutionProvider::Cpu
+            encoder_batch_size(ExecutionProvider::MIGraphX, Some(23)),
+            23
         );
     }
 
     #[test]
-    fn test_auto_execution_provider_uses_compiled_accelerator_or_cpu() {
-        let expected = compiled_accelerated_execution_provider().unwrap_or(ExecutionProvider::Cpu);
-
+    fn test_force_cpu_execution_provider_is_cpu() {
         assert_eq!(
-            execution_provider_for_acceleration_mode(AccelerationMode::Auto),
-            expected
+            execution_provider_for_acceleration_mode(AccelerationMode::ForceCpu),
+            ExecutionProvider::Cpu
         );
     }
 

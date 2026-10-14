@@ -96,6 +96,7 @@ flate2 = "1"
 tar = "0.4"
 dirs = "5"
 libloading = "0.8"
+sha2 = "0.10"
 
 # === CLI ===
 clap = { version = "4", features = ["derive"] }
@@ -129,6 +130,7 @@ walkdir = "2"
 ignore = "0.4"
 globset = "0.4"
 fs2 = "0.4"
+tempfile = "3"
 
 # === Hashing ===
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
@@ -143,9 +145,6 @@ atty = "0.2"
 
 # === Ndarray (for embeddings) ===
 ndarray = "0.16"
-
-[dev-dependencies]
-tempfile = "3"
 
 [features]
 default = []

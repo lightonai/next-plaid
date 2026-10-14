@@ -1,0 +1,341 @@
+diff --git a/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc b/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc
+index a59347841..4ab474800 100644
+--- a/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc
++++ b/onnxruntime/core/providers/migraphx/migraphx_execution_provider.cc
+@@ -4,6 +4,16 @@
+ #include <hip/hip_version.h>
+
+ #include <algorithm>
++#include <array>
++#include <cerrno>
++#include <optional>
++#include <string_view>
++#include <cstdlib>
++#include <system_error>
++#if defined(__linux__)
++#include <unistd.h>
++extern char** environ;
++#endif
+ #include <filesystem>
+ #include <fstream>
+ #include <functional>
+@@ -1178,12 +1188,32 @@ bool load_precompiled_model(migraphx::program& prog, const std::filesystem::path
+ }
+
+ void save_compiled_model(const migraphx::program& prog, const std::filesystem::path& path) {
+-  if (!path.empty()) {
+-    LOGS_DEFAULT(VERBOSE) << "Model Save at " << path.string() << ": Begin";
++  if (path.empty()) return;
++  std::filesystem::path temporary;
++  try {
++    std::filesystem::create_directories(path.parent_path());
++#if defined(__linux__)
++    std::string pattern = path.string() + ".tmp.XXXXXX";
++    std::vector<char> name(pattern.begin(), pattern.end());
++    name.push_back('\0');
++    int fd = mkstemp(name.data());
++    if (fd == -1) throw std::system_error(errno, std::generic_category());
++    temporary = name.data();
++    close(fd);
+     migraphx::file_options fo;
+     fo.set_file_format("msgpack");
+-    save(prog, path.string().c_str(), fo);
++    save(prog, temporary.string().c_str(), fo);
++    std::filesystem::rename(temporary, path);
++#else
++    // This cache format is used by the Linux runtime distribution.
++    return;
++#endif
+     LOGS_DEFAULT(VERBOSE) << "Model Save: Complete";
++  } catch (...) {
++    std::error_code ignored;
++    if (!temporary.empty()) std::filesystem::remove(temporary, ignored);
++    LOGS_DEFAULT(WARNING) << "MIGraphX cache write failed; continuing with the compiled program. "
++                         << "Check cache directory permissions and free disk space.";
+   }
+ }
+
+@@ -1257,37 +1287,129 @@ void compile_program(migraphx::program& prog,
+   LOGS_DEFAULT(WARNING) << "Model Compile: Complete";
+ }
+
+-std::string to_hex(const uint64_t v) {
+-  std::array<char, sizeof v << 1> s{};
+-  auto [ptr, _] = std::to_chars(s.data(), s.data() + s.size(), v, 16);
+-  return std::string{s.data(), ptr};
++std::string make_hash(std::string_view value) {
++  std::array<std::uint32_t, 4> hash{};
++  MurmurHash3::x86_128(value.data(), gsl::narrow_cast<int32_t>(value.size()), 0, hash.data());
++  constexpr char digits[] = "0123456789abcdef";
++  std::string result;
++  result.reserve(32);
++  for (uint32_t word : hash) {
++    for (int shift = 28; shift >= 0; shift -= 4) result += digits[(word >> shift) & 15];
++  }
++  return result;
+ }
+
+-template <typename T>
+-std::string make_hash(T v) {
+-  std::array<std::uint32_t, 4> temp{};
+-  MurmurHash3::x86_128(v.data(), gsl::narrow_cast<int32_t>(v.size()), temp[0], temp.data());
+-  return to_hex(temp[0] | static_cast<uint64_t>(temp[1]) << 32);
++void append_cache_field(std::string& buffer, std::string_view value) {
++  buffer += std::to_string(value.size());
++  buffer += ':';
++  buffer.append(value.data(), value.size());
++}
++
++// The shared provider API omits nested protobuf tensor accessors. These field
++// numbers come from ONNX's Model/Graph/Node/Attribute/Tensor/SparseTensor schema.
++// A malformed or unknown wire encoding disables persistent caching.
++enum class CacheProto { Model, Graph, Node, Attribute, Tensor, SparseTensor, Function, Training };
++
++bool cache_read_varint(std::string_view& data, uint64_t& value) {
++  value = 0;
++  for (int shift = 0; shift < 64 && !data.empty(); shift += 7) {
++    uint8_t byte = static_cast<uint8_t>(data.front());
++    data.remove_prefix(1);
++    if (shift == 63 && byte > 1) return false;
++    value |= static_cast<uint64_t>(byte & 127) << shift;
++    if (!(byte & 128)) return true;
++  }
++  return false;
+ }
+
+-template <>
+-std::string make_hash(const char* v) {
+-  return make_hash(std::string_view{v});
++bool cache_proto_is_inline(std::string_view model, CacheProto initial_kind) {
++  std::vector<std::pair<std::string_view, CacheProto>> pending{{model, initial_kind}};
++  while (!pending.empty()) {
++    auto [data, kind] = pending.back();
++    pending.pop_back();
++    while (!data.empty()) {
++      uint64_t tag, value;
++      if (!cache_read_varint(data, tag) || (tag >> 3) == 0) return false;
++      unsigned field = static_cast<unsigned>(tag >> 3), wire = tag & 7;
++      if (kind == CacheProto::Tensor && field == 13) return false;  // external_data
++      if (wire == 0) {
++        if (!cache_read_varint(data, value)) return false;
++        if (kind == CacheProto::Tensor && field == 14 && value != 0) return false;
++      } else if (wire == 1 || wire == 5) {
++        size_t size = wire == 1 ? 8 : 4;
++        if (data.size() < size) return false;
++        data.remove_prefix(size);
++      } else if (wire == 2) {
++        if (!cache_read_varint(data, value) || value > data.size()) return false;
++        auto child = data.substr(0, static_cast<size_t>(value));
++        data.remove_prefix(static_cast<size_t>(value));
++        CacheProto next = CacheProto::Tensor;
++        bool nested = true;
++        switch (kind) {
++          case CacheProto::Model:
++            if (field == 7) next = CacheProto::Graph;
++            else if (field == 20) next = CacheProto::Training;
++            else if (field == 25) next = CacheProto::Function;
++            else nested = false;
++            break;
++          case CacheProto::Graph:
++            if (field == 1) next = CacheProto::Node;
++            else if (field == 5) next = CacheProto::Tensor;
++            else if (field == 15) next = CacheProto::SparseTensor;
++            else nested = false;
++            break;
++          case CacheProto::Node:
++            next = CacheProto::Attribute; nested = field == 5; break;
++          case CacheProto::Attribute:
++            if (field == 5 || field == 10) next = CacheProto::Tensor;
++            else if (field == 6 || field == 11) next = CacheProto::Graph;
++            else if (field == 22 || field == 23) next = CacheProto::SparseTensor;
++            else nested = false;
++            break;
++          case CacheProto::SparseTensor:
++            next = CacheProto::Tensor; nested = field == 1 || field == 2; break;
++          case CacheProto::Function:
++            if (field == 7) next = CacheProto::Node;
++            else if (field == 11) next = CacheProto::Attribute;
++            else nested = false;
++            break;
++          case CacheProto::Training:
++            next = CacheProto::Graph; nested = field == 1 || field == 2; break;
++          case CacheProto::Tensor: nested = false; break;
++        }
++        if (nested) pending.emplace_back(child, next);
++      } else {
++        return false;
++      }
++    }
++  }
++  return true;
+ }
+
+-constexpr std::uint64_t MIGraphX_Version =
+-    ((MIGRAPHX_VERSION_MAJOR << 16) | (MIGRAPHX_VERSION_MINOR << 8) | MIGRAPHX_VERSION_PATCH);
++std::string cache_environment() {
++  std::vector<std::string> settings;
++#if defined(__linux__)
++  for (char** entry = ::environ; entry && *entry; ++entry) {
++    std::string_view value(*entry);
++    if (value.rfind("MIGRAPHX_", 0) == 0 || value.rfind("ORT_MIGRAPHX_", 0) == 0)
++      settings.emplace_back(value);
++  }
++#endif
++  std::sort(settings.begin(), settings.end());
++  std::string result;
++  for (const auto& setting : settings) append_cache_field(result, setting);
++  return result;
++}
+
+ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& fused_nodes,
+                                           std::vector<NodeComputeInfo>& node_compute_funcs) {
+   migraphx::onnx_options options;
+-  bool no_input_shape = false;
++  std::optional<bool> inline_model;
+   for (const auto& fused_node_graph : fused_nodes) {
+     const GraphViewer& graph_body_viewer = fused_node_graph.filtered_graph;
+     const Node& fused_node = fused_node_graph.fused_node;
+
+     std::filesystem::path model_cache_file;
+-    auto mxr_filename_prefix = to_hex(MIGraphX_Version) + "-" + GenerateGraphId(graph_body_viewer) + "-" + make_hash(std::string_view(device_prop_.gcnArchName)) + "-";
+
+     // Get model input names (only first layer)
+     const Graph* cur_graph = &graph_body_viewer.GetGraph();
+@@ -1300,24 +1422,12 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+       session_input_names.insert(i->Name());
+     }
+
+-    // empty cache path means the MXR caching is disabled - always compile
+-    if (!model_cache_path_.empty()) {
+-      std::vector<std::int64_t> input_shapes;
+-      for (std::size_t i = 0; i < session_input_names.size(); ++i) {
+-        auto tensor_shape = input_tensor[i]->Shape();
+-        for (int j = 1; j < tensor_shape->dim_size(); ++j) {
+-          input_shapes.push_back(tensor_shape->dim(j).dim_value());
+-        }
+-      }
+-      model_cache_file = model_cache_path_ / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
+-    }
+-
+     // map parameter input name to index
+     std::unordered_map<std::string, std::size_t> input_name_index;
+     const auto& input_defs = fused_node.InputDefs();
+     input_name_index.reserve(input_defs.size());
+     for (std::size_t i = 0; i < input_defs.size(); ++i) {
+-      input_name_index[input_defs[i]->Name()] = i;
++      if (!input_defs[i]->Name().empty()) input_name_index[input_defs[i]->Name()] = i;
+     }
+
+     auto model = graph_body_viewer.CreateModel(*GetLogger());
+@@ -1335,7 +1445,35 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+     }
+
+     std::vector<std::string> input_names, output_names;
+-    no_input_shape = no_input_shape || get_input_output_names(graph_body_viewer, input_names, output_names);
++    bool no_input_shape = get_input_output_names(graph_body_viewer, input_names, output_names);
++    bool calibrated = (int8_enable_ || fp8_enable_) && int8_calibration_cache_available_;
++    std::filesystem::path persistent_cache_path;
++    std::string identity;
++    int runtime_hip_version = 0;
++    if (no_input_shape && !calibrated && !model_cache_path_.empty()) {
++      if (!inline_model.has_value()) {
++        // Inspect the original model, including nodes removed by graph optimization.
++        // Fileless or unreadable models retain only their in-memory compiled program.
++        std::ifstream source(main_graph.ModelPath(), std::ios::binary);
++        std::string bytes{std::istreambuf_iterator<char>(source), std::istreambuf_iterator<char>()};
++        inline_model = source.is_open() && !source.bad() && !bytes.empty() &&
++                       cache_proto_is_inline(bytes, CacheProto::Model);
++      }
++    }
++    if (no_input_shape && inline_model.value_or(false) && !calibrated && !model_cache_path_.empty() &&
++        hipRuntimeGetVersion(&runtime_hip_version) == hipSuccess) {
++      persistent_cache_path = model_cache_path_;
++      append_cache_field(identity, "migraphx-model-cache-v2");
++      append_cache_field(identity, "ORT-1.23.1-d9b2048791efb5804fe3d53a04b4971256addebf");
++      append_cache_field(identity, "fast_math=false");
++      append_cache_field(identity, onnx_string_buffer);
++      append_cache_field(identity, device_prop_.gcnArchName);
++      append_cache_field(identity, MakeString(MIGRAPHX_VERSION_MAJOR, ".", MIGRAPHX_VERSION_MINOR, ".", MIGRAPHX_VERSION_PATCH));
++      append_cache_field(identity, MakeString(HIP_VERSION, ":", runtime_hip_version));
++      append_cache_field(identity, MakeString(fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_, exhaustive_tune_));
++      append_cache_field(identity, cache_environment());
++    }
++    auto mxr_filename_prefix = "v2-" + make_hash(identity) + "-";
+
+     // by parsing the model_proto, create a program corresponding to
+     // the input fused_node
+@@ -1378,7 +1516,7 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+             map_onnx_string_[context->node_name], options, t_, map_input_index_[context->node_name], &mgx_mu_,
+             map_no_input_shape_[context->node_name], fp16_enable_, bf16_enable_, fp8_enable_, int8_enable_,
+             int8_calibration_cache_available_, dynamic_range_map_,
+-            model_cache_path_.string(), dump_model_ops_};
++            persistent_cache_path, dump_model_ops_};
+       *state = p.release();
+       return 0;
+     };
+@@ -1409,7 +1547,16 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+       // from input data
+       bool input_shape_match = true;
+       migraphx::program_parameter_shapes param_shapes;
+-      std::vector<std::int64_t> input_shapes;
++      std::string input_signature;
++      std::map<std::string, std::size_t> sorted_inputs(map_input_name_index.begin(), map_input_name_index.end());
++      for (const auto& [name, index] : sorted_inputs) {
++        auto tensor_info = ctx.GetInput(index).GetTensorTypeAndShapeInfo();
++        auto shape = tensor_info.GetShape();
++        append_cache_field(input_signature, name);
++        append_cache_field(input_signature, std::to_string(tensor_info.GetElementType()));
++        append_cache_field(input_signature, std::to_string(shape.size()));
++        for (int64_t dimension : shape) append_cache_field(input_signature, std::to_string(dimension));
++      }
+
+       if (no_input_shape) {
+         LOGS_DEFAULT(VERBOSE) << "Missing input shape setting input parameters again";
+@@ -1450,7 +1597,6 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+                 cmp_options.set_input_parameter_shape(name, ort_lens);
+                 input_shape_match = false;
+               }
+-              input_shapes.insert(input_shapes.end(), tensor_shape.begin(), tensor_shape.end());
+             }
+           }
+         }
+@@ -1461,8 +1607,8 @@ Status MIGraphXExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>&
+       if (!input_shape_match) {
+         std::filesystem::path model_cache_file;
+         // empty cache path means the MXR caching is disabled - always compile
+-        if (!model_cache_path_.empty()) {
+-          model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + make_hash(input_shapes) + ".mxr");
++        if (!mgx_state->model_cache_dir.empty()) {
++          model_cache_file = mgx_state->model_cache_dir / (mxr_filename_prefix + make_hash(input_signature) + ".mxr");
+         }
+         if (!load_precompiled_model(prog, model_cache_file)) {
+           LOGS_DEFAULT(VERBOSE) << "Input shape mismatch detected. Recompiling";
+diff --git a/onnxruntime/core/providers/migraphx/migraphx_execution_provider_info.cc b/onnxruntime/core/providers/migraphx/migraphx_execution_provider_info.cc
+index 33ef366eb..9b40f47ec 100644
+--- a/onnxruntime/core/providers/migraphx/migraphx_execution_provider_info.cc
++++ b/onnxruntime/core/providers/migraphx/migraphx_execution_provider_info.cc
+@@ -63,6 +63,12 @@ MIGraphXExecutionProviderInfo::MIGraphXExecutionProviderInfo(const ProviderOptio
+                 model_cache_dir = ToPathString(value_str);
+                 return Status::OK();
+               })
++          .AddValueParser(
++              migraphx_provider_option::kModelCacheDirV2,
++              [this](const std::string& value_str) -> Status {
++                model_cache_dir = ToPathString(value_str);
++                return Status::OK();
++              })
+           .AddAssignmentToReference(migraphx_provider_option::kFp16Enable, fp16_enable)
+           .AddAssignmentToReference(migraphx_provider_option::kBf16Enable, bf16_enable)
+           .AddAssignmentToReference(migraphx_provider_option::kFp8Enable, fp8_enable)
+diff --git a/onnxruntime/core/providers/migraphx/migraphx_execution_provider_info.h b/onnxruntime/core/providers/migraphx/migraphx_execution_provider_info.h
+index 414254aaa..851e0f128 100644
+--- a/onnxruntime/core/providers/migraphx/migraphx_execution_provider_info.h
++++ b/onnxruntime/core/providers/migraphx/migraphx_execution_provider_info.h
+@@ -34,6 +34,7 @@ constexpr auto kGpuExternalAlloc = "migraphx_external_alloc"sv;
+ constexpr auto kGpuExternalFree = "migraphx_external_free"sv;
+ constexpr auto kGpuExternalEmptyCache = "migraphx_external_empty_cache"sv;
+ constexpr auto kModelCacheDir = "migraphx_model_cache_dir"sv;
++constexpr auto kModelCacheDirV2 = "migraphx_model_cache_dir_v2"sv;
+ }  // namespace migraphx_provider_option
+
+ extern const EnumNameMapping<ArenaExtendStrategy> arena_extend_strategy_mapping;

@@ -525,7 +525,7 @@ pub struct Cli {
     #[arg(long = "force-cpu", global = true, conflicts_with = "force_gpu")]
     pub force_cpu: bool,
 
-    /// Force GPU execution for all runtime paths and fail if unavailable
+    /// Force GPU encoding and fail if unavailable (AMD clustering/compression uses CPU)
     #[arg(long = "force-gpu", global = true, conflicts_with = "force_cpu")]
     pub force_gpu: bool,
 }
