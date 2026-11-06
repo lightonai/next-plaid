@@ -2137,7 +2137,7 @@ mod tests {
             "",
             "The standard chunk of Lorem Ipsum used since 1966 is reproduced below.",
         ]
-        .join("\\n");
+        .join("\n");
 
         let matcher = PatternMatcher::new(
             "Lorem Ipsum used since 1966",
