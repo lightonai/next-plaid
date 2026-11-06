@@ -779,8 +779,23 @@ pub(crate) fn print_results(
                 // Semantic-only mode: files ordered by score; for each, its best matched
                 // units with their own range and name, so an agent can read exactly those
                 // lines (`path:start-end  name`).
+                let query_matcher = PatternMatcher::new(query, false, true, false, case_sensitive);
                 for result in &results {
                     let file_path = display_path(&result.unit.file, use_relative);
+
+                    // Markdown is indexed as one document per file. Its semantic result
+                    // therefore spans the whole document; when the query also appears
+                    // literally, report the actual matching source lines instead.
+                    if result.unit.language == colgrep::Language::Markdown {
+                        let matching_lines = query_matcher.find_matches_in_unit(&result.unit);
+                        if !matching_lines.is_empty() {
+                            for line in matching_lines {
+                                println!("{}:{}-{}  {}", file_path, line, line, result.unit.name);
+                            }
+                            continue;
+                        }
+                    }
+
                     for m in result.unit_matches().iter().take(MATCHES_PER_FILE) {
                         if m.name.is_empty() {
                             println!("{}:{}-{}", file_path, m.line, m.end_line);
@@ -2103,6 +2118,35 @@ mod tests {
             merge_query_with_pattern("pub fn", "pub async fn test"),
             "pub fn async test"
         );
+    }
+
+    #[test]
+    fn test_markdown_semantic_output_can_locate_exact_matching_line() {
+        let mut unit = colgrep::CodeUnit::new(
+            "TEST".to_string(),
+            PathBuf::from("TEST.md"),
+            1,
+            14,
+            colgrep::Language::Markdown,
+            colgrep::UnitType::Document,
+            None,
+        );
+        unit.code = [
+            "Lorem ipsum dolor sit amet,",
+            "consectetur adipiscing elit.",
+            "",
+            "The standard chunk of Lorem Ipsum used since 1966 is reproduced below.",
+        ]
+        .join("\\n");
+
+        let matcher = PatternMatcher::new(
+            "Lorem Ipsum used since 1966",
+            false,
+            true,
+            false,
+            false,
+        );
+        assert_eq!(matcher.find_matches_in_unit(&unit), vec![4]);
     }
 
     #[cfg(windows)]
