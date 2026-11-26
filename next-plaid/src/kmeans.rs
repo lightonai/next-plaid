@@ -37,7 +37,7 @@ pub struct ComputeKmeansConfig {
     /// If provided, explicitly sets the number of centroids (K).
     /// If None, K is calculated using heuristic based on dataset size.
     pub num_partitions: Option<usize>,
-    /// Force CPU execution even when CUDA feature is enabled.
+    /// Force CPU execution even when the CUDA or Metal feature is enabled.
     /// Useful for small batches where GPU initialization overhead exceeds benefits.
     pub force_cpu: bool,
 }
@@ -388,15 +388,8 @@ pub fn compute_kmeans(
     // Run k-means (Metal GPU with CPU fallback when force_cpu is true)
     #[cfg(all(feature = "metal_gpu", not(feature = "_cuda")))]
     let centroids = if config.force_cpu {
-        let mut kmeans = FastKMeans::with_config(kmeans_config);
-        kmeans
-            .train(&samples_tensor.view())
-            .map_err(|e| Error::IndexCreation(format!("K-means training failed: {}", e)))?;
-
-        kmeans
-            .centroids()
-            .ok_or_else(|| Error::IndexCreation("K-means did not produce centroids".into()))?
-            .to_owned()
+        // Not FastKMeans::train(), which switches to Metal for large workloads
+        compute_centroids_cpu(&samples_tensor.view(), kmeans_config)?
     } else {
         let mut kmeans = FastKMeansMetal::with_config(kmeans_config).map_err(|e| {
             Error::IndexCreation(format!("Metal K-means initialization failed: {}", e))
@@ -531,6 +524,29 @@ mod tests {
 
         assert_eq!(centroids.nrows(), 16);
         assert_eq!(centroids.ncols(), 16);
+    }
+
+    #[test]
+    fn test_compute_kmeans_force_cpu_matches_cpu_kmeans() {
+        // 3000 samples * 256 centroids is above the 500_000 workload at which
+        // FastKMeans::train switches to Metal in metal_gpu builds.
+        let doc: Array2<f32> = Array2::random((3000, 64), Uniform::new(-1.0f32, 1.0));
+        let config = ComputeKmeansConfig {
+            num_partitions: Some(256),
+            force_cpu: true,
+            ..Default::default()
+        };
+        let centroids = compute_kmeans(std::slice::from_ref(&doc), &config).unwrap();
+
+        let mut expected = kmeans_double_chunked(&doc.view(), &default_config(256))
+            .unwrap()
+            .centroids;
+        for mut row in expected.axis_iter_mut(Axis(0)) {
+            let norm = row.dot(&row).sqrt().max(1e-12);
+            row /= norm;
+        }
+
+        assert_eq!(centroids, expected);
     }
 
     #[test]

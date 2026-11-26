@@ -137,7 +137,7 @@ pub struct IndexConfig {
     /// to embeddings.npy for potential rebuilds during updates.
     #[serde(default = "default_start_from_scratch")]
     pub start_from_scratch: usize,
-    /// Force CPU execution for K-means even when CUDA feature is enabled.
+    /// Force CPU execution for K-means even when the CUDA or Metal feature is enabled.
     /// Useful for small batches where GPU initialization overhead exceeds benefits.
     #[serde(default)]
     pub force_cpu: bool,
