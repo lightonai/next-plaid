@@ -226,7 +226,7 @@ IndexConfig {
     max_points_per_centroid: 256,// K-means parameter
     n_samples_kmeans: None,      // Auto: min(1 + 16*sqrt(120*N), N)
     start_from_scratch: 999,     // Rebuild threshold
-    force_cpu: false,            // Force CPU K-means (skip CUDA)
+    force_cpu: false,            // Force CPU K-means (skip CUDA/Metal)
 }
 ```
 

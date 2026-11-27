@@ -87,7 +87,7 @@ pub struct UpdateConfig {
     pub start_from_scratch: usize,
     /// Buffer size before triggering centroid expansion (default: 100)
     pub buffer_size: usize,
-    /// Force CPU execution for K-means even when CUDA feature is enabled.
+    /// Force CPU execution for K-means even when the CUDA or Metal feature is enabled.
     #[serde(default)]
     pub force_cpu: bool,
 }
